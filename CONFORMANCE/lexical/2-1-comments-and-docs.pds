@@ -1,0 +1,8 @@
+// §2.1 — Comments & docs: `//` and `/* */` are discarded (no token);
+//        `//!` emits INNER_DOC and `///` emits DOC.
+
+// discarded line comment
+/* discarded block comment */
+//! module-level docs
+/// Customer-facing system.
+public system Banking;

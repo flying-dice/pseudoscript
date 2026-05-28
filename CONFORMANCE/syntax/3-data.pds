@@ -1,0 +1,21 @@
+// LANG.md §3.4-3.5: a `data` record (optional `{ }` block), a black-box `data`
+// (`;`), and a discriminated union mixing a bare variant reference with an
+// inline-record variant. Array (`T[]`) types parse.
+
+data BankingInfo {
+  id: number
+  accountNo: string
+  balance: number
+  owner: Person
+  tags: string[]
+}
+
+data BankAccCreated { accId: string }
+
+// black box — shape not yet disclosed
+data OpenRequest;
+
+data AccountEvent =
+  | BankAccCreated                                     // bare reference to the data above
+  | BankAccClosed  { accId: string, reason: string }   // inline declare
+  | BankAccFrozen

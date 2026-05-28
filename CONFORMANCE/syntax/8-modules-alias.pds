@@ -1,0 +1,15 @@
+// LANG.md §8: an `//!` inner doc documents the module; an `alias` binds a
+// local name to a node FQN and ends with `;`.
+
+//! banking::core — core account systems.
+
+alias Store = banking::core::AccountStore;
+
+public system Banking;
+
+public container AccountStore for Banking;
+
+public container Mainframe for Banking {
+  public GetInfo(): void;
+  internalReconcile(): void;
+}

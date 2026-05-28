@@ -1,0 +1,7 @@
+// §2.4 — Hash disambiguation: `#name` on a /// line is a TAG, `#[` opens a
+//        macro (HASH_LBRACKET), and a `#` inside a string is literal prose
+//        (part of the STRING lexeme).
+
+/// Durable store. #critical
+#[http("GET /a#b")]
+ListAccounts(): Accounts;

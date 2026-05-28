@@ -1,0 +1,38 @@
+// LANG.md §2.4: doc block (prose + tags), then macros, then modifiers, then
+// declaration. Tags live in `///`; macros sit on the declaration; `public`
+// is the modifier.
+
+//! example module.
+
+/// Durable store of account records.
+/// #critical
+public container AccountStore for Banking;
+
+public system Banking;
+
+public data Request { id: number }
+public data Response { ok: bool }
+public data HandlerError { reason: string }
+
+public container Api for Banking {
+
+  /// An HTTP-triggered request handler (also a sequence entry point).
+  /// #headline
+  #[http("POST /handle")]
+  public Handle(req: Request): Result<Response, HandlerError> {
+    return AccountStore::Repository.lookup(req)
+  }
+
+  /// Reachable two ways: on demand and on a schedule (stacked macros, with
+  /// the word and name=value forms).
+  #[manual]
+  #[schedule = "0 3 * * *"]
+  Reconcile() { }
+}
+
+public container Logger for Banking;
+
+component Audit for Logger {
+  /// #deprecated
+  Record(req: Request) { }
+}

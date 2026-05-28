@@ -1,0 +1,15 @@
+// LANG.md §5.1: a callable is a bare function-shaped declaration. It discloses
+// its logic with a block or is a black box with `;`. Return type optional.
+// `public` marks a callable cross-module addressable; absence is private.
+
+public system Banking;
+
+public container Mainframe for Banking {
+  public GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
+    return Ok(x)
+  }
+
+  Reconcile(): Result<void, ReconcileError>;
+
+  internalReconcile(): void;
+}

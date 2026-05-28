@@ -1,0 +1,7 @@
+// LANG.md §2.5 / §5.1: a callable must end with a `{ }` block or a `;`.
+// `Reconcile(...)` has neither before the enclosing container's `}`.
+
+public system Banking;
+public container Mainframe for Banking {
+  Reconcile(): Result<void, ReconcileError>
+}

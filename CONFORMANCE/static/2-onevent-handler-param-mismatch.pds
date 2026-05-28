@@ -1,0 +1,14 @@
+// LANG.md §2.4: an `#[onevent(Event)]` trigger keys on the event's `data` type;
+// the handler's single parameter type must equal `Event`.
+
+//! banking::core
+
+public data BankAccCreated { accId: string }
+public data AuditEntry { note: string }
+
+public system Banking;
+
+public container Audit for Banking {
+  #[onevent(banking::core::BankAccCreated)]
+  StoreCreation(e: banking::core::AuditEntry) { }
+}

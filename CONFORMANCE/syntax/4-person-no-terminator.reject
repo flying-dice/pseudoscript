@@ -1,0 +1,4 @@
+// LANG.md §4.2 / §10: every structural construct ends with a `{ }` block or a
+// `;`. A bare `person` declaration with neither is rejected.
+
+public person Customer

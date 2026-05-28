@@ -1,0 +1,10 @@
+[package]
+name = "pseudoscript"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pds"
+path = "src/main.rs"
+
+[dependencies]

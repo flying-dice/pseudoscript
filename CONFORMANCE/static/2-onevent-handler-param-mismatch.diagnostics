@@ -1,0 +1,1 @@
+handler parameter type `banking::core::AuditEntry` does not match triggered event `banking::core::BankAccCreated`

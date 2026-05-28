@@ -1,0 +1,8 @@
+// LANG.md §4 (ADR-010): a container's parent must be a system. `Ledger` names
+// another container as its parent.
+
+//! example
+
+public system Banking;
+public container Mainframe for Banking;
+public container Ledger for Mainframe;

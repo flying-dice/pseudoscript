@@ -1,0 +1,10 @@
+// LANG.md §3.5 (ADR-006): an inline-declared variant hoists to the module
+// namespace, where its name collides with an existing data declaration.
+
+//! example
+
+data BankAccClosed { accId: string }
+
+data AccountEvent =
+  | BankAccCreated { accId: string }
+  | BankAccClosed  { accId: string, reason: string }

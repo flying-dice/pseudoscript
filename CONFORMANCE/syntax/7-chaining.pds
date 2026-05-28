@@ -1,0 +1,13 @@
+// LANG.md §7 (ADR-007): `.` access and calls chain freely — field-off-call,
+// field-of-field, and call chains all parse.
+
+public system Banking;
+
+data Info { owner: string }
+
+public container Mainframe for Banking {
+  Run(): void {
+    a = Store::Repo.fetch(1).value.owner
+    b = self.Pick().first().tag
+  }
+}

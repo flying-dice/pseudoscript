@@ -1,0 +1,6 @@
+// §2.3 — Keywords vs identifiers: bare keywords tokenise as KW_*, but an
+//        identifier that merely contains a keyword stays one IDENT, matched
+//        greedily (`systematic`, `forwarder`).
+
+public container EventBus for Banking;
+systematic = forwarder.inputs

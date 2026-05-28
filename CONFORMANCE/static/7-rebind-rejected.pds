@@ -1,0 +1,16 @@
+// LANG.md §7.1 (ADR-002): bindings are single-assignment. The second
+// assignment to `r` re-binds a name and is a model error.
+
+//! example
+
+public data Info { id: number }
+
+public system Banking;
+
+public container Mainframe for Banking {
+  Run(): void {
+    r = self.Make()
+    r = self.Make()
+  }
+  Make(): Info;
+}

@@ -1,0 +1,6 @@
+// LANG.md §4 (ADR-011): a person may disclose callables modeling actions it
+// initiates.
+
+public person Buyer {
+  MakePurchase(item: Sku): Result<Receipt, PurchaseError>;
+}

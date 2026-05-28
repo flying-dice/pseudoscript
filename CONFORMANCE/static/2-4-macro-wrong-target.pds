@@ -1,0 +1,9 @@
+// LANG.md §2.4 (ADR-015): each macro declares its target kind(s). The trigger
+// macros target callables; `#[http]` on a container is rejected.
+
+//! example
+
+public system Banking;
+
+#[http("GET /ping")]
+public container Api for Banking;

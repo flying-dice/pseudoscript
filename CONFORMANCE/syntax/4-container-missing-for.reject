@@ -1,0 +1,4 @@
+// LANG.md §4 / §10: a `container` must name its parent with `for <Parent>`.
+
+container Mainframe {
+}

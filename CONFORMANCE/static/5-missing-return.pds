@@ -1,0 +1,19 @@
+// LANG.md §5.1 (ADR-016): a disclosed non-void callable must return on every
+// path. The branch where `r.isErr` is false falls through with no return.
+
+//! example
+
+public data Info { id: number }
+public data Missing { id: number }
+
+public system Banking;
+
+public container Mainframe for Banking {
+  Get(): Result<Info, Missing> {
+    r = self.Fetch()
+    if (r.isErr) {
+      return Err(r.error)
+    }
+  }
+  Fetch(): Result<Info, Missing>;
+}

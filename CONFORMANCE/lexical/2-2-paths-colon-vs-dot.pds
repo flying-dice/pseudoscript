@@ -1,0 +1,5 @@
+// §2.2 — Paths: `::` walks the architecture path (COLONCOLON);
+//        the final `.` invokes or accesses (DOT).
+
+alias Bus = banking::core::EventBus;
+Repository.store(x)

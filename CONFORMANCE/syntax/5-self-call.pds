@@ -1,0 +1,10 @@
+// LANG.md §5 (ADR-004): a same-node callable is invoked via `self.Name(args)`.
+
+public system Banking;
+
+public container Mainframe for Banking {
+  A(): void {
+    self.B()
+  }
+  B(): void;
+}

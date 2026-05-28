@@ -1,0 +1,6 @@
+INNER_DOC@6:1 "module-level docs"
+DOC@7:1 "Customer-facing system."
+KW_PUBLIC@8:1 "public"
+KW_SYSTEM@8:8 "system"
+IDENT@8:15 "Banking"
+SEMI@8:22 ";"

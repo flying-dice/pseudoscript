@@ -1,0 +1,26 @@
+// LANG.md §7: the statement forms valid inside a callable body — assignment,
+// call, `from` composition, return, if/else, while, for. Conditions are
+// paren-delimited; `{` opens a source set only directly after `from`.
+
+public system Banking;
+
+data BankingInfo { id: number }
+
+public container Mainframe for Banking {
+  Run(): void {
+    a = Foo.getThing()
+    b = Bar.getOther()
+    c = BankingInfo from { a, b }
+    if (a.isErr) {
+      return
+    } else {
+      x = a.value
+    }
+    while (cond) {
+      self.step()
+    }
+    for (item in items) {
+      self.handle(item)
+    }
+  }
+}

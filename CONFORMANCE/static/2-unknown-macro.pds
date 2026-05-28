@@ -1,0 +1,11 @@
+// LANG.md §2.4: the macro namespace is system-only and closed; an unknown
+// macro is a hard error (not silently ignored).
+
+//! example
+
+public system Banking;
+
+public container Api for Banking {
+  #[retry(3)]
+  Ping() { }
+}

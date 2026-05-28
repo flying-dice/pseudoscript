@@ -1,0 +1,3 @@
+// LANG.md §8.3 / §10: an `alias` declaration must end with `;`.
+
+alias Bus = banking::core::EventBus

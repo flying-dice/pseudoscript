@@ -1,0 +1,4 @@
+// LANG.md §3.3 (ADR-008): the optionality marker `?` was removed. A `?` type
+// suffix no longer parses.
+
+data Account { owner: Person? }

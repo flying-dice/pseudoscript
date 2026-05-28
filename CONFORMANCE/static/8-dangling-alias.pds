@@ -1,0 +1,4 @@
+// LANG.md §8.3: a dangling alias (target missing) is a hard error. No node
+// named `banking::events::BankAccCreated` exists in this workspace.
+
+alias Created = banking::events::BankAccCreated;
