@@ -18,10 +18,16 @@ const NODE_W: i32 = 160;
 const NODE_H: i32 = 60;
 const NODE_GAP: i32 = 30;
 const BOUNDARY_PAD: i32 = 30;
-const LIFELINE_GAP: i32 = 180;
-const LIFELINE_TOP: i32 = 60;
-const MSG_GAP: i32 = 50;
-const FRAME_PAD: i32 = 16;
+const LIFELINE_GAP: i32 = 200;
+const LIFELINE_TOP: i32 = 64;
+const MSG_GAP: i32 = 54;
+const FRAME_PAD: i32 = 18;
+// Sequence-diagram detail.
+const SELF_EXTRA: i32 = 26; // extra height a self-message loop needs
+const FRAME_HEAD: i32 = 30; // height of a combined-fragment's operator tab band
+const FRAME_FOOT: i32 = 14; // padding below a frame's last row
+const ACT_W: i32 = 10; // execution-activation bar width
+const RET_STUB: i32 = 46; // length of a return arrow to the (implicit) caller
 
 // --- C4 layout --------------------------------------------------------------
 
@@ -96,7 +102,8 @@ pub(crate) fn layout_sequence(scene: &mut SequenceScene) {
     }
 }
 
-/// The width/height a laid-out sequence scene needs.
+/// The width/height a laid-out sequence scene needs. Height is measured by the
+/// same row-advancement rules the renderer uses, so nothing clips.
 fn sequence_extent(scene: &SequenceScene) -> (i32, i32) {
     let max_x = scene
         .participants
@@ -104,19 +111,26 @@ fn sequence_extent(scene: &SequenceScene) -> (i32, i32) {
         .map(|l| l.x + NODE_W / 2)
         .max()
         .unwrap_or(NODE_W)
+        // room for a self-loop / return stub on the rightmost lifeline
+        + RET_STUB
         + PAD;
-    let height = LIFELINE_TOP + NODE_H + (message_count(&scene.items) + 1) * MSG_GAP + PAD;
+    let body_top = LIFELINE_TOP + NODE_H + MSG_GAP;
+    let height = body_top + content_height(&scene.items) + PAD;
     (max_x, height)
 }
 
-/// The number of message rows a sequence body occupies (frames count their
-/// bodies, plus a row for the frame header).
-fn message_count(items: &[SeqItem]) -> i32 {
+/// The vertical space a sequence body occupies, mirroring [`draw_seq_items`]'s
+/// advancement: a call/return is one row, a self-message is taller, and a frame
+/// adds its operator-tab band and footer padding around its body.
+fn content_height(items: &[SeqItem]) -> i32 {
     items
         .iter()
         .map(|item| match item {
-            SeqItem::Message(_) => 1,
-            SeqItem::Frame(frame) => 1 + message_count(&frame.body),
+            SeqItem::Message(msg) => match msg.kind {
+                MessageKind::SelfMsg => MSG_GAP + SELF_EXTRA,
+                _ => MSG_GAP,
+            },
+            SeqItem::Frame(frame) => FRAME_HEAD + content_height(&frame.body) + FRAME_FOOT,
         })
         .sum()
 }
@@ -150,26 +164,64 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
     );
 }
 
+// Sequence-diagram palette (ink-on-paper, readable on the doc site's light
+// plate in either theme).
+const SEQ_INK: &str = "#2a2f3a";
+const SEQ_LINE: &str = "#c3c8d2";
+const SEQ_MUTED: &str = "#6b7280";
+const SEQ_ACCENT: &str = "#e8431f";
+const SEQ_OK: &str = "#0f9d8a";
+const SEQ_ERR: &str = "#d6432a";
+const SEQ_FRAME: &str = "#aab0bd";
+
 fn render_sequence(scene: &SequenceScene) -> String {
     let (w, h) = sequence_extent(scene);
+    let body_top = LIFELINE_TOP + NODE_H + MSG_GAP;
+    let body_bottom = h - PAD;
     let mut out = String::new();
     svg_open(&mut out, w, h);
 
-    // Title: the entry callable's simple name, in the band above the lifelines.
+    // Sequence-specific markers: a solid filled head for calls, a slim open head
+    // for returns.
     let _ = write!(
         &mut out,
-        "<text x=\"{PAD}\" y=\"28\" font-weight=\"bold\">{}</text>",
-        escape_xml(simple_name(&scene.entry)),
+        "<defs>\
+         <marker id=\"seqcall\" markerWidth=\"11\" markerHeight=\"11\" refX=\"9\" refY=\"3.5\" \
+         orient=\"auto\" markerUnits=\"userSpaceOnUse\"><path d=\"M0,0 L10,3.5 L0,7 z\" \
+         fill=\"{SEQ_INK}\"/></marker>\
+         <marker id=\"seqret\" markerWidth=\"12\" markerHeight=\"12\" refX=\"9\" refY=\"4\" \
+         orient=\"auto\" markerUnits=\"userSpaceOnUse\"><path d=\"M0,0 L10,4 M0,8 L10,4\" \
+         fill=\"none\" stroke=\"{SEQ_MUTED}\" stroke-width=\"1.3\"/></marker></defs>",
     );
 
-    // Lifeline heads (the same modern C4 card as the box views) plus the dashed
-    // lifeline dropping from each.
+    // Eyebrow + the entry callable's name in the band above the lifelines.
+    let _ = write!(
+        &mut out,
+        "<text x=\"{PAD}\" y=\"22\" font-size=\"10\" letter-spacing=\"2\" \
+         fill=\"{SEQ_MUTED}\">SEQUENCE</text>\
+         <text x=\"{PAD}\" y=\"44\" font-size=\"17\" font-weight=\"700\" fill=\"{SEQ_INK}\">{name}</text>",
+        name = escape_xml(simple_name(&scene.entry)),
+    );
+
+    // Owner execution-activation bar runs the length of the body: the entry is
+    // active throughout its own trace.
+    if let Some(owner) = scene.participants.first() {
+        let _ = write!(
+            &mut out,
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{ACT_W}\" height=\"{hgt}\" rx=\"2\" \
+             fill=\"{SEQ_ACCENT}\" fill-opacity=\"0.10\" stroke=\"{SEQ_ACCENT}\" stroke-opacity=\"0.5\"/>",
+            x = owner.x - ACT_W / 2,
+            y = body_top - MSG_GAP / 2,
+            hgt = (body_bottom - (body_top - MSG_GAP / 2)).max(0),
+        );
+    }
+
+    // Lifeline heads (the kind-coloured C4 card) plus the dashed lifeline.
     for lifeline in &scene.participants {
         let x = lifeline.x;
-        let head_x = x - NODE_W / 2;
         crate::c4_render::draw_card(
             &mut out,
-            head_x,
+            x - NODE_W / 2,
             LIFELINE_TOP,
             NODE_W,
             NODE_H,
@@ -179,97 +231,212 @@ fn render_sequence(scene: &SequenceScene) -> String {
         );
         let _ = write!(
             &mut out,
-            "<line x1=\"{x}\" y1=\"{ll_top}\" x2=\"{x}\" y2=\"{ll_bot}\" stroke=\"#999\" \
-             stroke-dasharray=\"3 3\"/>",
+            "<line x1=\"{x}\" y1=\"{ll_top}\" x2=\"{x}\" y2=\"{ll_bot}\" stroke=\"{SEQ_LINE}\" \
+             stroke-dasharray=\"2 4\"/>",
             ll_top = LIFELINE_TOP + NODE_H,
-            ll_bot = h - PAD,
+            ll_bot = body_bottom,
         );
     }
 
-    let mut y = LIFELINE_TOP + NODE_H + MSG_GAP;
-    draw_seq_items(&mut out, scene, &scene.items, &mut y);
+    let mut y = body_top;
+    let mut step = 0;
+    draw_seq_items(&mut out, scene, &scene.items, &mut y, &mut step);
 
     out.push_str("</svg>");
     out
 }
 
-/// Draws a sequence body, advancing `y` per row. Frames draw an enclosing
-/// rectangle around their body.
-fn draw_seq_items(out: &mut String, scene: &SequenceScene, items: &[SeqItem], y: &mut i32) {
+/// Draws a sequence body, advancing `y` per row and numbering each call. Frames
+/// draw an enclosing combined-fragment around their body.
+fn draw_seq_items(
+    out: &mut String,
+    scene: &SequenceScene,
+    items: &[SeqItem],
+    y: &mut i32,
+    step: &mut u32,
+) {
     for item in items {
         match item {
-            SeqItem::Message(msg) => {
-                draw_message(out, scene, msg, *y);
-                *y += MSG_GAP;
-            }
+            SeqItem::Message(msg) => match msg.kind {
+                MessageKind::Call => {
+                    *step += 1;
+                    draw_call(out, scene, msg, *y, *step);
+                    *y += MSG_GAP;
+                }
+                MessageKind::SelfMsg => {
+                    *step += 1;
+                    draw_self(out, scene, msg, *y, *step);
+                    *y += MSG_GAP + SELF_EXTRA;
+                }
+                MessageKind::Return => {
+                    draw_return(out, scene, msg, *y);
+                    *y += MSG_GAP;
+                }
+            },
             SeqItem::Frame(frame) => {
                 let top = *y;
-                let label_y = *y + 16;
-                *y += MSG_GAP;
-                draw_seq_items(out, scene, &frame.body, y);
-                let bottom = *y;
-                draw_frame_box(out, scene, frame.kind, &frame.cond, top, label_y, bottom);
+                *y += FRAME_HEAD;
+                draw_seq_items(out, scene, &frame.body, y, step);
+                *y += FRAME_FOOT;
+                draw_frame(out, scene, frame.kind, &frame.cond, top, *y);
             }
         }
     }
 }
 
-fn draw_message(out: &mut String, scene: &SequenceScene, msg: &crate::scene::Message, y: i32) {
+/// A call: solid arrow owner → target, numbered, with a short activation bar on
+/// the target.
+fn draw_call(
+    out: &mut String,
+    scene: &SequenceScene,
+    msg: &crate::scene::Message,
+    y: i32,
+    step: u32,
+) {
     let Some(from_x) = lifeline_x(scene, &msg.from) else {
         return;
     };
     let to_x = lifeline_x(scene, &msg.to).unwrap_or(from_x);
-    match msg.kind {
-        MessageKind::SelfMsg | MessageKind::Return => {
-            // A self/return message loops on the owner's lifeline.
-            let _ = write!(
-                out,
-                "<path d=\"M{x},{y} h30 v16 h-30\" fill=\"none\" stroke=\"#333\" \
-                 marker-end=\"url(#arrow)\"/>\
-                 <text x=\"{tx}\" y=\"{ty}\">{label}</text>",
-                x = from_x,
-                tx = from_x + 36,
-                ty = y + 4,
-                label = escape_xml(&msg.label),
-            );
-        }
-        MessageKind::Call => {
-            let _ = write!(
-                out,
-                "<line x1=\"{from_x}\" y1=\"{y}\" x2=\"{to_x}\" y2=\"{y}\" stroke=\"#333\" \
-                 marker-end=\"url(#arrow)\"/>\
-                 <text x=\"{tx}\" y=\"{ty}\" text-anchor=\"middle\">{label}</text>",
-                tx = i32::midpoint(from_x, to_x),
-                ty = y - 4,
-                label = escape_xml(&msg.label),
-            );
-        }
-    }
+    let dir = if to_x >= from_x { 1 } else { -1 };
+    let start = from_x + dir * (ACT_W / 2);
+    let end = to_x - dir * (ACT_W / 2);
+    // target activation stub
+    let _ = write!(
+        out,
+        "<rect x=\"{ax}\" y=\"{ay}\" width=\"{ACT_W}\" height=\"{ah}\" rx=\"2\" fill=\"#fff\" \
+         stroke=\"{SEQ_LINE}\"/>",
+        ax = to_x - ACT_W / 2,
+        ay = y - 6,
+        ah = MSG_GAP - 14,
+    );
+    let _ = write!(
+        out,
+        "<line x1=\"{start}\" y1=\"{y}\" x2=\"{end}\" y2=\"{y}\" stroke=\"{SEQ_INK}\" \
+         stroke-width=\"1.4\" marker-end=\"url(#seqcall)\"/>",
+    );
+    step_badge(out, from_x, y, step);
+    seq_label(
+        out,
+        i32::midpoint(from_x, to_x),
+        y - 9,
+        &msg.label,
+        "middle",
+        SEQ_INK,
+        true,
+    );
 }
 
-fn draw_frame_box(
+/// A self-message: a rounded loop on the owner's lifeline.
+fn draw_self(
+    out: &mut String,
+    scene: &SequenceScene,
+    msg: &crate::scene::Message,
+    y: i32,
+    step: u32,
+) {
+    let Some(x) = lifeline_x(scene, &msg.from) else {
+        return;
+    };
+    let lx = x + ACT_W / 2;
+    let _ = write!(
+        out,
+        "<path d=\"M{lx},{y} h34 a6 6 0 0 1 6 6 v8 a6 6 0 0 1 -6 6 h-34\" fill=\"none\" \
+         stroke=\"{SEQ_INK}\" stroke-width=\"1.4\" marker-end=\"url(#seqcall)\"/>",
+    );
+    step_badge(out, x, y, step);
+    seq_label(out, lx + 46, y + 4, &msg.label, "start", SEQ_INK, false);
+}
+
+/// A return to the (implicit) caller: a dashed arrow off the owner's lifeline,
+/// labelled and coloured by its marker (`Ok`/`Some` vs `Err`/`None`).
+fn draw_return(out: &mut String, scene: &SequenceScene, msg: &crate::scene::Message, y: i32) {
+    let Some(x) = lifeline_x(scene, &msg.from) else {
+        return;
+    };
+    let (colour, text) = return_style(&msg.label);
+    let _ = write!(
+        out,
+        "<line x1=\"{x1}\" y1=\"{y}\" x2=\"{x2}\" y2=\"{y}\" stroke=\"{colour}\" \
+         stroke-width=\"1.3\" stroke-dasharray=\"5 3\" marker-end=\"url(#seqret)\"/>",
+        x1 = x - ACT_W / 2,
+        x2 = x - RET_STUB,
+    );
+    seq_label(out, x - RET_STUB, y - 9, &text, "start", colour, false);
+}
+
+/// A combined fragment (`alt`/`loop`): a framed box with a notched operator tab
+/// and the guard.
+fn draw_frame(
     out: &mut String,
     scene: &SequenceScene,
     kind: crate::scene::FrameKind,
     cond: &str,
     top: i32,
-    label_y: i32,
     bottom: i32,
 ) {
     let min_x = scene.participants.iter().map(|l| l.x).min().unwrap_or(PAD) - FRAME_PAD;
-    let max_x = scene.participants.iter().map(|l| l.x).max().unwrap_or(PAD) + FRAME_PAD;
+    let max_x = scene.participants.iter().map(|l| l.x).max().unwrap_or(PAD) + FRAME_PAD + RET_STUB;
+    let op = kind.keyword();
+    let tab_w = i32::try_from(op.len()).unwrap_or(3) * 8 + 18;
     let _ = write!(
         out,
-        "<rect x=\"{x}\" y=\"{top}\" width=\"{w}\" height=\"{h}\" fill=\"none\" \
-         stroke=\"#77a\" stroke-dasharray=\"2 2\"/>\
-         <text x=\"{tx}\" y=\"{label_y}\" fill=\"#558\">{kw} [{cond}]</text>",
+        "<rect x=\"{x}\" y=\"{top}\" width=\"{w}\" height=\"{h}\" rx=\"4\" fill=\"{SEQ_INK}\" \
+         fill-opacity=\"0.015\" stroke=\"{SEQ_FRAME}\"/>\
+         <path d=\"M{x},{top} h{tab_w} l-8,16 h-{tab_inner} z\" fill=\"{SEQ_FRAME}\" \
+         fill-opacity=\"0.5\" stroke=\"{SEQ_FRAME}\"/>\
+         <text x=\"{ox}\" y=\"{oy}\" font-size=\"11\" font-weight=\"700\" fill=\"{SEQ_INK}\">{op}</text>\
+         <text x=\"{gx}\" y=\"{oy}\" font-size=\"11\" fill=\"{SEQ_MUTED}\">[{cond}]</text>",
         x = min_x,
         w = max_x - min_x,
         h = bottom - top,
-        tx = min_x + 6,
-        kw = kind.keyword(),
+        tab_inner = tab_w - 8,
+        ox = min_x + 8,
+        oy = top + 15,
+        gx = min_x + tab_w + 8,
         cond = escape_xml(cond),
     );
+}
+
+/// A small numbered badge at a message's origin, in reading order.
+fn step_badge(out: &mut String, x: i32, y: i32, step: u32) {
+    let _ = write!(
+        out,
+        "<circle cx=\"{cx}\" cy=\"{y}\" r=\"8\" fill=\"{SEQ_ACCENT}\"/>\
+         <text x=\"{cx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"10\" font-weight=\"700\" \
+         fill=\"#fff\">{step}</text>",
+        cx = x - ACT_W / 2 - 12,
+        ty = y + 3,
+    );
+}
+
+/// A message label with a faint backing pill for legibility over lifelines and
+/// activation bars.
+fn seq_label(out: &mut String, x: i32, y: i32, text: &str, anchor: &str, colour: &str, pill: bool) {
+    let label = escape_xml(text);
+    if pill && !text.is_empty() {
+        let w = i32::try_from(text.chars().count()).unwrap_or(0) * 7 + 12;
+        let _ = write!(
+            out,
+            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"17\" rx=\"4\" fill=\"#fff\" \
+             fill-opacity=\"0.92\"/>",
+            rx = x - w / 2,
+            ry = y - 12,
+        );
+    }
+    let _ = write!(
+        out,
+        "<text x=\"{x}\" y=\"{y}\" text-anchor=\"{anchor}\" font-size=\"12.5\" fill=\"{colour}\">{label}</text>",
+    );
+}
+
+/// The colour and display text for a return marker.
+fn return_style(marker: &str) -> (&'static str, String) {
+    match marker {
+        "Ok" | "Some" => (SEQ_OK, format!("\u{21a9} {marker}")),
+        "Err" | "None" => (SEQ_ERR, format!("\u{21a9} {marker}")),
+        "" => (SEQ_MUTED, "\u{21a9} return".to_owned()),
+        other => (SEQ_MUTED, format!("\u{21a9} {other}")),
+    }
 }
 
 // --- helpers ----------------------------------------------------------------
