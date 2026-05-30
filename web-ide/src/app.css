@@ -1,0 +1,53 @@
+/* PseudoScript Web IDE — shares the doc-site design language (Bricolage display,
+ * Hanken text, JetBrains Mono code, vivid red accent), tuned for a dark editor. */
+
+:root {
+  --bg: #0a0b0d;
+  --surface: #141519;
+  --surface-2: #1b1d23;
+  --surface-3: #22242b;
+  --ink: #f3f3f5;
+  --ink-soft: #a6a8b1;
+  --ink-faint: #6c6e77;
+  --line: #232529;
+  --line-strong: #31343b;
+  --accent: #ff5a3c;
+  --accent-hi: #ff7a60;
+  --accent-ink: #0a0b0d;
+  --accent-soft: rgba(255, 90, 60, 0.15);
+  --ok: #2dd4bf;
+  --warn: #e0a93f;
+  --err: #ff5a52;
+
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --topbar-h: 56px;
+  --status-h: 28px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+::selection { background: var(--accent-soft); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}

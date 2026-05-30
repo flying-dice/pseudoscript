@@ -46,9 +46,10 @@
 mod assets;
 mod config;
 mod escape;
+pub mod nav;
 mod render;
 mod site;
-mod url;
+pub mod url;
 
 pub use config::{DocConfig, Theme};
 pub use escape::escape;
