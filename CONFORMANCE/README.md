@@ -57,6 +57,7 @@ When a new case is added:
 ## Known gaps
 
 - **Cross-module visibility** (§8.2) needs multi-file fixtures: PseudoScript FQNs are file-derived (one `.pds` file = one module), so a `public`/private cross-module case cannot be expressed as a single file. A multi-file case is a directory rooted at `pds.toml` (§8.1, ADR-017); these fixtures land with the workspace loader.
+- **Cross-workspace references** (§8.4, §8.5) need multi-*workspace* fixtures: a consumer `pds.toml` plus one or more dependency workspaces and a `pds.lock`. The fixture format and runner land with the dependency loader. Until then, the resolution rules (public resolves, private and dangling reject) are exercised by `pseudoscript-model` unit tests.
 
 ## What conformance does not test
 

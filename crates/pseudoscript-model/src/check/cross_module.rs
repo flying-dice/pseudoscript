@@ -190,13 +190,14 @@ impl Ctx<'_> {
     }
 }
 
-/// Whether `fqn`'s module portion names a module in the workspace other than
-/// `from_module` — i.e. the reference points across a module boundary.
+/// Whether `fqn`'s module portion names a known module (local or a dependency,
+/// §8.4) other than `from_module` — i.e. the reference points across a module or
+/// workspace boundary.
 fn references_other_module(fqn: &str, from_module: &str, workspace: &Workspace) -> bool {
     let Some((module, _)) = fqn.rsplit_once("::") else {
         return false;
     };
-    module != from_module && workspace.modules().iter().any(|m| m.fqn == module)
+    module != from_module && workspace.is_known_module(module)
 }
 
 /// Renders a `Path` as its `::`-joined source form.

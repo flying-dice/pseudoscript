@@ -1309,6 +1309,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "toml",
+ "toml_edit",
  "ureq",
  "walkdir",
  "zip",

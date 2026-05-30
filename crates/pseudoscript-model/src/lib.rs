@@ -78,14 +78,31 @@ impl WorkspaceModule {
 /// remain the single-module convenience that derives the module FQN from `//!`.
 #[must_use]
 pub fn check_workspace(modules: &[WorkspaceModule]) -> Vec<Diagnostic> {
+    check_workspace_with_externals(modules, &[])
+}
+
+/// Parses and analyzes a workspace that has git dependencies (`LANG.md` §8.4):
+/// `local` modules are checked as in [`check_workspace`], while `external`
+/// modules — the loader supplies them dependency-name-prefixed — contribute only
+/// their `public` symbols so cross-workspace references resolve. External
+/// modules are not themselves checked; a dependency's internal diagnostics are
+/// not the consumer's.
+#[must_use]
+pub fn check_workspace_with_externals(
+    local: &[WorkspaceModule],
+    external: &[WorkspaceModule],
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut parsed = Vec::with_capacity(modules.len());
-    for module in modules {
+    let mut local_parsed = Vec::with_capacity(local.len());
+    for module in local {
         let result = pseudoscript_syntax::parse(&module.source);
         diagnostics.extend(result.diagnostics);
-        parsed.push((module.fqn.clone(), result.ast));
+        local_parsed.push((module.fqn.clone(), result.ast));
     }
-    let workspace = Workspace::build(parsed);
+    let external_parsed = external
+        .iter()
+        .map(|m| (m.fqn.clone(), pseudoscript_syntax::parse(&m.source).ast));
+    let workspace = Workspace::build_with_externals(local_parsed, external_parsed);
     diagnostics.extend(check::run_workspace(&workspace));
     diagnostics
 }
@@ -208,6 +225,59 @@ mod tests {
             b.diagnostics.iter().any(|d| d.message.contains("private")),
             "referrer flags the private access: {:?}",
             b.diagnostics
+        );
+    }
+
+    /// A consumer references a dependency's `public` node by its
+    /// dependency-rooted FQN; the reference resolves and the dependency's own
+    /// modules are not checked (§8.4).
+    #[test]
+    fn cross_workspace_reference_to_public_dep_node_resolves() {
+        let local = [WorkspaceModule::new(
+            "main",
+            "//! main\n\npublic container Portal for auth::core::Login;\n",
+        )];
+        let external = [WorkspaceModule::new(
+            "auth::core",
+            "//! auth core\n\npublic system Login;\n",
+        )];
+        let diagnostics = check_workspace_with_externals(&local, &external);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// Referencing a dependency's *private* node is rejected (§8.4 extends §8.2).
+    #[test]
+    fn cross_workspace_reference_to_private_dep_node_is_rejected() {
+        let local = [WorkspaceModule::new(
+            "main",
+            "//! main\n\npublic container Portal for auth::core::Login;\n",
+        )];
+        let external = [WorkspaceModule::new(
+            "auth::core",
+            "//! auth core\n\nsystem Login;\n",
+        )];
+        let diagnostics = check_workspace_with_externals(&local, &external);
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("private")),
+            "{diagnostics:?}"
+        );
+    }
+
+    /// A dangling reference into a known dependency module is rejected (§8.5).
+    #[test]
+    fn dangling_cross_workspace_reference_is_rejected() {
+        let local = [WorkspaceModule::new(
+            "main",
+            "//! main\n\npublic container Portal for auth::core::Ghost;\n",
+        )];
+        let external = [WorkspaceModule::new(
+            "auth::core",
+            "//! auth core\n\npublic system Login;\n",
+        )];
+        let diagnostics = check_workspace_with_externals(&local, &external);
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("dangling")),
+            "{diagnostics:?}"
         );
     }
 

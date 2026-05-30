@@ -29,6 +29,10 @@ pub struct Workspace {
     pub out_dir: PathBuf,
     /// The workspace's modules, sorted by FQN for determinism.
     pub modules: Vec<WorkspaceModule>,
+    /// Direct git-dependency modules (`LANG.md` §8.4), each FQN prefixed with
+    /// the dependency name. Indexed for cross-workspace resolution but not
+    /// checked. Empty when the workspace has no `pds.lock`.
+    pub dependencies: Vec<WorkspaceModule>,
 }
 
 /// The raw `pds.toml`, as parsed before mapping into a [`Workspace`].
@@ -81,10 +85,12 @@ pub fn find_root(start: &Path) -> Result<PathBuf> {
 pub fn load(root: &Path) -> Result<Workspace> {
     let (config, out) = load_manifest(root)?;
     let modules = load_modules(root)?;
+    let dependencies = crate::deps::dependency_modules(root)?;
     Ok(Workspace {
         config,
         out_dir: root.join(out),
         modules,
+        dependencies,
     })
 }
 
@@ -165,9 +171,9 @@ pub fn load_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
     Ok(modules)
 }
 
-/// Whether `entry` should be descended into / kept: skips a `target` directory
-/// and any hidden entry (a name starting with `.`). The walk root itself is
-/// always kept.
+/// Whether `entry` should be descended into / kept: skips the `target` and
+/// `pds_modules` directories (build output and vendored dependencies) and any
+/// hidden entry (a name starting with `.`). The walk root itself is always kept.
 fn is_visible(entry: &walkdir::DirEntry) -> bool {
     if entry.depth() == 0 {
         return true;
@@ -176,7 +182,7 @@ fn is_visible(entry: &walkdir::DirEntry) -> bool {
     if name.starts_with('.') {
         return false;
     }
-    !(entry.file_type().is_dir() && name == "target")
+    !(entry.file_type().is_dir() && (name == "target" || name == "pds_modules"))
 }
 
 /// Whether `path` is a regular file with a `.pds` extension.

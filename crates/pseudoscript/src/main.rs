@@ -10,7 +10,10 @@
 //!   ([`pseudoscript_doc`]) for the workspace rooted at the nearest `pds.toml`.
 //! - `pds init [PATH]` — bootstrap a new workspace (`pds.toml` + a starter module).
 //! - `pds upgrade [VERSION]` — replace the binary with a GitHub release.
+//! - `pds add <URL>` — add a git workspace dependency and resolve it ([`deps`]).
+//! - `pds install` — restore `pds_modules/` from `pds.lock` ([`deps`]).
 
+mod deps;
 mod upgrade;
 mod workspace;
 
@@ -24,7 +27,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use pseudoscript_format::{FormatError, format};
-use pseudoscript_model::{Diagnostic, check, check_workspace, graph};
+use pseudoscript_model::{Diagnostic, check, check_workspace_with_externals, graph};
 use pseudoscript_syntax::{LineIndex, Severity, render_tokens};
 
 /// The `PseudoScript` toolchain.
@@ -90,6 +93,28 @@ enum Command {
         /// Release to install, e.g. `0.1.0` or `v0.1.0`. Defaults to the latest.
         version: Option<String>,
     },
+    /// Add a git workspace dependency to `pds.toml` and resolve it.
+    Add {
+        /// The dependency's git URL.
+        url: String,
+        /// Install a specific tag.
+        #[arg(long, conflicts_with_all = ["rev", "branch"])]
+        tag: Option<String>,
+        /// Install a specific commit.
+        #[arg(long, conflicts_with_all = ["tag", "branch"])]
+        rev: Option<String>,
+        /// Install the tip of a branch.
+        #[arg(long, conflicts_with_all = ["tag", "rev"])]
+        branch: Option<String>,
+        /// The dependency workspace's directory within the repo (default: root).
+        #[arg(long)]
+        path: Option<String>,
+        /// The dependency name (its FQN root). Defaults to the repo name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Restore `pds_modules/` from `pds.lock`.
+    Install,
 }
 
 fn main() -> ExitCode {
@@ -107,12 +132,45 @@ fn main() -> ExitCode {
             port,
         } => cmd_doc(&path, serve, watch, port),
         Command::Upgrade { version } => cmd_upgrade(version),
+        Command::Add {
+            url,
+            tag,
+            rev,
+            branch,
+            path,
+            name,
+        } => cmd_add(&url, tag, rev, branch, path, name),
+        Command::Install => cmd_install(),
     }
 }
 
 /// `pds upgrade`: download and install a release over the running binary.
 fn cmd_upgrade(version: Option<String>) -> ExitCode {
-    match upgrade::run(version) {
+    report(upgrade::run(version))
+}
+
+/// `pds add`: resolve a git dependency into `pds.toml` and `pds.lock`.
+fn cmd_add(
+    url: &str,
+    tag: Option<String>,
+    rev: Option<String>,
+    branch: Option<String>,
+    path: Option<String>,
+    name: Option<String>,
+) -> ExitCode {
+    let result = deps::Rev::from_flags(tag, rev, branch)
+        .and_then(|selector| deps::add(Path::new("."), url, &selector, path, name));
+    report(result)
+}
+
+/// `pds install`: restore `pds_modules/` from `pds.lock`.
+fn cmd_install() -> ExitCode {
+    report(deps::install(Path::new(".")))
+}
+
+/// Maps a unit-or-error command result to an exit code, printing the error.
+fn report(result: Result<()>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -327,7 +385,10 @@ fn build_site(path: &Path, announce: bool) -> Result<PathBuf> {
     let root = workspace::find_root(path)?;
     let project = workspace::load(&root)?;
 
-    report_diagnostics(&check_workspace(&project.modules));
+    report_diagnostics(&check_workspace_with_externals(
+        &project.modules,
+        &project.dependencies,
+    ));
 
     let site = pseudoscript_doc::render_site(&graph(&project.modules), &project.config);
     for file in &site.files {

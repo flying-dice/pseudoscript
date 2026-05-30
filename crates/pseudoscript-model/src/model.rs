@@ -8,7 +8,7 @@ use pseudoscript_syntax::Span;
 use pseudoscript_syntax::ast::{
     Callable, Decl, DeclKind, Field, Item, Module, Node, NodeKind, Param, Type, Variant,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// What kind of declaration a symbol names.
 ///
@@ -335,8 +335,14 @@ pub struct ModuleEntry {
 pub struct Workspace {
     /// Each module's parsed AST and resolved model, in input order.
     modules: Vec<ModuleEntry>,
-    /// Every declared symbol across all modules, keyed by its full FQN.
+    /// Every resolvable symbol, keyed by its full FQN: all symbols of the local
+    /// modules, plus the `public` symbols of dependency modules (§8.4),
+    /// dependency-name-prefixed by the loader.
     by_fqn: FxHashMap<String, Symbol>,
+    /// FQNs of dependency (external) modules — indexed for resolution but not
+    /// themselves checked. Lets a dangling reference into a known dependency
+    /// module be told apart from a local fully-qualified name (§8.5).
+    external_modules: FxHashSet<String>,
 }
 
 /// The outcome of resolving a cross-module reference (`LANG.md` §8.2).
@@ -358,13 +364,41 @@ impl Workspace {
     /// global index keys on the correct cross-module names.
     #[must_use]
     pub fn build(modules: impl IntoIterator<Item = (String, Module)>) -> Self {
+        Self::build_with_externals(modules, std::iter::empty())
+    }
+
+    /// Builds a workspace from its `local` modules plus `external` dependency
+    /// modules (§8.4).
+    ///
+    /// Local modules are indexed and checked as usual. External modules — the
+    /// loader supplies them dependency-name-prefixed (`auth::core`) — are indexed
+    /// for resolution but *not* checked: a dependency's internal diagnostics are
+    /// not the consumer's. A consumer reference `dep::module::Node` then has the
+    /// §8.2 visibility rule enforced unchanged by [`Workspace::resolve_qualified`]
+    /// (a private dependency target resolves to `Private` and is rejected).
+    #[must_use]
+    pub fn build_with_externals(
+        local: impl IntoIterator<Item = (String, Module)>,
+        external: impl IntoIterator<Item = (String, Module)>,
+    ) -> Self {
         let mut workspace = Workspace::default();
-        for (fqn, ast) in modules {
+        for (fqn, ast) in local {
             let model = Model::build_with_path(&ast, fqn.clone());
             for symbol in model.symbols.values() {
                 workspace.by_fqn.insert(symbol.fqn.clone(), symbol.clone());
             }
             workspace.modules.push(ModuleEntry { fqn, ast, model });
+        }
+        for (fqn, ast) in external {
+            let model = Model::build_with_path(&ast, fqn.clone());
+            // Index every external symbol, public or not: visibility is enforced
+            // by `resolve_qualified` (a private target resolves to `Private` and
+            // is rejected), and indexing privates lets a reference to one be
+            // reported as private rather than dangling (§8.4).
+            for symbol in model.symbols.values() {
+                workspace.by_fqn.insert(symbol.fqn.clone(), symbol.clone());
+            }
+            workspace.external_modules.insert(fqn);
         }
         workspace
     }
@@ -390,6 +424,15 @@ impl Workspace {
     #[must_use]
     pub fn module(&self, fqn: &str) -> Option<&ModuleEntry> {
         self.modules.iter().find(|m| m.fqn == fqn)
+    }
+
+    /// Whether `module_fqn` names a known module — a local one or an indexed
+    /// dependency module (§8.4). Distinguishes a dangling reference into a known
+    /// module from a local fully-qualified name the single-module checks own.
+    #[must_use]
+    pub fn is_known_module(&self, module_fqn: &str) -> bool {
+        self.modules.iter().any(|m| m.fqn == module_fqn)
+            || self.external_modules.contains(module_fqn)
     }
 
     /// Resolves a fully-qualified reference made *from* `from_module`, applying
