@@ -245,108 +245,108 @@ component Watcher for Cli {
 /// The CLI is the composition root and the only I/O edge.
 feature CompositionRoot for Cli {
   given "the library crates that are pure over in-memory modules"
-  when  "the CLI runs any subcommand"
-  then  "all file reading, writing, HTTP serving, and watching happen in the CLI"
-  and   "the pure core receives module text and returns values"
-  but   "I/O and load failures are the only things that fail a command, via the exit code"
+  when "the CLI runs any subcommand"
+  then "all file reading, writing, HTTP serving, and watching happen in the CLI"
+  and "the pure core receives module text and returns values"
+  but "I/O and load failures are the only things that fail a command, via the exit code"
 }
 
 /// argv is parsed into one subcommand and dispatched.
 feature ParseSubcommand for Cli {
   given "a command line for one of init, doc, check, fmt, tokens, or lsp"
-  when  "the CLI starts"
-  then  "clap parses argv into the chosen subcommand and its options"
-  and   "the matching command handler is invoked"
-  but   "an unrecognised command or bad option is rejected with a usage error"
+  when "the CLI starts"
+  then "clap parses argv into the chosen subcommand and its options"
+  and "the matching command handler is invoked"
+  but "an unrecognised command or bad option is rejected with a usage error"
 }
 
 /// `pds init` bootstraps a workspace and refuses to clobber an existing one.
 feature InitWorkspace for InitCmd {
   given "a target directory with no pds.toml"
-  when  "the developer runs `pds init`"
-  then  "the directory is created if absent"
-  and   "a pds.toml carrying a [doc] table is written"
-  and   "a starter main.pds is written when none exists"
-  but   "an existing pds.toml aborts the command without overwriting it"
+  when "the developer runs `pds init`"
+  then "the directory is created if absent"
+  and "a pds.toml carrying a [doc] table is written"
+  and "a starter main.pds is written when none exists"
+  but "an existing pds.toml aborts the command without overwriting it"
 }
 
 /// `pds doc` runs the headline pipeline end to end.
 feature DocPipeline for DocCmd {
   given "a project rooted at a pds.toml with one or more .pds modules"
-  when  "the developer runs `pds doc`"
-  then  "the workspace is loaded and checked"
-  and   "the resolved graph is built and rendered to a site"
-  and   "every site file is written under the output directory"
-  and   "the configured logo is copied beside the site"
+  when "the developer runs `pds doc`"
+  then "the workspace is loaded and checked"
+  and "the resolved graph is built and rendered to a site"
+  and "every site file is written under the output directory"
+  and "the configured logo is copied beside the site"
 }
 
 /// The project root is found by walking up to the nearest pds.toml.
 feature ResolveProjectRoot for Loader {
   given "a path somewhere inside a project tree"
-  when  "the CLI loads the workspace"
-  then  "it walks ancestor directories to the nearest pds.toml"
-  and   "the [doc] config and every .pds module beneath it load, sorted by FQN"
-  but   "a tree with no pds.toml is an error"
+  when "the CLI loads the workspace"
+  then "it walks ancestor directories to the nearest pds.toml"
+  and "the [doc] config and every .pds module beneath it load, sorted by FQN"
+  but "a tree with no pds.toml is an error"
 }
 
 /// The workspace check is reported but never aborts generation.
 feature CheckIsNonFatal for DocCmd {
   given "a workspace whose model has warnings or errors"
-  when  "the developer runs `pds doc`"
-  then  "every diagnostic is printed to stderr"
-  but   "generation continues like `cargo doc`, so a partial model still documents"
-  and   "only an I/O or load failure exits non-zero"
+  when "the developer runs `pds doc`"
+  then "every diagnostic is printed to stderr"
+  but "generation continues like `cargo doc`, so a partial model still documents"
+  and "only an I/O or load failure exits non-zero"
 }
 
 /// `pds doc --serve` hosts the generated site over HTTP on localhost.
 feature ServeOverHttp for HttpServer {
   given "a generated documentation site"
-  when  "the developer runs `pds doc --serve`"
-  then  "the site is hosted over HTTP on 127.0.0.1 at the chosen port"
-  and   "`/` maps to index.html"
-  but   "a request path that escapes the output directory yields 404"
+  when "the developer runs `pds doc --serve`"
+  then "the site is hosted over HTTP on 127.0.0.1 at the chosen port"
+  and "`/` maps to index.html"
+  but "a request path that escapes the output directory yields 404"
 }
 
 /// `pds doc --watch` rebuilds on change and live-reloads the browser.
 feature WatchAndLiveReload for Watcher {
   given "a site served with `--watch`"
-  when  "a .pds file or pds.toml under the root changes"
-  then  "the watcher debounces the save burst and rebuilds the site"
-  and   "the live-reload version is bumped"
-  and   "the browser, polling /__livereload, reloads to the new version"
-  but   "writes under the output directory are ignored so the build does not loop"
+  when "a .pds file or pds.toml under the root changes"
+  then "the watcher debounces the save burst and rebuilds the site"
+  and "the live-reload version is bumped"
+  and "the browser, polling /__livereload, reloads to the new version"
+  but "writes under the output directory are ignored so the build does not loop"
 }
 
 /// `pds check` exits non-zero when any error diagnostic is produced.
 feature CheckExitCode for CheckCmd {
   given "a .pds source file"
-  when  "the developer runs `pds check` on it"
-  then  "every diagnostic is printed as path:line:col: severity: message"
-  but   "the command exits non-zero if any diagnostic is error-severity"
-  and   "a well-formed model prints nothing and exits zero"
+  when "the developer runs `pds check` on it"
+  then "every diagnostic is printed as path:line:col: severity: message"
+  but "the command exits non-zero if any diagnostic is error-severity"
+  and "a well-formed model prints nothing and exits zero"
 }
 
 /// `pds fmt --write` overwrites in place; otherwise it prints.
 feature FormatInPlaceOrStdout for FmtCmd {
   given "a .pds source file"
-  when  "the developer runs `pds fmt`"
-  then  "the source is parsed and pretty-printed to canonical PseudoScript"
-  and   "with `--write` the file is overwritten in place"
-  but   "without `--write` the canonical text is printed to stdout"
-  and   "unparseable source is reported and the file is left untouched"
+  when "the developer runs `pds fmt`"
+  then "the source is parsed and pretty-printed to canonical PseudoScript"
+  and "with `--write` the file is overwritten in place"
+  but "without `--write` the canonical text is printed to stdout"
+  and "unparseable source is reported and the file is left untouched"
 }
 
 /// `pds tokens` prints the conformance token stream.
 feature PrintTokenStream for TokensCmd {
   given "a .pds source file"
-  when  "the developer runs `pds tokens`"
-  then  "the lexical token stream is printed as KIND@line:col \"lexeme\""
+  when "the developer runs `pds tokens`"
+  then "the lexical token stream is printed as KIND@line:col \"lexeme\""
 }
 
 /// `pds lsp` launches the language server over stdio.
 feature LaunchLanguageServer for LspHost {
   given "an editor that speaks the Language Server Protocol"
-  when  "the editor spawns `pds lsp` as a child process"
-  then  "a Tokio runtime boots and the server runs over stdio"
-  and   "the editor drives it with document changes and renders its diagnostics"
+  when "the editor spawns `pds lsp` as a child process"
+  then "a Tokio runtime boots and the server runs over stdio"
+  and "the editor drives it with document changes and renders its diagnostics"
 }
