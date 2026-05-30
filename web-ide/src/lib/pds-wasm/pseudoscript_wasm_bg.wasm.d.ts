@@ -6,6 +6,7 @@ export const check_modules: (a: number, b: number) => [number, number, number, n
 export const emit_scene: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const emit_svg: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const format: (a: number, b: number) => [number, number, number, number];
+export const outline: (a: number, b: number) => [number, number];
 export const parse: (a: number, b: number) => [number, number];
 export const version: () => [number, number];
 export const start: () => void;

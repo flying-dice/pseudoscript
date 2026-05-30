@@ -55,6 +55,14 @@ export function emit_svg(source: string, view: string, target: string): string;
 export function format(source: string): string;
 
 /**
+ * Lists the nodes declared in `source` as a JSON array of
+ * `{ fqn, name, kind, triggered }`. A host uses this to populate a diagram's
+ * target picker: `container` views target a `system`, `component` views a
+ * `container`, and `sequence` views a `triggered` callable.
+ */
+export function outline(source: string): string;
+
+/**
  * Parses `source` and returns its **syntax** diagnostics as a JSON array.
  * Faster than [`check`] — no static analysis — for an editor's parse-error
  * squiggles on every keystroke.
@@ -81,6 +89,7 @@ export interface InitOutput {
     readonly emit_scene: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly emit_svg: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly format: (a: number, b: number) => [number, number, number, number];
+    readonly outline: (a: number, b: number) => [number, number];
     readonly parse: (a: number, b: number) => [number, number];
     readonly version: () => [number, number];
     readonly start: () => void;

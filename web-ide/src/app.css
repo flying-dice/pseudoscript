@@ -1,53 +1,195 @@
-/* PseudoScript Web IDE — shares the doc-site design language (Bricolage display,
- * Hanken text, JetBrains Mono code, vivid red accent), tuned for a dark editor. */
+/* PseudoScript Web IDE — "Drafting Terminal".
+ *
+ * Ink-black canvas under a blueprint grid and a vermilion horizon glow.
+ * Hairline-framed panes, drafting corner ticks, one hot accent, mono-forward
+ * uppercase micro-labels. Diagrams sit on a warm paper "sheet". One staggered
+ * reveal on load; everything else is restrained and precise.
+ */
 
 :root {
-  --bg: #0a0b0d;
-  --surface: #141519;
-  --surface-2: #1b1d23;
-  --surface-3: #22242b;
-  --ink: #f3f3f5;
-  --ink-soft: #a6a8b1;
-  --ink-faint: #6c6e77;
-  --line: #232529;
-  --line-strong: #31343b;
-  --accent: #ff5a3c;
-  --accent-hi: #ff7a60;
-  --accent-ink: #0a0b0d;
-  --accent-soft: rgba(255, 90, 60, 0.15);
-  --ok: #2dd4bf;
-  --warn: #e0a93f;
+  /* ink + surfaces */
+  --bg: #0a0b0e;
+  --surface: #121319;
+  --surface-2: #181a21;
+  --surface-3: #20232c;
+  --ink: #f4f4f6;
+  --ink-soft: #aeb0ba;
+  --ink-faint: #71747f;
+  --line: #21232b;
+  --line-strong: #2f323c;
+
+  /* the one hot accent */
+  --accent: #ff5a36;
+  --accent-hi: #ff7d5e;
+  --accent-ink: #0a0b0e;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+
+  /* status colours */
+  --ok: #38d6b0;
+  --warn: #e8b341;
   --err: #ff5a52;
 
+  /* the drafting sheet diagrams sit on */
+  --sheet: #f4f1ea;
+  --sheet-ink: #3a3a3a;
+  --sheet-grid: rgba(58, 58, 58, 0.08);
+  --tick: rgba(58, 58, 58, 0.45);
+
+  /* atmosphere */
+  --grid: rgba(255, 255, 255, 0.022);
+  --glow: radial-gradient(1100px 560px at 88% -12%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
+
+  /* kind palette (shared with the diagrams) */
+  --k-person: #6e8bff;
+  --k-system: #ff6a52;
+  --k-container: #2dd4bf;
+  --k-component: #e0a93f;
+  --k-data: #b87bf5;
+  --k-callable: #f472b6;
+
+  /* type — distinctive grotesque display, humanist body, mono for code/labels */
   --font-display: "Bricolage Grotesque", system-ui, sans-serif;
   --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --topbar-h: 60px;
+  --status-h: 30px;
   --radius: 10px;
   --radius-sm: 7px;
-  --topbar-h: 56px;
-  --status-h: 28px;
+
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 
-html, body {
-  margin: 0;
-  height: 100%;
-  background: var(--bg);
+html, body { height: 100%; margin: 0; }
+
+body {
   color: var(--ink);
+  background-color: var(--bg);
+  /* layered: vermilion glow over a fine blueprint grid */
+  background-image:
+    var(--glow),
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 100% 100%, 30px 30px, 30px 30px;
+  background-attachment: fixed;
   font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: -0.004em;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-button {
-  font: inherit;
-  cursor: pointer;
+/* a whisper of grain over everything for tactile depth */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-::selection { background: var(--accent-soft); }
+button { font: inherit; cursor: pointer; color: inherit; }
+
+::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 
 :focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* thin, themed scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); background-clip: content-box; }
+
+/* ---- motion ---------------------------------------------------------------- */
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+  60% { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
+}
+
+/* ---- Svelte Flow (interactive diagrams + timeline) ------------------------ */
+
+.svelte-flow {
+  background: transparent;
+  --xy-edge-stroke-default: var(--line-strong);
+  --xy-edge-stroke-selected-default: var(--accent);
+  --xy-edge-label-color-default: var(--ink-soft);
+  --xy-edge-label-background-color-default: var(--surface);
+  --xy-attribution-background-color-default: transparent;
+  --xy-controls-button-background-color-default: var(--surface-2);
+  --xy-controls-button-background-color-hover-default: var(--surface-3);
+  --xy-controls-button-color-default: var(--ink-soft);
+  --xy-controls-button-color-hover-default: var(--accent);
+  --xy-controls-button-border-color-default: var(--line);
+  --xy-minimap-background-color-default: var(--surface);
+}
+.svelte-flow__background { color: var(--grid); }
+.svelte-flow__minimap { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.svelte-flow__controls { box-shadow: none; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.svelte-flow__edge-text { fill: var(--ink-soft); font-family: var(--font-mono); font-size: 10px; }
+.svelte-flow__edge-textbg { fill: var(--surface); }
+
+/* kind-coloured card nodes (shared by C4 graph + timeline) */
+.svelte-flow__node.c4-node {
+  width: auto;
+  padding: 0.55rem 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--k, var(--ink-faint));
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.8);
+  text-align: left;
+}
+.svelte-flow__node.c4-node.person { --k: var(--k-person); }
+.svelte-flow__node.c4-node.system { --k: var(--k-system); }
+.svelte-flow__node.c4-node.container { --k: var(--k-container); }
+.svelte-flow__node.c4-node.component { --k: var(--k-component); }
+.svelte-flow__node.c4-node.data { --k: var(--k-data); }
+.svelte-flow__node.c4-node.callable { --k: var(--k-callable); }
+.svelte-flow__edge.c4-edge.trigger .svelte-flow__edge-path { stroke: var(--k-callable); }
+
+/* the timeline's growing node set reflows; animate the reposition */
+.timeline .svelte-flow__node { transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.timeline .svelte-flow__node.c4-node { animation: pop 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.flow-edge.past .svelte-flow__edge-path { stroke: var(--line-strong); opacity: 0.4; }
+.flow-edge.current .svelte-flow__edge-path { stroke: var(--accent); stroke-width: 2.5; }
+.flow-edge.current .svelte-flow__edge-text { fill: var(--accent); font-weight: 600; }
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

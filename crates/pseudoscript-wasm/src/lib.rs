@@ -30,7 +30,9 @@
 
 use pseudoscript_emit::{Scene, View, graph_of_source, project, render_svg};
 use pseudoscript_format::format as format_source;
-use pseudoscript_model::{WorkspaceModule, check as check_source, check_workspace_modules};
+use pseudoscript_model::{
+    NodeKind, WorkspaceModule, check as check_source, check_workspace_modules,
+};
 use pseudoscript_syntax::{Diagnostic, LineIndex, Severity, parse as parse_source};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -123,6 +125,27 @@ pub fn emit_svg(source: &str, view: &str, target: &str) -> Result<String, JsErro
         .map_err(|e| JsError::new(&e))
 }
 
+/// Lists the nodes declared in `source` as a JSON array of
+/// `{ fqn, name, kind, triggered }`. A host uses this to populate a diagram's
+/// target picker: `container` views target a `system`, `component` views a
+/// `container`, and `sequence` views a `triggered` callable.
+#[wasm_bindgen]
+#[must_use]
+pub fn outline(source: &str) -> String {
+    let graph = graph_of_source(source);
+    let nodes: Vec<OutlineNode> = graph
+        .nodes()
+        .iter()
+        .map(|n| OutlineNode {
+            fqn: n.fqn.clone(),
+            name: n.name.clone(),
+            kind: n.kind,
+            triggered: !n.triggers.is_empty(),
+        })
+        .collect();
+    to_json(&nodes)
+}
+
 // ---- logic (host-testable; no `JsError`, which cannot exist off-wasm) ------
 
 fn check_modules_impl(modules_json: &str) -> Result<String, String> {
@@ -188,6 +211,17 @@ struct ModuleResult {
     diagnostics: Vec<WasmDiagnostic>,
 }
 
+/// One declared node, for the [`outline`] target picker. `kind` serialises
+/// lowercase (`person`/`system`/`container`/`component`/`data`/`callable`);
+/// `triggered` marks a callable that carries a trigger macro (a sequence entry).
+#[derive(Serialize)]
+struct OutlineNode {
+    fqn: String,
+    name: String,
+    kind: NodeKind,
+    triggered: bool,
+}
+
 /// A diagnostic enriched with 1-based line/column for both span ends, in
 /// addition to the raw byte offsets.
 #[derive(Serialize)]
@@ -243,7 +277,7 @@ fn to_json<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, check_modules_impl, format_impl, parse, project_view};
+    use super::{check, check_modules_impl, format_impl, outline, parse, project_view};
 
     #[test]
     fn check_reports_an_error_with_line_col() {
@@ -281,6 +315,18 @@ mod tests {
     #[test]
     fn emit_unknown_view_errors() {
         assert!(project_view("//! m\npublic system S;", "nope", "").is_err());
+    }
+
+    #[test]
+    fn outline_lists_nodes_by_kind_and_triggers() {
+        let json = outline(
+            "//! m\npublic person P;\npublic system S;\npublic container C for S {\n  #[manual]\n  public Go(): void {}\n}",
+        );
+        assert!(json.contains(r#""kind":"person""#), "{json}");
+        assert!(json.contains(r#""kind":"system""#), "{json}");
+        assert!(json.contains(r#""kind":"container""#), "{json}");
+        // the triggered callable is flagged for the sequence picker
+        assert!(json.contains(r#""triggered":true"#), "{json}");
     }
 
     #[test]

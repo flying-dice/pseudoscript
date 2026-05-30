@@ -5,6 +5,7 @@ import { linter } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 
 import { check } from "./pds.js";
+import { byteToChar } from "./offsets.js";
 
 const KEYWORDS = new Set([
   "system", "container", "component", "person", "data", "feature", "for",
@@ -88,10 +89,9 @@ export function pseudoscriptLinter() {
     }
     const length = view.state.doc.length;
     return diagnostics.map((d) => {
-      // Compiler spans are byte offsets; clamp to the document (matches char
-      // offsets for ASCII source — the common case).
-      const from = Math.min(d.start, length);
-      const to = Math.min(Math.max(d.end, d.start), length);
+      // Compiler spans are UTF-8 byte offsets; map to code-unit offsets.
+      const from = Math.min(byteToChar(source, d.start), length);
+      const to = Math.min(Math.max(byteToChar(source, d.end), from), length);
       const severity = d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info";
       return { from, to, severity, message: d.message };
     });

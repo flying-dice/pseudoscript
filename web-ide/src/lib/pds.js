@@ -5,10 +5,12 @@
 // the named functions are synchronous. Call `initWasm()` once before using them.
 import init, {
   check as wasmCheck,
+  check_modules as wasmCheckModules,
   parse as wasmParse,
   format as wasmFormat,
   emit_scene as wasmEmitScene,
   emit_svg as wasmEmitSvg,
+  outline as wasmOutline,
   version as wasmVersion,
 } from "./pds-wasm/pseudoscript_wasm.js";
 
@@ -30,6 +32,14 @@ export function parse(source) {
   return JSON.parse(wasmParse(source));
 }
 
+/**
+ * Check a whole workspace. `modules` is `[{ fqn, source }]`; returns
+ * `[{ fqn, diagnostics }]` with cross-module errors attributed per module.
+ */
+export function checkModules(modules) {
+  return JSON.parse(wasmCheckModules(JSON.stringify(modules)));
+}
+
 /** Format source to canonical form; throws on a parse error. */
 export function format(source) {
   return wasmFormat(source);
@@ -38,6 +48,14 @@ export function format(source) {
 /** Project a diagram view to its laid-out scene object. */
 export function emitScene(source, view, target = "") {
   return JSON.parse(wasmEmitScene(source, view, target));
+}
+
+/**
+ * List the nodes declared in `source`: `[{ fqn, name, kind, triggered }]`.
+ * Used to derive a diagram view's target options from the model itself.
+ */
+export function outline(source) {
+  return JSON.parse(wasmOutline(source));
 }
 
 /** Project a diagram view to an SVG string. */

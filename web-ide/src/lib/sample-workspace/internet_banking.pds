@@ -1,0 +1,34 @@
+//! internet_banking
+
+/// Allows customers to view information about their bank accounts and make
+/// payments.
+public system InternetBanking;
+
+/// Delivers the static content and the Internet Banking single-page application.
+public container WebApplication for InternetBanking {
+  /// Deliver the single-page application to the customer's browser.
+  #[http]
+  public Deliver(): void;
+}
+
+/// Provides all of the Internet Banking functionality to customers via their
+/// web browser.
+public container SinglePageApplication for InternetBanking {
+  /// Make API calls on the customer's behalf.
+  public Render(): void;
+}
+
+/// Provides a limited subset of the Internet Banking functionality to customers
+/// via their mobile device.
+public container MobileApp for InternetBanking {
+  /// Make API calls on the customer's behalf.
+  public Render(): void;
+}
+
+/// Provides Internet Banking functionality via a JSON/HTTPS API. Its components
+/// live in the `api` module.
+public container ApiApplication for InternetBanking;
+
+/// Stores user registration information, hashed authentication credentials,
+/// access logs, etc.
+public container Database for InternetBanking;
