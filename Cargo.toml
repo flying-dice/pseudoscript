@@ -5,3 +5,10 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Spans and offsets are u32 by design (compact arena indices, rust-analyzer
+# style); source sizes are bounded well under u32::MAX, so usize -> u32 casts
+# are intentional and checked at the LineIndex boundary.
+cast_possible_truncation = "allow"

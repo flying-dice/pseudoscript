@@ -1,0 +1,11 @@
+// LANG.md §5.1 (ADR-022): a same-module call matches the callable's arity.
+// `add` takes 2 arguments.
+
+//! example
+
+public system S;
+
+public container C for S {
+  run(): void { self.add(1, 2, 3) }
+  add(a: number, b: number): number { return a }
+}

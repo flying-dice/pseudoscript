@@ -1,0 +1,15 @@
+// LANG.md §5.2, §8.1 (ADR-018): feature names must be unique within a module.
+
+//! example
+
+public system Banking;
+
+feature OpenAccount for Banking {
+  when "the owner opens an account"
+  then "banking info is returned"
+}
+
+feature OpenAccount for Banking {
+  when "the owner closes an account"
+  then "the account is closed"
+}

@@ -1,0 +1,13 @@
+// LANG.md §5.2 (ADR-018): a feature is a strict given* when+ then+ flow;
+// `and`/`but` continue the preceding step kind.
+
+public system Banking;
+
+/// A verified owner opens an account.
+feature OpenAccount for Banking {
+  given "a verified owner"
+  and   "no existing account for that owner"
+  when  "the owner opens an account"
+  then  "banking info is returned"
+  but   "no duplicate account is created"
+}

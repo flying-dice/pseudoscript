@@ -1,0 +1,10 @@
+// LANG.md §7.3 (ADR-014): `for (x in Expr)` requires an array. Iterating a
+// non-array parameter is a model error.
+
+//! example
+
+public system S;
+
+public container C for S {
+  each(x: number): void { for (i in x) { } }
+}

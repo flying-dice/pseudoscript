@@ -1,0 +1,4 @@
+view context
+node shop::Customer person "Customer"
+node shop::Shop system "Shop"
+node shop::Payments system "Payments"

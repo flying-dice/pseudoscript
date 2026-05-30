@@ -1,6 +1,6 @@
 # ADR-003 — No value construction; Ok/Err are result markers
 
-**Status:** Accepted
+**Status:** Accepted (superseded by ADR-019 for the built-in generics — `Ok`/`Err`/`Some`/`None` now construct; `data` stays `from`-only)
 **Affects:** LANG.md §2.3, §5.1, §6, §7.2, §10
 
 ## Context

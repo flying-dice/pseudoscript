@@ -1,0 +1,10 @@
+// LANG.md §7 (ADR-023): an `if`/`while` condition must be `bool`. A `number`
+// parameter is not.
+
+//! example
+
+public system S;
+
+public container C for S {
+  run(x: number): void { if (x) { } }
+}

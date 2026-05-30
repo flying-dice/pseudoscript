@@ -4,7 +4,7 @@ Architecture decision records for PseudoScript. Each pins a resolved fork out of
 
 ## [001 — Result is the only fallible type (no Option)](001-result-only-no-option.md)
 
-`Result<T, E>` is the only built-in generic; `Option`, `Some`, and `None` do not exist. The `?` clause here is superseded by ADR-008.
+`Result<T, E>` is the only built-in generic; `Option`, `Some`, and `None` do not exist. The `?` clause here is superseded by ADR-008. **Superseded by ADR-019** — `Option` is reinstated.
 
 Read in full for the rationale that a static model gains no power from a second absence type, and for the full list of `LANG.md` edits (§3.2, §6, §10).
 
@@ -16,7 +16,7 @@ Read in full when implementing the rebind/shadowing checks, or for the `static/7
 
 ## [003 — No value construction; Ok/Err are result markers](003-no-construction-result-markers.md)
 
-PseudoScript never instantiates values. `Ok`/`Err` are result markers that tag a return branch; `data` describes shape only; `from` is the sole value-combining form and records provenance.
+No constructor syntax: `Ok`/`Err` are result markers that tag a return branch, not constructors; `data` describes shape only. `from` is the sole value-producing form (it composes a value and records provenance) — see LANG.md §7.2. **Superseded by ADR-019** for the built-in generics: `Ok`/`Err`/`Some`/`None` now construct `Result`/`Option`; `data` stays `from`-only.
 
 Read in full to see why `CtorExpr` became `ResultMarker` and how this reinforces ADR-001.
 
@@ -34,9 +34,9 @@ Read in full when deciding whether to warn on unconsumed results — this ADR re
 
 ## [006 — Union variants: inline declares and hoists, bare references](006-union-variants.md)
 
-`| Name { ... }` declares a variant and hoists it to the module namespace; bare `| Name` references an existing module-level `data`. Missing references and name collisions MUST be rejected.
+Record variant `| Name { ... }` declares and hoists to the module's type namespace; bare `| Name` references an existing `data Name`, or declares a fieldless variant (no hoist) when none exists. Record-variant name collisions MUST be rejected.
 
-Read in full for the declare-vs-reference worked example and the namespace-scoping alternative that was rejected.
+Read in full for the declare-vs-reference worked example, the fieldless-variant refinement (enum-style unions), and the namespace-scoping alternative that was rejected.
 
 ## [007 — Full `.` chaining](007-full-chaining.md)
 
@@ -97,3 +97,51 @@ Read in full when adding a macro or its target check, and for why targeting is a
 A non-`void` callable MUST return on every path; a fall-through branch MUST be rejected. A `void` callable needs no return.
 
 Read in full for the all-paths example and the `static/5-missing-return` conformance case it enables.
+
+## [017 — `pds.toml` is the project root; `pds doc` generates the doc site](017-pds-toml-root-and-build.md)
+
+`pds.toml` replaces `workspace.toml` as the sole root FQNs derive from. `pds doc` auto-documents the workspace as a static site (cargo-doc style) with embedded C4 and sequence diagrams; a `[doc]` table tunes presentation. SVG is the only backend; the `Scene` IR is the conformance surface.
+
+Read in full when implementing the workspace loader, the doc-site generator, or the generation conformance layer; and for the rejected descriptor/backend alternatives.
+
+## [018 — `feature` BDD scenarios: prose given/when/then for a node](018-feature-bdd-scenarios.md)
+
+`feature Name for <node>` documents one behavioral scenario as a strict given/when/then flow of prose steps. Steps are not resolved against the model; `and`/`but` continue the preceding kind; the flow is grammar-enforced.
+
+Read in full for the node-target rule, the feature namespace, and the rejected structured-step / multi-scenario / loose-flow alternatives.
+
+## [019 — Option reinstated; the built-in generics are constructed by their markers](019-option-and-built-in-construction.md)
+
+`Option<T>` joins `Result<T, E>` as a built-in generic; `Some(v)` / `None` construct it as `Ok(v)` / `Err(e)` construct a `Result`. Accessors `isSome` / `isNone` / `value` mirror `Result`; the checker narrows on `if (o.isNone)` / `if (o.isSome)`. Supersedes ADR-001 (no-`Option`) and ADR-003 (no-construction, for the built-in generics); ADR-008 (no `?`) stands.
+
+Read in full for the construction rule, the accessor-only surface, and the rejected combinator-method alternative.
+
+## [020 — Return-type and `from` checking for determinable forms](020-return-type-and-from-checking.md)
+
+A `return` of a literal, an `Ok`/`Err`/`Some`/`None` marker, or a `Type from { … }` composition MUST match the declared return type (a union variant satisfies its union); a `from` target MUST be a `data` record or union variant. Bindings/calls/field accesses stay uninferred (shape hints, §1).
+
+Read in full for the determinable-forms scope, the variant-satisfies-union rule, and the rejected full-static-typing alternative.
+
+## [021 — `from` can compose an array (`Type[] from { … }`)](021-array-from-composition.md)
+
+`Type[] from { … }` composes an array; `Type from { … }` stays a single value. The return-type and `for`-iterable checks compare array-ness. `alias` is unchanged — it binds a node, not a type, so it is not a type-alias. Amends ADR-020.
+
+Read in full for the array-composition rule and the rejected type-alias alternative.
+
+## [022 — Inference-based body checks: references, member access, return types, call arity](022-inference-based-checks.md)
+
+A conservative inference (concrete only for literals/markers/`from`/param-or-binding refs) drives four body checks: bare references resolve (§7/§8), `.field` reads name a real field of a known record (§2.2/§3.4), inferred return types match the declaration (§5.1), and calls to same-module callables match arity (§5.1). Cross-module member/arity, argument-type checking, and chained-receiver inference are deferred.
+
+Read in full for the conservative-inference stance, the fieldless-variant reference rule, and the deferred scope.
+
+## [023 — Boolean conditions and call-argument types](023-condition-and-argument-types.md)
+
+An `if`/`while` condition whose inferred type is concrete MUST be `bool` (§7); each inferable call argument MUST match its parameter type by leaf name, with union-variant allowance (§5.1). Generic params, `Unknown`, and cross-module callees are skipped. Extends ADR-022.
+
+Read in full for the two rules and the still-open operator question.
+
+## [024 — Cross-workspace git dependencies](024-git-dependencies.md)
+
+A `pds.toml` `[dependencies]` table declares other workspaces via git; each name is an FQN root scoped to the declaring workspace. Cross-workspace targets MUST be `public`; only direct dependencies are addressable; identity is `(source, revision, path)` so versions coexist; `pds.lock` pins the graph. `alias` MAY target a cross-workspace node.
+
+Read in full for the resolution model, the side-by-side identity rule, and the rejected `use`-statement / flat-namespace / version-solver alternatives.

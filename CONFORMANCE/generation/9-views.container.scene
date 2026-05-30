@@ -1,0 +1,5 @@
+view container
+of shop::Shop
+node shop::Shop system "Shop"
+node shop::Web container "Web" in shop::Shop
+node shop::Orders container "Orders" in shop::Shop

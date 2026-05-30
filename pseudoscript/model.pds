@@ -1,0 +1,550 @@
+//! model — AST to one resolved graph; static checks (crate `pseudoscript-model`).
+//!
+//! Sits above `syntax`: parses a `.pds` module, resolves its declarations into a
+//! symbol table, then runs the well-formedness checks (LANG.md §3.5, §4, §5.1,
+//! §6, §8, §2.4). Owns the resolved-architecture vocabulary (`Graph`, `EdgeKind`)
+//! and the workspace input unit. WASM-safe: no threads, filesystem, or time.
+//!
+//! Every check returns `syntax::Diagnostic[]` — diagnostics, not exceptions;
+//! well-formed input yields an empty list. The graph is a pure projection of a
+//! resolved workspace: it records what resolves and annotates what does not.
+
+/// One `.pds` module of a workspace: its caller-supplied FQN (the loader derives
+/// it from the file path relative to `pds.toml`, LANG.md §8.1) and its source
+/// text. This crate stays pure over in-memory modules; it never touches the
+/// filesystem.
+public data WorkspaceModule { fqn: string, text: string }
+
+/// One workspace module's diagnostics, attributed to its FQN. Every span lies in
+/// that module's own source, so a tool with the FQN-to-file mapping publishes
+/// each list against the right file.
+public data ModuleDiagnostics { fqn: string, diagnostics: syntax::Diagnostic[] }
+
+/// The lowercase declaration keyword a `Symbol` names. Drives the parent-kind and
+/// macro-target diagnostics, which embed it as prose.
+public data SymbolKind =
+  | Person
+  | System
+  | Container
+  | Component
+  | Data
+
+/// What kind of member is reachable through `.` from an owner: a node's callable
+/// (§5.1) or a `data` record field (§3.4).
+public data MemberKind =
+  | Callable
+  | Field
+
+/// A member reachable through `.` from a node or `data` owner: its name, kind,
+/// definition span, one-line signature detail (`run(name: string): uuid`), value
+/// type (a field's type or a callable's return type), and `///` summary (empty
+/// for a field). Powers member completion and go-to-definition.
+public data Member {
+  name: string,
+  kind: MemberKind,
+  span: syntax::Span,
+  detail: string,
+  ty: string,
+  doc: string
+}
+
+/// A file-local `alias` binding: the `::`-joined target node FQN it expands to,
+/// and the span of the alias name's declaration (LANG.md §8.3).
+public data Alias { target: string, span: syntax::Span }
+
+/// One declared, addressable node in a module namespace: the bare name, its FQN
+/// (`module::Ledger`), its declaration kind, whether it is `public` (§8.2), and
+/// the span of its name.
+public data Symbol {
+  name: string,
+  fqn: string,
+  kind: SymbolKind,
+  isPublic: bool,
+  span: syntax::Span
+}
+
+/// The outcome of resolving a cross-module reference (LANG.md §8.2): the FQN
+/// names a public symbol, a private one reached from another module, or nothing.
+public data Resolution =
+  | Public { symbol: Symbol }
+  | Private { symbol: Symbol }
+  | Missing
+
+/// One module's resolved symbol table (LANG.md §8): its FQN plus the declared
+/// nodes, the members reachable through `.`, and the file-local `alias` bindings.
+/// The `Resolver` produces it; the `Workspace` indexes and the `Checks` consume it.
+public data SymbolTable { modulePath: string, symbols: Symbol[], members: Member[], aliases: Alias[] }
+
+/// One module's parsed AST, resolved symbol table, and FQN, as held by a
+/// `Workspace`.
+public data ModuleEntry { fqn: string, ast: syntax::Module, model: SymbolTable }
+
+/// What kind of model element a `GraphNode` is. Adds `Callable` to the structural
+/// kinds: structural declarations, `data` types (including hoisted union
+/// variants), and callables all become nodes.
+public data NodeKind =
+  | Person
+  | System
+  | Container
+  | Component
+  | Data
+  | Callable
+
+/// Whether a node is `public` (cross-module addressable) or module-private
+/// (LANG.md §8.2).
+public data Visibility =
+  | Public
+  | Private
+
+/// A trigger macro on a callable (LANG.md §2.4): the macro that makes the
+/// callable a diagram entry point and synthesises an inbound initiator edge. Each
+/// variant maps to a synthesised initiator node (`event:<FQN>`, `scheduler`,
+/// `client`, `caller`).
+public data Trigger =
+  | OnEvent { eventFqn: string }
+  | Schedule
+  | Http
+  | Manual
+
+/// A node's documentation, lifted from its `///` block (LANG.md §2.1): the
+/// summary (compact-diagram text), the extended description (tooltip text), and
+/// its tags (`#name`, including the `#`), in source order.
+public data NodeDoc { summary: string, extended: string, tags: string[] }
+
+/// One node in the resolved graph — a structural declaration, a `data` type, or a
+/// callable. Carries its FQN, simple name, kind, enclosing-node FQN (`for` parent,
+/// owning node, or empty at top level), declaring module, visibility, name span,
+/// any trigger macros (callables only), and lifted `///` documentation.
+public data GraphNode {
+  fqn: string,
+  name: string,
+  kind: NodeKind,
+  parent: string,
+  module: string,
+  visibility: Visibility,
+  span: syntax::Span,
+  triggers: Trigger[],
+  doc: NodeDoc
+}
+
+/// What relationship a graph edge expresses (LANG.md §9.1): a `for` parent link,
+/// a body call (label = method), a synthesised trigger initiator edge, or a
+/// `from` provenance link.
+public data EdgeKind =
+  | ForParent
+  | Call
+  | Trigger
+  | Provenance
+
+/// A typed, directed relationship between two graph node FQNs. `to` (and for some
+/// kinds `from`) may name a node not present as a `GraphNode` — a synthesised
+/// trigger initiator, or a target that does not resolve. `label` is the method
+/// name for `Call`, otherwise empty.
+public data Edge {
+  source: string,
+  to: string,
+  kind: EdgeKind,
+  label: string
+}
+
+/// One step in a callable's ordered sequence trace (LANG.md §7, §9.2). Calls in a
+/// chained expression are emitted left-to-right; control flow becomes `Alt`/
+/// `Loop` frames whose bodies are nested step lists, in §7 evaluation order.
+public data Step =
+  | Call { targetFqn: string, method: string }
+  | SelfCall { method: string }
+  | Return { marker: string }
+  | Alt { condLabel: string, thenSteps: Step[], elseSteps: Step[] }
+  | Loop { condLabel: string, body: Step[] }
+
+/// One step of a `Scenario` (LANG.md §5.2): a keyword (`given`/`when`/`then`/
+/// `and`/`but`) and its prose, with the string literal's quotes stripped.
+public data ScenarioStep { keyword: string, text: string }
+
+/// A `feature` BDD scenario attached to its target node (LANG.md §5.2, §9.3):
+/// its name, the canonicalised target FQN (as written if it does not resolve),
+/// lifted `///` documentation, and the ordered given/when/then steps. Steps are
+/// prose, not resolved, so a scenario adds no edges; it renders as a card on its
+/// target node's doc page.
+public data Scenario {
+  name: string,
+  targetFqn: string,
+  doc: NodeDoc,
+  steps: ScenarioStep[]
+}
+
+/// The resolved architecture graph: every node and typed edge across all C4
+/// levels, plus feature scenarios. The single source every view projects from —
+/// enough to extract any view without re-reading source. Per-callable sequence
+/// traces (`Step[]`) are held alongside, keyed by the owning callable's FQN.
+public data Graph {
+  nodes: GraphNode[],
+  edges: Edge[],
+  scenarios: Scenario[]
+}
+
+/// `crates/pseudoscript-model`. AST to one resolved graph; static checks
+/// (resolution, visibility, Result flow, return coverage). WASM-safe.
+public container Model for context::Pseudoscript;
+
+/// Resolves a module's declarations into a symbol table (LANG.md §8). FQNs are
+/// file-derived: a single `.pds` file is one module, named by its `//!` path.
+/// Holds two namespaces — type names and node names share the symbol table, while
+/// feature names live in a separate namespace the `Checks` enforce — plus member
+/// and alias indexes. The LSP reuses the table for hover and go-to-definition.
+public component Resolver for Model {
+  /// Builds the per-module symbol table, deriving the module FQN from its `//!`
+  /// inner doc. Walks each item: a decl collects a symbol (and its members, and
+  /// hoisted inline union variants); an alias records a binding; a feature adds
+  /// nothing to this table — its name lives in a separate namespace.
+  public build(ast: syntax::Module): SymbolTable {
+    path = self.modulePath(ast)
+    return self.buildWithPath(ast, path)
+  }
+
+  /// Builds the table with a caller-supplied module FQN — the path the workspace
+  /// loader derived from the file location relative to `pds.toml` (§8.1).
+  public buildWithPath(ast: syntax::Module, modulePath: string): SymbolTable {
+    return SymbolTable from { ast, modulePath }
+  }
+
+  /// Whether `path` resolves to a declared node in this module: its final segment
+  /// names a declared symbol. The single-module model cannot see other files, so
+  /// a leading module prefix is accepted as long as the leaf matches.
+  public resolvesNode(model: SymbolTable, path: string): bool;
+
+  /// Whether `path` names this module exactly — a namespace, not a node (§8.3).
+  public isModulePath(model: SymbolTable, path: string): bool;
+
+  /// Derives the module FQN from the first `//!` inner-doc line: its first
+  /// whitespace-delimited token (`//! banking::core — notes` → `banking::core`).
+  modulePath(ast: syntax::Module): string;
+
+  /// Computes a symbol's FQN: `module::name`, or the bare name for an anonymous
+  /// module. The shared rule every node-symbol insertion follows (§8.1).
+  qualify(modulePath: string, name: string): string;
+}
+
+/// The resolved set of modules keyed by FQN (LANG.md §8). Built once per
+/// workspace from `(fqn, parsed module)` pairs; owns the per-module models and a
+/// global FQN-to-`Symbol` index for cross-module resolution.
+public component Workspace for Model {
+  /// Builds the workspace, resolving each module with its caller-supplied FQN so
+  /// the global index keys on the correct cross-module names.
+  public build(modules: WorkspaceModule[]): ModuleEntry[] {
+    for (m in modules) {
+      parsed = syntax::Parser.parse(m.text)
+      Model::Resolver.buildWithPath(parsed.ast, m.fqn)
+    }
+    return self.collect(modules)
+  }
+
+  /// Resolves each module into a `ModuleEntry` and indexes its symbols by FQN.
+  collect(modules: WorkspaceModule[]): ModuleEntry[];
+
+  /// Looks up a symbol by its full FQN, regardless of visibility.
+  public symbol(fqn: string): Symbol;
+
+  /// Resolves a fully-qualified reference made from `fromModule`, applying the
+  /// §8.2 visibility rule: a same-module target resolves regardless of
+  /// visibility; a cross-module target resolves only if it is `public`.
+  public resolveQualified(fromModule: string, fqn: string): Resolution {
+    sym = self.symbol(fqn)
+    if (self.sameModule(fromModule, fqn)) {
+      return Public from { sym }
+    }
+    if (sym.isPublic) {
+      return Public from { sym }
+    }
+    return Private from { sym }
+  }
+
+  /// Whether `fqn`'s module portion (everything before the final `::`) equals
+  /// `fromModule` — i.e. the reference stays within one module.
+  sameModule(fromModule: string, fqn: string): bool;
+}
+
+/// Static analysis (LANG.md §3.5, §4, §5.1, §6, §8, §2.4): builds the symbol
+/// tables, then runs the well-formedness checks. Every entry returns a
+/// `syntax::Diagnostic[]`; well-formed input yields an empty one. Checks are
+/// conservative — each rule fires only when the violation is certain.
+public component Checks for Model {
+  /// Parse and statically analyze one module's source: parse errors followed by
+  /// the static-analysis errors. The CLI's `pds check` driver.
+  public check(text: string): syntax::Diagnostic[] {
+    parsed = syntax::Parser.parse(text)
+    static = self.analyze(parsed.ast)
+    return syntax::Diagnostic[] from { parsed.diagnostics, static }
+  }
+
+  /// Run the static checks over an already-parsed module — the LSP reuses one
+  /// parse across diagnostics, hover, and definition. Returns only static
+  /// diagnostics; the caller supplies the parse diagnostics.
+  public analyze(ast: syntax::Module): syntax::Diagnostic[] {
+    model = Model::Resolver.build(ast)
+    return self.run(ast, model)
+  }
+
+  /// Check a multi-module workspace (§8.2): each module's parse and per-module
+  /// static errors, then the cross-module visibility pass. Parses each module
+  /// before resolving the workspace.
+  public checkWorkspace(modules: WorkspaceModule[]): syntax::Diagnostic[] {
+    entries = Model::Workspace.build(modules)
+    return self.runWorkspace(entries)
+  }
+
+  /// The per-file counterpart of `checkWorkspace`: each module's diagnostics keyed
+  /// by FQN. A cross-module visibility error lands in the module that makes the
+  /// offending reference, where its span points.
+  public checkWorkspaceModules(modules: WorkspaceModule[]): ModuleDiagnostics[];
+
+  /// Runs every per-module check against a parsed module and its resolved model:
+  /// variant collisions, feature collisions, then each item's checks.
+  run(ast: syntax::Module, model: SymbolTable): syntax::Diagnostic[] {
+    variants = Model::VariantCollision.check(ast)
+    features = Model::FeatureCheck.check(ast, model)
+    return syntax::Diagnostic[] from { variants, features }
+  }
+
+  /// Runs the per-module checks for every module, then the cross-module pass.
+  runWorkspace(entries: ModuleEntry[]): syntax::Diagnostic[] {
+    for (e in entries) {
+      self.run(e.ast, e.model)
+    }
+    return Model::CrossModule.check(entries)
+  }
+}
+
+/// §8.2 — cross-module visibility resolution. Walks each module's qualified
+/// references — `for` parents, `alias` targets, feature targets, and body call
+/// targets — and against the global FQN index enforces: a reference from module A
+/// to a node in module B resolves only if that node is `public`. A private target
+/// or a dangling cross-module FQN is a diagnostic. Same-module references are the
+/// single-module checks' business and are skipped here.
+public component CrossModule for Model {
+  public check(entries: ModuleEntry[]): syntax::Diagnostic[];
+
+  /// Judges one node-naming reference. A bare name or a same-module FQN is
+  /// skipped; a public cross-module target resolves; a private one is reported; a
+  /// missing FQN whose module portion names another known module is dangling.
+  checkRef(entries: ModuleEntry[], fromModule: string, path: string): syntax::Diagnostic[];
+}
+
+/// §6 — flow-sensitive `Result` typestate. Each `Result` binding carries a state
+/// (`Unknown`/`Ok`/`Err`), narrowed on entering the branches of `if (r.isErr)` /
+/// `if (r.isOk)`. Reading `.value` while known-`Err`, or `.error` while
+/// known-`Ok`, is a model error. The env is cloned per branch so narrowing does
+/// not leak; an `if` whose guarded arm diverges narrows the fall-through to the
+/// inverse state.
+public component ResultFlow for Model {
+  /// Checks one callable body for wrong-branch accessor reads, threading the
+  /// per-point typestate environment through its statements.
+  public check(body: syntax::Module): syntax::Diagnostic[];
+
+  /// If `cond` is a bare `r.isErr` / `r.isOk` guard, the binding name and the
+  /// branch it narrows to inside the then-block. Anything else narrows nothing.
+  resultGuard(cond: syntax::Token[]): string;
+
+  /// Reports a wrong-branch read when a chain is exactly `r.value` over a
+  /// known-`Err` binding, or `r.error` over a known-`Ok` binding.
+  checkAccessor(name: string, accessor: string, state: string): syntax::Diagnostic[];
+}
+
+/// ADR-016 — return coverage. A disclosed non-void callable MUST return on every
+/// path. A `return` makes a block diverge; an `if`/`else` diverges only when both
+/// arms do; `for`/`while` bodies and bare expressions never guarantee a return.
+/// An absent return type and an explicit `void` both mean void.
+public component ReturnCoverage for Model {
+  /// Whether a block returns on every path: any statement diverges.
+  public blockReturns(body: syntax::Module): bool {
+    return self.stmtReturns(body)
+  }
+
+  /// Whether one statement guarantees a return: a `return`, or an `if`/`else`
+  /// whose both arms return.
+  stmtReturns(stmt: syntax::Module): bool;
+}
+
+/// §2.4 / ADR-015 — macro targeting. Every built-in macro (`onevent`, `schedule`,
+/// `http`, `manual`) targets callables; on any structural declaration it is a
+/// wrong-target error, and an unrecognised macro is unknown. An `#[onevent(E)]`
+/// handler MUST have exactly one parameter whose type matches the event type.
+public component MacroTargeting for Model {
+  /// Checks the macros on a structural declaration: a built-in macro here is a
+  /// wrong-target error; anything else is unknown.
+  public checkOnDecl(macroName: string, target: SymbolKind): syntax::Diagnostic[];
+
+  /// Checks a callable's macros: an unknown name is reported, and an
+  /// `#[onevent(E)]` is matched against the callable's single parameter type.
+  public checkOnCallable(callable: syntax::Module): syntax::Diagnostic[];
+}
+
+/// §3.5 / ADR-006 — union variant collision. A top-level `data Name` followed by
+/// an inline variant `| Name { ... }` hoisting the same name is a collision. Bare
+/// variants reference existing data and never collide.
+public component VariantCollision for Model {
+  public check(ast: syntax::Module): syntax::Diagnostic[];
+}
+
+/// §5.2 / §8.1 — feature checks. A feature's `for` target MUST resolve to a node,
+/// not a type or module; a target this single-module model cannot see is left to
+/// cross-module resolution. Feature names occupy their own module namespace, so a
+/// repeated name is a collision (checked once per module).
+public component FeatureCheck for Model {
+  /// Checks one feature's target resolves to a node (not a data type or module).
+  public check(ast: syntax::Module, model: SymbolTable): syntax::Diagnostic[];
+
+  /// §7.1 / ADR-002 — single-assignment: no binding is re-bound, and no inner
+  /// block shadows an outer name; loop and parameter bindings count.
+  public checkRebinds(body: syntax::Module): syntax::Diagnostic[];
+}
+
+/// Projects the parsed, resolved workspace into the architecture graph: structural
+/// nodes plus edges from `for` parents, body calls, triggers, and `from`
+/// provenance, with a sequence trace recorded per disclosed body. A pure
+/// projection — no I/O — so the emit crate and a future salsa/LSP layer can both
+/// adopt it.
+public component Builder for Model {
+  /// Builds the resolved graph: collect every node, derive its edges, and trace
+  /// each disclosed callable body into an ordered step list.
+  public graph(modules: WorkspaceModule[]): Graph {
+    entries = Model::Workspace.build(modules)
+    for (e in entries) {
+      self.collectModule(e)
+    }
+    return Graph from { entries }
+  }
+
+  /// Adds the nodes for one module's items and records its feature scenarios.
+  collectModule(entry: ModuleEntry): void;
+
+  /// Records a feature scenario against its canonicalised target node FQN (§9.3).
+  collectFeature(feat: syntax::Module, module: string): Scenario;
+
+  /// Traces one callable body into an ordered step list (§7, §9.2): each call
+  /// left-to-right, control flow as `Alt`/`Loop` frames. Emits a `Call` edge for
+  /// each cross-boundary call and a `Provenance` edge per `from` source.
+  traceBlock(body: syntax::Module, ownerFqn: string, module: string): Step[];
+
+  /// Canonicalises a node reference written in `module` to a full FQN: try the
+  /// path as-written, then `module::path`, then the leaf against this module. An
+  /// unresolvable reference is returned as written, so the emit crate sees what
+  /// the model named.
+  canonicalize(reference: string, module: string): string;
+
+  /// The synthesised initiator node FQN a trigger contributes an edge from
+  /// (`event:<FQN>`, `scheduler`, `client`, `caller`).
+  initiator(trigger: Trigger): string;
+}
+
+/// Well-formed input yields no diagnostics: a check returns data, never throws.
+feature DiagnosticsAreData for Checks {
+  given "a well-formed module"
+  when  "it is checked"
+  then  "the returned diagnostic list is empty"
+  but   "the check never throws or aborts"
+}
+
+/// Cross-module references obey visibility (§8.2).
+feature EnforceVisibility for CrossModule {
+  given "a workspace whose modules reference each other by FQN"
+  when  "the workspace is checked"
+  then  "a cross-module reference to a public node resolves"
+  but   "a reference to a private node, or a dangling FQN, is rejected"
+}
+
+/// A same-module reference resolves regardless of visibility (§8.2).
+feature SameModuleAlwaysResolves for Workspace {
+  given "a reference whose target is declared in the same module"
+  when  "the reference is resolved"
+  then  "it resolves whether the target is public or private"
+}
+
+/// A cross-module visibility error is attributed to the referrer (§8.2).
+feature ErrorAttributedToReferrer for Checks {
+  given "module B referencing a private node in module A"
+  when  "the workspace is checked per module"
+  then  "the diagnostic lands in module B, where the reference is written"
+  but   "module A, the declarer, stays clean"
+}
+
+/// Result typestate narrows accessor reads to the right branch (§6).
+feature ResultTypestateNarrows for ResultFlow {
+  given "a binding `r` of type Result inside `if (r.isErr)`"
+  when  "the body is checked"
+  then  "reading `r.value` on the Err branch is rejected"
+  and   "reading `r.error` on the Ok branch is rejected"
+  but   "the matching accessor on each branch is accepted"
+}
+
+/// A diverging guarded arm narrows the fall-through to the inverse state (§6).
+feature DivergingArmNarrowsContinuation for ResultFlow {
+  given "`if (r.isErr) { return Err(r.error) }` with no else"
+  when  "the statements after the `if` are checked"
+  then  "`r` is treated as Ok in the fall-through"
+  and   "a later `r.value` read is accepted"
+}
+
+/// A disclosed non-void callable must return on every path (ADR-016).
+feature ReturnsOnAllPaths for ReturnCoverage {
+  given "a disclosed callable with a non-void return type"
+  when  "its body is checked"
+  then  "a body returning on every path is accepted"
+  but   "a path that falls through without returning is rejected"
+}
+
+/// Bindings are single-assignment, with no shadowing (§7.1, ADR-002).
+feature SingleAssignmentNoShadowing for FeatureCheck {
+  given "a callable body that binds a name already in scope"
+  when  "the body is checked"
+  then  "the re-binding is rejected"
+  and   "a binding introduced in a nested block still shadows nothing"
+}
+
+/// A built-in macro on a structural declaration is a wrong-target error (§2.4).
+feature MacroWrongTarget for MacroTargeting {
+  given "a `#[http(...)]` macro written on a container declaration"
+  when  "the declaration is checked"
+  then  "the macro is rejected as targeting the wrong kind"
+  but   "the same macro on a callable is accepted"
+}
+
+/// An onevent handler's parameter type must match the triggered event (§2.4).
+feature OnEventParameterMatches for MacroTargeting {
+  given "a callable tagged `#[onevent(OrderPlaced)]`"
+  when  "its single parameter type is checked"
+  then  "a parameter of type OrderPlaced is accepted"
+  but   "a mismatched parameter type is rejected"
+}
+
+/// An inline union variant colliding with a prior data name is rejected (§3.5).
+feature VariantNameCollision for VariantCollision {
+  given "a top-level `data Name` and an inline variant `| Name { ... }`"
+  when  "the module is checked"
+  then  "the colliding inline variant is rejected"
+  but   "a bare `| Name` referencing the existing data is accepted"
+}
+
+/// A feature's target must be a node, and feature names are unique (§5.2, §8.1).
+feature FeatureTargetIsANode for FeatureCheck {
+  given "a feature whose `for` target names a `data` type"
+  when  "the module is checked"
+  then  "the feature is rejected because its target is not a node"
+  and   "a second feature reusing an existing feature name is a collision"
+}
+
+/// References resolve regardless of declaration order (§8.1).
+feature ForwardReferencesResolve for Resolver {
+  given "a node referenced before its declaration appears in the module"
+  when  "the symbol table is built"
+  then  "the reference resolves to the later declaration"
+}
+
+/// One resolved graph feeds every view (§9).
+feature ResolveToOneGraph for Builder {
+  given "a parsed, resolved workspace"
+  when  "the graph is built"
+  then  "every structural node and callable becomes a graph node"
+  and   "for-parent, call, trigger, and provenance edges are recorded"
+  and   "each disclosed body carries an ordered sequence trace"
+}

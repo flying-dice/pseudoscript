@@ -18,8 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit:*)",
-            "command": "cmd=$(jq -r '.tool_input.command'); if printf '%s' \"$cmd\" | grep -q 'pre-commit-ok'; then exit 0; fi; jq -n '{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"Pre-commit quality gate (.claude/skills/pre-commit) required before committing. Run it now: (1) change-review on the change — fix any bug/issue; (2) clean-code-review — fix every clean-code TODO marker scored > 0.5; (3) lint, typecheck, tests; (4) repeat until clean. Then re-issue this commit with the comment \\\" # pre-commit-ok\\\" appended to the command to confirm the gate passed.\"}}'",
+            "command": "cmd=$(jq -r '.tool_input.command'); if ! printf '%s' \"$cmd\" | grep -qE '(^|[;&|(]| )[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'; then exit 0; fi; if printf '%s' \"$cmd\" | grep -q 'pre-commit-ok'; then exit 0; fi; jq -n '{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"Pre-commit quality gate (.claude/skills/pre-commit) required before committing. Run it now: (1) change-review on the change — fix any bug/issue; (2) clean-code-review — fix every clean-code TODO marker scored > 0.5; (3) lint, typecheck, tests; (4) repeat until clean. Then re-issue this commit with the comment \\\" # pre-commit-ok\\\" appended to the command to confirm the gate passed.\"}}'",
             "statusMessage": "Pre-commit gate"
           }
         ]

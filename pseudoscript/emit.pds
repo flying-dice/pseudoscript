@@ -1,0 +1,396 @@
+//! emit — project a view out of the graph and render SVG (crate `pseudoscript-emit`).
+//!
+//! Sits above `model`: projects a diagram `View` from the resolved `Graph` into a
+//! `Scene` (laid-out, notation-neutral geometry), then renders a `Scene` to SVG.
+//! The `Scene` IR is the generation conformance surface; SVG is the only backend
+//! (ADR-017). WASM-safe: no threads, filesystem, clock, or headless browser — SVG
+//! is string-built.
+
+/// Which view to project from the graph (LANG.md §9). Context is the C1 whole;
+/// Container/Component zoom into one boundary; Sequence traces one entry point.
+public data View =
+  | Context
+  | Container { of: string }
+  | Component { of: string }
+  | Sequence { entry: string }
+
+/// Which C4 view a `C4Scene` is — drives the golden header keyword.
+data C4View =
+  | ContextView
+  | ContainerView
+  | ComponentView
+
+/// A laid-out diagram: the notation-neutral IR the SVG renderer consumes. A C4
+/// scene carries placed nodes and routed edges; a sequence scene carries
+/// lifelines and ordered messages with nested frames. This IR is the generation
+/// conformance surface (ADR-017): coordinates are carried for the renderer only,
+/// never serialised to the golden.
+public data Scene =
+  | C4Scene { view: C4View, of: string, nodes: PlacedNode[], edges: RoutedEdge[] }
+  | SequenceScene { entry: string, participants: Lifeline[], items: SeqItem[] }
+
+/// A node placed in a C4 view: its FQN, C4 kind, display label, optional `///`
+/// summary (the card's dimmed description), the boundary it sits inside, and the
+/// layout rectangle assigned by the placer.
+data PlacedNode {
+  fqn: string,
+  kind: string,
+  label: string,
+  summary: string,
+  boundary: string,
+  rect: Rect
+}
+
+/// An axis-aligned layout rectangle in renderer coordinates.
+data Rect { x: number, y: number, w: number, h: number }
+
+/// The relationship a routed edge expresses: a body `call`, a synthesised
+/// `trigger` from an initiator, or a `from` `provenance` link. Maps from
+/// `model::EdgeKind`, dropping the structural `for`-parent link.
+data C4EdgeKind =
+  | Call
+  | Trigger
+  | Provenance
+
+/// An edge routed between two C4 nodes, sorted by `(from, to, kind, label)`.
+data RoutedEdge { source: string, to: string, kind: C4EdgeKind, label: string }
+
+/// A sequence lifeline (a participant): its FQN, C4 kind for the head card, and
+/// the layout x-position assigned by the placer.
+data Lifeline { fqn: string, kind: string, x: number }
+
+/// One ordered item in a sequence trace: a message or a nested frame.
+data SeqItem =
+  | MessageItem { message: Message }
+  | FrameItem { frame: Frame }
+
+/// The kind of a sequence message: a `call` to another lifeline, a `return` to
+/// the caller, or a `self`-message on the owner's own lifeline.
+data MessageKind =
+  | CallMsg
+  | ReturnMsg
+  | SelfMsg
+
+/// A message between two lifelines (or a self-message). `label` is the method
+/// name, or `Ok`/`Err`/empty for a return.
+data Message { source: string, to: string, kind: MessageKind, label: string }
+
+/// The kind of a sequence frame: `if`/`else` becomes an `alt` frame, `for`/
+/// `while` becomes a `loop` frame.
+data FrameKind =
+  | Alt
+  | Loop
+
+/// A nestable frame over a body of sequence items, drawn as an enclosing box
+/// with its condition label.
+data Frame { kind: FrameKind, cond: string, body: SeqItem[] }
+
+/// Why projecting a view failed: the target FQN names no node, names a node of
+/// the wrong kind, or the sequence entry has no disclosed body.
+public data EmitError =
+  | UnknownNode { fqn: string }
+  | WrongKind { fqn: string, expected: string, found: string }
+  | NoBody { entry: string }
+
+/// `crates/pseudoscript-emit`. Projects a view into a `Scene` and renders it to
+/// SVG; C4 views run the `layout-rs` Sugiyama placer, the sequence view orders
+/// messages on lifelines.
+/// #headline
+public container Emit for context::Pseudoscript;
+
+/// Projects a `View` out of the graph (LANG.md §9): dispatches on the view
+/// variant, collecting nodes and edges for a C4 scene or tracing a callable body
+/// for a sequence scene, then hands off to the placer. Fails with `EmitError`
+/// when the view's target is missing or the wrong kind.
+public component Projector for Emit {
+  /// Dispatch on the view variant: Context and the boundary views project a
+  /// `C4Scene`; Sequence traces a callable body. The boundary views check the
+  /// `of` node's kind first.
+  public project(graph: model::Graph, view: View): Result<Scene, EmitError> {
+    if (view.isContext) {
+      return Ok(self.projectContext(graph))
+    }
+    if (view.isContainer) {
+      return self.projectBoundary(graph, view.of, "system", "container")
+    }
+    if (view.isComponent) {
+      return self.projectBoundary(graph, view.of, "container", "component")
+    }
+    return self.projectSequence(graph, view.entry)
+  }
+
+  /// The context view: every person and system, with inter-system edges and
+  /// triggers. A cross-container call bubbles to a single system → system edge.
+  projectContext(graph: model::Graph): Scene {
+    nodes = self.collectKinds(graph, "person", "system")
+    edges = Emit::Edges.collect(graph, nodes)
+    return Emit::Layout.solveC4(C4Scene from { nodes, edges })
+  }
+
+  /// A boundary view: the `of` node plus its `for`-children of `child` kind,
+  /// with edges among them lifted to the contained child. Errors when `of` is
+  /// missing or not of `boundary` kind.
+  projectBoundary(graph: model::Graph, of: string, boundary: string, child: string): Result<Scene, EmitError> {
+    anchor = self.requireKind(graph, of, boundary)
+    if (anchor.isErr) {
+      return Err(anchor.error)
+    }
+    nodes = self.childrenOf(graph, of, child)
+    edges = Emit::Edges.collect(graph, nodes)
+    return Ok(Emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
+  }
+
+  /// The sequence view: a callable's body trace as lifelines, messages, and
+  /// frames (LANG.md §9.2). Errors when the entry is not a callable, or has no
+  /// disclosed body to trace.
+  projectSequence(graph: model::Graph, entry: string): Result<Scene, EmitError> {
+    node = self.requireKind(graph, entry, "callable")
+    if (node.isErr) {
+      return Err(node.error)
+    }
+    body = self.bodyOf(graph, entry)
+    if (body.isErr) {
+      return Err(NoBody from { entry })
+    }
+    scene = Emit::Trace.walk(graph, entry, body.value)
+    return Ok(Emit::Layout.solveSequence(scene))
+  }
+
+  /// Looks a node up and asserts its C4 kind, mapping a miss to `UnknownNode`
+  /// and a mismatch to `WrongKind`. Reads the kind off the graph's nodes.
+  requireKind(graph: model::Graph, fqn: string, expected: string): Result<string, EmitError> {
+    found = self.kindOf(graph, fqn)
+    if (found.isErr) {
+      return Err(UnknownNode from { fqn })
+    }
+    if (self.kindMatches(found.value, expected)) {
+      return Ok(found.value)
+    }
+    return Err(WrongKind from { fqn, expected, found.value })
+  }
+
+  /// The C4 kind of the node named `fqn` in the graph, or an error if no node
+  /// carries that FQN.
+  kindOf(graph: model::Graph, fqn: string): Result<string, EmitError>;
+
+  /// The disclosed sequence trace for `entry`, or an error when the callable is
+  /// black-boxed and carries no body.
+  bodyOf(graph: model::Graph, entry: string): Result<model::Step[], EmitError>;
+
+  /// Whether a node's actual kind equals the kind the view requires.
+  kindMatches(found: string, expected: string): bool;
+
+  /// Every node of the given C4 kinds, placed in source-declaration order.
+  collectKinds(graph: model::Graph, a: string, b: string): PlacedNode[];
+
+  /// The boundary anchor plus its `for`-children of `child` kind, each tagged
+  /// with its boundary.
+  childrenOf(graph: model::Graph, of: string, child: string): PlacedNode[];
+}
+
+/// Builds the routed-edge set for a C4 scene from the graph's edges: maps each
+/// `model::EdgeKind` to a `C4EdgeKind` (dropping `for`-parent links), lifts each
+/// endpoint to the in-view node it belongs to, drops self-loops and
+/// out-of-view edges, then sorts and de-duplicates.
+component Edges for Emit {
+  /// Collect the in-view routed edges for the nodes already placed in a scene.
+  collect(graph: model::Graph, inView: PlacedNode[]): RoutedEdge[] {
+    routed = self.route(graph, inView)
+    return self.sortDedup(routed)
+  }
+
+  /// Walk the graph's edges, keeping each whose endpoints both resolve in view.
+  route(graph: model::Graph, inView: PlacedNode[]): RoutedEdge[];
+
+  /// Map a `model::EdgeKind` to a C4 edge kind; `for`-parent links are dropped
+  /// (containment is the `in` attribute, not an arrow).
+  c4Kind(kind: model::EdgeKind): C4EdgeKind;
+
+  /// Lift a graph endpoint to the in-view node it belongs to by walking the
+  /// `parent` chain; a synthesised trigger initiator is kept verbatim.
+  lift(graph: model::Graph, fqn: string, inView: PlacedNode[]): string;
+
+  /// Sort edges by `(from, to, kind, label)` and de-duplicate, so the scene is
+  /// deterministic and order-independent.
+  sortDedup(edges: RoutedEdge[]): RoutedEdge[];
+}
+
+/// Walks a callable's body trace into ordered sequence items, registering each
+/// participant on first appearance (LANG.md §9.2, §7). A `call` is a message to
+/// the target; a `self.` call is a self-message; a return marks `Ok`/`Err`;
+/// `if`/`else` nests an `alt` frame, `for`/`while` a `loop` frame.
+component Trace for Emit {
+  /// Build the sequence scene: the owner (the callable's parent node) is the
+  /// first lifeline; the body trace registers every other participant on first
+  /// appearance.
+  walk(graph: model::Graph, entry: string, body: model::Step[]): Scene {
+    owner = self.ownerOf(graph, entry)
+    items = self.traceItems(body, owner)
+    participants = self.participantsOf(graph, owner, items)
+    return SequenceScene from { entry, participants, items }
+  }
+
+  /// The owner FQN of `entry`: its parent node, defaulting to the entry itself.
+  ownerOf(graph: model::Graph, entry: string): string;
+
+  /// Walk a step list into sequence items, recursing into frame bodies.
+  traceItems(steps: model::Step[], owner: string): SeqItem[];
+
+  /// The owner lifeline first, then each message target in first-appearance
+  /// order, each tagged with its node's C4 kind (defaulting to container).
+  participantsOf(graph: model::Graph, owner: string, items: SeqItem[]): Lifeline[];
+}
+
+/// Assigns geometry to a projected scene. C4 views run the `layout-rs` Sugiyama
+/// layered placer over a back-edge-free subset of edges (the engine requires a
+/// DAG), framing a boundary view's children; the sequence view spaces lifelines
+/// across the x-axis and stacks messages top-to-bottom.
+component Layout for Emit {
+  /// Place a C4 scene: free nodes flow in a row, boundary children inside their
+  /// boundary box. The renderer's Sugiyama pass refines this; this assigns the
+  /// fallback rects.
+  solveC4(scene: Scene): Scene {
+    acyclic = self.breakCycles(scene)
+    return self.placeC4(scene, acyclic)
+  }
+
+  /// Drop back-edges so the edge set fed to the layered placer is acyclic — the
+  /// engine panics on a cycle. DFS in scene order keeps the result deterministic.
+  breakCycles(scene: Scene): RoutedEdge[];
+
+  /// Assign each node a layout rectangle from the acyclic placement.
+  placeC4(scene: Scene, acyclic: RoutedEdge[]): Scene;
+
+  /// Place a sequence scene: lifeline x-positions in first-appearance order,
+  /// message rows stacked by evaluation order, frames sized to their body.
+  solveSequence(scene: Scene): Scene;
+}
+
+/// Renders a laid-out `Scene` to standalone SVG markup — string-building, no
+/// template engine and no headless browser (LANG.md §9.3, ADR-017). Dispatches
+/// on the scene variant; the layout engine is wrapped so no input panics the
+/// render, falling back to the scene's own simple coordinates.
+public component SvgRenderer for Emit {
+  /// Render any scene to a self-contained SVG document.
+  public render(scene: Scene): string {
+    if (scene.isC4Scene) {
+      return self.renderC4(scene)
+    }
+    return self.renderSequence(scene)
+  }
+
+  /// Re-emit the laid-out C4 placement as modern C4 cards (coloured left rule,
+  /// kind eyebrow, bold title, dimmed wrapped description) and routed edges;
+  /// frames the boundary children when the view has an `of`.
+  renderC4(scene: Scene): string {
+    if (self.layoutFailed(scene)) {
+      return self.fallbackSvg(scene)
+    }
+    return self.emitSvg(scene)
+  }
+
+  /// Draw the sequence: lifeline-head cards with dropping dashed lifelines,
+  /// per-message rows left-to-right (self/return looped on the owner), and
+  /// frame boxes around their bodies.
+  renderSequence(scene: Scene): string;
+
+  /// Whether the layout engine produced no usable placement (empty view or a
+  /// panic), so rendering falls back to the scene's own coordinates.
+  layoutFailed(scene: Scene): bool;
+
+  /// The panic-proof fallback: draw each card at its scene-assigned rect with
+  /// straight centre-to-centre edges, so `pds doc` never crashes on a model.
+  fallbackSvg(scene: Scene): string;
+
+  /// Re-emit the captured Sugiyama geometry as cards, routed polylines, and
+  /// edge labels on light plates.
+  emitSvg(scene: Scene): string;
+}
+
+/// A view projects to a notation-neutral scene, then to SVG.
+feature ProjectAView for Emit {
+  given "a resolved graph and a chosen view"
+  when  "the view is projected"
+  then  "the relevant nodes and edges are selected and laid out into a Scene"
+  and   "the Scene renders to standalone SVG"
+  but   "a missing or wrong-kind target fails with an EmitError"
+}
+
+/// Each view kind dispatches to its projection.
+feature DispatchOnViewKind for Projector {
+  given "a graph and a View variant"
+  when  "project runs"
+  then  "Context and the boundary views build a C4Scene"
+  and   "Sequence traces the entry callable's body into a SequenceScene"
+}
+
+/// The Scene IR is the conformance surface: notation-neutral and deterministic.
+feature SceneIsDeterministic for Emit {
+  given "the same resolved graph and view projected twice"
+  when  "the scenes are compared"
+  then  "node order is source-declaration order"
+  and   "edges are sorted by from, to, kind, then label and de-duplicated"
+  but   "renderer coordinates never appear in the golden"
+}
+
+/// SVG is built as a string — no headless browser.
+feature RenderSvgAsString for SvgRenderer {
+  given "a laid-out Scene"
+  when  "render runs"
+  then  "a self-contained SVG document is built by string concatenation"
+  but   "no template engine or headless browser is invoked"
+}
+
+/// The C4 placer requires a DAG, so cycles are broken before layout.
+feature LayoutTolerantOfCycles for Layout {
+  given "a C4 scene whose edges form a cycle"
+  when  "the scene is laid out"
+  then  "back-edges are dropped to leave an acyclic edge set for the placer"
+  and   "the placement stays deterministic"
+}
+
+/// A failed layout degrades to simple coordinates rather than crashing.
+feature LayoutFallbackIsPanicSafe for SvgRenderer {
+  given "a scene the layout engine cannot place, or an empty view"
+  when  "the C4 scene is rendered"
+  then  "rendering falls back to the scene's own simple coordinates"
+  but   "the render never panics"
+}
+
+/// A missing node fails the projection.
+feature UnknownNodeFails for Projector {
+  given "a boundary or sequence view whose target FQN names no node"
+  when  "the view is projected"
+  then  "projection fails with EmitError::UnknownNode"
+}
+
+/// A target of the wrong kind fails the projection.
+feature WrongKindFails for Projector {
+  given "a container view whose of node is not a system"
+  when  "the view is projected"
+  then  "projection fails with EmitError::WrongKind carrying expected and found"
+}
+
+/// A sequence entry without a disclosed body fails the projection.
+feature SequenceEntryNeedsBody for Projector {
+  given "a sequence view whose entry callable is black-boxed"
+  when  "the view is projected"
+  then  "projection fails with EmitError::NoBody"
+}
+
+/// Control flow becomes nested frames in the trace.
+feature ControlFlowBecomesFrames for Trace {
+  given "a callable body with if/else and for/while"
+  when  "the body is traced"
+  then  "an if/else becomes an alt frame over its branches"
+  and   "a for/while becomes a loop frame over its body"
+}
+
+/// Body calls become left-to-right messages; self-calls loop on the owner.
+feature CallsBecomeMessages for Trace {
+  given "a callable body with calls to other nodes and self-calls"
+  when  "the body is traced"
+  then  "each call to another node is a left-to-right message to that lifeline"
+  and   "each self. call is a self-message on the owner's own lifeline"
+  and   "every target is registered as a participant on first appearance"
+}

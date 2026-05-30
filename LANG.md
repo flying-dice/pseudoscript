@@ -15,7 +15,7 @@ Principles:
 - **Behavior lives with its owner** and never changes ownership.
 - **Progressive disclosure**: any `system`, `container`, `component`, `data` type, or callable MAY disclose internals with a block, or stay a black box with `;`. Sketch the architecture as signatures, then fill in only the flows worth tracing.
 - **High-level**: bodies describe *flow and provenance*, not field-level computation.
-- **Errors are values** (`Result`), handled explicitly with `if`.
+- **Fallibility and absence live in the type** (`Result`, `Option`), handled explicitly with `if`.
 - **Fully-qualified names everywhere**; `alias` provides local shorthand.
 - **Tags** are additive visual labels (in docs); **macros** are active annotations (on declarations); **modifiers** are behavior- or styling-altering keywords.
 
@@ -41,7 +41,7 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 
 - Identifiers: letter or `_`, then letters, digits, `_`. Case-sensitive (`Banking` ≠ `banking`); PascalCase nodes and lowercase locals are convention, not enforced.
 - `::` walks the module/node path: `banking::core::Ledger`.
-- `.` invokes a method on, or reads a field of, a resolved node/value: `Repository.store(x)`, `r.value`. Chains freely: `Repo.fetch(id).value.owner` (§7).
+- `.` invokes a method on, or reads a field of, a resolved node/value: `Repository.store(x)`, `r.value`. The member MUST exist on the receiver's type where it resolves (ADR-022). Chains freely: `Repo.fetch(id).value.owner` (§7).
 - After an `alias` name, only `.` MUST follow; `::` MUST NOT.
 
 ### 2.3 Keywords
@@ -49,11 +49,12 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 system  container  component  person
 data    for        alias      from
 public  self
-return  Ok    Err
+return  Ok    Err   Some  None
 if      else  while  in
 true    false
+feature given when   then   and    but
 ```
-Also reserved (MUST NOT be used as identifiers): the primitive type names (§3.1) and `Result`.
+Also reserved (MUST NOT be used as identifiers): the primitive type names (§3.1), `Result`, and `Option`.
 
 ### 2.4 Annotations: Tags, Macros, Modifiers
 Three annotation kinds, distinct in syntax and effect.
@@ -115,12 +116,13 @@ number  string  bool  datetime  uuid  void
 
 ### 3.2 Built-in generics
 ```
-Result<T, E>     // fallible result: Ok(T) | Err(E)
+Result<T, E>     // fallible result:  Ok(T) | Err(E)
+Option<T>        // optional value:   Some(T) | None
 ```
-`Result<T, E>` is the only built-in generic.
+`Result<T, E>` and `Option<T>` are the built-in generics.
 
 ### 3.3 Type expressions
-A named type (`BankingInfo`), generic (`Result<BankingInfo, NotFound>`), or array (`T[]`). There is no optionality marker.
+A named type (`BankingInfo`), generic (`Result<BankingInfo, NotFound>`, `Option<Person>`), or array (`T[]`). `[]` is the only type suffix; an absent value is modeled with `Option<T>` (§6).
 
 ### 3.4 Data declarations
 A `data` type models any payload — DTOs, entities, messages alike. It MAY stay a **black box** with `;` (fields not yet disclosed).
@@ -139,16 +141,21 @@ data AccountSnapshot;
 ```
 
 ### 3.5 Unions (discriminated)
-Each variant is a usable `data` type.
+A variant is either a record (its own `data` type) or fieldless.
 ```pds
 data BankAccCreated { accId: string }    // standalone
 data AccountEvent =
   | BankAccCreated                       // reference to an existing data
   | BankAccClosed { accId: string, reason: string }   // declares + hoists to the module
+
+data Severity =          // fieldless variants — an enum
+  | Error
+  | Warning
+  | Info
 ```
-- `| Name { ... }` declares the variant and hoists it to the enclosing module namespace, addressed `module::Name` — the same as a top-level `data`.
-- Bare `| Name` references an existing module-level `data Name`; a missing target MUST be rejected.
-- A declared variant whose name collides with another module-level `data` MUST be rejected.
+- `| Name { ... }` (record variant) declares the variant and hoists it to the module's type namespace, addressed `module::Name` — the same as a top-level `data`. Its name MUST be unique among module-level type names (§8.1); a collision MUST be rejected.
+- Bare `| Name` (no record): if a module-level `data Name` exists, it references that type; otherwise it declares a fieldless variant scoped to the union. A fieldless variant does not hoist.
+- A fieldless variant's name MAY repeat across unions and MAY coincide with a node name (§8.1).
 
 ---
 
@@ -198,9 +205,12 @@ Callables are declared **inside** the disclosing `system`/`container`/`component
 ### 5.1 Callables (implicit operations)
 A function-shaped declaration is a callable.
 - It MAY **disclose** its logic with a block, or be a **black box** with `;`.
-- All calls are request/response.
+- All calls are request/response. A call to a resolvable callable MUST pass one argument per declared parameter, and each inferable argument MUST match its parameter's type; a wrong arity or argument type MUST be rejected (ADR-022, ADR-023).
 - Return type is optional; absence means `void`. A disclosed non-`void` callable MUST return a value on every path.
+- A `return` expression whose type is inferable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `Type from { … }` composition (§7.2), or a parameter/binding reference — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). Calls, field accesses, and `self` are not inferred (ADR-022).
+- A bare name in a body MUST resolve to a parameter, a binding, a node, an alias, or a union variant; an unresolved reference MUST be rejected (ADR-022).
 - A same-node callable is invoked via `self.Name(args)` (`self` = the enclosing node); this also covers recursion.
+- A callable's name and its parameter names MUST NOT be reserved words (§2.3) — `container`, `component`, `data`, and `for` are reserved.
 - A call statement MAY ignore its `Result` (the call still renders as a message).
 - A black-box callable shows in C4 as a capability; a call to it in a sequence diagram is a single message with no expansion.
 ```pds
@@ -220,14 +230,36 @@ component AccountService for Mainframe {
 }
 ```
 
+### 5.2 Features (BDD scenarios)
+A `feature` is a top-level construct documenting one behavioral scenario of a node in given/when/then form.
+
+- `feature Name for Path` names the node the scenario is about. `Path` is an FQN (§8) resolving to a node — `system`, `container`, `component`, or `person`. A `Path` resolving to a type or module MUST be rejected. A cross-module target MUST be `public` (§8.2).
+- Each step is a step keyword followed by a string literal describing the step. The string is prose; it MUST NOT be resolved against the model.
+- The flow is strict: zero or more `given` steps, then one or more `when` steps, then one or more `then` steps, in that order. A `then` before any `when`, or a `when` after any `then`, MUST be rejected.
+- `and` and `but` continue the preceding step's kind. A leading `and` or `but` (no preceding step) MUST be rejected.
+- A feature carries no behavior and takes no modifier; `public` MUST NOT precede it.
+- A feature name occupies the module's feature namespace (§8.1); it MUST be unique among the module's features.
+- A feature MAY carry a `///` doc block (summary + tags); macros MUST NOT attach to it.
+
+```pds
+/// A verified owner opens an account.
+feature OpenAccount for banking::core::Mainframe {
+  given "a verified owner"
+  and   "no existing account for that owner"
+  when  "the owner opens an account"
+  then  "banking info is returned"
+  and   "the account is durably stored"
+}
+```
+
 ---
 
-## 6. Errors
+## 6. Errors & Optional Values
 
-Fallibility lives in the **type**, and every error path is explicit.
+Fallibility and absence live in the **type**, and every branch is explicit. The two built-in generics (§3.2) are inspected by their accessors and narrowed by `if`.
 
+### 6.1 Result
 - `Result<T, E>` — `Ok(v)` / `Err(e)`. Access: `r.isOk`, `r.isErr`, `r.value` (the `T`), `r.error` (the `E`).
-- `Ok` and `Err` are branch markers, not constructors; nothing is instantiated.
 - Accessing `.value` on an `Err`, or `.error` on an `Ok`, is a model error. The checker MUST report it; it tracks which branch you are in after an `if (r.isErr)` / `if (r.isOk)`.
 
 ```pds
@@ -243,6 +275,22 @@ OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError> {
   return Ok(acc.value)
 }
 ```
+
+### 6.2 Option
+- `Option<T>` — `Some(v)` / `None`. Access: `o.isSome`, `o.isNone`, `o.value` (the `T`). `Option` has no `.error`.
+- Accessing `.value` on a `None` is a model error. The checker MUST report it; it tracks which branch you are in after an `if (o.isNone)` / `if (o.isSome)`.
+
+```pds
+FindOwner(id: number): Option<Person> {
+  o = AccountStore::Directory.lookup(id)
+  if (o.isNone) {
+    return None
+  }
+  return Some(o.value)
+}
+```
+
+`Ok`, `Err`, `Some`, and `None` construct the built-in generics (§7.2): `Ok(v)` / `Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` carries nothing.
 
 ---
 
@@ -260,6 +308,8 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 | For | `for (x in Expr) { }` | `loop` frame |
 | While | `while (C) { }` | `loop` frame |
 
+An `if`/`while` condition `C` MUST be `bool` where its type is inferable (ADR-023).
+
 ### 7.1 Assignment
 `x = Expr` binds `x` once. Type is inferred from the right-hand side. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
 
@@ -270,6 +320,10 @@ a = Foo.getThing()
 b = Bar.getOther()
 c = BankingInfo from { a, b }
 ```
+- `from` composes a `data` record or union variant. The built-in constructors `Ok` / `Err` / `Some` / `None` produce `Result` / `Option` values (§6). No other construction exists.
+- The `from` target MUST resolve to a `data` record or union variant; a primitive, `Result`, `Option`, or node target MUST be rejected.
+- `from` produces a single value of that type; `Type[] from { … }` composes an array `Type[]`. A singular `from` MUST NOT satisfy an array type, and an array `from` MUST NOT satisfy a singular type.
+- The produced value — a record `data` or a union variant — is usable wherever a value of `Type` is expected: a call argument, a `return` operand, or a binding.
 - Model/C4: records a derivation relationship (data-flow edge).
 - Sequence diagram: the calls producing the sources are the messages; the composition itself is local.
 
@@ -283,10 +337,10 @@ A `{` opens a **source set** only when it directly follows `from`. Everywhere el
 
 ## 8. Modules, Names & Visibility
 
-### 8.1 Workspace & module paths
-A `workspace.toml` at the root anchors the file system. Every `.pds` file is a module, addressed by its path relative to the root: separators become `::`, and the **filename is a path segment**.
+### 8.1 Project root & module paths
+A `pds.toml` at the project root anchors the file system: it is the single root from which every name is addressable. Every `.pds` file is a module, addressed by its path relative to `pds.toml`: separators become `::`, and the **filename is a path segment**. §9.3 defines `pds doc` and the `[doc]` table.
 ```
-workspace.toml
+pds.toml
 banking/
   core.pds      → module  banking::core
   events.pds    → module  banking::events
@@ -294,6 +348,10 @@ platforms/
   legacy.pds    → module  platforms::legacy
 ```
 A node declared in `banking/core.pds` is addressed `banking::core::NodeName`.
+
+A module has three distinct namespaces: **type names** (`data` declarations and hoisted record variants, §3.5), **node names** (`system`/`container`/`component`/`person`), and **feature names** (§5.2). A name MUST be unique within its namespace; the three do not collide — a `data`, a `container`, and a `feature` MAY share a name. Callable and parameter names are scoped to their owner, not the module.
+
+An FQN's first segment is a **root**. The file-derived module paths above are the local roots; a `[dependencies]` entry (§8.4) adds one root per declared dependency.
 
 ### 8.2 Visibility
 All declarations are module-private by default. **`public` means cross-module addressable**; a private node is reachable only within its own file, even by FQN. Applies to `data`, `person`, `system`, `container`, `component`, and callables.
@@ -307,8 +365,8 @@ public container Mainframe for Banking {
 ### 8.3 alias
 `alias` binds a local name to a **node** FQN, not a module/namespace.
 - File-scoped, not exported; nothing MAY follow it via `::`.
-- The target is a node addressable by `::`; a callable (reached via `.`) cannot be aliased.
-- A dangling alias (target missing, or not `public` when cross-module) MUST be rejected.
+- The target is a node addressable by `::`; a callable (reached via `.`) cannot be aliased. The target MAY be a cross-workspace node (a dependency-rooted FQN, §8.4).
+- A dangling alias (target missing, or not `public` when cross-module or cross-workspace) MUST be rejected.
 ```pds
 alias Store = banking::core::AccountStore;       // ✓ a container node
 alias Created = banking::core::BankAccCreated;   // ✓ a data node
@@ -316,6 +374,22 @@ alias Core = banking::core;                      // ✗ that's a module, not a n
 
 Store.fetch(id)   // alias then invoke
 ```
+
+### 8.4 Dependencies
+A `pds.toml` `[dependencies]` table declares other workspaces, distributed via git. Each entry is one dependency.
+- An entry carries a **git source**, at most one **revision selector** (`tag`, `rev`, or `branch`; default = the remote's default-branch HEAD), and an optional **`path`** — the dependency workspace's directory within its repository (default = repo root).
+- Each declared name is an **FQN root** (§8.1), scoped to the declaring workspace: `dep::module::Node` addresses the node at module path `module` within dependency `dep`. The same name MAY denote different dependencies in different workspaces.
+- A cross-workspace target MUST be `public`; a private or missing target MUST be rejected (extends §8.2).
+- Only **direct** dependencies are addressable. A dependency's own dependencies are resolved so it is internally well-formed, but MUST NOT be nameable from a workspace that does not declare them.
+```toml
+[dependencies]
+banking = { git = "https://example.com/acme/banking.git", tag = "v2.1.0", path = "model" }
+```
+
+### 8.5 Resolution & lockfile
+A dependency's **identity** is `(source, revision, path)`.
+- Entries resolving to one identity are the same package. Entries differing in revision or path are distinct packages and MAY coexist; there is no version unification.
+- `pds.lock` pins the resolved graph: one entry per package — source, resolved commit, path, and dependency edges — making resolution reproducible.
 
 ---
 
@@ -332,12 +406,36 @@ Store.fetch(id)   // alias then invoke
 ### 9.2 Sequence diagrams (bodies)
 From disclosed callables per §7. A **triggered** callable (one bearing a trigger macro) is an entry point. Black-box callables render as single messages with no expansion (§5.1). In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
 
+### 9.3 Documentation site (`pds doc`)
+`pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded as inline SVG.
+
+The site MUST contain:
+- An **index** page: the workspace name and the C4 context diagram (persons, systems, inter-system edges).
+- One page **per module** (§8.1), listing its nodes with their `///` summaries (§2.1) and tags.
+- One section **per node** with its `///` description, tags, visibility, and relationships (its `for` parent, inbound and outbound edges). A `system` section embeds that system's container diagram; a `container` section embeds its component diagram.
+- A **sequence** diagram for each triggered callable (§9.2), on its owning node.
+- A **scenario** card for each `feature` (§5.2), rendered as its given/when/then steps on the target node's section.
+- **Cross-links**: every FQN reference links to the referenced node.
+
+`[doc]` in `pds.toml` configures the site; all keys are optional:
+- `name` — site title. Defaults to the root directory name.
+- `out` — output directory, relative to `pds.toml`. Defaults to `target/doc`.
+- `logo` — path to a logo image, relative to `pds.toml`.
+- `theme` — `light` or `dark`. Defaults to `light`.
+
+```toml
+[doc]
+name = "Banking Architecture"
+out  = "target/doc"
+logo = "media/pds-logo.svg"
+```
+
 ---
 
 ## 10. Grammar Sketch (EBNF, informal)
 
 ```ebnf
-Program     = { InnerDoc } { Alias | Decl } ;
+Program     = { InnerDoc } { Alias | Decl | Feature } ;
 
 Alias       = "alias" Ident "=" Path ";" ;          // Path must resolve to a node
 
@@ -355,6 +453,13 @@ BodyMember  = DocBlock { Macro } [ "public" ] Callable ;
 Callable    = Ident "(" [ Params ] ")" [ ":" Type ] ( Block | ";" ) ;
 Params      = Param { "," Param } ;
 Param       = Ident ":" Type ;
+
+Feature     = DocBlock "feature" Ident "for" Path FeatureBody ; // Path MUST resolve to a node
+FeatureBody = "{" { Given } When { When } Then { Then } "}" ;   // strict given* when+ then+
+Given       = "given" String { Cont } ;
+When        = "when"  String { Cont } ;
+Then        = "then"  String { Cont } ;
+Cont        = ( "and" | "but" ) String ;                        // continues the preceding step kind
 
 Data        = "data" Ident ( Record | "=" Union | ";" ) ;   // block discloses, ';' = black box
 Record      = "{" { Field } "}" ;
@@ -374,11 +479,11 @@ If          = "if" "(" Expr ")" Block [ "else" Block ] ;
 For         = "for" "(" Ident "in" Expr ")" Block ; // Expr MUST be an array type
 While       = "while" "(" Expr ")" Block ;
 
-Expr        = ResultMarker | FromExpr | Postfix | Literal | Unary ;
+Expr        = Marker | FromExpr | Postfix | Literal | Unary ;
 Postfix     = Primary { "." Ident [ "(" [ Args ] ")" ] } ;   // field access / call, chained
 Primary     = Ref | "(" Expr ")" ;
-ResultMarker= ( "Ok" | "Err" ) [ "(" Expr ")" ] ;
-FromExpr    = Path "from" "{" Expr { "," Expr } "}" ;
+Marker      = ( "Ok" | "Err" | "Some" ) [ "(" Expr ")" ] | "None" ;   // built-in generic constructors
+FromExpr    = Path [ "[]" ] "from" "{" Expr { "," Expr } "}" ;   // "[]" composes an array
 Unary       = "!" Expr ;
 Args        = Expr { "," Expr } ;
 Ref         = "self" | Ident | Path ;               // self, alias name, or FQN
@@ -432,11 +537,18 @@ public container Mainframe for Banking {
 
 /// Durable store of account records.
 /// #critical
-public container AccountStore for Banking {
-  component Repository for AccountStore {
-    fetch(id: number): Result<BankingInfo, NotFound>;
-    create(req: OpenRequest): Result<BankingInfo, OpenError>;
-  }
+public container AccountStore for Banking;
+
+component Repository for AccountStore {
+  fetch(id: number): Result<BankingInfo, NotFound>;
+  create(req: OpenRequest): Result<BankingInfo, OpenError>;
+}
+
+/// A customer opens an account through the mainframe.
+feature OpenAccount for Mainframe {
+  given "a verified owner"
+  when  "the owner opens an account"
+  then  "banking info is returned"
 }
 ```
 
@@ -445,7 +557,7 @@ public container AccountStore for Banking {
 ## 12. Open Questions
 
 1. **Macro extensibility** — fixed built-in set, or user-definable macros?
-2. **Generics** — only built-in `Result`, or user-defined generic `data` later?
+2. **Generics** — only the built-in `Result`/`Option`, or user-defined generic `data` later?
 3. **Expression grammar** — conditions admit only `Ref`/call/`!Expr`; no comparison/boolean operators (`==`, `&&`). Add them for `if`/`while`?
 4. **Branch-aware typing** — how far does the checker track `isOk`/`isErr` narrowing (nested ifs, early returns)?
 5. **`person` parenting** — can a person belong to anything, or always top-level?

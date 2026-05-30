@@ -1,0 +1,21 @@
+// LANG.md §3.2 / §6 / §10: `Option<T>` is a built-in generic; `Some(v)` and
+// `None` construct it, parallel to `Ok`/`Err` for `Result`.
+
+//! example
+
+public data Person { id: number }
+
+public system Registry;
+
+public container Directory for Registry {
+  /// The optional person on file for an id.
+  public find(id: number): Option<Person> {
+    o = self.lookup(id)
+    if (o.isNone) {
+      return None
+    }
+    return Some(o.value)
+  }
+
+  lookup(id: number): Option<Person>;
+}

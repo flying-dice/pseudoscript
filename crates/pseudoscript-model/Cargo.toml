@@ -1,0 +1,25 @@
+[package]
+name = "pseudoscript-model"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pseudoscript_model"
+path = "src/lib.rs"
+
+[dependencies]
+pseudoscript-syntax = { path = "../pseudoscript-syntax" }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+strsim = "0.11"
+
+[dev-dependencies]
+cucumber = "0.21"
+futures = "0.3"
+
+[[test]]
+name = "conformance"
+harness = false

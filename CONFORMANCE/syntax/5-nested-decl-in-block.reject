@@ -1,0 +1,11 @@
+// LANG.md §5 (ADR-011): a disclosed block holds callables only. A container or
+// component is a top-level declaration wired by `for`; nesting one inside a
+// block is rejected.
+
+public system Banking;
+
+public container AccountStore for Banking {
+  component Repository for AccountStore {
+    fetch(id: number): Result<void, void>;
+  }
+}

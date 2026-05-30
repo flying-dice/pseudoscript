@@ -1,6 +1,6 @@
 # ADR-001 — Result is the only fallible type (no Option)
 
-**Status:** Accepted (the `?` clause is superseded by ADR-008)
+**Status:** Accepted (the `?` clause is superseded by ADR-008; the no-`Option` rule is superseded by ADR-019)
 **Affects:** LANG.md §3.2, §3.3, §6, §10, §12
 
 ## Context

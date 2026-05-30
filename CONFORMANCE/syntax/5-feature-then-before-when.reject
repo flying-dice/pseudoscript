@@ -1,0 +1,9 @@
+// LANG.md §5.2 / §10 (ADR-018): the flow is given* when+ then+; a `then` with
+// no preceding `when` is rejected.
+
+public system Banking;
+
+feature OpenAccount for Banking {
+  given "a verified owner"
+  then  "banking info is returned"
+}

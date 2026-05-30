@@ -1,0 +1,283 @@
+//! format — the canonical formatter (crate `pseudoscript-format`).
+//!
+//! Parse the source, and only if it carries no error-severity diagnostic,
+//! pretty-print the tree to one canonical form. The printer walks the AST and
+//! emits two-space indentation, preserves comment and blank-line trivia (blank
+//! runs collapsing to one), and lays out one declaration per stanza: records
+//! inline, unions one variant per line, features one step per line.
+//!
+//! Two invariants hold. Formatting is idempotent — formatting the output is a
+//! no-op (`format(format(x)) == format(x)`). Formatting is semantics-preserving
+//! — only whitespace and comment layout change, so the result re-parses to a
+//! structurally equivalent tree. Unparseable source is never rewritten: it
+//! short-circuits to `FormatError::Parse` and the caller keeps the original.
+//! WASM-safe — no threads, filesystem, clock, or I/O.
+
+/// Why formatting failed. The only failure is unparseable input: `Parse`
+/// carries the rendered error messages (one per diagnostic) for context, and
+/// the caller keeps its original text.
+public data FormatError =
+  | Parse { messages: string[] }
+
+/// The running pretty-printer state: the text buffer being built, the current
+/// nesting depth (two spaces each), and whether the current line has had its
+/// indentation written yet so further writes append in place.
+data PrinterState { out: string, indent: number, lineStarted: bool }
+
+/// `crates/pseudoscript-format`. The canonical formatter: parse, then
+/// pretty-print the tree to one canonical form. The string-to-string entry the
+/// CLI and LSP depend on.
+public container Format for context::Pseudoscript;
+
+/// Drives the headline flow: parse the source, short-circuit to
+/// `FormatError::Parse` if any error diagnostic surfaced, else hand the tree to
+/// the printer for canonical text.
+public component Formatter for Format {
+  /// Format `text` to canonical PseudoScript. Parse first; if the parse carried
+  /// any error-severity diagnostic, return `FormatError::Parse` with the
+  /// rendered messages and leave the source unrewritten; otherwise print the
+  /// tree.
+  public format(text: string): Result<string, FormatError> {
+    parsed = syntax::Parser.parse(text)
+    if (self.hasErrors(parsed)) {
+      errors = self.collectErrors(parsed)
+      err = FormatError from { errors }
+      return Err(err)
+    }
+    out = Format::Printer.print(parsed.ast)
+    return Ok(out)
+  }
+
+  /// Pretty-print an already-parsed module to canonical text. The string-to-
+  /// string `format` surface is preferred; this serves the LSP, which already
+  /// holds a parsed tree. The trailing newline matches `format`.
+  public formatModule(ast: syntax::Module): string {
+    return Format::Printer.print(ast)
+  }
+
+  /// True if `parsed` carries any error-severity diagnostic — the test that
+  /// gates whether the source may be reformatted at all.
+  hasErrors(parsed: syntax::Parsed): bool;
+
+  /// Filter `parsed`'s diagnostics to the error-severity ones and render each
+  /// message into the list `FormatError::Parse` carries.
+  collectErrors(parsed: syntax::Parsed): string[];
+
+  /// True if `diagnostic` is error severity (`syntax::Severity::Error`); warning
+  /// and info never block formatting.
+  isError(diagnostic: syntax::Diagnostic): bool;
+}
+
+/// The canonical pretty-printer: walks the AST top-down, appending to a buffer,
+/// and emits one canonical form. Indentation is a level counter (two spaces
+/// each); leading trivia is normalised — blank-line runs collapse to at most one
+/// separator and `//` / `/* */` comments reproduce at the current indent in
+/// source order. Internals are black-boxed per construct; the top-level `print`
+/// flow is disclosed.
+component Printer for Format {
+  /// Print a whole module to canonical text with exactly one trailing newline:
+  /// the `//!` inner docs, a blank separator if items follow, then each item in
+  /// source order.
+  print(ast: syntax::Module): string {
+    state = self.writeModule(ast)
+    out = self.finish(state)
+    return out
+  }
+
+  /// Walk the module: emit each `//!` inner-doc line, a single blank line if
+  /// both inner docs and items are present, then every item with its leading
+  /// trivia.
+  writeModule(module: syntax::Module): PrinterState;
+
+  /// Trim trailing blank lines, then guarantee exactly one trailing newline on a
+  /// non-empty buffer; an empty buffer stays empty.
+  finish(state: PrinterState): string;
+
+  /// Emit leading trivia before an item, member, or statement: blank-line runs
+  /// collapse to at most one separator (suppressed for the first item in a block
+  /// or file), and `//` / `/* */` comments reproduce on their own lines at the
+  /// current indent, in source order.
+  writeMemberSeparator(state: PrinterState, trivia: syntax::SpannedTrivia[], first: bool): PrinterState;
+
+  /// Emit one comment, re-indenting each physical line at the current level and
+  /// trimming trailing whitespace; block comments may span lines.
+  writeComment(state: PrinterState, text: string): PrinterState;
+
+  /// Emit one `//!` inner-doc line: `//!` alone when empty, else `//! ` then the
+  /// prose.
+  writeInnerDoc(state: PrinterState, text: string): PrinterState;
+
+  /// Dispatch an item to its writer — `alias`, declaration, or `feature` — after
+  /// its leading trivia.
+  writeItem(state: PrinterState, item: syntax::Item, first: bool): PrinterState;
+
+  /// Emit `alias Name = Path;` on one line.
+  writeAlias(state: PrinterState, aliasDecl: syntax::AliasDecl): PrinterState;
+
+  /// Emit the shared declaration prefix in canonical order (§2.1) — doc block,
+  /// then macros one per line, then `public` — and dispatch the node or `data`
+  /// payload.
+  writeDecl(state: PrinterState, decl: syntax::Declaration): PrinterState;
+
+  /// Emit a node: keyword, name, optional `for <parent>`, then either `;` for a
+  /// black box or a `{ }` body with one member per line (an empty body renders
+  /// ` { }`).
+  writeNode(state: PrinterState, node: syntax::NodeDecl): PrinterState;
+
+  /// Emit a disclosed node body, one member per line with leading trivia between
+  /// members; an empty member list renders ` { }` on the header line.
+  writeNodeBody(state: PrinterState, members: syntax::BodyMember[]): PrinterState;
+
+  /// Emit a `data` declaration: `data Name`, then the black-box `;`, the inline
+  /// record body, or the union — one `| Variant` per line at one extra indent.
+  writeData(state: PrinterState, decl: syntax::DataDecl): PrinterState;
+
+  /// Emit a record body inline: `{ a: T, b: U }`, fields comma-joined; an empty
+  /// record renders ` { }`.
+  writeRecord(state: PrinterState, fields: syntax::Field[]): PrinterState;
+
+  /// Emit one field `name: Type`.
+  writeField(state: PrinterState, field: syntax::Field): PrinterState;
+
+  /// Emit one union variant on its own line: `| Name`, plus an inline record
+  /// body when the variant carries one.
+  writeVariant(state: PrinterState, variant: syntax::Variant): PrinterState;
+
+  /// Emit a callable: doc block, macros one per line, optional `public`, name,
+  /// the comma-joined parameter list, optional `: Ret`, then a `;` black box or
+  /// a disclosed `{ }` block.
+  writeCallable(state: PrinterState, callable: syntax::CallableDecl): PrinterState;
+
+  /// Emit one parameter `name: Type`.
+  writeParam(state: PrinterState, param: syntax::Param): PrinterState;
+
+  /// Emit a `{ ... }` block appended to the current line, opening with ` {`; an
+  /// empty block renders ` { }`. Statements take one extra indent, each with its
+  /// leading trivia. No trailing newline.
+  writeBlock(state: PrinterState, block: syntax::Block): PrinterState;
+
+  /// Emit one statement on its own line: an `x = Expr` assignment, a `return`
+  /// (optionally with an expression), an `if (c) { } else { }`, a `for (x in e)
+  /// { }`, a `while (c) { }`, or a bare expression statement.
+  writeStmt(state: PrinterState, stmt: syntax::Stmt): PrinterState;
+
+  /// Emit one expression: the `Ok`/`Err` marker (with optional payload), a
+  /// `Type from { src, ... }` composition, a `.name`/`.name(args)` postfix chain,
+  /// a reference, a literal, a `!`-unary, or a parenthesised group.
+  writeExpr(state: PrinterState, expr: syntax::Expr): PrinterState;
+
+  /// Emit one postfix segment: `.name`, plus a comma-joined `(args)` list when
+  /// the segment is a call.
+  writePostfixSeg(state: PrinterState, seg: syntax::PostfixSeg): PrinterState;
+
+  /// Emit a reference primary: the literal `self`, or a path.
+  writeRef(state: PrinterState, reference: syntax::Reference): PrinterState;
+
+  /// Emit a literal from its raw source text — strings keep their quotes,
+  /// numbers their lexeme, bools render `true`/`false`.
+  writeLiteral(state: PrinterState, literal: syntax::Literal): PrinterState;
+
+  /// Emit a type: its name path, an optional `<...>` of comma-joined generic
+  /// arguments, then a trailing `[]` for an array. No space around the array
+  /// suffix (ADR-008).
+  writeType(state: PrinterState, ty: syntax::Type): PrinterState;
+
+  /// Emit a `::`-joined path of identifiers.
+  writePath(state: PrinterState, path: syntax::Path): PrinterState;
+
+  /// Emit a doc block in canonical order (ADR-009): the summary lines, then a
+  /// blank `///` line and the extended lines if any, then each `#name` tag on
+  /// its own `///` line. An empty block emits nothing.
+  writeDocBlock(state: PrinterState, doc: syntax::DocBlock): PrinterState;
+
+  /// Emit a feature: its doc block, the `feature Name for Path` header, then one
+  /// step per line at one extra indent — step keyword, a space, then the prose.
+  /// Keywords are not column-aligned, which keeps the form idempotent. An empty
+  /// flow renders ` { }`.
+  writeFeature(state: PrinterState, feat: syntax::FeatureDecl): PrinterState;
+
+  /// Emit one `#[..]` macro: `#[`, the name path, then the word, comma-joined
+  /// `(list)`, or ` = value` argument form, then `]`.
+  writeMacro(state: PrinterState, macro: syntax::Macro): PrinterState;
+}
+
+/// Formatting the output again changes nothing.
+feature FormatIsIdempotent for Format {
+  given "a parseable .pds source"
+  when  "it is formatted and the result is formatted a second time"
+  then  "the first pass yields canonical text"
+  and   "the second pass returns that text unchanged"
+}
+
+/// Reformatting only touches layout, never meaning.
+feature FormatPreservesSemantics for Format {
+  given "a parseable .pds source"
+  when  "it is formatted"
+  then  "the result re-parses to a structurally equivalent tree"
+  but   "only whitespace and comment layout differ from the source"
+}
+
+/// Unparseable source short-circuits and is left untouched.
+feature ParseErrorsShortCircuit for Formatter {
+  given "source with at least one error-severity parse diagnostic"
+  when  "it is formatted"
+  then  "formatting returns FormatError::Parse carrying the rendered messages"
+  but   "the source is not rewritten and the caller keeps the original text"
+}
+
+/// Warnings and info never block formatting.
+feature OnlyErrorsBlockFormatting for Formatter {
+  given "source that parses with only warning or info diagnostics"
+  when  "it is formatted"
+  then  "the tree is pretty-printed to canonical text"
+  but   "the non-error diagnostics do not short-circuit the formatter"
+}
+
+/// Records render on one line.
+feature CanonicalRecord for Printer {
+  given "a data record declaration"
+  when  "it is printed"
+  then  "the fields render inline as { a: T, b: U }"
+  and   "an empty record renders as { }"
+}
+
+/// Unions stack one variant per line.
+feature CanonicalUnion for Printer {
+  given "a data union declaration"
+  when  "it is printed"
+  then  "the body opens with ` =` on the declaration line"
+  and   "each variant prints as `| Name` on its own line, indented one level"
+}
+
+/// Features render one step per line.
+feature CanonicalFeature for Printer {
+  given "a feature declaration with given/when/then steps"
+  when  "it is printed"
+  then  "each step prints on its own line, keyword then prose"
+  but   "the keywords are not column-aligned, keeping the form idempotent"
+}
+
+/// Indentation is two spaces per nesting level.
+feature TwoSpaceIndent for Printer {
+  given "a disclosed node, block, union, or feature body"
+  when  "its members are printed"
+  then  "each nesting level adds two spaces of indentation"
+}
+
+/// Comments and blank-line runs survive; runs collapse to one.
+feature TriviaPreserved for Printer {
+  given "source interleaving declarations with comments and runs of blank lines"
+  when  "it is printed"
+  then  "each comment reproduces on its own line at the current indent"
+  and   "a run of blank lines collapses to a single blank separator"
+  but   "the first member in a block or file gets no leading blank line"
+}
+
+/// Black-box and disclosed forms are each kept, never converted.
+feature BodyFormsPreserved for Printer {
+  given "a mix of black-box `;` and disclosed `{ }` nodes and callables"
+  when  "they are printed"
+  then  "a black-box body stays `;`"
+  and   "a disclosed body keeps its `{ }`, one member per line"
+  but   "an empty disclosed body renders ` { }`"
+}

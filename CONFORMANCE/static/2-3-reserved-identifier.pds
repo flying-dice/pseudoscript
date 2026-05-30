@@ -1,0 +1,6 @@
+// LANG.md §2.3 (ADR-012): a reserved word cannot be used as an identifier. The
+// field name `from` is reserved.
+
+//! example
+
+data Edge { from: number }

@@ -1,0 +1,1415 @@
+//! Recursive-descent parser for the `LANG.md` §10 grammar.
+//!
+//! The parser never panics: on unexpected input it records a [`Diagnostic`] and
+//! resynchronises to the next statement/declaration boundary, then continues.
+//! The result always carries a (possibly partial) [`Module`].
+
+use crate::ast::{
+    Alias, Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind,
+    Feature, FeatureStep, Field, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs,
+    MarkerKind, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, StepKind, Stmt, StmtKind,
+    Tag, Type, Variant,
+};
+use crate::diagnostic::Diagnostic;
+use crate::lexer::{Lexed, SpannedTrivia, lex};
+use crate::span::Span;
+use crate::token::{Token, TokenKind};
+
+/// The output of [`parse`]: the syntax tree and any diagnostics.
+#[derive(Debug, Clone)]
+pub struct Parsed {
+    /// The parsed module (partial if there were errors).
+    pub ast: Module,
+    /// Diagnostics produced while parsing (errors and warnings).
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Parses `src` into a [`Module`], recovering from errors (§10).
+#[must_use]
+pub fn parse(src: &str) -> Parsed {
+    let lexed = lex(src);
+    let mut parser = Parser::new(src, lexed);
+    let ast = parser.parse_module();
+    Parsed {
+        ast,
+        diagnostics: parser.diagnostics,
+    }
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    trivia: Vec<SpannedTrivia>,
+    pos: usize,
+    trivia_pos: usize,
+    diagnostics: Vec<Diagnostic>,
+    eof_span: Span,
+}
+
+/// The flow phase reached while parsing a feature body (§5.2). `and`/`but`
+/// continue the current phase without advancing it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeaturePhase {
+    /// No step seen yet.
+    Start,
+    /// Inside the `given` run.
+    Given,
+    /// Inside the `when` run.
+    When,
+    /// Inside the `then` run.
+    Then,
+}
+
+impl Parser {
+    fn new(src: &str, lexed: Lexed) -> Self {
+        let end = src.len() as u32;
+        Self {
+            tokens: lexed.tokens,
+            trivia: lexed.trivia,
+            pos: 0,
+            trivia_pos: 0,
+            diagnostics: Vec::new(),
+            eof_span: Span::new(end, end),
+        }
+    }
+
+    // --- token cursor -------------------------------------------------------
+
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
+
+    fn peek_kind(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos).map(|t| t.kind)
+    }
+
+    fn peek2_kind(&self) -> Option<TokenKind> {
+        self.tokens.get(self.pos + 1).map(|t| t.kind)
+    }
+
+    fn at(&self, kind: TokenKind) -> bool {
+        self.peek_kind() == Some(kind)
+    }
+
+    fn is_eof(&self) -> bool {
+        self.pos >= self.tokens.len()
+    }
+
+    fn bump(&mut self) -> Option<Token> {
+        let token = self.tokens.get(self.pos).cloned();
+        if token.is_some() {
+            self.pos += 1;
+        }
+        token
+    }
+
+    /// Consumes `kind` if present, returning its token.
+    fn eat(&mut self, kind: TokenKind) -> Option<Token> {
+        if self.at(kind) { self.bump() } else { None }
+    }
+
+    /// The span of the current token, or end-of-input.
+    fn cur_span(&self) -> Span {
+        self.peek().map_or(self.eof_span, |t| t.span)
+    }
+
+    fn error(&mut self, span: Span, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic::error(span, message));
+    }
+
+    /// Drains trivia whose end is at or before `offset` and returns it, so the
+    /// next declaration/statement can own the comments that preceded it.
+    fn take_trivia_before(&mut self, offset: u32) -> Vec<SpannedTrivia> {
+        let mut out = Vec::new();
+        while let Some(t) = self.trivia.get(self.trivia_pos) {
+            if t.span.end <= offset {
+                out.push(t.clone());
+                self.trivia_pos += 1;
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    // --- module -------------------------------------------------------------
+
+    fn parse_module(&mut self) -> Module {
+        let start = self.cur_span().start;
+        let mut inner_docs = Vec::new();
+        while self.at(TokenKind::InnerDoc) {
+            let token = self.bump().expect("peeked InnerDoc");
+            inner_docs.push(InnerDoc {
+                text: token.text,
+                span: token.span,
+            });
+        }
+
+        let mut items = Vec::new();
+        while !self.is_eof() {
+            // Inner docs may appear after blank lines; absorb stray ones.
+            if self.at(TokenKind::InnerDoc) {
+                let token = self.bump().expect("peeked InnerDoc");
+                inner_docs.push(InnerDoc {
+                    text: token.text,
+                    span: token.span,
+                });
+                continue;
+            }
+            if let Some(item) = self.parse_item() {
+                items.push(item);
+            } else {
+                // No progress possible at this token: skip it to avoid a
+                // loop, after recording the gap once.
+                let span = self.cur_span();
+                self.error(span, "unexpected token at top level");
+                self.bump();
+                self.recover_to_item();
+            }
+        }
+
+        let end = items.last().map_or(start, |i| i.span().end);
+        Module {
+            inner_docs,
+            items,
+            span: Span::new(start, end.max(start)),
+        }
+    }
+
+    fn parse_item(&mut self) -> Option<Item> {
+        let leading_trivia = self.take_trivia_before(self.cur_span().start);
+
+        if self.at(TokenKind::KwAlias) {
+            return Some(Item::Alias(self.parse_alias(leading_trivia)));
+        }
+
+        // Decl = DocBlock { Macro } { Modifier } Structural
+        let doc = self.parse_doc_block();
+        let macros = self.parse_macros();
+        let is_public = self.eat(TokenKind::KwPublic).is_some();
+
+        let start = leading_trivia
+            .first()
+            .map(|t| t.span.start)
+            .or_else(|| doc.tags.first().map(|t| t.span.start))
+            .unwrap_or_else(|| self.cur_span().start);
+
+        // Feature = DocBlock "feature" Ident "for" Path FeatureBody (§5.2). A
+        // feature takes no macros and no modifier; reject any that were consumed.
+        if self.at(TokenKind::KwFeature) {
+            return Some(Item::Feature(self.parse_feature(
+                leading_trivia,
+                doc,
+                &macros,
+                is_public,
+                start,
+            )));
+        }
+
+        let kind = self.parse_decl_kind()?;
+        let span = Span::new(start, self.prev_end());
+        Some(Item::Decl(Decl {
+            doc,
+            macros,
+            is_public,
+            kind,
+            leading_trivia,
+            span,
+        }))
+    }
+
+    /// End offset of the most recently consumed token.
+    fn prev_end(&self) -> u32 {
+        if self.pos == 0 {
+            return 0;
+        }
+        self.tokens
+            .get(self.pos - 1)
+            .map_or(self.eof_span.end, |t| t.span.end)
+    }
+
+    // --- alias --------------------------------------------------------------
+
+    fn parse_alias(&mut self, leading_trivia: Vec<SpannedTrivia>) -> Alias {
+        let kw = self.bump().expect("peeked alias");
+        let start = leading_trivia
+            .first()
+            .map_or(kw.span.start, |t| t.span.start);
+
+        let name = self.expect_ident("alias name");
+        self.eat(TokenKind::Eq);
+        let target = self.parse_path();
+
+        // An alias target is a node path: `::`-only. A `.` means it points at a
+        // callable, which cannot be aliased (§8.3).
+        if self.at(TokenKind::Dot) {
+            let span = self.cur_span();
+            self.error(span, "alias target is not a node path (contains `.`)");
+            // Skip the dotted tail so recovery lands on the `;`.
+            while self.at(TokenKind::Dot) {
+                self.bump();
+                self.eat(TokenKind::Ident);
+            }
+        }
+
+        let end = if self.at(TokenKind::Semi) {
+            self.bump().expect("peeked semi").span.end
+        } else {
+            self.error(target.span, "alias declaration without terminating `;`");
+            self.prev_end()
+        };
+
+        Alias {
+            name,
+            target,
+            leading_trivia,
+            span: Span::new(start, end),
+        }
+    }
+
+    // --- features (§5.2) ----------------------------------------------------
+
+    /// Parses `feature Name for Path { given* when+ then+ }`. `macros`/`is_public`
+    /// were consumed by [`Self::parse_item`]; a feature accepts neither, so any
+    /// present are rejected (§5.2).
+    fn parse_feature(
+        &mut self,
+        leading_trivia: Vec<SpannedTrivia>,
+        doc: DocBlock,
+        macros: &[Macro],
+        is_public: bool,
+        start: u32,
+    ) -> Feature {
+        let kw = self.bump().expect("peeked feature");
+        for mac in macros {
+            self.error(mac.span, "macro on a `feature`: macros target callables");
+        }
+        if is_public {
+            self.error(kw.span, "`public` modifier on a `feature`");
+        }
+
+        let name = self.expect_ident("feature name");
+        let target = if self.eat(TokenKind::KwFor).is_some() {
+            self.parse_path()
+        } else {
+            self.error(
+                name.span,
+                "feature declaration missing `for <target>` clause",
+            );
+            Path {
+                segments: Vec::new(),
+                span: name.span,
+            }
+        };
+
+        let steps = self.parse_feature_body(name.span);
+        Feature {
+            doc,
+            name,
+            target,
+            steps,
+            leading_trivia,
+            span: Span::new(start, self.prev_end()),
+        }
+    }
+
+    /// Parses the `{ ... }` flow block, enforcing the strict given* when+ then+
+    /// order: `and`/`but` continue the preceding step's kind; a `then` before any
+    /// `when`, a `when` after a `then`, or a leading `and`/`but` are rejected.
+    fn parse_feature_body(&mut self, name_span: Span) -> Vec<FeatureStep> {
+        if !self.at(TokenKind::LBrace) {
+            self.eat(TokenKind::Semi);
+            self.error(name_span, "feature declaration has no `{ }` flow block");
+            return Vec::new();
+        }
+        self.bump(); // `{`
+
+        let mut steps = Vec::new();
+        let mut phase = FeaturePhase::Start;
+
+        while !self.is_eof() && !self.at(TokenKind::RBrace) {
+            let before = self.pos;
+            let Some(step_kind) = self.peek_kind().and_then(StepKind::from_token) else {
+                let span = self.cur_span();
+                self.error(span, "expected a `given`, `when`, or `then` step");
+                self.recover_in_block();
+                if self.pos == before {
+                    self.bump();
+                }
+                continue;
+            };
+
+            let kw = self.bump().expect("peeked step keyword");
+            match step_kind {
+                StepKind::Given => match phase {
+                    FeaturePhase::Start | FeaturePhase::Given => phase = FeaturePhase::Given,
+                    FeaturePhase::When => self.error(kw.span, "feature flow: `given` after `when`"),
+                    FeaturePhase::Then => self.error(kw.span, "feature flow: `given` after `then`"),
+                },
+                StepKind::When => match phase {
+                    FeaturePhase::Start | FeaturePhase::Given | FeaturePhase::When => {
+                        phase = FeaturePhase::When;
+                    }
+                    FeaturePhase::Then => self.error(kw.span, "feature flow: `when` after `then`"),
+                },
+                StepKind::Then => match phase {
+                    FeaturePhase::Start | FeaturePhase::Given => {
+                        self.error(kw.span, "feature flow: `then` before any `when`");
+                        // Advance to the `then` phase so repeats and the
+                        // missing-`when`/`then` guards don't pile on for one mistake.
+                        phase = FeaturePhase::Then;
+                    }
+                    FeaturePhase::When | FeaturePhase::Then => phase = FeaturePhase::Then,
+                },
+                StepKind::And | StepKind::But => {
+                    if phase == FeaturePhase::Start {
+                        self.error(
+                            kw.span,
+                            format!("feature flow: leading `{}` with no preceding step", kw.text),
+                        );
+                    }
+                }
+            }
+
+            let text = self.parse_step_text();
+            steps.push(FeatureStep {
+                kind: step_kind,
+                span: Span::new(kw.span.start, self.prev_end()),
+                text,
+            });
+        }
+        self.eat(TokenKind::RBrace);
+
+        // §5.2: one or more `when` and one or more `then` are required. Reaching
+        // the `When`/`Then` phase means a valid step of that kind was seen.
+        if !matches!(phase, FeaturePhase::When | FeaturePhase::Then) {
+            self.error(name_span, "feature flow: missing `when` step");
+        }
+        if phase != FeaturePhase::Then {
+            self.error(name_span, "feature flow: missing `then` step");
+        }
+        steps
+    }
+
+    /// Parses a step's prose: a string literal. A non-string step body is an
+    /// error; an empty string is synthesised so recovery continues.
+    fn parse_step_text(&mut self) -> Literal {
+        if self.at(TokenKind::String) {
+            self.parse_literal().expect("peeked string")
+        } else {
+            let span = self.cur_span();
+            self.error(span, "feature step expects a string literal");
+            Literal::String {
+                raw: String::new(),
+                span,
+            }
+        }
+    }
+
+    // --- declarations -------------------------------------------------------
+
+    fn parse_decl_kind(&mut self) -> Option<DeclKind> {
+        match self.peek_kind()? {
+            TokenKind::KwPerson => Some(DeclKind::Person(self.parse_node(NodeKind::Person))),
+            TokenKind::KwSystem => Some(DeclKind::System(self.parse_node(NodeKind::System))),
+            TokenKind::KwContainer => {
+                Some(DeclKind::Container(self.parse_node(NodeKind::Container)))
+            }
+            TokenKind::KwComponent => {
+                Some(DeclKind::Component(self.parse_node(NodeKind::Component)))
+            }
+            TokenKind::KwData => Some(DeclKind::Data(self.parse_data())),
+            _ => None,
+        }
+    }
+
+    fn parse_node(&mut self, kind: NodeKind) -> Node {
+        let kw = self.bump().expect("peeked node keyword");
+        let name = self.expect_ident("node name");
+
+        let mut parent = None;
+        if matches!(kind, NodeKind::Container | NodeKind::Component) {
+            if self.eat(TokenKind::KwFor).is_some() {
+                parent = Some(self.parse_path());
+            } else {
+                let noun = if kind == NodeKind::Container {
+                    "container"
+                } else {
+                    "component"
+                };
+                self.error(
+                    name.span,
+                    format!("{noun} declaration missing `for <parent>` clause"),
+                );
+            }
+        }
+
+        let body = self.parse_node_body(kind, name.span);
+        let end = self.prev_end();
+        Node {
+            kind,
+            name,
+            parent,
+            body,
+            span: Span::new(kw.span.start, end),
+        }
+    }
+
+    /// Parses a node body: a `{ members }` block, a `;` black box, or — if
+    /// neither is present — records the missing-terminator error (§2.5).
+    fn parse_node_body(&mut self, kind: NodeKind, name_span: Span) -> Option<Vec<BodyMember>> {
+        if self.at(TokenKind::LBrace) {
+            return Some(self.parse_body_block());
+        }
+        if self.eat(TokenKind::Semi).is_some() {
+            return None;
+        }
+        let noun = match kind {
+            NodeKind::Person => "person",
+            NodeKind::System => "system",
+            NodeKind::Container => "container",
+            NodeKind::Component => "component",
+        };
+        self.error(
+            name_span,
+            format!("{noun} declaration with neither a `{{ }}` block nor a terminating `;`"),
+        );
+        None
+    }
+
+    /// Parses a `{ ... }` body block of callables and nested declarations.
+    fn parse_body_block(&mut self) -> Vec<BodyMember> {
+        self.bump(); // `{`
+        let mut members = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RBrace) {
+            let before = self.pos;
+            let member = self.parse_body_member();
+            if self.pos == before {
+                // Forward-progress guard (see `parse_block`): a token starting
+                // neither a callable nor a nested declaration must not spin.
+                let span = self.cur_span();
+                self.error(span, "expected a callable or declaration");
+                self.recover_in_block();
+            } else if let Some(m) = member {
+                members.push(m);
+            }
+        }
+        self.eat(TokenKind::RBrace);
+        members
+    }
+
+    /// Parses one body member: shared `doc → macros → public` prefix, then a
+    /// nested structural declaration if a structural keyword follows, otherwise
+    /// a callable.
+    fn parse_body_member(&mut self) -> Option<BodyMember> {
+        let leading_trivia = self.take_trivia_before(self.cur_span().start);
+        let doc = self.parse_doc_block();
+        let macros = self.parse_macros();
+        let is_public = self.eat(TokenKind::KwPublic).is_some();
+        let prefix_consumed = !doc.is_empty() || !macros.is_empty() || is_public;
+        let start = leading_trivia
+            .first()
+            .map_or_else(|| self.cur_span().start, |t| t.span.start);
+
+        if matches!(
+            self.peek_kind(),
+            Some(
+                TokenKind::KwPerson
+                    | TokenKind::KwSystem
+                    | TokenKind::KwContainer
+                    | TokenKind::KwComponent
+                    | TokenKind::KwData
+            )
+        ) {
+            // ADR-011 / §5: a disclosed block holds callables only. Containers
+            // and components are top-level declarations wired by `for` and MUST
+            // NOT nest inside a block. Parse the declaration anyway (error
+            // recovery) but reject it.
+            let (kw_span, kw_lexeme) = {
+                let kw = self.peek().expect("structural keyword present");
+                (kw.span, kw.text.clone())
+            };
+            self.error(
+                kw_span,
+                format!(
+                    "`{kw_lexeme}` declaration inside a block: a disclosed block holds callables only"
+                ),
+            );
+            let kind = self.parse_decl_kind()?;
+            let span = Span::new(start, self.prev_end());
+            return Some(BodyMember::Decl(Decl {
+                doc,
+                macros,
+                is_public,
+                kind,
+                leading_trivia,
+                span,
+            }));
+        }
+
+        self.parse_callable(
+            leading_trivia,
+            doc,
+            macros,
+            is_public,
+            prefix_consumed,
+            start,
+        )
+        .map(BodyMember::Callable)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn parse_callable(
+        &mut self,
+        leading_trivia: Vec<SpannedTrivia>,
+        doc: DocBlock,
+        macros: Vec<Macro>,
+        is_public: bool,
+        prefix_consumed: bool,
+        start: u32,
+    ) -> Option<Callable> {
+        if !self.at(TokenKind::Ident) {
+            // Nothing callable-shaped here. If we consumed docs/macros, that is
+            // still progress; otherwise the caller recovers.
+            if !prefix_consumed {
+                return None;
+            }
+            let span = self.cur_span();
+            self.error(span, "expected a callable name");
+            return None;
+        }
+
+        let name = self.expect_ident("callable name");
+
+        self.eat(TokenKind::LParen);
+        let params = self.parse_params();
+        self.eat(TokenKind::RParen);
+
+        let return_ty = if self.eat(TokenKind::Colon).is_some() {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        let body = if self.at(TokenKind::LBrace) {
+            Some(self.parse_block())
+        } else if self.eat(TokenKind::Semi).is_some() {
+            None
+        } else {
+            self.error(
+                name.span,
+                "callable with neither a `{ }` body block nor a terminating `;`",
+            );
+            None
+        };
+
+        Some(Callable {
+            doc,
+            macros,
+            is_public,
+            name,
+            params,
+            return_ty,
+            body,
+            leading_trivia,
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn parse_params(&mut self) -> Vec<Param> {
+        let mut params = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RParen) {
+            if !self.at_name() {
+                break;
+            }
+            let name = self.expect_name("parameter name");
+            self.eat(TokenKind::Colon);
+            let ty = self.parse_type();
+            let span = name.span.to(ty.span);
+            params.push(Param { name, ty, span });
+            if self.eat(TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        params
+    }
+
+    // --- data ---------------------------------------------------------------
+
+    fn parse_data(&mut self) -> Data {
+        let kw = self.bump().expect("peeked data");
+        let name = self.expect_ident("data name");
+
+        let body = if self.at(TokenKind::LBrace) {
+            DataBody::Record(self.parse_record())
+        } else if self.eat(TokenKind::Eq).is_some() {
+            DataBody::Union(self.parse_union())
+        } else if self.eat(TokenKind::Semi).is_some() {
+            DataBody::BlackBox
+        } else {
+            self.error(
+                name.span,
+                "data declaration with neither a `{ }` block, `= union`, nor a terminating `;`",
+            );
+            DataBody::BlackBox
+        };
+
+        Data {
+            name,
+            body,
+            span: Span::new(kw.span.start, self.prev_end()),
+        }
+    }
+
+    fn parse_record(&mut self) -> Vec<Field> {
+        self.bump(); // `{`
+        let mut fields = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RBrace) {
+            if !self.at_name() {
+                let span = self.cur_span();
+                self.error(span, "expected a field name");
+                self.recover_in_block();
+                if self.at(TokenKind::RBrace) {
+                    break;
+                }
+                continue;
+            }
+            let name = self.expect_name("field name");
+            self.eat(TokenKind::Colon);
+            let ty = self.parse_type();
+            let span = name.span.to(ty.span);
+            fields.push(Field { name, ty, span });
+            self.eat(TokenKind::Comma);
+        }
+        self.eat(TokenKind::RBrace);
+        fields
+    }
+
+    fn parse_union(&mut self) -> Vec<Variant> {
+        let mut variants = Vec::new();
+        while self.eat(TokenKind::Pipe).is_some() {
+            if !self.at_name() {
+                let span = self.cur_span();
+                self.error(span, "expected a union variant name");
+                break;
+            }
+            let name = self.expect_name("variant name");
+            let record = if self.at(TokenKind::LBrace) {
+                Some(self.parse_record())
+            } else {
+                None
+            };
+            let end = self.prev_end();
+            variants.push(Variant {
+                span: Span::new(name.span.start, end),
+                name,
+                record,
+            });
+        }
+        variants
+    }
+
+    // --- types --------------------------------------------------------------
+
+    fn parse_type(&mut self) -> Type {
+        let path = self.parse_path();
+        let mut span = path.span;
+
+        let mut generics = Vec::new();
+        if self.at(TokenKind::LAngle) {
+            self.bump();
+            loop {
+                generics.push(self.parse_type());
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+            if let Some(gt) = self.eat(TokenKind::RAngle) {
+                span = span.to(gt.span);
+            } else {
+                self.error(self.cur_span(), "expected `>` to close generic arguments");
+            }
+        }
+
+        // `[]` array suffix (ADR-008: the only type suffix).
+        if self.at(TokenKind::LBracket) && self.peek2_kind() == Some(TokenKind::RBracket) {
+            self.bump();
+            let rb = self.bump().expect("peeked `]`");
+            span = span.to(rb.span);
+            return Type {
+                name: path,
+                generics,
+                is_array: true,
+                span,
+            };
+        }
+
+        // A `?` in type position is the removed optionality marker (ADR-008).
+        if self.at(TokenKind::Question) {
+            let q = self.cur_span();
+            self.error(q, "unexpected `?` in type: no optionality marker");
+            self.bump();
+        }
+
+        Type {
+            name: path,
+            generics,
+            is_array: false,
+            span,
+        }
+    }
+
+    // --- doc blocks, tags, macros -------------------------------------------
+
+    /// Parses a run of `DOC`/`TAG` tokens into a [`DocBlock`], splitting summary
+    /// from extended on the first blank `///` line (ADR-009).
+    fn parse_doc_block(&mut self) -> DocBlock {
+        let mut block = DocBlock::default();
+        let mut in_extended = false;
+        let mut seen_summary = false;
+
+        while let Some(kind) = self.peek_kind() {
+            match kind {
+                TokenKind::Doc => {
+                    let token = self.bump().expect("peeked Doc");
+                    if token.text.is_empty() {
+                        // Blank `///` line: switch to the extended section once.
+                        if seen_summary {
+                            in_extended = true;
+                        }
+                    } else if in_extended {
+                        block.extended.push(token.text);
+                    } else {
+                        block.summary.push(token.text);
+                        seen_summary = true;
+                    }
+                }
+                TokenKind::Tag => {
+                    let token = self.bump().expect("peeked Tag");
+                    block.tags.push(Tag {
+                        text: token.text,
+                        span: token.span,
+                    });
+                }
+                _ => break,
+            }
+        }
+        block
+    }
+
+    fn parse_macros(&mut self) -> Vec<Macro> {
+        let mut macros = Vec::new();
+        while self.at(TokenKind::HashLBracket) {
+            macros.push(self.parse_macro());
+        }
+        macros
+    }
+
+    fn parse_macro(&mut self) -> Macro {
+        let open = self.bump().expect("peeked `#[`");
+        let name = self.parse_path();
+
+        let args = if self.at(TokenKind::LParen) {
+            self.bump();
+            let mut list = Vec::new();
+            while !self.is_eof() && !self.at(TokenKind::RParen) {
+                if let Some(arg) = self.parse_macro_arg() {
+                    list.push(arg);
+                } else {
+                    break;
+                }
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+            self.eat(TokenKind::RParen);
+            MacroArgs::List(list)
+        } else if self.eat(TokenKind::Eq).is_some() {
+            if let Some(lit) = self.parse_literal() {
+                MacroArgs::NameValue(lit)
+            } else {
+                self.error(self.cur_span(), "expected a literal after `=` in macro");
+                MacroArgs::Word
+            }
+        } else {
+            MacroArgs::Word
+        };
+
+        let end = if let Some(rb) = self.eat(TokenKind::RBracket) {
+            rb.span.end
+        } else {
+            self.error(self.cur_span(), "expected `]` to close macro");
+            self.prev_end()
+        };
+
+        Macro {
+            name,
+            args,
+            span: Span::new(open.span.start, end),
+        }
+    }
+
+    fn parse_macro_arg(&mut self) -> Option<MacroArg> {
+        match self.peek_kind()? {
+            TokenKind::String | TokenKind::Number | TokenKind::KwTrue | TokenKind::KwFalse => {
+                self.parse_literal().map(MacroArg::Literal)
+            }
+            TokenKind::Ident => {
+                let path = self.parse_path();
+                if self.at(TokenKind::LParen) || self.at(TokenKind::Eq) {
+                    // A nested meta item, e.g. `outer(inner(...))`.
+                    let args = if self.at(TokenKind::LParen) {
+                        self.bump();
+                        let mut list = Vec::new();
+                        while !self.is_eof() && !self.at(TokenKind::RParen) {
+                            if let Some(arg) = self.parse_macro_arg() {
+                                list.push(arg);
+                            } else {
+                                break;
+                            }
+                            if self.eat(TokenKind::Comma).is_none() {
+                                break;
+                            }
+                        }
+                        self.eat(TokenKind::RParen);
+                        MacroArgs::List(list)
+                    } else {
+                        self.bump();
+                        self.parse_literal()
+                            .map_or(MacroArgs::Word, MacroArgs::NameValue)
+                    };
+                    let span = path.span;
+                    Some(MacroArg::Nested(Box::new(Macro {
+                        name: path,
+                        args,
+                        span,
+                    })))
+                } else {
+                    Some(MacroArg::Path(path))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    // --- statements & blocks ------------------------------------------------
+
+    fn parse_block(&mut self) -> Block {
+        let open = self.bump().expect("`{`");
+        let mut stmts = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RBrace) {
+            let before = self.pos;
+            let stmt = self.parse_stmt();
+            if self.pos == before {
+                // Forward-progress guard: the current token cannot start a
+                // statement and `parse_stmt` consumed nothing (e.g. a stray `;`
+                // — §10 has no statement terminator). Recover so the loop can
+                // never spin; `recover_in_block` advances past the offending
+                // token.
+                let span = self.cur_span();
+                self.error(span, "expected a statement");
+                self.recover_in_block();
+            } else if let Some(stmt) = stmt {
+                stmts.push(stmt);
+            }
+        }
+        let end = self
+            .eat(TokenKind::RBrace)
+            .map_or(self.prev_end(), |t| t.span.end);
+        Block {
+            stmts,
+            span: Span::new(open.span.start, end),
+        }
+    }
+
+    fn parse_stmt(&mut self) -> Option<Stmt> {
+        let leading_trivia = self.take_trivia_before(self.cur_span().start);
+        let start = leading_trivia
+            .first()
+            .map_or_else(|| self.cur_span().start, |t| t.span.start);
+
+        let kind = match self.peek_kind()? {
+            TokenKind::KwReturn => self.parse_return(),
+            TokenKind::KwIf => self.parse_if(),
+            TokenKind::KwFor => self.parse_for(),
+            TokenKind::KwWhile => self.parse_while(),
+            // `Ident =` is an assignment; otherwise an expression statement.
+            TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Eq) => {
+                let name = self.expect_ident("binding name");
+                self.bump(); // `=`
+                let value = self.parse_expr();
+                StmtKind::Assign { name, value }
+            }
+            _ => StmtKind::Expr(self.parse_expr()),
+        };
+
+        Some(Stmt {
+            kind,
+            leading_trivia,
+            span: Span::new(start, self.prev_end()),
+        })
+    }
+
+    fn parse_return(&mut self) -> StmtKind {
+        self.bump(); // `return`
+        // A bare `return` (no expression) is valid for void callables.
+        let value = if self.starts_expr() {
+            Some(self.parse_expr())
+        } else {
+            None
+        };
+        StmtKind::Return(value)
+    }
+
+    fn parse_if(&mut self) -> StmtKind {
+        self.bump(); // `if`
+        let cond = self.parse_paren_cond();
+        let then_block = self.parse_block();
+        let else_block = if self.eat(TokenKind::KwElse).is_some() {
+            Some(self.parse_block())
+        } else {
+            None
+        };
+        StmtKind::If {
+            cond,
+            then_block,
+            else_block,
+        }
+    }
+
+    fn parse_for(&mut self) -> StmtKind {
+        self.bump(); // `for`
+        self.eat(TokenKind::LParen);
+        let binding = self.expect_ident("loop binding");
+        self.eat(TokenKind::KwIn);
+        let iter = self.parse_expr();
+        self.eat(TokenKind::RParen);
+        let body = self.parse_block();
+        StmtKind::For {
+            binding,
+            iter,
+            body,
+        }
+    }
+
+    fn parse_while(&mut self) -> StmtKind {
+        self.bump(); // `while`
+        let cond = self.parse_paren_cond();
+        let body = self.parse_block();
+        StmtKind::While { cond, body }
+    }
+
+    fn parse_paren_cond(&mut self) -> Expr {
+        self.eat(TokenKind::LParen);
+        let cond = self.parse_expr();
+        self.eat(TokenKind::RParen);
+        cond
+    }
+
+    // --- expressions --------------------------------------------------------
+
+    fn starts_expr(&self) -> bool {
+        matches!(
+            self.peek_kind(),
+            Some(
+                TokenKind::KwOk
+                    | TokenKind::KwErr
+                    | TokenKind::KwSome
+                    | TokenKind::KwNone
+                    | TokenKind::KwSelf
+                    | TokenKind::Ident
+                    | TokenKind::String
+                    | TokenKind::Number
+                    | TokenKind::KwTrue
+                    | TokenKind::KwFalse
+                    | TokenKind::Bang
+                    | TokenKind::LParen
+            )
+        )
+    }
+
+    fn parse_expr(&mut self) -> Expr {
+        let base = self.parse_unary_or_primary();
+        self.parse_postfix(base)
+    }
+
+    fn parse_unary_or_primary(&mut self) -> Expr {
+        if self.at(TokenKind::Bang) {
+            let bang = self.bump().expect("peeked `!`");
+            let expr = self.parse_expr();
+            let span = bang.span.to(expr.span);
+            return Expr {
+                kind: ExprKind::Unary {
+                    op_span: bang.span,
+                    expr: Box::new(expr),
+                },
+                span,
+            };
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Expr {
+        match self.peek_kind() {
+            Some(TokenKind::KwOk | TokenKind::KwErr | TokenKind::KwSome | TokenKind::KwNone) => {
+                self.parse_marker()
+            }
+            Some(
+                TokenKind::String | TokenKind::Number | TokenKind::KwTrue | TokenKind::KwFalse,
+            ) => {
+                let lit = self.parse_literal().expect("peeked literal");
+                Expr {
+                    span: lit.span(),
+                    kind: ExprKind::Literal(lit),
+                }
+            }
+            Some(TokenKind::KwSelf) => {
+                let token = self.bump().expect("peeked self");
+                Expr {
+                    kind: ExprKind::Ref(Ref::SelfNode(token.span)),
+                    span: token.span,
+                }
+            }
+            Some(TokenKind::LParen) => {
+                let open = self.bump().expect("peeked `(`");
+                let inner = self.parse_expr();
+                let end = self
+                    .eat(TokenKind::RParen)
+                    .map_or(inner.span.end, |t| t.span.end);
+                Expr {
+                    kind: ExprKind::Paren(Box::new(inner)),
+                    span: Span::new(open.span.start, end),
+                }
+            }
+            Some(TokenKind::Ident) => {
+                let path = self.parse_path();
+                // `Type from { .. }` composition (§7.2): `from` opens a source
+                // set, never a block (§7.4).
+                if self.at(TokenKind::KwFrom) {
+                    return self.parse_from(path, false);
+                }
+                // `Type[] from { .. }` composes an array (§7.2). Only consume the
+                // `[]` when a `from` follows it, so a stray `[]` is left to error.
+                if self.at(TokenKind::LBracket)
+                    && self.peek2_kind() == Some(TokenKind::RBracket)
+                    && self.tokens.get(self.pos + 2).map(|t| t.kind) == Some(TokenKind::KwFrom)
+                {
+                    self.bump(); // `[`
+                    self.bump(); // `]`
+                    return self.parse_from(path, true);
+                }
+                Expr {
+                    span: path.span,
+                    kind: ExprKind::Ref(Ref::Path(path)),
+                }
+            }
+            _ => {
+                // Not an expression: synthesise an empty path ref so callers do
+                // not have to special-case `None`, and record nothing extra.
+                let span = self.cur_span();
+                self.error(span, "expected an expression");
+                Expr {
+                    kind: ExprKind::Ref(Ref::Path(Path {
+                        segments: Vec::new(),
+                        span,
+                    })),
+                    span,
+                }
+            }
+        }
+    }
+
+    fn parse_marker(&mut self) -> Expr {
+        let token = self.bump().expect("peeked marker keyword");
+        // The caller dispatches only on the four marker keywords.
+        let kind = match token.kind {
+            TokenKind::KwOk => MarkerKind::Ok,
+            TokenKind::KwErr => MarkerKind::Err,
+            TokenKind::KwSome => MarkerKind::Some,
+            TokenKind::KwNone => MarkerKind::None,
+            other => unreachable!("parse_marker dispatched on a non-marker token: {other:?}"),
+        };
+        let mut end = token.span.end;
+        let payload = if self.at(TokenKind::LParen) {
+            self.bump();
+            let inner = self.parse_expr();
+            end = self
+                .eat(TokenKind::RParen)
+                .map_or(inner.span.end, |t| t.span.end);
+            Some(Box::new(inner))
+        } else {
+            None
+        };
+        Expr {
+            kind: ExprKind::Marker { kind, payload },
+            span: Span::new(token.span.start, end),
+        }
+    }
+
+    fn parse_from(&mut self, ty: Path, is_array: bool) -> Expr {
+        self.bump(); // `from`
+        self.eat(TokenKind::LBrace);
+        let mut sources = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RBrace) {
+            sources.push(self.parse_expr());
+            if self.eat(TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        let end = self
+            .eat(TokenKind::RBrace)
+            .map_or(self.prev_end(), |t| t.span.end);
+        let span = Span::new(ty.span.start, end);
+        Expr {
+            kind: ExprKind::From {
+                ty,
+                is_array,
+                sources,
+            },
+            span,
+        }
+    }
+
+    /// Parses chained `.name` / `.name(args)` segments onto `base` (ADR-007).
+    fn parse_postfix(&mut self, base: Expr) -> Expr {
+        if !self.at(TokenKind::Dot) {
+            return base;
+        }
+        let start = base.span.start;
+        let mut segments = Vec::new();
+        while self.at(TokenKind::Dot) {
+            let dot = self.bump().expect("peeked `.`");
+            let name = self.expect_ident("member name");
+            let mut end = name.span.end;
+            let call_args = if self.at(TokenKind::LParen) {
+                self.bump();
+                let mut args = Vec::new();
+                while !self.is_eof() && !self.at(TokenKind::RParen) {
+                    args.push(self.parse_expr());
+                    if self.eat(TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+                end = self.eat(TokenKind::RParen).map_or(end, |t| t.span.end);
+                Some(args)
+            } else {
+                None
+            };
+            segments.push(PostfixSeg {
+                span: Span::new(dot.span.start, end),
+                name,
+                call_args,
+            });
+        }
+        let end = segments.last().map_or(base.span.end, |s| s.span.end);
+        Expr {
+            kind: ExprKind::Postfix {
+                base: Box::new(base),
+                segments,
+            },
+            span: Span::new(start, end),
+        }
+    }
+
+    fn parse_literal(&mut self) -> Option<Literal> {
+        match self.peek_kind()? {
+            TokenKind::String => {
+                let token = self.bump().expect("peeked string");
+                Some(Literal::String {
+                    raw: token.text,
+                    span: token.span,
+                })
+            }
+            TokenKind::Number => {
+                let token = self.bump().expect("peeked number");
+                Some(Literal::Number {
+                    raw: token.text,
+                    span: token.span,
+                })
+            }
+            TokenKind::KwTrue => {
+                let token = self.bump().expect("peeked true");
+                Some(Literal::Bool {
+                    value: true,
+                    span: token.span,
+                })
+            }
+            TokenKind::KwFalse => {
+                let token = self.bump().expect("peeked false");
+                Some(Literal::Bool {
+                    value: false,
+                    span: token.span,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    // --- paths & idents -----------------------------------------------------
+
+    fn parse_path(&mut self) -> Path {
+        let mut segments = Vec::new();
+        let start = self.cur_span().start;
+        if self.at(TokenKind::Ident) {
+            segments.push(self.expect_ident("path segment"));
+            while self.at(TokenKind::ColonColon) {
+                self.bump();
+                segments.push(self.expect_ident("path segment"));
+            }
+        } else {
+            self.error(self.cur_span(), "expected a path");
+        }
+        let end = segments.last().map_or(start, |s| s.span.end);
+        Path {
+            segments,
+            span: Span::new(start, end),
+        }
+    }
+
+    fn expect_ident(&mut self, what: &str) -> Ident {
+        if let Some(token) = self.eat(TokenKind::Ident) {
+            Ident {
+                name: token.text,
+                span: token.span,
+            }
+        } else {
+            let span = self.cur_span();
+            self.error(span, format!("expected {what}"));
+            Ident {
+                name: String::new(),
+                span,
+            }
+        }
+    }
+
+    /// Whether the current token can serve as a declared name. In addition to a
+    /// plain `IDENT`, a reserved keyword token is accepted here: `LANG.md` §2.3
+    /// makes reserved-word misuse a *static* error (enforced by the model
+    /// crate), not a parse error, and the worked example uses `Container` /
+    /// `Component` as `data` union variant names.
+    fn at_name(&self) -> bool {
+        matches!(self.peek_kind(), Some(k) if k == TokenKind::Ident || Self::is_keyword(k))
+    }
+
+    fn is_keyword(kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::KwSystem
+                | TokenKind::KwContainer
+                | TokenKind::KwComponent
+                | TokenKind::KwPerson
+                | TokenKind::KwData
+                | TokenKind::KwFor
+                | TokenKind::KwAlias
+                | TokenKind::KwFrom
+                | TokenKind::KwPublic
+                | TokenKind::KwSelf
+                | TokenKind::KwReturn
+                | TokenKind::KwOk
+                | TokenKind::KwErr
+                | TokenKind::KwSome
+                | TokenKind::KwNone
+                | TokenKind::KwIf
+                | TokenKind::KwElse
+                | TokenKind::KwWhile
+                | TokenKind::KwIn
+                | TokenKind::KwTrue
+                | TokenKind::KwFalse
+                | TokenKind::KwFeature
+                | TokenKind::KwGiven
+                | TokenKind::KwWhen
+                | TokenKind::KwThen
+                | TokenKind::KwAnd
+                | TokenKind::KwBut
+        )
+    }
+
+    /// Consumes a name token (an `IDENT` or, leniently, a reserved keyword used
+    /// in name position — see [`Self::at_name`]).
+    fn expect_name(&mut self, what: &str) -> Ident {
+        if self.at_name() {
+            let token = self.bump().expect("peeked name token");
+            Ident {
+                name: token.text,
+                span: token.span,
+            }
+        } else {
+            let span = self.cur_span();
+            self.error(span, format!("expected {what}"));
+            Ident {
+                name: String::new(),
+                span,
+            }
+        }
+    }
+
+    // --- recovery -----------------------------------------------------------
+
+    /// Skips tokens until the next top-level declaration boundary.
+    fn recover_to_item(&mut self) {
+        while let Some(kind) = self.peek_kind() {
+            if matches!(
+                kind,
+                TokenKind::KwPublic
+                    | TokenKind::KwPerson
+                    | TokenKind::KwSystem
+                    | TokenKind::KwContainer
+                    | TokenKind::KwComponent
+                    | TokenKind::KwData
+                    | TokenKind::KwAlias
+                    | TokenKind::KwFeature
+                    | TokenKind::Doc
+                    | TokenKind::HashLBracket
+            ) {
+                break;
+            }
+            self.bump();
+        }
+    }
+
+    /// Skips tokens to the next `;`, `}`, or statement/member start, consuming a
+    /// trailing `;` so the enclosing loop makes progress.
+    fn recover_in_block(&mut self) {
+        while let Some(kind) = self.peek_kind() {
+            match kind {
+                TokenKind::Semi => {
+                    self.bump();
+                    return;
+                }
+                TokenKind::RBrace => return,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+    use crate::diagnostic::Diagnostic;
+
+    /// Regression: a stray `;` in statement position (§10 has no statement
+    /// terminator) must not spin the block loop. Before the forward-progress
+    /// guard, `parse_stmt` returned `Some` without consuming the `;`, so
+    /// `parse_block` looped forever, growing `stmts` until the process ran out
+    /// of memory. Parsing must terminate and report the stray token.
+    #[test]
+    fn stray_semicolon_in_block_terminates() {
+        let parsed = parse("public system S { f() { self.g(); } }");
+        assert!(
+            parsed.diagnostics.iter().any(Diagnostic::is_error),
+            "a stray `;` is reported"
+        );
+        // The callable still parses; the `self.g()` call survives recovery.
+        assert_eq!(parsed.ast.items.len(), 1);
+    }
+
+    /// A token that starts neither a callable nor a nested declaration must not
+    /// spin the body-member loop either.
+    #[test]
+    fn stray_token_in_body_terminates() {
+        let parsed = parse("public system S { = }");
+        assert!(parsed.diagnostics.iter().any(Diagnostic::is_error));
+    }
+}

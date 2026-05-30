@@ -1,0 +1,10 @@
+// LANG.md §5.1 (ADR-004): `self.Name(args)` must name a callable of the
+// enclosing node. `missing` is not declared on `C`.
+
+//! example
+
+public system S;
+
+public container C for S {
+  run(): void { self.missing() }
+}

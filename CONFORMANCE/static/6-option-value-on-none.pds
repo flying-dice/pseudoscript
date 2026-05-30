@@ -1,0 +1,21 @@
+// LANG.md §6: the checker tracks which branch you are in. Inside `if (o.isNone)`
+// the value is a `None`, so reading `o.value` is a model error — there is no
+// contained value on the None branch.
+
+//! example
+
+public data Person { id: number }
+
+public system Registry;
+
+public container Directory for Registry {
+  public find(id: number): Option<Person> {
+    o = self.lookup(id)
+    if (o.isNone) {
+      return Some(o.value)
+    }
+    return o
+  }
+
+  lookup(id: number): Option<Person>;
+}

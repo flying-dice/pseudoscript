@@ -1,0 +1,12 @@
+//! admin — internal support tooling.
+
+/// `admin` — the internal support console.
+public container Admin for context::NorthBank;
+
+/// Account lookup for support agents.
+public component Console for Admin {
+  /// Find an account by id on a customer's behalf.
+  public findAccount(id: shared::AccountId): Result<accounts::Account, accounts::NotFound> {
+    return accounts::AccountService.getAccount(id)
+  }
+}

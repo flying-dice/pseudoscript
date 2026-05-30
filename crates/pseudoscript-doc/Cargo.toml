@@ -1,0 +1,23 @@
+[package]
+name = "pseudoscript-doc"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pseudoscript_doc"
+path = "src/lib.rs"
+
+[dependencies]
+pseudoscript-model = { path = "../pseudoscript-model" }
+pseudoscript-emit = { path = "../pseudoscript-emit" }
+
+[dev-dependencies]
+cucumber = "0.21"
+futures = "0.3"
+
+[[test]]
+name = "site"
+harness = false

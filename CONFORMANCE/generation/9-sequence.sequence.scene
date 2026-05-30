@@ -1,0 +1,8 @@
+view sequence
+entry shop::Orders::Place
+participant shop::Orders
+participant shop::Inventory
+message shop::Orders -> shop::Inventory call "reserve"
+frame alt "r.isErr"
+  message shop::Orders -> shop::Orders return "Err"
+message shop::Orders -> shop::Orders return "Ok"

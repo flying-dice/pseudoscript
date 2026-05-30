@@ -1,0 +1,12 @@
+// LANG.md §2.2/§3.4 (ADR-022): a `.field` read on a known record names a field.
+// `Item` has no `missing`.
+
+//! example
+
+public data Item { id: number }
+
+public system S;
+
+public container C for S {
+  get(it: Item): number { return it.missing }
+}

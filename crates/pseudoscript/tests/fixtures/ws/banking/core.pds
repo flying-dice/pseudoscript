@@ -1,0 +1,7 @@
+//! banking::core
+
+/// A retail banking customer.
+public person Customer;
+
+/// The banking system.
+public system Banking;

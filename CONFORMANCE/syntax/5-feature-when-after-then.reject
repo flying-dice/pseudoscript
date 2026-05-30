@@ -1,0 +1,10 @@
+// LANG.md §5.2 / §10 (ADR-018): once a `then` appears, no further `when` may
+// follow; a `when` after a `then` is rejected.
+
+public system Banking;
+
+feature OpenAccount for Banking {
+  when "the owner opens an account"
+  then "banking info is returned"
+  when "the owner opens another account"
+}

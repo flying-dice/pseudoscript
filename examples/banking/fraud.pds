@@ -1,0 +1,35 @@
+//! fraud — scores settled transfers and queues the risky ones for review.
+
+/// A transfer's risk score.
+public data RiskScore { value: number }
+
+/// A flagged transfer awaiting an officer's decision.
+public data Flag { transfer: payments::Transfer, score: RiskScore, reason: string }
+
+/// `fraud` — real-time transfer risk scoring.
+public container Fraud for context::NorthBank;
+
+/// Scores every transfer as it settles.
+public component Scoring for Fraud {
+  /// React to a settled transfer: score it, and queue it for review if risky.
+  #[onevent(payments::TransferCompleted)]
+  public onTransfer(event: payments::TransferCompleted): void {
+    scored = self.score(event.transfer)
+    if (scored.isErr) {
+      Fraud::Review.enqueue(scored.error)
+    }
+  }
+
+  /// Score a transfer. `Err(Flag)` means it crossed the risk threshold.
+  score(transfer: payments::Transfer): Result<RiskScore, Flag>;
+}
+
+/// The compliance officer's review queue.
+public component Review for Fraud {
+  /// Add a flagged transfer to the queue.
+  enqueue(flag: Flag): void;
+  /// The transfers currently awaiting review.
+  public queue(): payments::Transfer[];
+  /// An officer clears or escalates a flagged transfer.
+  public resolve(transfer: payments::Transfer): void;
+}

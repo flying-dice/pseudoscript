@@ -9,7 +9,7 @@ CONFORMANCE/
 ├── lexical/      ← tokenisation cases            (LANG.md §2)
 ├── syntax/       ← parse / reject cases          (LANG.md §3–§10 grammar)
 ├── static/       ← resolution / well-formedness  (LANG.md §6, §8)
-└── generation/   ← diagram generation            (LANG.md §9) — deferred
+└── generation/   ← diagram generation            (LANG.md §9)
 ```
 
 One sub-directory per spec layer. A test in `lexical/` exercises the lexer in isolation; one in `static/` runs the lexer, parser, and checker together.
@@ -21,7 +21,7 @@ One sub-directory per spec layer. A test in `lexical/` exercises the lexer in is
 | `lexical/` | `name.pds` | `name.tokens` — one token per line, format `KIND@line:col "lexeme"`. See `lexical/README.md` for the token taxonomy. |
 | `syntax/`  | `name.pds` (accept) | the source must parse against the §10 grammar with no error node. A second form, `name.reject`, is a source the parser must reject; `name.reject.expected` names the error category in prose. |
 | `static/`  | `name.pds` | `name.diagnostics` — the set of static errors the checker must report, one per line (empty file = well-formed). The match is order-independent. |
-| `generation/` | `name.pds` | **Deferred** — see `generation/README.md`. Output is custom SVG (LANG.md §1, §9); the stable assertion surface is the pre-render `Scene` IR, whose shape isn't specified yet. |
+| `generation/` | `name.pds` | one `name.<view>.scene` per view — the laid-out `Scene` IR, the backend-independent assertion surface (output is custom SVG, LANG.md §1, §9). See `generation/README.md` for the format. |
 
 Pairs live side-by-side. The test runner glob is `*.pds` and the expected files are derived by extension.
 
@@ -56,8 +56,7 @@ When a new case is added:
 
 ## Known gaps
 
-- **Cross-module visibility** (§8.2) needs multi-file fixtures: PseudoScript FQNs are file-derived (one `.pds` file = one module), so a `public`/private cross-module case cannot be expressed as a single file. The `*.pds`-per-case convention does not yet model a multi-file workspace; these cases are future work.
-- **Generation** (§9) is deferred until the spec pins a diagram notation.
+- **Cross-module visibility** (§8.2) needs multi-file fixtures: PseudoScript FQNs are file-derived (one `.pds` file = one module), so a `public`/private cross-module case cannot be expressed as a single file. A multi-file case is a directory rooted at `pds.toml` (§8.1, ADR-017); these fixtures land with the workspace loader.
 
 ## What conformance does not test
 

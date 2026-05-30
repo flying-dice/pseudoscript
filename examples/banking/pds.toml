@@ -1,0 +1,9 @@
+# Root of the NorthBank PseudoScript project. `pds doc` documents every `.pds`
+# file under this directory; module FQNs derive from each file's path
+# (§8.1, ADR-017). One module per bounded context.
+[doc]
+name  = "NorthBank — Retail Banking Architecture"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"
+

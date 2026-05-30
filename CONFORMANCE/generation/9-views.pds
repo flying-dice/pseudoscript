@@ -1,0 +1,13 @@
+// LANG.md §9.1: the context view shows persons and systems; the container view
+// shows one system's containers (resolved via `for`). Black-box nodes, no
+// bodies, so no edges — this anchors the node/containment rules of the Scene IR.
+
+//! shop
+
+public person Customer;
+
+public system Shop;
+public system Payments;
+
+public container Web for Shop;
+public container Orders for Shop;

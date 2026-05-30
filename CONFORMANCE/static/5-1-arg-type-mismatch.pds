@@ -1,0 +1,11 @@
+// LANG.md §5.1 (ADR-023): a call argument must match the parameter type.
+// `take` expects a `number`, not a string.
+
+//! example
+
+public system S;
+
+public container C for S {
+  run(): void { self.take("x") }
+  take(n: number): void { }
+}

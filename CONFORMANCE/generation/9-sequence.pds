@@ -1,0 +1,23 @@
+// LANG.md §9.2: a triggered callable (`#[manual]`) is a sequence entry point.
+// Its body trace becomes lifelines, messages, and an `alt` frame: a call to
+// another container, then an `if (r.isErr)` branch (§7).
+
+//! shop
+
+public data Order { id: number }
+public data Rejected { reason: string }
+
+public system Shop;
+
+public container Inventory for Shop;
+
+public container Orders for Shop {
+  #[manual]
+  public Place(order: Order): Result<Order, Rejected> {
+    r = Inventory.reserve(order)
+    if (r.isErr) {
+      return Err(r.error)
+    }
+    return Ok(order)
+  }
+}

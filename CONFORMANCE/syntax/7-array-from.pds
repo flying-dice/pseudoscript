@@ -1,0 +1,11 @@
+// LANG.md §7.2 / §10 (ADR-021): `Type[] from { .. }` composes an array.
+
+//! example
+
+public data Item { id: number }
+
+public system S;
+
+public container C for S {
+  all(x: Item, y: Item): Item[] { return Item[] from { x, y } }
+}

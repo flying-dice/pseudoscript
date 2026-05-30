@@ -1,0 +1,7 @@
+# A single-module PseudoScript workspace: the compiler modeling its own design.
+# `pds doc` documents `pseudoscript.pds` (module `pseudoscript`, §8.1).
+[doc]
+name  = "PseudoScript"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"

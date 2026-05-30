@@ -1,0 +1,14 @@
+// LANG.md §7.2 (ADR-020): `from` composes a single value; returning it where an
+// array type is declared is a model error.
+
+//! example
+
+public data Item { id: number }
+
+public system Banking;
+
+public container Mainframe for Banking {
+  All(id: number): Item[] {
+    return Item from { id }
+  }
+}

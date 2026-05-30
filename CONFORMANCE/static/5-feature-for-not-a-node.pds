@@ -1,0 +1,12 @@
+// LANG.md §5.2 (ADR-018): a feature's `for` target must resolve to a node.
+// `OpenRequest` is a data type, not a node.
+
+//! example
+
+public system Banking;
+public data OpenRequest { owner: string }
+
+feature OpenAccount for OpenRequest {
+  when "the owner opens an account"
+  then "banking info is returned"
+}

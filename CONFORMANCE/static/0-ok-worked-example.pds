@@ -24,9 +24,9 @@ public container Mainframe for Banking {
   }
 }
 
-public container AccountStore for Banking {
-  component Repository for AccountStore {
-    fetch(id: number): Result<BankingInfo, NotFound>;
-  }
+public container AccountStore for Banking;
+
+component Repository for AccountStore {
+  fetch(id: number): Result<BankingInfo, NotFound>;
 }
 

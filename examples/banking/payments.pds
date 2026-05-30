@@ -1,0 +1,61 @@
+//! payments — moving money between accounts and out to the settlement network.
+
+/// A request to move money between two accounts.
+public data TransferRequest { payer: shared::AccountId, payee: shared::AccountId, amount: shared::Money }
+
+/// Where a transfer is in its lifecycle.
+public data TransferStatus =
+  | Pending
+  | Settled
+  | Failed { reason: string }
+
+/// A transfer and its current status.
+public data Transfer { request: TransferRequest, status: TransferStatus }
+
+/// Why a transfer could not be initiated.
+public data TransferError =
+  | RejectedByLedger { reason: string }
+  | NetworkUnavailable
+
+/// Event: a transfer has settled. Fraud and notifications subscribe to it.
+public data TransferCompleted { transfer: Transfer }
+
+/// `payments` — the transfer engine.
+/// #headline
+public container Transfers for context::NorthBank;
+
+/// Initiates and settles transfers.
+public component TransferService for Transfers {
+  /// Move money: validate via the ledger, then ask the network to settle. On
+  /// success it emits a `TransferCompleted` event that fraud and notifications
+  /// consume.
+  /// #headline
+  public initiate(req: TransferRequest): Result<TransferCompleted, TransferError> {
+    debit = accounts::Posting from { req.payer, req.amount }
+    credit = accounts::Posting from { req.payee, req.amount }
+    posted = accounts::Ledger.post(debit, credit)
+    if (posted.isErr) {
+      return Err(self.ledgerError(posted.error))
+    }
+    accepted = context::PaymentNetwork.settle(req)
+    if (accepted.isErr) {
+      return Err(NetworkUnavailable)
+    }
+    transfer = Transfer from { req, accepted.value }
+    return Ok(TransferCompleted from { transfer })
+  }
+
+  /// Mark a previously-pending transfer settled (driven by the network webhook).
+  markSettled(ref: context::SettlementRef): Result<void, TransferError>;
+  /// Map a ledger rejection to a transfer error.
+  ledgerError(e: accounts::LedgerError): TransferError;
+}
+
+/// Inbound settlement callbacks from the payment network.
+public component SettlementHook for Transfers {
+  /// The network confirms an out-of-band settlement over HTTP.
+  #[http("POST /webhooks/settlement")]
+  public confirm(ref: context::SettlementRef): Result<void, TransferError> {
+    return Transfers::TransferService.markSettled(ref)
+  }
+}

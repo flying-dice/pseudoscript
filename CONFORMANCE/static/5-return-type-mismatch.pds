@@ -1,0 +1,13 @@
+// LANG.md §5.1 (ADR-020): a `return` whose type is statically determinable must
+// match the declared return type. A string literal returned from a `: number`
+// callable is a model error.
+
+//! example
+
+public system Banking;
+
+public container Mainframe for Banking {
+  Count(): number {
+    return ""
+  }
+}

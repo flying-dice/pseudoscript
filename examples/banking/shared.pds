@@ -1,0 +1,7 @@
+//! shared — value objects used across every context (a shared kernel).
+
+/// An amount of money in minor units (e.g. cents), with its currency.
+public data Money { currency: string, minor: number }
+
+/// A stable account identifier.
+public data AccountId { value: string }

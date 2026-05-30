@@ -1,0 +1,10 @@
+// LANG.md §5.2 / §10 (ADR-018): `and`/`but` continue the preceding step; a
+// leading `and` with no preceding step is rejected.
+
+public system Banking;
+
+feature OpenAccount for Banking {
+  and  "a verified owner"
+  when "the owner opens an account"
+  then "banking info is returned"
+}

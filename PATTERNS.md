@@ -1,376 +1,266 @@
 # PATTERNS.md
 
-Implementation patterns for the PseudoScript compiler, mapped to the components
-defined in [`pseudoscript.pds`](./pseudoscript.pds). This is a research and
-decision document: for each crate it records the pattern we intend to use, the
-established prior art it borrows from, and the alternatives we weighed.
+Two kinds of idiom, one document:
 
-## Guiding constraints
+1. **Modeling idioms** — how to write `.pds` models (the language as used).
+2. **Implementation patterns** — how the compiler is built, crate by crate, mapped to the components in the [`pseudoscript/`](./pseudoscript/) workspace (one module per crate).
 
-Four constraints shape every choice below; a pattern that violates one is out.
-
-1. **WASM-safe core.** `Syntax`, `Model`, and `Emit` ship inside the browser
-   build (`Wasm` container), so they must avoid native-only dependencies:
-   no threads, no filesystem, no `std::time`, no C-linked crates. I/O lives at
-   the edges (`Cli`, `Lsp`) behind traits.
-2. **One core, many frontends.** `Cli`, `Lsp`, and `Wasm` are thin shells over
-   the same `Syntax → Model → Emit` pipeline. Anything frontend-specific
-   (argv, JSON-RPC, JS interop) stays out of the core.
-3. **Errors are values.** Mirrors the language itself (LANG.md §6): the core
-   returns `Result`, never panics on user input. Diagnostics carry spans.
-4. **Incremental-friendly.** The `Lsp` re-runs the pipeline on every keystroke.
-   Data structures must support cheap re-computation and partial results
-   (error recovery), not just batch compilation.
-
-The reference architecture throughout is **rust-analyzer**, which solves exactly
-this shape of problem (shared core, LSP frontend, incremental, error-tolerant).
+The implementation half records the pattern **in use**, the prior art it draws on, and the alternatives weighed. Where the build chose differently from an obvious default (hand-written over `logos`, an index arena over `petgraph`), the rejected option is kept as an alternative, not presented as current.
 
 ---
 
-## Cross-cutting patterns
+## Modeling idioms (writing `.pds`)
 
-These apply across crates and are worth fixing before any single component.
+The model expresses **architecture and flow**, not computation. Reach for these when authoring a model.
 
-### Index/handle types over pointers (`NodeId`, `Span`, `Symbol`)
+### Express meaning, not the implementation
 
-Represent the AST and the graph as flat arenas (`Vec<T>`) addressed by newtype
-indices (`struct NodeId(u32)`), not `Box`/`Rc<RefCell<…>>` trees. This is the
-data-oriented pattern petgraph and rust-analyzer both use: compact, `Copy`,
-cache-friendly, trivially serialisable, and — crucially — it sidesteps the
-borrow-checker gymnastics that pointer-graphs cause and is WASM-friendly.
+A `data` field is a shape hint, not a faithful port of the host type: a count is `number` whether the code uses `u32` or `usize`. Model a genuinely optional value with `Option<T>` (LANG.md §6) and a fallible one with `Result<T, E>`; reach for the type that conveys intent, not the host language's exact one. Bodies describe *flow and provenance* (LANG.md §1, §7), never field-level arithmetic.
 
-- petgraph's `Graph` is itself `Vec<Node>` + `Vec<Edge>` keyed by `NodeIndex`.
-  Use `StableGraph` if we ever delete nodes (indices stay valid).
+### Produce values with `from`
 
-### String interning (`Symbol`)
+`from` composes a record `data` or a union variant (LANG.md §7.2), and the result is usable as a call argument, a `return` operand, or a binding:
 
-Identifiers and FQNs repeat constantly. Intern them once into a `Symbol(u32)`
-so comparison and hashing are integer ops. Use a dedicated interner crate or a
-tiny `FxHashMap<&str, Symbol>` + `Vec<String>`. FQN resolution (§8) becomes
-symbol-keyed map lookups instead of string compares.
+```pds
+view = Sequence from { entry }            // construct a View variant
+scene = Emit::Projector.project(graph, view)
+```
 
-### Spans everywhere
+`Ok`/`Err`/`Some`/`None` construct the built-in generics (LANG.md §6): `Ok(v)`/`Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` is empty. `from` composes everything else.
 
-Every token, AST node, and diagnostic carries a `Span { start: u32, end: u32 }`
-(byte offsets into the source). Line/column is derived lazily from a
-`LineIndex` (precomputed newline offsets) only when rendering — never stored.
-This keeps the hot path offset-based and makes LSP range mapping a lookup.
+### Model fallibility by the operation's nature
 
-### Diagnostics as data, rendered at the edge
+| Operation | Return | Idiom |
+| --- | --- | --- |
+| genuinely fallible (I/O, projection) | `Result<T, E>` | handle with `if (x.isErr) { return Err(x.error) }` |
+| optional / may be absent | `Option<T>` | handle with `if (x.isNone) { return None }`, then read `x.value` |
+| total | the type directly | `parse(text): Parsed` |
+| validation pass | `Diagnostic[]` | collect, don't fail — empty means well-formed |
 
-The core emits structured `Diagnostic { severity, span, code, message }`
-values; it does **not** render them. Rendering is a frontend concern:
+Parsing and checking are total: they always produce a tree/graph and collect `Diagnostic`s. Don't wrap them in `Result`.
 
-- **`Cli`** renders to the terminal with **ariadne** (or **codespan-reporting**)
-  — fancy carets, multi-line labels.
-- **`Lsp`** maps the same structs to LSP `Diagnostic` (range + severity).
-- **`Wasm`** serialises them to JS.
+### Triggers mark entry points
 
-This is the codespan/ariadne split: the *report model* is shared, the *renderer*
-varies. (We avoid baking **miette** into the core — it's a great app-level error
-framework, but it's a heavier protocol than the core needs and pulls rendering
-concerns inward.)
+A callable bearing a trigger macro (`#[manual]`, `#[http]`, `#[onevent]`, `#[schedule]`, LANG.md §2.4) is a sequence-diagram entry point and gets its own diagram on its owner's page (LANG.md §9.3). A callable with no trigger is reached only when something calls it.
 
-### Incremental computation (longer-term): salsa
+### Disclose only flows worth tracing
 
-rust-analyzer's core trick is **salsa** — a memoising query system where
-`parse(file)`, `resolve(module)`, `graph(workspace)` are queries whose results
-are cached and invalidated only when their inputs change. The load-bearing
-invariant is *"editing inside one function body never invalidates global derived
-data."* We don't need salsa for the CLI, but the `Model` API should be shaped as
-**pure functions of inputs** (`fn build(ast) -> Graph`) so we can drop salsa in
-under the `Lsp` later without rewriting the core. Design for it now; adopt it
-when the LSP needs sub-100ms responses.
+Black-box every callable with `;` by default. Disclose a body `{ }` (LANG.md §5.1) only where the sequence is worth showing — the headline path, a cross-crate flow, the one place an error is handled. Progressive disclosure (LANG.md §1) is the point: a sketch of signatures is a valid model.
+
+### Document scenarios with `feature`
+
+```pds
+/// A verified owner opens an account.
+feature OpenAccount for banking::core::Mainframe {
+  given "a verified owner"
+  when  "the owner opens an account"
+  then  "banking info is returned"
+}
+```
+
+A `feature` records one expected behavior of a node as a prose given/when/then flow (LANG.md §5.2), surfaced as a scenario card on the node's page (LANG.md §9.3). Steps are prose — they don't resolve against the model, so reach for `feature` to state intent, not to trace a flow (disclose a body for that). The flow is strict: `given*` then `when+` then `then+`, with `and`/`but` continuing the preceding step.
+
+### Names
+
+Three namespaces are distinct (LANG.md §8.1): **type names** (`data` + hoisted record variants), **node names** (`system`/`container`/`component`/`person`), and **feature names** (LANG.md §5.2). Don't reuse a name across two nodes (a container and a component both `Doc` collides), or across two record variants. Fieldless variants are free — they don't hoist (LANG.md §3.5). Don't name a callable or parameter with a reserved word — `container`/`component`/`data`/`for` are reserved (LANG.md §2.3).
+
+### Validate against the toolchain
+
+`pds check <file>` is ground truth for well-formedness; `pds fmt <file>` is ground truth for layout. Run both — they settle questions (is a bare nullary variant legal? yes) faster than reading the spec.
 
 ---
 
-## `Syntax` — lexer + parser (`pseudoscript-syntax`)
+## Implementation patterns
 
-The most consequential and most WASM-sensitive crate (it's tagged `#wasm`,
-`#critical`). Maps to the `Lexer` and `Parser` components.
+The reference architecture throughout is **rust-analyzer** — shared core, LSP frontend, incremental, error-tolerant.
 
-### Lexer: `logos`
+### Guiding constraints
 
-Use **logos** for the `Lexer.tokenize` step. It's a derive-macro lexer that
-generates a fast DFA, is `no_std`/WASM-clean, and emits a flat token stream with
-spans — exactly the shape the `lexical/` conformance layer asserts
-(`KIND@line:col`). The token enum maps 1:1 to the kinds defined in
-`CONFORMANCE/lexical/README.md` (`KW_SYSTEM`, `COLONCOLON`, `DOC`, `TAG`,
-`HASH_LBRACKET`, …). The tricky `#`-disambiguation (tag vs. macro vs. literal,
-LANG.md §2.4) is handled with logos callbacks / a tiny mode flag for doc lines.
+1. **Pure, I/O-free core.** `Syntax`, `Model`, `Emit`, and `Doc` are pure functions of their inputs and touch no filesystem, clock, or network. `Doc::render_site` returns in-memory files; the CLI writes them. I/O lives at the edges (`Cli`, `Lsp`).
+2. **One core, two frontends.** `Cli` and `Lsp` are thin shells over the same `Syntax → Model → Emit`/`Doc` pipeline. Anything frontend-specific (argv, JSON-RPC, HTTP serving) stays out of the core.
+3. **Diagnostics as data; `Result` only where it fails.** The core never panics on user input. Parsing and checking always return a value plus a `Vec<Diagnostic>` (LANG.md §6 is the *language's* error model; the compiler's own is diagnostics). Only projection (`EmitError`) and formatting (`FormatError`) return `Result`.
+4. **Incremental-friendly.** `Lsp` reruns the pipeline on every keystroke, so the core is shaped as pure functions (`fn graph(modules) -> Graph`) that a memoiser could wrap later.
 
-### Parser: hand-written recursive descent producing a lossless tree
+### Cross-cutting
 
-**Recommendation: hand-written recursive-descent + a lossless syntax tree
-(`rowan`), with Pratt parsing for expressions.** Rationale below.
+#### Index/handle types over pointers
 
-- **Why lossless (CST, not just AST)?** The `Lsp` needs to map cursor offsets to
-  nodes, preserve trivia (comments, the `///` docs that LANG.md attaches to
-  constructs), and survive incomplete input. rust-analyzer's **rowan** (red-green
-  trees) is built for this: immutable, position-free *green* nodes that share
-  structure, with *red* nodes adding absolute offsets on demand. A typed AST
-  layer is then a thin accessor view over the CST. `cstree` is a viable
-  alternative (interns tokens, slightly different ergonomics).
-- **Why hand-written?** Error *recovery* and progressive disclosure (LANG.md
-  §1 — a half-written model must still parse into something) are far easier to
-  steer in recursive descent than in a generated parser, and the grammar (§10)
-  is small. rust-analyzer is hand-written for the same reasons.
-- **Pratt parsing** for the expression grammar (§7 / §10 `Expr`). It cleanly
-  absorbs the comparison/boolean operators flagged as needed in LANG.md §13 #3
-  (`==`, `&&`) when we add them, via a precedence table — no grammar surgery.
+The AST and graph are flat arenas (`Vec<T>`) addressed by indices, not `Box`/`Rc<RefCell<…>>` trees — `Copy`, cache-friendly, serialisable, and it sidesteps borrow-checker gymnastics. `Graph` is `Vec<GraphNode>` + `Vec<Edge>` + an FQN→index `FxHashMap` (graph.rs), the data-oriented shape rust-analyzer uses. **petgraph** is the obvious alternative; the hand arena was chosen to keep the node payloads and edge kinds domain-specific and dependency-free.
 
-### Alternatives weighed
+#### String keys via `rustc-hash`
+
+FQN resolution (LANG.md §8) is map lookups keyed on owned `String`s in `FxHashMap` (`rustc-hash`), the fast non-crypto hash. Interning to a `Symbol(u32)` is the next step if profiling shows FQN compares hot; not yet needed.
+
+#### Spans everywhere, line/col on demand
+
+Every token, AST node, and diagnostic carries `Span { start: u32, end: u32 }` (byte offsets, span.rs). Line/column is derived lazily from `LineIndex` (precomputed newline offsets) only when rendering — the hot path stays offset-based and LSP range mapping is a lookup.
+
+#### Diagnostics as data, rendered at the edge
+
+The core emits structured `Diagnostic { severity, span, code, message }` — the one type every crate produces (diagnostic.rs) — and never renders. Rendering is a frontend concern:
+
+- **`Cli`** prints `path:line:col: severity: message` to stderr and exits non-zero on any error.
+- **`Lsp`** maps the same struct to an LSP `Diagnostic` (range + severity) via `convert`.
+
+A richer CLI renderer (**ariadne**, **codespan-reporting**) is a drop-in upgrade at the `Cli` edge — the report model is already shared.
+
+#### Incremental computation: salsa (not adopted)
+
+rust-analyzer's core trick is **salsa** — memoised queries (`parse`, `graph`) invalidated only when inputs change. Not adopted: the CLI is batch, and the LSP rechecks whole documents fast enough. The `Model` API is kept as pure functions so salsa can slot under the `Lsp` later without a core rewrite.
+
+---
+
+### `Syntax` — lexer + parser (`pseudoscript-syntax`)
+
+The most `#critical` crate. Maps to `Lexer` and `Parser`.
+
+- **Hand-written lexer** (lexer.rs) → `Vec<Token>`, each with a `Span` and lexeme; `lex` also returns trivia (comments, blank-line runs) for the formatter. `render_tokens` emits the `KIND@line:col "lexeme"` form the `lexical/` conformance layer asserts. The `#`-disambiguation (tag vs macro vs literal, LANG.md §2.4) is a mode flag on doc lines.
+- **Hand-written recursive descent** (parser.rs) → `Parsed { ast: Module, diagnostics }`. **Total and recovering**: it always yields a tree (partial on error) and never throws, because progressive disclosure (LANG.md §1) means a half-written model must still parse. The typed AST (ast.rs) is the parser's own structs, not a view over a lossless tree.
+
+#### Alternatives weighed
 
 | Option | Verdict |
 | --- | --- |
-| **chumsky** (parser combinator) | Strong: built-in **error recovery**, partial ASTs, `no_std`, ~hand-written speed, pairs with logos. Best pick if we don't want to hand-roll. Tradeoff: combinator types get heavy, and steering recovery/lossless-trivia is less direct than RD. **Solid plan B.** |
-| **tree-sitter** | The browser-runnable WASM build exists, gives incremental reparse for free. But its terminals are *anonymous* nodes with no mapping to our named token classes — the exact reason `CONFORMANCE/lexical/README.md` cites for not asserting against it. Would mean maintaining a grammar in a second language (JS DSL) and a CST→AST mapping. Reserve for a future "incremental reparse" optimisation, not the primary parser. |
-| LALR generators (lalrpop) | Poor error recovery, generated-code WASM bloat, awkward for the doc/tag lexical quirks. Rejected. |
+| **logos** (DFA lexer) | Fast, `no_std`, span-carrying. Not used — the hand-written lexer keeps the `#`/doc-line modes explicit and adds no dependency. Viable swap. |
+| **rowan / cstree** (lossless CST) | The rust-analyzer pattern; a typed AST is a view over position-free green nodes. Not used — the typed AST + trivia list covers the LSP and formatter needs without the red-green machinery. Reserve for if incremental reparse is needed. |
+| **chumsky** (combinator) | Built-in recovery, `no_std`. Solid plan B; recovery is less direct to steer than recursive descent. |
+| **tree-sitter** | Browser-runnable, incremental reparse for free, but anonymous terminals don't map to our named token classes (the reason `lexical/` cites for not asserting against it). Reserve for a future incremental optimisation. |
 
 ---
 
-## `Model` — resolver, builder, views (`pseudoscript-model`)
+### `Model` — resolution, checks, graph (`pseudoscript-model`)
 
-Turns the AST into the one resolved `Graph` and projects views from it. Maps to
-`Resolver`, `Builder`, `Views`.
+Turns parsed modules into the one resolved `Graph`, and runs the static checks. Maps to `Checks` and `Builder`. **View extraction is not here** — projection lives in `Emit`; `Model` produces the complete graph any view draws from.
 
-### Graph representation: petgraph (or a thin index arena)
+#### Graph: hand-rolled index arena
 
-The architecture graph is a directed multigraph: nodes (`system`/`container`/
-`component`/`person`/`data`/callable) and typed edges (`for`-parent, derived
-call, `from`-provenance). Use **petgraph**
-(`StableGraph<Node, EdgeKind>`) or a hand-rolled `Vec<Node>` + `Vec<Edge>`. Node
-payloads are small structs referencing interned `Symbol`s and `Span`s.
+`Graph` (graph.rs) is `Vec<GraphNode>` + `Vec<Edge>` + a per-callable body trace, keyed by an FQN→index map. Node kinds: `person`/`system`/`container`/`component`/`data`/`callable`. Edge kinds: `ForParent`, `Call`, `Trigger`, `Provenance`. **petgraph** (`StableGraph<Node, EdgeKind>`) is the weighed alternative.
 
-### Name resolution: two-phase, FQN-keyed symbol table
+#### Name resolution: two-phase, FQN-keyed
 
-This is the classic compiler pattern and matches LANG.md §8:
+Classic compiler shape, matching LANG.md §8:
 
-1. **Collect.** Walk all modules, derive each declaration's FQN from the file
-   path (filename is a path segment, §8.1), and insert into a `FxHashMap<Fqn,
-   NodeId>`. Record visibility (`public` = cross-module addressable, §8.2).
-2. **Resolve.** Walk references (`::` paths, `.` access, `alias` targets, macro
-   args). `alias` binds to a *node* not a module (§8.3) — a dangling or
-   module-targeted alias is the diagnostic asserted in
-   `CONFORMANCE/static/8-*`. Cross-module access to a non-`public` node is the
-   visibility error.
+1. **Collect** — walk modules, derive each declaration's FQN from the file path (filename is a segment, §8.1), record visibility into an FQN→node map.
+2. **Resolve** — walk references (`::` paths, `.` access, `alias` targets, macro args). Separating the phases is what lets forward references resolve regardless of order.
 
-Keeping these phases separate is what lets recursion/forward-references resolve
-regardless of declaration order.
+#### Edge derivation: AST visitor
 
-### Relationship derivation: the visitor pattern
+`Builder` walks each disclosed body and emits edges: a `Target.method()` call → `Call`; `Type from { … }` → `Provenance`; a trigger macro → a `Trigger` edge from a synthesised initiator (`caller`/`client`/`scheduler`/`event:<FQN>`) and marks the callable a sequence entry. Every C4 edge originates here, so any view projects from one graph.
 
-`Builder` walks each disclosed callable body (the AST visitor pattern) and emits
-edges: a `Target.method()` call → a derived relationship; `Type from { … }` →
-provenance edges. **Trigger** macros add inbound edges from a synthesised
-initiator (event source / scheduler / client / person) and mark the callable as
-a sequence entry point — `#[onevent(Event)]` also resolves `Event` and checks the
-handler's parameter type matches. This is where "full coverage of relationships"
-lives — every C4 edge originates here so any view can be projected.
+#### Checks (`check/`)
 
-### View extraction: Strategy + graph traversal
+- **`cross_module`** — LANG.md §8.2: a cross-module reference resolves only to a `public` node; private access and dangling FQNs are diagnostics.
+- **`result_flow`** — LANG.md §6: a typestate dataflow threading each `Result` binding as `Unknown | Ok | Err`, narrowed on entering `if (r.isErr)` / `if (r.isOk)`, flagging wrong-branch `.value`/`.error` reads.
 
-`Views.extract(graph, view)` is a **Strategy**: each view kind is a projection.
-
-- **C1 context / C2 container / C3 component** — filter the graph to the nodes
-  at that level (resolving children via `for`) plus their boundary edges.
-- **Sequence trace** — a DFS from a chosen triggered (entry-point) callable
-  following call edges, emitting an ordered message list; `if`/`else` → `alt` frames,
-  `while`/`for` → `loop` frames (LANG.md §7 mapping). This is the "C1 all the
-  way down to a sequence diagram" requirement, and it's just a graph walk over
-  the edges `Builder` already produced.
-
-### Branch-aware accessor checking (§6)
-
-The `r.value`-on-`Err` rule (asserted in `CONFORMANCE/static/6-*`) is
-flow-sensitive. Implement as a small **typestate dataflow**: thread an
-environment mapping each `Result`/`Option` binding to `Unknown | Ok | Err`, and
-narrow it on entering an `if (r.isErr)` / `if (r.isOk)` branch. Cloning the
-environment per branch is fine at this scale.
+Both return `Vec<Diagnostic>`. `check`/`analyze`/`check_workspace` are the entry points; `graph` is the diagnostic-free projection `Emit` and `Doc` consume.
 
 ---
 
-## `Emit` — pluggable backends over the graph (`pseudoscript-emit`)
+### `Emit` — view projection + SVG (`pseudoscript-emit`)
 
-The resolved (sub-)graph is the stable seam; emission is a **pluggable backend**
-chosen at runtime by `--format` (`Target`). Maps to `Transpiler` (dispatch), the
-custom `Svg` path (`Layout` + `SvgRenderer`), the text exporters
-`Dot`/`Mermaid`/`PlantUml`, and the `#future` `SvgWorkspace`.
+Projects a `View` out of the graph into a `Scene` and renders it to SVG. **SVG is the only backend (ADR-017).** Maps to `Projector`, `Layout`, `SvgRenderer`.
 
-### Backend trait: Strategy over the graph
+#### Project, then render
 
-```rust
-trait Backend { fn render(&self, view: &SubGraph) -> Result<Diagram, EmitError>; }
+```
+project(graph, view) -> Result<Scene, EmitError>      // select nodes/edges + lay out
+render_svg(scene)     -> String                       // draw the positioned scene
 ```
 
-`Transpiler` holds a `Box<dyn Backend>` selected from the `Target`; every backend
-consumes the **same resolved sub-graph**. Two families:
+`project` (project.rs) dispatches on the `View` value the caller built with `from`: `Context`/`Container`/`Component` → a `C4Scene`, `Sequence` → a `SequenceScene`. It fails with `EmitError` (`UnknownNode`, `WrongKind`, `NoBody`) when the target is missing or wrong-kind.
 
-- **Text exporters (`Dot`, `Mermaid`, `PlantUml`)** — graph → notation text in a
-  single pass; layout is delegated to the external tool (Graphviz `dot`,
-  mermaid, plantuml). Cheap to add, and the output is deterministic text.
-- **Custom `Svg` (headline)** — graph → our own layout → SVG. We own the
-  geometry, so the result is self-contained (no external renderer) and runs
-  client-side in WASM.
+`Scene` (scene.rs) is the **notation-neutral geometry IR** — placed nodes and routed edges, or lifelines and ordered messages. It is the `generation/` conformance surface (ADR-017): deterministic structure, no pixel coordinates in the golden form.
 
-Backends are additive: a new notation is one `render(&SubGraph)` impl. `Target`
-is orthogonal to `View` (which C4 level / sequence) — any view renders through
-any backend.
+#### Layout
 
-### The custom SVG path: layout, then render
+- **C4 views** — the **`layout-rs`** Sugiyama placer assigns box positions and routes edges (c4_render.rs), with a panic-safe fallback.
+- **Sequence view** — a hand-rolled timeline: lifelines across x, messages down y, `if`/`else` → `alt` frames, `for`/`while` → `loop` frames (LANG.md §7).
 
-The hard part of "SVG from the graph" is **layout** — turning a node/edge set
-into coordinates. Keep it separate from rendering:
+#### Generation: programmatic SVG
 
-1. **`Layout.solve(graph, view) -> Scene`** computes geometry. The view kind
-   selects the algorithm: C4 box diagrams want a layered/hierarchical layout
-   (Sugiyama-style — `rust-sugiyama` or `dagre-rs`, both built on petgraph; or
-   `layout-rs` for GraphViz-style records), while the sequence view is a far
-   simpler timeline (lifelines across the x-axis, messages ordered down the
-   y-axis) worth hand-rolling.
-2. **`SvgRenderer.render(scene) -> Diagram`** walks the positioned `Scene` and
-   emits SVG — uniform across views; it just draws the shapes, edges, and labels
-   the layout placed.
-
-`Scene` is the SVG path's **notation-neutral geometry IR** (positioned boxes,
-routed edges, frames, text). The interactive `SvgWorkspace` consumes the same
-`Scene` the static renderer does.
-
-### Generation: programmatic, WASM-safe
-
-Every backend is a visitor that string-builds its output with `std::fmt::Write`
-(the **Builder** pattern) — SVG (or the `svg` crate), DOT, Mermaid, and PlantUML
-are all just text. No template engine, no headless browser, no native deps, so
-the whole of `Emit` compiles to `wasm32` and renders client-side
-(`wasm_svg_graphics` is an option for the interactive workspace specifically).
-
-### Goldening (see `generation/README.md`)
-
-- Text backends (`Dot`/`Mermaid`/`PlantUml`) emit **deterministic text** →
-  byte-for-byte goldens are fine.
-- The custom SVG path is brittle (float coords) → assert on the `Scene` IR, not
-  the rendered pixels.
-
-> Conformance note: raw SVG is brittle to golden (floating-point coordinates,
-> attribute order). The `generation/` layer should assert on the **`Scene` IR**
-> (deterministic — which nodes/edges/lifelines, not pixel positions); pixel-level
-> SVG snapshots belong in implementation tests, not the spec contract.
+`render_svg` string-builds with `std::fmt::Write` — no template engine, no headless browser. Notation exporters (DOT/Mermaid/PlantUML) were weighed and **rejected** (ADR-017): the stable seam is the `Scene` IR, not a `Box<dyn Backend>`. A new notation would consume `Scene`, not re-walk the graph.
 
 ---
 
-## `Cli` — the `pds` binary (`pds`)
+### `Doc` — static documentation site (`pseudoscript-doc`)
 
-Maps to `Args`, `Generate`, `Check`, `Serve`. A thin frontend.
+The headline subsystem (ADR-017). `render_site(graph, config) -> Site` turns the resolved graph into a cargo-doc-style static site. Maps to `SiteBuilder`, `Pages`, `Diagrams`, `Urls`, `Assets`.
 
-- **Arg parsing: `clap`** (derive API). Subcommands (`generate`, `check`,
-  `serve`) map to the **Command pattern** — each is a handler that reads input,
-  calls the core, and renders the result. This is the `Args.parse → Request`
-  shape in the model.
-- **I/O at the edge.** The CLI owns file reading and writing; the core receives
-  a `Source { path, text }` and returns `Diagram`/`Diagnostic`s. Diagnostics
-  render via **ariadne** to stderr; exit non-zero on any error diagnostic
-  (matches the conformance "exit status" rule).
+- **Pure, no I/O.** Returns a `Site` of in-memory `SiteFile { path, contents }`; the CLI writes them. Deterministic and unit-testable.
+- **One page per module**, a section per node (its `///` docs, tags, visibility, relationships), an index carrying the C4 context diagram (LANG.md §9.3).
+- **Diagrams embedded inline.** `Diagrams` is the bridge into `Emit`: build a `View` with `from`, call `project` + `render_svg`, embed the SVG. A failed projection degrades to a placeholder rather than aborting the build — the cargo-doc stance that a partial model still documents.
+- **`Urls`** maps every FQN to a page path + anchor for cross-links; **`Assets`** ships the stylesheet and the sidebar/search/zoom-pan script; **`config`** carries the `[doc]` table (`name`/`out`/`logo`/`theme`).
 
 ---
 
-## `Lsp` — language server (`pseudoscript-lsp`)
+### `Format` — canonical formatter (`pseudoscript-format`)
 
-Maps to `Server`, `Diagnostics`, `Hover`, `Definition`. Reuses `Syntax` +
-`Model` wholesale — it adds protocol, not language logic.
+`format(src) -> Result<String, FormatError>` (lib.rs). Maps to `Formatter`, `Printer`.
 
-### Framework: `tower-lsp` (or `lsp-server` for full control)
-
-- **tower-lsp** (and the maintained **tower-lsp-server** fork) gives an async,
-  Tower-based `LanguageServer` trait — fastest path to a working server,
-  handles JSON-RPC framing and lifecycle. Default plan.
-- **lsp-server** (rust-analyzer's own, synchronous, no async runtime) is the
-  alternative when we want a hand-driven main loop and tighter control over
-  scheduling — and it composes more naturally with salsa. Choose this if/when
-  incremental scheduling becomes the bottleneck.
-
-### Server patterns
-
-- **VFS + document store.** Keep open documents in memory keyed by URI; the
-  filesystem is just the initial load. `didChange` updates the in-memory text.
-- **Debounce + recompute.** On `didChange`, debounce, then run
-  `parse → build` and `publishDiagnostics` — exactly `Server.onChange` in the
-  model. Error recovery (from the parser) is what makes diagnostics useful while
-  typing.
-- **Span ↔ range mapping** via the shared `LineIndex`. `Hover` and `Definition`
-  resolve the offset under the cursor to a `NodeId` through `Model`'s resolver,
-  then read its `///` doc / declaration span.
-- **Incremental** is the long-term reason to adopt salsa here: typing in one
-  module shouldn't reparse the workspace.
+- Parse with `Syntax::parse`; if any error-severity diagnostic, return `FormatError::Parse(messages)`; otherwise pretty-print.
+- **Trivia-preserving** (printer.rs): two-space indent, comments and blank-line runs kept, one declaration per stanza. Idempotent — formatting the output is a no-op.
 
 ---
 
-## `Wasm` — browser bindings (`pseudoscript-wasm`)
+### `Cli` — the `pds` binary (`pseudoscript`)
 
-Maps to `Bindings`. The reason the core crates carry the `#wasm` constraint.
+A thin frontend over the libraries. Maps to `Args`, `Workspace`, the command components, `HttpServer`, `Watcher`.
 
-- **`wasm-bindgen` + `wasm-pack`** to compile and package the core for the
-  browser. `Bindings.generate(text, view)` becomes an exported JS function.
-- **`serde-wasm-bindgen`** for crossing the boundary: derive
-  `Serialize`/`Deserialize` on `View`, `Diagram`, and `Diagnostic`, and convert
-  with `to_value`/`from_value`. It's the officially preferred path — smaller and
-  faster than the JSON bridge for structured data.
-- **Hygiene:** install `console_error_panic_hook` (turn panics into readable JS
-  errors), keep the core panic-free regardless, and gate any native-only code
-  out of the WASM build with `#[cfg(not(target_arch = "wasm32"))]`. This is the
-  enforcement point for constraint #1 — if it doesn't compile to `wasm32`, it
-  doesn't belong in `Syntax`/`Model`/`Emit`.
+- **`clap`** derive subcommands (`doc`/`check`/`fmt`/`tokens`/`lsp`) — the **Command pattern**: each handler reads input, calls the core, renders the result.
+- **`Workspace`** resolves the project root by walking up to the nearest `pds.toml` (`find_root`) and loads the `[doc]` config + every `.pds` module (`load`, via `walkdir` + `toml`/`serde`).
+- **`pds doc`** is the headline: `find_root` → `load` → `check_workspace` (reported, non-fatal, like `cargo doc`) → `graph` → `render_site` → write files.
+- **`--serve`** hosts the site over **`tiny_http`** on `127.0.0.1`; **`--watch`** adds a **`notify`** filesystem watcher that rebuilds and bumps a live-reload version the browser polls.
+- **I/O at the edge.** The CLI owns reading and writing; `anyhow` carries I/O errors to the exit code.
 
 ---
 
-## Dependency cheat-sheet
+### `Lsp` — language server (`pseudoscript-lsp`)
 
-| Crate | Role | WASM-safe | Notes / alt |
-| --- | --- | --- | --- |
-| `logos` | lexer DFA | ✅ | matches `lexical/` token kinds |
-| `rowan` | lossless syntax tree | ✅ | alt: `cstree` |
-| (hand-written RD) | parser | ✅ | alt: `chumsky` |
-| `petgraph` | architecture graph | ✅ | `StableGraph`; or hand arena |
-| `rust-sugiyama` / `dagre-rs` | C4 layered layout | ✅ | petgraph-based; `layout-rs` alt |
-| `svg` (or `fmt::Write`) | SVG generation | ✅ | `wasm_svg_graphics` for interactive |
-| `rustc-hash` (`FxHashMap`) | interning, symbol tables | ✅ | fast non-crypto hash |
-| `ariadne` | CLI diagnostic rendering | n/a (CLI) | alt: `codespan-reporting` |
-| `clap` | CLI args | n/a (CLI) | derive API |
-| `tower-lsp` | LSP framework | n/a (LSP) | alt: `lsp-server` (+ salsa) |
-| `wasm-bindgen` + `wasm-pack` | JS interop / packaging | ✅ | the browser build |
-| `serde-wasm-bindgen` | struct marshalling | ✅ | preferred over JSON bridge |
-| `salsa` | incremental queries | ✅ | adopt when LSP needs it |
+Protocol, not language logic — reuses `Syntax` + `Model` + `Format`. Maps to `Server`, `Analysis`, `Convert`.
+
+- **`tower-lsp`** over stdio, on a **`tokio`** runtime: an async `LanguageServer` `Backend` that handles JSON-RPC framing and lifecycle.
+- **Document store.** Open documents live in memory keyed by URI; `did_change` (full sync) updates the text and republishes diagnostics — `Server.onChange` in the model.
+- **`Analysis`** computes fresh per request, delegating to the core: `diagnostics` → `Model::check`, `format_edit` → `Format::format`, `hover`/`definition` → `parse` + symbol lookup.
+- **`Convert`** maps byte-offset `Span`s to LSP positions (0-based line, UTF-16 column) via `LineIndex`.
+- **lsp-server** (rust-analyzer's synchronous loop) is the alternative if hand-driven scheduling or salsa integration becomes the bottleneck.
+
+---
+
+## Dependency cheat-sheet (as built)
+
+| Crate | Role | Used by |
+| --- | --- | --- |
+| `serde` | derive `Serialize`/`Deserialize` (Scene IR, tokens, diagnostics) | syntax, model, emit |
+| `rustc-hash` (`FxHashMap`) | FQN-keyed symbol tables, graph index | model |
+| `layout-rs` | C4 Sugiyama layout | emit |
+| `tower-lsp` | LSP framework | lsp |
+| `tokio` | async runtime (LSP; CLI runtime) | lsp, cli |
+| `serde_json` | LSP payloads | lsp |
+| `clap` | CLI args (derive) | cli |
+| `anyhow` | edge error chaining | cli |
+| `toml` + `serde` | parse `pds.toml` | cli |
+| `walkdir` | discover `.pds` modules | cli |
+| `tiny_http` | serve the doc site (`--serve`) | cli |
+| `notify` | watch + live-reload (`--watch`) | cli |
+
+**Weighed, not adopted:** `logos`, `rowan`/`cstree`, `chumsky`, `tree-sitter` (Syntax); `petgraph` (Model); DOT/Mermaid/PlantUML exporters (Emit, per ADR-017); `salsa` (incremental); `ariadne`/`codespan-reporting` (CLI diagnostics); `wasm-bindgen` (no browser build exists).
 
 ---
 
 ## Alignment with LANG.md open questions
 
-Two patterns above are shaped by gaps the spec itself flags (LANG.md §13):
-
-- **Expression operators (#3).** Pratt parsing in `Syntax` is chosen so that
-  adding `==`/`&&` later is a precedence-table edit, not a rewrite.
-- **Union narrowing / no `match` (#4 and the missing `match`).** `Model` does
-  `Result`/`Option` narrowing by hand, and the view-kind dispatch is pushed
-  inside the black-box `Layout.solve` rather than branched in a disclosed body —
-  both because the language can't yet match on a `View` variant. When it lands,
-  the layout dispatch could surface explicitly.
-
-These are deliberate accommodations, not accidents — revisit them when the
-corresponding language features are resolved.
+- **Expression operators (§12 #3).** `==`/`&&` are not in the grammar yet; the recursive-descent expression parser is the place to add them via a precedence table when they land.
+- **`View` dispatch without `match` (§12 #4).** The language can't `match` on a `View` variant, but a caller **constructs** a `View` with `from` (LANG.md §7.2) and passes it to `Emit::Projector.project`, which dispatches internally. The dispatch is real; it just isn't surfaced in a disclosed body — the projection callable is a black box over the graph.
 
 ---
 
 Sources:
 - [rust-analyzer architecture (book)](https://rust-analyzer.github.io/book/contributing/architecture.html)
 - [rust-analyzer architecture.md (repo)](https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/architecture.md)
-- [Red-Green Syntax Trees — an Overview](https://willspeak.me/2021/11/24/red-green-syntax-trees-an-overview.html)
-- [cstree crate](https://crates.io/crates/cstree)
-- [chumsky (docs.rs)](https://docs.rs/chumsky/latest/chumsky/)
-- [chumsky + logos example](https://github.com/zesterer/chumsky/blob/main/examples/logos.rs)
+- [layout-rs](https://crates.io/crates/layout-rs)
 - [tower-lsp](https://github.com/ebkalderon/tower-lsp)
-- [tower-lsp-server (fork)](https://github.com/tower-lsp-community/tower-lsp-server)
-- [ariadne](https://docs.rs/ariadne/latest/ariadne/)
-- [codespan / codespan-reporting](https://github.com/brendanzab/codespan)
-- [miette](https://lib.rs/crates/miette)
-- [serde-wasm-bindgen](https://docs.rs/serde-wasm-bindgen/latest/serde_wasm_bindgen/)
-- [wasm-bindgen Guide — arbitrary data with Serde](https://rustwasm.github.io/docs/wasm-bindgen/reference/arbitrary-data-with-serde.html)
+- [rustc-hash (FxHashMap)](https://crates.io/crates/rustc-hash)
+- [Red-Green Syntax Trees — an Overview](https://willspeak.me/2021/11/24/red-green-syntax-trees-an-overview.html)
+- [chumsky (docs.rs)](https://docs.rs/chumsky/latest/chumsky/)
 - [petgraph](https://docs.rs/petgraph/)
+- [ariadne](https://docs.rs/ariadne/latest/ariadne/)

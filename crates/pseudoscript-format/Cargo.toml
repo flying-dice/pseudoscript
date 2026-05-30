@@ -1,0 +1,22 @@
+[package]
+name = "pseudoscript-format"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pseudoscript_format"
+path = "src/lib.rs"
+
+[dependencies]
+pseudoscript-syntax = { path = "../pseudoscript-syntax" }
+
+[dev-dependencies]
+cucumber = "0.21"
+futures = "0.3"
+
+[[test]]
+name = "format"
+harness = false

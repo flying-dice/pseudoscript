@@ -1,0 +1,4 @@
+//! banking::events
+
+/// Raised when an account cannot be found.
+public data NotFound { id: number }
