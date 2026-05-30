@@ -1,0 +1,7 @@
+# release-plz drives versioning, changelog, and GitHub releases from
+# conventional commits. This ships a binary (`pds`), not a crates.io library,
+# so publishing is off; tagging and GitHub releases stay on (the defaults).
+[workspace]
+publish = false
+# `pds upgrade <version>` and scripts/install.* expect `v<version>` tags.
+git_tag_name = "v{{ version }}"

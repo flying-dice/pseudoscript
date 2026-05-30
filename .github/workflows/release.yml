@@ -1,28 +1,65 @@
-name: Release
+name: release
 
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: write       # create releases + tags
-  issues: write         # @semantic-release/github success comments
-  pull-requests: write  # @semantic-release/github success comments
+  contents: write       # create releases/tags, upload assets
+  pull-requests: write  # open/update the release PR
 
+# Never run release-plz against itself concurrently.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # Open or update the version-bump + changelog PR from conventional commits.
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After a release PR merges, tag the commit and create the GitHub Release.
+  # The build job is gated on this having actually released something.
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+      releases: ${{ steps.release-plz.outputs.releases }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build native binaries for the freshly-released commit. Runner arch is
+  # load-bearing: macos-13 is the last Intel image, macos-latest is Apple
+  # Silicon. Do not "modernize" macos-13 to macos-latest.
   build:
     name: Build ${{ matrix.target }}
+    needs: release
+    if: needs.release.outputs.releases_created == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        # Each target builds natively — no cross-compilation. Runner arch is
-        # load-bearing: macos-13 is the last Intel (x86_64) image; macos-latest
-        # is Apple Silicon (arm64). Do not "modernize" macos-13 to macos-latest.
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
@@ -63,14 +100,15 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  release:
-    name: Release
-    needs: build
+  # Checksum the binaries and attach them, SHA256SUMS, and the install scripts
+  # to the release release-plz created.
+  assets:
+    name: Upload assets
+    needs: [release, build]
+    if: needs.release.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -80,12 +118,12 @@ jobs:
           cd dist
           sha256sum pds-* > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install semantic-release
-        run: npm install -g semantic-release@24
-      - name: Release
-        run: npx semantic-release
+      - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+        run: |
+          gh release upload "$TAG" \
+            dist/pds-*.tar.gz dist/pds-*.zip dist/SHA256SUMS \
+            scripts/install.sh scripts/install.ps1 \
+            --clobber
