@@ -66,7 +66,70 @@
   --radius: 10px;
   --radius-sm: 7px;
 
+  /* spacing scale (4px base) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* type scale */
+  --text-xs: 0.68rem;
+  --text-sm: 0.78rem;
+  --text-base: 0.92rem;
+  --text-md: 1.02rem;
+  --text-lg: 1.18rem;
+  --text-xl: 1.5rem;
+
+  /* elevation — one shadow scale for popovers/modals/levitation */
+  --shadow-sm: 0 2px 8px -2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 24px 60px -18px rgba(0, 0, 0, 0.7);
+
   color-scheme: dark;
+}
+
+/* Light theme — the same token names re-pointed for a paper-pale drafting sheet.
+   The interactive diagram canvas keeps its own `--sheet`/`--bg` warmth so it
+   stays legible in both modes. */
+:root[data-theme="light"] {
+  --bg: #f3f1ec;
+  --surface: #ffffff;
+  --surface-2: #f4f2ed;
+  --surface-3: #e8e5dd;
+  --ink: #1a1b20;
+  --ink-soft: #4c4e57;
+  --ink-faint: #8a8c95;
+  --line: #e3e0d8;
+  --line-strong: #cfccc2;
+
+  --accent: #e8401c;
+  --accent-hi: #ff5a36;
+  --accent-ink: #ffffff;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+
+  --ok: #1d9e7e;
+  --warn: #b5790c;
+  --err: #d63a32;
+
+  --grid: rgba(20, 20, 30, 0.04);
+  --glow: radial-gradient(1100px 560px at 88% -12%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
+
+  --k-person: #3f5bd6;
+  --k-system: #d6492f;
+  --k-container: #0f9b8a;
+  --k-component: #b07d12;
+  --k-data: #8a4fd0;
+  --k-callable: #c0357f;
+
+  --shadow-sm: 0 2px 8px -3px rgba(20, 20, 30, 0.16);
+  --shadow-md: 0 10px 28px -12px rgba(20, 20, 30, 0.22);
+  --shadow-lg: 0 22px 54px -20px rgba(20, 20, 30, 0.28);
+
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -97,7 +160,10 @@ body::after {
   pointer-events: none;
   opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
 }
+/* the grain reads as harsh specks on a pale sheet — soften it in light mode */
+:root[data-theme="light"] body::after { opacity: 0.02; }
 
 button { font: inherit; cursor: pointer; color: inherit; }
 
@@ -352,6 +418,79 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .cm-editor.cm-md-live .cm-lineNumbers .cm-gutterElement {
   overflow: hidden;
 }
+
+/* ---- Markdown preview links + images (T4) --------------------------------- */
+.cm-editor.cm-md-live .cm-md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.cm-editor.cm-md-live .cm-md-link:hover { color: var(--accent-hi); }
+.cm-editor.cm-md-live .cm-md-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.4rem 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+.cm-editor.cm-md-live .cm-md-img-missing {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.85em;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- CodeMirror find/replace panel (T5) ----------------------------------- */
+/* The search panel is plain DOM; align it with the drafting-terminal chrome. */
+.cm-panels {
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  border-bottom: 1px solid var(--line-strong) !important;
+}
+.cm-panels.cm-panels-top { border-bottom: 1px solid var(--line-strong) !important; }
+.cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem !important;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.cm-search .cm-textfield {
+  background: var(--bg) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 0.3rem 0.5rem !important;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.cm-search .cm-textfield:focus-visible { outline: none; border-color: var(--accent) !important; }
+.cm-search .cm-button {
+  background: var(--surface-2) !important;
+  color: var(--ink-soft) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: var(--radius-sm) !important;
+  background-image: none !important;
+  padding: 0.3rem 0.6rem !important;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+.cm-search .cm-button:hover { border-color: var(--accent) !important; color: var(--ink) !important; }
+.cm-search label { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--ink-faint); font-size: 0.72rem; }
+.cm-panel.cm-search [name="close"] {
+  color: var(--ink-faint) !important;
+  background: transparent !important;
+  border: none !important;
+}
+.cm-searchMatch { background: color-mix(in srgb, var(--warn) 30%, transparent) !important; }
+.cm-searchMatch-selected { background: color-mix(in srgb, var(--accent) 45%, transparent) !important; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

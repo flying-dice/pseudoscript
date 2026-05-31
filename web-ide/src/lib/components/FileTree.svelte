@@ -1,5 +1,5 @@
 <script>
-  import { Box, Component, Container, Database, FileCode, FileText, SquareFunction, User } from "@lucide/svelte";
+  import { Box, Component, Container, Database, FileCode, FileText, Settings2, SquareFunction, User } from "@lucide/svelte";
 
   // One icon per C4 level, so a node's place in the hierarchy reads at a glance.
   const ICONS = {
@@ -18,6 +18,9 @@
     onopen,
     onpicknode,
     errorPaths = new Set(),
+    // Paths whose live buffer differs from disk — render an unsaved dot (an error
+    // marker takes visual precedence over the dirty one).
+    dirtyPaths = new Set(),
     // Authored doc groups from `[[doc.sidebar]]` (`{ title, items: [{ title,
     // path }] }`), listed above Files. Clicking a page opens its raw Markdown.
     docGroups = [],
@@ -28,6 +31,10 @@
     symbols = [],
     // The FQN of the currently selected node, highlighted in the tree.
     selectedFqn = null,
+    // The workspace manifest path (`pds.toml`), or null when there's none. A
+    // dedicated row opens it as editable raw TOML.
+    manifestPath = null,
+    onmanifestopen,
   } = $props();
 
   // Collapsed symbol subtrees, by node FQN. Default expanded.
@@ -77,9 +84,10 @@
               <button
                 class="doc"
                 class:active={item.path === openPath}
+                class:is-dirty={dirtyPaths.has(item.path)}
                 onclick={() => ondocopen?.(item)}
                 aria-current={item.path === openPath ? "true" : undefined}
-                title={item.path}
+                title={dirtyPaths.has(item.path) ? `${item.path} · unsaved changes` : item.path}
               >
                 <FileText class="file-ico" size={15} strokeWidth={2} aria-hidden="true" />
                 <span class="fqn">{item.title}</span>
@@ -88,6 +96,27 @@
           {/each}
         </ul>
       {/each}
+    </section>
+  {/if}
+
+  {#if manifestPath}
+    <section class="group">
+      <div class="group-head"><span class="kicker">Manifest</span></div>
+      <ul class="files">
+        <li>
+          <button
+            class="file"
+            class:active={manifestPath === openPath}
+            class:is-dirty={dirtyPaths.has(manifestPath)}
+            onclick={() => onmanifestopen?.()}
+            aria-current={manifestPath === openPath ? "true" : undefined}
+            title={dirtyPaths.has(manifestPath) ? `${manifestPath} · unsaved changes` : manifestPath}
+          >
+            <Settings2 class="file-ico" size={15} strokeWidth={2} aria-hidden="true" />
+            <span class="fqn">pds.toml</span>
+          </button>
+        </li>
+      </ul>
     </section>
   {/if}
 
@@ -103,9 +132,10 @@
               class="file"
               class:active={file.path === openPath}
               class:has-error={errorPaths.has(file.path)}
+              class:is-dirty={!errorPaths.has(file.path) && dirtyPaths.has(file.path)}
               onclick={() => onopen?.(file)}
               aria-current={file.path === openPath ? "true" : undefined}
-              title={file.path}
+              title={dirtyPaths.has(file.path) ? `${file.path} · unsaved changes` : file.path}
             >
               <FileCode class="file-ico" size={15} strokeWidth={2} aria-hidden="true" />
               <span class="fqn">{file.fqn}</span>
@@ -267,6 +297,19 @@
     margin-left: 0.45rem;
     border-radius: 50%;
     background: var(--err);
+    vertical-align: middle;
+  }
+  /* unsaved marker — mirrors the error dot, in the warn colour. The error dot
+     wins (is-dirty is only set when has-error isn't). */
+  .file.is-dirty .fqn::after,
+  .doc.is-dirty .fqn::after {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 0.45rem;
+    border-radius: 50%;
+    background: var(--warn);
     vertical-align: middle;
   }
   .fqn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

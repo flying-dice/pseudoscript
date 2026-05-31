@@ -21,6 +21,66 @@ export async function openWorkspace() {
   return readWorkspace(root);
 }
 
+/** A safe directory name: trims, lowercases spaces to hyphens, strips anything
+ *  outside `[a-z0-9._-]`, and collapses repeats. Empty input yields "". */
+export function sanitizeProjectName(name) {
+  return (name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+}
+
+/** The default new-project name. */
+export const DEFAULT_PROJECT_NAME = "my-architecture";
+
+/** The starter `pds.toml` for a new project (named for the workspace). */
+function starterManifest(name) {
+  return `[package]\nname = "${name}"\n\n[doc]\nname = "${name}"\ntheme = "dark"\n`;
+}
+
+/** The starter `main.pds`: a minimal valid model that compiles clean and draws. */
+function starterModule(name) {
+  const title = name.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return `# The ${title} system — your architecture starts here.
+system Platform {
+  # A first container. Add components, data, and callables beneath it.
+  container Api {
+    # A first behaviour. Replace with your own flows.
+    fn health() {
+      # describe what happens here
+    }
+  }
+}
+`;
+}
+
+/**
+ * Scaffolds a new workspace: prompts for a parent directory, creates a `<name>`
+ * subdirectory under it, writes a starter `pds.toml` + `main.pds`, and returns
+ * the same shape as `readWorkspace` so `mountWorkspace` just works. The name is
+ * sanitized (falling back to the default if it sanitizes to empty).
+ * @returns {Promise<{name, root, base, manifestToml, files}>}
+ */
+export async function createWorkspace(name) {
+  const safe = sanitizeProjectName(name) || DEFAULT_PROJECT_NAME;
+  const parent = await window.showDirectoryPicker({ mode: "readwrite" });
+  const root = await parent.getDirectoryHandle(safe, { create: true });
+
+  const manifestToml = starterManifest(safe);
+  const manifestHandle = await root.getFileHandle("pds.toml", { create: true });
+  await writeFile(manifestHandle, manifestToml);
+
+  const moduleHandle = await root.getFileHandle("main.pds", { create: true });
+  await writeFile(moduleHandle, starterModule(safe));
+
+  const files = [{ path: "main.pds", handle: moduleHandle, fqn: "main" }];
+  const manifest = { handle: manifestHandle, path: "pds.toml" };
+  return { name: safe, root, base: "", manifestToml, manifest, files };
+}
+
 /**
  * Loads a workspace from an already-resolved directory handle (e.g. a recent
  * project's stored handle, after permission is re-granted) — the picker-free
@@ -45,9 +105,12 @@ export async function readWorkspace(root) {
     .sort((a, b) => a.fqn.localeCompare(b.fqn));
 
   // The raw `[doc]` manifest, so the doc build can read `[[doc.sidebar]]` pages.
+  // The handle is retained so `pds.toml` can be opened and edited in the IDE.
   const manifestToml = manifestHandle ? await readFile(manifestHandle) : null;
+  const manifestPath = manifestHandle ? (base ? `${base}/pds.toml` : "pds.toml") : null;
+  const manifest = manifestHandle ? { handle: manifestHandle, path: manifestPath } : null;
 
-  return { name: root.name, root, base, manifestToml, files };
+  return { name: root.name, root, base, manifestToml, manifest, files };
 }
 
 /**
@@ -70,6 +133,47 @@ export async function readDocPages(root, base, sidebar) {
     groups.push({ title: group.title, items });
   }
   return groups;
+}
+
+/**
+ * Resolves a doc-relative asset path (e.g. `./diagram.png`, `../img/x.png`) to a
+ * `Blob`, walking from the workspace `root` using the open doc's path to anchor
+ * the relative reference. Returns null when unresolvable (missing file, or no
+ * root — a sample). Used by the Markdown live preview to render relative images.
+ */
+export async function resolveDocAsset(root, docPath, relPath) {
+  if (!root || REMOTE_ASSET.test(relPath)) return null;
+  const dir = docPath.includes("/") ? docPath.slice(0, docPath.lastIndexOf("/")) : "";
+  const joined = normalizeRelPath(dir, relPath);
+  if (joined == null) return null;
+  const parts = joined.split("/").filter(Boolean);
+  const name = parts.pop();
+  try {
+    let cur = root;
+    for (const part of parts) cur = await cur.getDirectoryHandle(part);
+    const handle = await cur.getFileHandle(name);
+    return await handle.getFile();
+  } catch {
+    return null;
+  }
+}
+
+const REMOTE_ASSET = /^(https?:|data:|mailto:)/i;
+
+/** Join a base dir and a relative path, resolving `.`/`..`. Returns null if it
+ *  escapes above the workspace root. */
+function normalizeRelPath(dir, rel) {
+  const stack = dir ? dir.split("/").filter(Boolean) : [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (stack.length === 0) return null; // escapes the workspace root
+      stack.pop();
+    } else {
+      stack.push(seg);
+    }
+  }
+  return stack.join("/");
 }
 
 /** Opens `path` under `root`, returning `{ content, handle }`, or `null`. */

@@ -52,7 +52,11 @@
 
     <header class="head">
       <div class="brand">
-        <span class="dot" aria-hidden="true"></span>
+        <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="2.5" y="2.5" width="19" height="19" rx="4" stroke="currentColor" stroke-width="1.4" opacity="0.45" />
+          <rect x="6.5" y="6.5" width="11" height="11" rx="2.6" stroke="currentColor" stroke-width="1.5" />
+          <circle cx="12" cy="12" r="2.3" fill="var(--accent)" />
+        </svg>
         <span class="word">PseudoScript</span>
         <span class="sep">/</span>
         <span class="eyebrow">Project</span>
@@ -179,10 +183,9 @@
     animation: rise 0.4s 0.02s both;
   }
   .brand { display: flex; align-items: baseline; gap: 0.55rem; }
-  .brand .dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--accent); align-self: center;
-    animation: pulse-dot 2.8s ease-out infinite;
+  .brand .logo {
+    width: 20px; height: 20px; align-self: center;
+    color: var(--ink-soft);
   }
   .brand .word { font-family: var(--font-display); font-weight: 700; font-size: 1.04rem; letter-spacing: -0.025em; }
   .brand .sep { color: var(--ink-faint); }
