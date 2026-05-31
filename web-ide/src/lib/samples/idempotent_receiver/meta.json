@@ -1,7 +1,0 @@
-{
-  "name": "Idempotent Receiver",
-  "category": "Coordination",
-  "order": 70,
-  "landing": "docs/the-pattern.md",
-  "description": "PayLoop (payment webhooks) \u2014 dedupe by event id so a retried callback credits once."
-}

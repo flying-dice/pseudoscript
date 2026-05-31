@@ -1,7 +1,0 @@
-{
-  "name": "Anti-Corruption Layer",
-  "category": "Evolution",
-  "order": 61,
-  "landing": "docs/the-pattern.md",
-  "description": "Relay CRM \u2014 translates a legacy ERP model at the boundary so it never leaks in."
-}

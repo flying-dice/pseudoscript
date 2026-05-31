@@ -1,7 +1,0 @@
-{
-  "name": "Claim Check",
-  "category": "Messaging",
-  "order": 33,
-  "landing": "docs/the-pattern.md",
-  "description": "Reelbox (video) \u2014 store the big upload, queue only a small claim the transcoder redeems."
-}

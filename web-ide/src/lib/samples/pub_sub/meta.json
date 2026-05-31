@@ -1,7 +1,0 @@
-{
-  "name": "Publish / Subscribe",
-  "category": "Messaging",
-  "order": 30,
-  "landing": "docs/the-pattern.md",
-  "description": "PriceDrop (price alerts) \u2014 a price change fans out to alerts, search, and analytics via a broker."
-}

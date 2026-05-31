@@ -1,7 +1,0 @@
-{
-  "name": "Scatter-Gather",
-  "category": "Coordination",
-  "order": 71,
-  "landing": "docs/the-pattern.md",
-  "description": "QuoteMesh (insurance) \u2014 fan a quote to many insurers and aggregate the best offer."
-}

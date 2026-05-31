@@ -1,7 +1,0 @@
-{
-  "name": "Leader Election",
-  "category": "Coordination",
-  "order": 72,
-  "landing": "docs/the-pattern.md",
-  "description": "Cronicle (scheduler) \u2014 nodes elect a leader via a lease; one fires jobs and a standby takes over."
-}
