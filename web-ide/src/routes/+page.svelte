@@ -3,7 +3,7 @@
   import "../app.css";
   import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outline, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
   import { charToByte } from "$lib/offsets.js";
-  import { fsSupported, createWorkspace, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset } from "$lib/workspace.js";
+  import { fsSupported, createWorkspace, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import { collapseSequence } from "$lib/sequence.js";
   import { SAMPLES, loadSample } from "$lib/samples.js";
   import { getRecents, recordSample, recordFolder, reopenFolder, forget } from "$lib/recents.js";
@@ -17,6 +17,7 @@
   import Notifications from "$lib/components/Notifications.svelte";
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
   import Settings from "$lib/components/Settings.svelte";
+  import PromptDialog from "$lib/components/PromptDialog.svelte";
 
   let ready = $state(false);
   let wasmError = $state(null);
@@ -641,6 +642,336 @@
     }
   }
 
+  // ---- shared file-set mutation (T9/T10/T11) -------------------------------
+  // The single affordance through which the FileTree create/rename/move/delete
+  // flows reshape the model. It reassigns `workspace.files` and applies seed/
+  // rename/drop edits to `moduleSources`, re-seeding the dirty baseline so
+  // seeded/renamed buffers start clean. Reassigning these reactive maps re-runs
+  // the whole `$derived` resolution chain off `allModules` — no explicit
+  // re-resolve call is needed.
+  //
+  //   seed   : { [fqn]: text } modules to add with a clean baseline.
+  //   rename : { from, to } to move a module's source (+ baseline) to a new key.
+  //   drop   : [fqn] modules to remove from sources (+ baseline).
+  function applyFileSet(files, { seed = {}, rename = null, drop = [] } = {}) {
+    const sources = { ...moduleSources };
+    const base = { ...persisted };
+    if (rename && rename.from !== rename.to) {
+      if (rename.from in sources) {
+        sources[rename.to] = sources[rename.from];
+        delete sources[rename.from];
+      }
+      if (rename.from in base) {
+        base[rename.to] = base[rename.from];
+        delete base[rename.from];
+      }
+    }
+    for (const fqn of drop) {
+      delete sources[fqn];
+      delete base[fqn];
+    }
+    for (const [fqn, text] of Object.entries(seed)) {
+      sources[fqn] = text;
+      if (workspace?.root) base[fqn] = text; // folder-backed → on-disk baseline (clean)
+    }
+    moduleSources = sources;
+    persisted = base;
+    workspace = { ...workspace, files };
+  }
+
+  // Persist a programmatic `[[doc.sidebar]]` manifest change (T10): update the
+  // live `workspace.manifestToml` + editable buffer, write `pds.toml` to disk
+  // when folder-backed, re-seed its baseline, and re-resolve doc nav.
+  async function persistManifest(toml) {
+    const handle = workspace?.manifest?.handle;
+    workspace = { ...workspace, manifestToml: toml };
+    manifestSource = toml;
+    if (handle) {
+      await writeFile(handle, toml);
+      seedBaseline([{ key: workspace.manifest.path, text: toml }]);
+    }
+  }
+
+  // One dialog drives every FileTree name prompt. `dialog` holds its config or
+  // is null when closed; `confirmDialog` is the destructive-action confirm.
+  let dialog = $state(null);
+  let confirmDialog = $state(null);
+
+  // A minimal valid `.pds` module: a system shell with one container and one
+  // behaviour, mirroring the new-workspace starter so it resolves clean.
+  function pdsSkeleton(fqn) {
+    const leaf = fqn.split("::").pop();
+    const title = leaf.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    return `# ${title} — describe this module's architecture here.
+system ${pascalName(leaf)} {
+  container Api {
+    fn health() {
+      # describe what happens here
+    }
+  }
+}
+`;
+  }
+
+  function pascalName(s) {
+    return s.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\s+/g, "") || "Module";
+  }
+
+  // ---- T9: new .pds file ---------------------------------------------------
+  // Normalise a typed name into a base-relative leaf path: trim, drop a leading
+  // slash, append `.pds` when no extension is given.
+  function normalizePdsPath(name) {
+    let p = name.trim().replace(/^\/+/, "");
+    if (!/\.[a-z0-9]+$/i.test(p)) p += ".pds";
+    return p;
+  }
+
+  // Validate a new .pds path against the file set + reserved names. `/` is a
+  // directory separator (subdirectory placement); `\` and empty are rejected.
+  function validateNewFile(name) {
+    const raw = name.trim();
+    if (!raw) return "Name can't be empty.";
+    if (raw.includes("\\")) return "Use forward slashes for folders.";
+    if (raw.endsWith("/")) return "Name a file, not a folder.";
+    const lower = raw.toLowerCase();
+    if (lower.endsWith(".md")) return "Use New doc for Markdown files.";
+    if (/(^|\/)pds\.toml$/i.test(raw)) return "pds.toml is reserved.";
+    if (/\.[a-z0-9]+$/i.test(raw) && !lower.endsWith(".pds")) return "Only .pds files are supported here.";
+    const path = withBase(normalizePdsPath(raw));
+    if ((workspace?.files ?? []).some((f) => f.path === path)) return "A file with that path already exists.";
+    return null;
+  }
+
+  // Prefix a base-relative path with the workspace base dir (the manifest dir).
+  function withBase(rel) {
+    return workspace?.base ? `${workspace.base}/${rel}` : rel;
+  }
+
+  function startNewFile() {
+    if (!workspace) return;
+    dialog = {
+      title: "New .pds file",
+      label: "Module path",
+      placeholder: "banking/core",
+      value: "",
+      confirmLabel: "Create",
+      hint: "A .pds extension is added automatically. Use / for subfolders.",
+      validate: validateNewFile,
+      run: createNewFile,
+    };
+  }
+
+  async function createNewFile(name) {
+    const rel = normalizePdsPath(name);
+    const path = withBase(rel);
+    const fqn = fqnOf(path, workspace.base ?? "");
+    const skeleton = pdsSkeleton(fqn);
+    let handle = null;
+    if (workspace.root) {
+      try {
+        handle = await createFile(workspace.root, path, skeleton);
+      } catch (e) {
+        notify("error", "Couldn't create file", String(e?.message ?? e));
+        return;
+      }
+    }
+    const newFile = { path, fqn, handle };
+    const files = [...workspace.files, newFile].sort((a, b) => a.fqn.localeCompare(b.fqn));
+    applyFileSet(files, { seed: { [fqn]: skeleton } });
+    selectFile(newFile);
+    notify("success", `Created ${rel}`);
+  }
+
+  // ---- T10: new doc (.md + [[doc.sidebar]] registration) -------------------
+  function slugify(title) {
+    return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  // Every doc path already in the live sidebar (base-relative).
+  function docPathSet() {
+    const set = new Set();
+    for (const g of docGroups) for (const it of g.items) set.add(it.path);
+    return set;
+  }
+
+  function validateNewDoc(title) {
+    const t = title.trim();
+    if (!t) return "Title can't be empty.";
+    const slug = slugify(t);
+    if (!slug) return "Title needs at least one letter or number.";
+    if (docPathSet().has(`docs/${slug}.md`)) return `A doc at docs/${slug}.md already exists.`;
+    return null;
+  }
+
+  function startNewDoc() {
+    if (!workspace) return;
+    dialog = {
+      title: "New doc page",
+      label: "Page title",
+      placeholder: "Release Notes",
+      value: "",
+      confirmLabel: "Create",
+      hint: "Saved as docs/<slug>.md and added to the sidebar.",
+      validate: validateNewDoc,
+      run: createNewDoc,
+    };
+  }
+
+  async function createNewDoc(title) {
+    const path = `docs/${slugify(title)}.md`;
+    const body = `# ${title}\n\nDescribe ${title} here.\n`;
+
+    let handle = null;
+    if (workspace.root) {
+      try {
+        handle = await createFile(workspace.root, withBase(path), body);
+      } catch (e) {
+        notify("error", "Couldn't create doc", String(e?.message ?? e));
+        return;
+      }
+    }
+
+    // Register in the manifest: append to the first sidebar group, or a new
+    // "Docs" group when none exist. Reuse the wasm manifest model, then
+    // serialise back to TOML.
+    let toml;
+    try {
+      const manifest = docManifest(workspace.manifestToml ?? "");
+      const sidebar = (manifest.sidebar ?? []).map((g) => ({ title: g.title, items: [...(g.items ?? [])] }));
+      if (sidebar.length === 0) sidebar.push({ title: "Docs", items: [] });
+      sidebar[0].items.push({ title, path });
+      toml = serializeManifest(workspace.manifestToml ?? "", { ...manifest, sidebar });
+    } catch (e) {
+      if (handle && workspace.root) {
+        try {
+          await deletePath(workspace.root, withBase(path)); // don't orphan an unregistered page
+        } catch {}
+      }
+      notify("error", "Couldn't register doc", String(e?.message ?? e));
+      return;
+    }
+
+    // Live: add to docGroups + docSources so the sidebar/preview update now.
+    const item = { title, path, handle };
+    docSources = { ...docSources, [path]: body };
+    if (workspace.root && handle) seedBaseline([{ key: path, text: body }]);
+    docGroups = docGroups.length
+      ? docGroups.map((g, i) => (i === 0 ? { ...g, items: [...g.items, item] } : g))
+      : [{ title: "Docs", items: [item] }];
+
+    try {
+      await persistManifest(toml);
+    } catch (e) {
+      notify("error", "Saved the page, but couldn't write pds.toml", String(e?.message ?? e));
+    }
+    openDoc(item);
+    notify("success", `Created ${path}`);
+  }
+
+  // ---- T11: rename / move / delete .pds ------------------------------------
+  function validateRename(file, name) {
+    const err = validateNewFile(name);
+    if (!err) return null;
+    // Allow the unchanged name, and a collision only against the file itself.
+    if (err === "A file with that path already exists.") {
+      const target = withBase(normalizePdsPath(name));
+      if (!(workspace?.files ?? []).some((f) => f !== file && f.path === target)) return null;
+    }
+    return err;
+  }
+
+  function startRenameFile(file) {
+    if (!workspace) return;
+    const rel = workspace.base ? file.path.slice(workspace.base.length + 1) : file.path;
+    dialog = {
+      title: "Rename module",
+      label: "Module path",
+      placeholder: "banking/core",
+      value: rel.replace(/\.pds$/, ""),
+      confirmLabel: "Rename",
+      hint: "Renaming changes the module FQN; importers of the old name may dangle.",
+      validate: (name) => validateRename(file, name),
+      run: (name) => renameFile(file, name),
+    };
+  }
+
+  async function renameFile(file, name) {
+    const newPath = withBase(normalizePdsPath(name));
+    if (newPath !== file.path) await relocate(file, newPath);
+  }
+
+  // Drag-and-drop move: `destDir` is a base-relative directory ("" = root).
+  async function moveFile({ file, destDir }) {
+    const leaf = file.path.split("/").pop();
+    const prefix = destDir ? withBase(destDir) : (workspace.base ?? "");
+    const newPath = prefix ? `${prefix}/${leaf}` : leaf;
+    if (newPath === file.path) return; // same folder → no-op
+    if ((workspace.files ?? []).some((f) => f.path === newPath)) {
+      notify("error", "Can't move file", "A file with that name already exists there.");
+      return;
+    }
+    await relocate(file, newPath);
+  }
+
+  // Shared rename/move core: disk move (with rollback), then memory rekey.
+  async function relocate(file, newPath) {
+    const newFqn = fqnOf(newPath, workspace.base ?? "");
+    const source = moduleSources[file.fqn] ?? "";
+    let handle = file.handle;
+    if (workspace.root) {
+      try {
+        handle = await movePath(workspace.root, file.path, newPath, source);
+      } catch (e) {
+        notify("error", "Couldn't move file", String(e?.message ?? e)); // disk unchanged → leave memory
+        return;
+      }
+    }
+    const updated = { path: newPath, fqn: newFqn, handle };
+    const files = workspace.files.map((f) => (f === file ? updated : f)).sort((a, b) => a.fqn.localeCompare(b.fqn));
+    applyFileSet(files, { rename: { from: file.fqn, to: newFqn } });
+    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === file.fqn) openFile = updated;
+    const importers = danglingImporters(newFqn, file.fqn);
+    if (importers.length) notify("info", `Renamed to ${newFqn}`, `${importers.length} module(s) still import the old name.`);
+    else notify("success", `Renamed to ${newFqn}`);
+  }
+
+  // Best-effort scan for modules whose source still references the old FQN — a
+  // warn-only signal (we do not auto-rewrite importers; see T11 decision). An
+  // FQN appears verbatim in import/alias statements, so a substring test suffices.
+  function danglingImporters(newFqn, oldFqn) {
+    return workspace.files
+      .filter((f) => f.fqn !== newFqn && (moduleSources[f.fqn] ?? "").includes(oldFqn))
+      .map((f) => f.fqn);
+  }
+
+  function requestDeleteFile(file) {
+    if (!workspace) return;
+    confirmDialog = {
+      title: "Delete module",
+      message: `Delete ${file.fqn}? This removes the file from disk and the model. Importers will dangle.`,
+      confirmLabel: "Delete",
+      run: () => deleteFile(file),
+    };
+  }
+
+  async function deleteFile(file) {
+    if (workspace.root) {
+      try {
+        await deletePath(workspace.root, file.path);
+      } catch (e) {
+        notify("error", "Couldn't delete file", String(e?.message ?? e));
+        return;
+      }
+    }
+    const files = workspace.files.filter((f) => f !== file);
+    applyFileSet(files, { drop: [file.fqn] });
+    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === file.fqn) {
+      if (files[0]) selectFile(files[0]);
+      else openFile = null;
+    }
+    notify("success", `Deleted ${file.fqn}`);
+  }
+
   // Load a bundled example (edits are session-only). Called from the project
   // panel's examples block.
   function openSample(id) {
@@ -1156,6 +1487,53 @@
   }}
 />
 
+{#if dialog}
+  <PromptDialog
+    title={dialog.title}
+    label={dialog.label}
+    placeholder={dialog.placeholder}
+    value={dialog.value}
+    confirmLabel={dialog.confirmLabel}
+    hint={dialog.hint}
+    validate={dialog.validate}
+    onconfirm={(v) => {
+      const run = dialog.run;
+      dialog = null;
+      run?.(v);
+    }}
+    oncancel={() => (dialog = null)}
+  />
+{/if}
+
+{#if confirmDialog}
+  <div
+    class="confirm-backdrop"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) confirmDialog = null;
+    }}
+  >
+    <div class="confirm" role="alertdialog" aria-modal="true" aria-label={confirmDialog.title}>
+      <h2>{confirmDialog.title}</h2>
+      <p>{confirmDialog.message}</p>
+      <div class="confirm-actions">
+        <button class="ghost" type="button" onclick={() => (confirmDialog = null)}>Cancel</button>
+        <button
+          class="danger"
+          type="button"
+          onclick={() => {
+            const run = confirmDialog.run;
+            confirmDialog = null;
+            run?.();
+          }}
+        >
+          {confirmDialog.confirmLabel ?? "Delete"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <Notifications {notes} ondismiss={dismissNote} />
 
 {#if ready && projectOpen}
@@ -1333,9 +1711,15 @@
           {errorPaths}
           {dirtyPaths}
           manifestPath={workspace?.manifest?.path ?? null}
+          base={workspace?.base ?? ""}
           onmanifestopen={openManifest}
           onopen={selectFile}
           onpicknode={(fqn) => selectNode(fqn, { goto: true })}
+          oncreatefile={startNewFile}
+          oncreatedoc={startNewDoc}
+          onrenamefile={startRenameFile}
+          onmovefile={moveFile}
+          ondeletefile={requestDeleteFile}
         />
       </section>
 
@@ -1421,6 +1805,61 @@
 </div>
 
 <style>
+  /* destructive-action confirm modal (file delete) */
+  .confirm-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--bg, #000) 62%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .confirm {
+    width: min(26rem, calc(100vw - 2rem));
+    background: var(--surface, #fff);
+    border: 1px solid var(--line);
+    border-radius: var(--radius, 10px);
+    padding: 1.1rem 1.2rem 1.2rem;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  .confirm h2 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+    color: var(--ink);
+  }
+  .confirm p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+  }
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1.1rem;
+  }
+  .confirm-actions button {
+    padding: 0.45rem 0.85rem;
+    font-size: 0.8rem;
+    border-radius: var(--radius-sm, 6px);
+    cursor: pointer;
+    border: 1px solid var(--line);
+  }
+  .confirm-actions .ghost {
+    background: transparent;
+    color: var(--ink-soft);
+  }
+  .confirm-actions .ghost:hover {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  .confirm-actions .danger {
+    background: var(--err);
+    border-color: var(--err);
+    color: #fff;
+  }
+
   .app {
     display: grid;
     grid-template-rows: var(--topbar-h) 1fr var(--status-h);

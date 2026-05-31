@@ -295,7 +295,7 @@
         border: "1px solid var(--line-strong)",
         borderRadius: "var(--radius-sm)",
         background: "var(--surface)",
-        boxShadow: "0 18px 40px rgba(0, 0, 0, 0.45)",
+        boxShadow: "var(--shadow-md)",
         overflow: "hidden",
       },
       // Two-class selector to match (and outrank, by injection order)
@@ -724,7 +724,7 @@
     background: var(--surface-2);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.85);
+    box-shadow: var(--shadow-md);
   }
   .um-head {
     position: sticky;

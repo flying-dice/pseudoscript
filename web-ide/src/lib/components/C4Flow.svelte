@@ -9,8 +9,13 @@
   import Dagre from "@dagrejs/dagre";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
+  import { theme } from "$lib/theme.svelte.js";
 
   let { scene, onpick, onup, flows = null } = $props();
+
+  // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
+  // grid, minimap, controls) follows light/dark instead of being pinned dark.
+  const colorMode = $derived(theme.resolved === "light" ? "light" : "dark");
 
   const nodeTypes = { boundary: BoundaryNode, card: C4Node };
 
@@ -171,7 +176,7 @@
     bind:edges
     {nodeTypes}
     fitView
-    colorMode="dark"
+    {colorMode}
     minZoom={0.2}
     maxZoom={2.5}
     nodesDraggable={false}
@@ -234,7 +239,7 @@
     background: var(--surface-2);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    box-shadow: 0 18px 48px -18px rgba(0, 0, 0, 0.85);
+    box-shadow: var(--shadow-lg);
   }
   .popover .kind {
     display: inline-block;

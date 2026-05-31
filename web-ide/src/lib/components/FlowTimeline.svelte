@@ -9,8 +9,13 @@
   import SequenceLifeline from "./SequenceLifeline.svelte";
   import SequenceFragment from "./SequenceFragment.svelte";
   import SequenceMessages from "./SequenceMessages.svelte";
+  import { theme } from "$lib/theme.svelte.js";
 
   let { scene, layout, oninfo = null, oninfoend = null, onusages = null, typeFqn = null } = $props();
+
+  // Drive Svelte Flow's colour mode from the app theme so the canvas follows
+  // light/dark instead of being pinned dark.
+  const colorMode = $derived(theme.resolved === "light" ? "light" : "dark");
 
   const nodeTypes = {
     lifeline: SequenceLifeline,
@@ -103,7 +108,7 @@
       bind:edges
       {nodeTypes}
       fitView
-      colorMode="dark"
+      {colorMode}
       minZoom={0.2}
       maxZoom={2.5}
       nodesDraggable={false}

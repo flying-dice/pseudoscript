@@ -69,7 +69,7 @@
     background: var(--surface-2);
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.8);
+    box-shadow: var(--shadow-md);
   }
   .depth button {
     padding: 0.28rem 0.6rem;

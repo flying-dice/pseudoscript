@@ -74,7 +74,7 @@
     border: 1px solid var(--line-strong);
     border-left: 3px solid var(--k, var(--ink-faint));
     border-radius: var(--radius-sm);
-    box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.8);
+    box-shadow: var(--shadow-md);
   }
   .seq-card.interactive { pointer-events: auto; cursor: pointer; }
   .seq-card.interactive:hover { border-color: var(--accent); }

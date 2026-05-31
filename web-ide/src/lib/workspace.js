@@ -217,12 +217,75 @@ export async function writeSite(root, files, dir = "target/doc") {
 }
 
 /** Resolves a writable file handle at `path` under `root`, creating dirs. */
-async function fileHandleAt(root, path) {
+export async function fileHandleAt(root, path) {
   const parts = path.split("/");
   const name = parts.pop();
   let dir = root;
   for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
   return dir.getFileHandle(name, { create: true });
+}
+
+/**
+ * Resolves the parent directory handle for `path` under `root`, returning
+ * `{ dir, name }` where `name` is the leaf segment. With `create`, intermediate
+ * directories are created; otherwise they must already exist.
+ */
+export async function parentDirFor(root, path, { create = false } = {}) {
+  const parts = path.split("/").filter(Boolean);
+  const name = parts.pop();
+  let dir = root;
+  for (const part of parts) dir = await dir.getDirectoryHandle(part, { create });
+  return { dir, name };
+}
+
+/**
+ * Creates a file at `path` under `root` (creating intermediate directories),
+ * seeds it with `contents`, and returns its handle — the IDE's new-file/new-doc
+ * disk primitive. Throws on a failed write so the caller can roll back any
+ * in-memory change.
+ */
+export async function createFile(root, path, contents = "") {
+  const handle = await fileHandleAt(root, path);
+  await writeFile(handle, contents);
+  return handle;
+}
+
+/**
+ * Renames or moves the file at `oldPath` to `newPath` under `root`. The FS
+ * Access API has no atomic rename/move, so this creates the destination, writes
+ * the (provided or read) source, then removes the source. A failed write removes
+ * the half-created destination and rethrows, so neither disk nor the caller's
+ * memory is left half-applied. Returns the new file handle.
+ */
+export async function movePath(root, oldPath, newPath, contents = null) {
+  const text = contents ?? (await readFile(await openHandleAt(root, oldPath)));
+  const newHandle = await fileHandleAt(root, newPath);
+  try {
+    await writeFile(newHandle, text);
+  } catch (err) {
+    try {
+      const { dir, name } = await parentDirFor(root, newPath);
+      await dir.removeEntry(name);
+    } catch {}
+    throw err;
+  }
+  // Destination is durable; drop the source. A failure here would leave a
+  // duplicate, so surface it.
+  const { dir, name } = await parentDirFor(root, oldPath);
+  await dir.removeEntry(name);
+  return newHandle;
+}
+
+/** Deletes the file at `path` under `root`. */
+export async function deletePath(root, path) {
+  const { dir, name } = await parentDirFor(root, path);
+  await dir.removeEntry(name);
+}
+
+/** Resolves an existing file handle at `path` under `root` (no create). */
+async function openHandleAt(root, path) {
+  const { dir, name } = await parentDirFor(root, path);
+  return dir.getFileHandle(name);
 }
 
 /**
@@ -253,7 +316,35 @@ function underBase(path, base) {
 }
 
 /** Path → module FQN, relative to the manifest `base` directory. */
-function fqnOf(path, base) {
+export function fqnOf(path, base) {
   const rel = base === "" ? path : path.slice(base.length + 1);
   return rel.replace(/\.pds$/, "").split("/").join("::");
+}
+
+/**
+ * Re-serialises a `pds.toml` after a programmatic sidebar change (T10 new doc).
+ * It preserves the original text up to the first `[[doc.sidebar]]` table (the
+ * `[package]`/`[doc]` tables, comments, formatting) and regenerates every
+ * `[[doc.sidebar]]` group from `manifest.sidebar`. With no original sidebar, the
+ * regenerated groups are appended. Only the sidebar section is rebuilt — the one
+ * part these flows mutate — not a general TOML round-trip.
+ */
+export function serializeManifest(originalToml, manifest) {
+  const text = originalToml ?? "";
+  const idx = text.search(/^\[\[doc\.sidebar\]\]/m);
+  const head = (idx === -1 ? text : text.slice(0, idx)).replace(/\s*$/, "\n");
+  const groups = (manifest.sidebar ?? [])
+    .map((g) => {
+      const items = (g.items ?? [])
+        .map((it) => `  { title = ${tomlStr(it.title)}, path = ${tomlStr(it.path)} },`)
+        .join("\n");
+      return `[[doc.sidebar]]\ntitle = ${tomlStr(g.title)}\nitems = [\n${items}\n]\n`;
+    })
+    .join("\n");
+  return groups ? `${head}\n${groups}` : head;
+}
+
+/** A double-quoted TOML basic string (escapes `\` and `"`). */
+function tomlStr(s) {
+  return `"${String(s ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }

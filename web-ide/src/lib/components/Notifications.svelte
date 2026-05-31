@@ -38,7 +38,7 @@
     border: 1px solid var(--line-strong);
     border-left: 3px solid var(--accent);
     border-radius: var(--radius);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-md);
     padding: 0.7rem 0.8rem;
     animation: slide-in 0.24s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   }

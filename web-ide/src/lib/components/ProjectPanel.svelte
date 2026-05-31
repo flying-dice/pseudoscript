@@ -154,7 +154,7 @@
     background-color: var(--surface);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
-    box-shadow: 0 30px 80px -28px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-lg), 0 0 0 1px var(--line);
     animation: dossier-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
   @keyframes dossier-in {
