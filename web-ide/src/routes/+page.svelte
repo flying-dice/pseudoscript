@@ -346,21 +346,46 @@
     return m;
   });
 
+  // A minimal single-lifeline scene for a selected symbol that has nothing to
+  // project (a leaf node with no structure, or a data type) — so the canvas
+  // reads as "this exists, no interactions yet" rather than a blank note.
+  function singleLifelineScene(sel) {
+    const node = nodeIndex.get(sel.fqn)?.node;
+    return {
+      participants: [
+        { fqn: sel.fqn, label: node?.name ?? sel.fqn.split("::").at(-1), kind: node?.kind ?? "participant" },
+      ],
+      messages: [],
+      fragments: [],
+    };
+  }
+
   // The CANVAS diagram: the selected node's fitting view, or the whole-model
   // context overview when nothing is selected. The compiler picks the view; a
   // sequence scene is then collapsed to the chosen depth in the IDE.
   const canvas = $derived.by(() => {
     if (!ready || !workspace) return { scene: null, error: "" };
+    const lifelineFallback = () => {
+      const scene = singleLifelineScene(selected);
+      return { scene, layout: layoutScene(scene), error: "" };
+    };
     try {
-      const scene = selected
+      const raw = selected
         ? symbolScene(allModules, selected.fqn)
         : emitSceneModules(allModules, "context", "");
-      const isSeq = scene && Array.isArray(scene.participants);
-      const shown = isSeq ? collapseSequence(scene, seqDepth, nodeInfo) : scene;
+      const isSeq = raw && Array.isArray(raw.participants);
+      const shown = isSeq ? collapseSequence(raw, seqDepth, nodeInfo) : raw;
+      // Nothing to draw for a selected symbol → fall back to its own lifeline
+      // (an empty whole-model context still shows the placeholder note).
+      const isEmpty = isSeq ? !shown?.participants?.length : !shown?.nodes?.length;
+      if (isEmpty && selected) return lifelineFallback();
       // A sequence scene is positioned by the layout engine; C4 stays as-is.
       const layout = isSeq ? layoutScene(shown) : null;
       return { scene: shown, layout, error: "" };
     } catch (e) {
+      // Unprojectable (e.g. a data type) — still show the symbol as a lifeline
+      // when one is selected, rather than an error note.
+      if (selected) return lifelineFallback();
       return { scene: null, layout: null, error: String(e?.message ?? e) };
     }
   });
