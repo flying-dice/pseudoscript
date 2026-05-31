@@ -450,22 +450,80 @@
     return { kind: hit.node.kind, title: info?.title || hit.node.name, body: info?.body || "" };
   }
 
+  // Hover-intent: mouseleave on a lifeline/node schedules a hide, but moving the
+  // pointer onto the popover (to click an action) cancels it. Without this bridge
+  // the card vanishes before its buttons can be reached.
+  let canvasInfoHideTimer = null;
+  function cancelCanvasInfoHide() {
+    if (canvasInfoHideTimer) {
+      clearTimeout(canvasInfoHideTimer);
+      canvasInfoHideTimer = null;
+    }
+  }
+
   function showCanvasInfo(fqn, e) {
+    cancelCanvasInfoHide();
     const at = { fqn, x: e.clientX, y: e.clientY };
     if (ACTOR_DOC[fqn]) {
       canvasInfo = { ...ACTOR_DOC[fqn], ...at };
       return;
     }
-    // An `event:<fqn>` actor documents the event node it names.
+    // An `event:<fqn>` actor documents the event node it names. Only a real,
+    // resolvable node carries actions (definition / usages / source); synthetic
+    // event and trigger actors keep the plain info card.
     const real = fqn.startsWith("event:") ? fqn.slice(6) : resolveNodeFqn(fqn);
     const doc = real ? docFor(real) : null;
     canvasInfo = doc
-      ? { ...doc, fqn: real, x: e.clientX, y: e.clientY }
+      ? { ...doc, fqn: real, actions: nodeIndex.has(real), x: e.clientX, y: e.clientY }
       : fqn.startsWith("event:")
         ? { kind: "system", title: fqn.slice(6), body: "Triggered by this event.", ...at }
         : null;
   }
-  const hideCanvasInfo = () => (canvasInfo = null);
+  // Delayed hide, so the pointer can bridge from the lifeline to the popover.
+  function hideCanvasInfo() {
+    cancelCanvasInfoHide();
+    canvasInfoHideTimer = setTimeout(() => {
+      canvasInfo = null;
+      canvasInfoHideTimer = null;
+    }, 120);
+  }
+
+  // Canvas-popover actions, mirroring the code hover (definition / usages /
+  // canvas), but the third opens the source instead of the canvas.
+  function canvasInfoGoto() {
+    if (!canvasInfo?.fqn) return;
+    const fqn = canvasInfo.fqn;
+    canvasInfo = null;
+    selectNode(fqn); // drill the canvas to the node (stays on the canvas)
+  }
+  function canvasInfoUsages() {
+    if (!canvasInfo?.fqn) return;
+    // Anchor the usages list where the info card sat.
+    showCanvasUsages(canvasInfo.fqn, { clientX: canvasInfo.x, clientY: canvasInfo.y });
+  }
+  function canvasInfoCode() {
+    if (!canvasInfo?.fqn) return;
+    const fqn = canvasInfo.fqn;
+    canvasInfo = null;
+    openSymbolInCode(fqn);
+  }
+
+  // Open a node's declaration in the code editor, unconditionally switching to
+  // the code view (unlike selectNode's goto, which leaves the canvas put).
+  function openSymbolInCode(fqn) {
+    const hit = nodeIndex.get(fqn);
+    if (!hit) return;
+    const file = workspace?.files.find((f) => f.fqn === hit.fileFqn);
+    if (!file) return;
+    if (openFile?.fqn !== file.fqn) {
+      flushSave();
+      openFile = file;
+    }
+    selected = { fqn, line: hit.node.line, col: hit.node.col, fileFqn: file.fqn };
+    view = "code";
+    pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn: file.fqn };
+    recordLocation({ fileFqn: file.fqn, line: hit.node.line, col: hit.node.col, fqn, label: nodeTitle(fqn) });
+  }
 
   function showCanvasUsages(fqn, e) {
     if (ACTOR_DOC[fqn]) {
@@ -1589,11 +1647,25 @@ system ${pascalName(leaf)} {
 
 <!-- Canvas hover info: kind eyebrow, name, FQN, anchored at the pointer. -->
 {#if canvasInfo}
-  <div class="canvas-pop info" style="left:{canvasInfo.x + 14}px; top:{canvasInfo.y + 14}px">
+  <div
+    class="canvas-pop info"
+    class:interactive={canvasInfo.actions}
+    style="left:{canvasInfo.x + 14}px; top:{canvasInfo.y + 14}px"
+    role="tooltip"
+    onmouseenter={cancelCanvasInfoHide}
+    onmouseleave={hideCanvasInfo}
+  >
     <span class="kind {canvasInfo.kind}">{canvasInfo.kind}</span>
     <span class="name">{canvasInfo.title}</span>
     {#if canvasInfo.body}<p class="doc">{canvasInfo.body}</p>{/if}
     <span class="fqn">{canvasInfo.fqn}</span>
+    {#if canvasInfo.actions}
+      <div class="pop-actions">
+        <button type="button" onclick={canvasInfoGoto}>Go to definition</button>
+        <button type="button" onclick={canvasInfoUsages}>Find usages</button>
+        <button type="button" onclick={canvasInfoCode}>Code view</button>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -2351,6 +2423,32 @@ system ${pascalName(leaf)} {
     pointer-events: auto;
   }
   .canvas-pop.info { display: flex; flex-direction: column; gap: 0.15rem; pointer-events: none; }
+  .canvas-pop.info.interactive { pointer-events: auto; }
+  .canvas-pop .pop-actions {
+    display: flex;
+    gap: 6px;
+    padding-top: 0.5rem;
+    margin-top: 0.4rem;
+    border-top: 1px solid var(--line);
+  }
+  .canvas-pop .pop-actions button {
+    flex: 1;
+    font: inherit;
+    font-size: 11px;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .canvas-pop .pop-actions button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
   .canvas-pop .kind {
     font-family: var(--font-mono);
     font-size: 0.52rem;
