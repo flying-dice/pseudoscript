@@ -15,6 +15,7 @@
 //! - `pds install` — restore `pds_modules/` from `pds.lock` ([`deps`]).
 
 mod deps;
+mod monorepo;
 mod upgrade;
 mod workspace;
 
@@ -56,8 +57,14 @@ enum Command {
     Lsp,
     /// Check a file and report diagnostics (exit non-zero on any error).
     Check {
-        /// The `.pds` file to check.
+        /// The `.pds` file to check — or, with `--all`, a root directory to
+        /// discover workspaces under. Defaults to the current directory.
+        #[arg(default_value = ".")]
         file: PathBuf,
+        /// Check every `pds.toml` workspace discovered under the path, with
+        /// cross-workspace dependency resolution. Exits non-zero if any fails.
+        #[arg(long)]
+        all: bool,
     },
     /// Format a file to canonical `PseudoScript`.
     Fmt {
@@ -88,6 +95,10 @@ enum Command {
         /// Port for the server (with `--serve` or `--watch`).
         #[arg(long, default_value_t = 8000)]
         port: u16,
+        /// Generate docs for every `pds.toml` workspace discovered under the
+        /// path. Incompatible with `--serve`/`--watch`.
+        #[arg(long, conflicts_with_all = ["serve", "watch"])]
+        all: bool,
     },
     /// Download and install a release over the running binary.
     Upgrade {
@@ -116,6 +127,19 @@ enum Command {
     },
     /// Restore `pds_modules/` from `pds.lock`.
     Install,
+    /// Re-resolve git dependencies, repinning `pds.lock` to current commits.
+    Update,
+    /// Remove a dependency from `pds.toml` and `pds.lock`.
+    Remove {
+        /// The dependency name to remove.
+        name: String,
+    },
+    /// List every `pds.toml` workspace under a root directory.
+    List {
+        /// The root to search. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -123,7 +147,13 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Init { path, name } => cmd_init(&path, name.as_deref()),
         Command::Lsp => run_lsp(),
-        Command::Check { file } => cmd_check(&file),
+        Command::Check { file, all } => {
+            if all {
+                cmd_check_all(&file)
+            } else {
+                cmd_check(&file)
+            }
+        }
         Command::Fmt { file, write } => cmd_fmt(&file, write),
         Command::Tokens { file } => cmd_tokens(&file),
         Command::Doc {
@@ -131,7 +161,14 @@ fn main() -> ExitCode {
             serve,
             watch,
             port,
-        } => cmd_doc(&path, serve, watch, port),
+            all,
+        } => {
+            if all {
+                cmd_doc_all(&path)
+            } else {
+                cmd_doc(&path, serve, watch, port)
+            }
+        }
         Command::Upgrade { version } => cmd_upgrade(version),
         Command::Add {
             url,
@@ -142,6 +179,9 @@ fn main() -> ExitCode {
             name,
         } => cmd_add(&url, tag, rev, branch, path, name),
         Command::Install => cmd_install(),
+        Command::Update => report(deps::update(Path::new("."))),
+        Command::Remove { name } => report(deps::remove(Path::new("."), &name)),
+        Command::List { root } => cmd_list(&root),
     }
 }
 
@@ -167,6 +207,108 @@ fn cmd_add(
 /// `pds install`: restore `pds_modules/` from `pds.lock`.
 fn cmd_install() -> ExitCode {
     report(deps::install(Path::new(".")))
+}
+
+/// `pds list`: print every discovered `pds.toml` workspace under `root`.
+fn cmd_list(root: &Path) -> ExitCode {
+    match monorepo::discover(root) {
+        Ok(roots) if roots.is_empty() => {
+            eprintln!("no `pds.toml` workspace found under {}", root.display());
+            ExitCode::FAILURE
+        }
+        Ok(roots) => {
+            for ws in roots {
+                println!("{}", ws.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `pds check --all`: check every discovered workspace under `root`, resolving
+/// each workspace's declared dependencies. Exits non-zero if any workspace has
+/// an error-severity diagnostic or fails to load.
+fn cmd_check_all(root: &Path) -> ExitCode {
+    let roots = match monorepo::discover(root) {
+        Ok(roots) if roots.is_empty() => {
+            eprintln!("no `pds.toml` workspace found under {}", root.display());
+            return ExitCode::FAILURE;
+        }
+        Ok(roots) => roots,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut had_error = false;
+    for ws in &roots {
+        println!("checking {}", ws.display());
+        had_error |= check_one_workspace(ws);
+    }
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Loads and checks one workspace, printing each diagnostic with its workspace
+/// path. Returns whether the workspace produced an error (a load failure or an
+/// error-severity diagnostic).
+fn check_one_workspace(root: &Path) -> bool {
+    let project = match workspace::load(root) {
+        Ok(project) => project,
+        Err(err) => {
+            eprintln!("error: {}: {err:#}", root.display());
+            return true;
+        }
+    };
+    let diagnostics = check_workspace_with_externals(&project.modules, &project.dependencies);
+    let mut had_error = false;
+    for diag in &diagnostics {
+        eprintln!(
+            "{}: {}: {}",
+            root.display(),
+            severity_label(diag.severity),
+            diag.message
+        );
+        had_error |= diag.is_error();
+    }
+    had_error
+}
+
+/// `pds doc --all`: generate docs for every discovered workspace under `root`.
+/// Exits non-zero if any workspace fails to build.
+fn cmd_doc_all(root: &Path) -> ExitCode {
+    let roots = match monorepo::discover(root) {
+        Ok(roots) if roots.is_empty() => {
+            eprintln!("no `pds.toml` workspace found under {}", root.display());
+            return ExitCode::FAILURE;
+        }
+        Ok(roots) => roots,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut failed = false;
+    for ws in &roots {
+        if let Err(err) = build_site(ws, true) {
+            eprintln!("error: {}: {err:#}", ws.display());
+            failed = true;
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Maps a unit-or-error command result to an exit code, printing the error.
@@ -281,9 +423,25 @@ fn default_project_name(path: &Path) -> String {
         )
 }
 
-/// `pds check`: print `path:line:col: severity: message` per diagnostic and
-/// exit non-zero if any error-severity diagnostic was produced.
+/// `pds check`: check a single `.pds` file, or — when given a directory — the
+/// workspace rooted there (with its declared dependencies resolved). Prints
+/// `path:line:col: severity: message` per diagnostic and exits non-zero if any
+/// error-severity diagnostic was produced.
 fn cmd_check(path: &Path) -> ExitCode {
+    if path.is_dir() {
+        let root = match workspace::find_root(path) {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return if check_one_workspace(&root) {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
     let src = match read(path) {
         Ok(src) => src,
         Err(code) => return code,

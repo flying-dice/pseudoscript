@@ -35,16 +35,37 @@ const LOCK_VERSION: u32 = 1;
 // Manifest `[dependencies]` model
 // ---------------------------------------------------------------------------
 
-/// A `[dependencies]` entry as written in `pds.toml` (§8.4).
+/// A `[dependencies]` entry as written in `pds.toml` (`LANG.md` §8.4).
+///
+/// The source is selected by `git` (ADR-024, ADR-026): present → a git source,
+/// absent → a local source whose `path` names a sibling workspace. `path` is
+/// overloaded — under git it is the in-repo subdirectory, under local it is the
+/// manifest-relative directory.
 #[derive(Debug, Clone, Deserialize)]
 struct DepSpec {
-    /// The git source URL.
-    git: String,
+    /// The git source URL, or `None` for a local source.
+    git: Option<String>,
     tag: Option<String>,
     rev: Option<String>,
     branch: Option<String>,
-    /// The dependency workspace's directory within the repo (default = root).
+    /// Under a git source: the dependency workspace's directory within the repo
+    /// (default = root). Under a local source: the sibling workspace's path,
+    /// relative to the declaring manifest.
     path: Option<String>,
+}
+
+/// The resolved source of a `[dependencies]` entry (ADR-026): a fetched git
+/// repository, or a local sibling workspace read live from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// A git source: a remote URL, a revision selector, and an in-repo subdir.
+    Git {
+        url: String,
+        selector: Rev,
+        sub: String,
+    },
+    /// A local source: a manifest-relative path to a sibling workspace.
+    Local { path: String },
 }
 
 /// A resolved revision selector: at most one of tag/rev/branch (§8.4).
@@ -100,20 +121,53 @@ impl Rev {
 }
 
 impl DepSpec {
-    /// The dependency's revision selector.
-    fn selector(&self) -> Result<Rev> {
-        Rev::from_flags(self.tag.clone(), self.rev.clone(), self.branch.clone())
-            .with_context(|| format!("dependency `{}`", self.git))
+    /// The dependency's resolved source (ADR-024, ADR-026).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry declares no source (neither `git` nor
+    /// `path`), or if a git source sets more than one revision selector, or if
+    /// `path` escapes its base via `..` or an absolute component.
+    fn source(&self, name: &str) -> Result<Source> {
+        // A git source is selected by the presence of `git`; otherwise the entry
+        // declares a local source named by `path` (ADR-026).
+        let Some(url) = &self.git else {
+            return self.local_source(name);
+        };
+        let selector = Rev::from_flags(self.tag.clone(), self.rev.clone(), self.branch.clone())
+            .with_context(|| format!("dependency `{name}`"))?;
+        let sub = sanitize_rel_path(self.path.as_deref().unwrap_or(""))
+            .with_context(|| format!("dependency `{name}` `path`"))?;
+        Ok(Source::Git {
+            url: url.clone(),
+            selector,
+            sub,
+        })
     }
 
-    /// The in-repo workspace path, normalised (no leading/trailing slashes;
-    /// empty = repo root).
-    fn sub_path(&self) -> String {
-        self.path
-            .as_deref()
-            .unwrap_or("")
-            .trim_matches('/')
-            .to_owned()
+    /// The local source of an entry with no `git` (ADR-026): `path` names a
+    /// sibling workspace and no revision selector is allowed.
+    ///
+    /// A local `path` is manifest-relative and `..` is the normal way to reach a
+    /// sibling (`path = "../shared"`), so traversal is permitted — only an
+    /// absolute path is rejected, since it would break repo portability.
+    fn local_source(&self, name: &str) -> Result<Source> {
+        let Some(path) = self.path.as_deref() else {
+            bail!("dependency `{name}` declares no source: set `git` or `path`");
+        };
+        if self.tag.is_some() || self.rev.is_some() || self.branch.is_some() {
+            bail!("dependency `{name}`: a local `path` source takes no `tag`/`rev`/`branch`");
+        }
+        let path = path.trim_end_matches('/');
+        if path.is_empty() {
+            bail!("dependency `{name}`: local `path` is empty");
+        }
+        if Path::new(path).is_absolute() {
+            bail!("dependency `{name}`: local `path` `{path}` must be relative to the manifest");
+        }
+        Ok(Source::Local {
+            path: path.to_owned(),
+        })
     }
 }
 
@@ -263,14 +317,25 @@ pub fn install(start: &Path) -> Result<()> {
     for pkg in &lock.packages {
         let id = pkg.id();
         let dest = vendor.join(id.slug());
+        // Present and pinned to the locked commit → trust it. A present but
+        // drifted checkout (wrong HEAD, or a manifest with no git metadata) is
+        // re-fetched rather than trusted, so `install` is reproducible.
         if workspace_manifest(&dest, &id.path).is_file() {
-            continue; // already present
+            match checkout_head(&dest) {
+                Ok(head) if head == id.rev => continue,
+                Ok(head) => println!(
+                    "  re-fetching {} (HEAD {} != locked {})",
+                    id.source,
+                    short_rev(&head),
+                    short_rev(&id.rev)
+                ),
+                Err(_) => println!("  re-fetching {} (modified dependency)", id.source),
+            }
+            fs::remove_dir_all(&dest)
+                .with_context(|| format!("removing stale `{}`", dest.display()))?;
+        } else {
+            println!("  fetching {} @ {}", id.source, short_rev(&id.rev));
         }
-        println!(
-            "  fetching {} @ {}",
-            id.source,
-            &id.rev[..id.rev.len().min(12)]
-        );
         fetch_package(
             &id.source,
             &Rev::Commit(id.rev.clone()),
@@ -287,19 +352,83 @@ pub fn install(start: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Loads the modules of every *direct* dependency (§8.4) for cross-workspace
-/// resolution, each module's FQN prefixed with the dependency name (so the
-/// consumer addresses `dep::module::Node`). Returns an empty list when the
-/// workspace has no lockfile.
-///
-/// Only direct dependencies (the lock's `root` edges) are loaded; transitive
-/// packages are not addressable from the consumer.
+/// `pds update`: re-resolve git dependencies from their manifest selectors,
+/// repinning `pds.lock` to the current commit of each moving `branch`/`tag`
+/// (and re-fetching as needed). Local dependencies are unaffected — they are not
+/// lock-pinned (ADR-026).
 ///
 /// # Errors
 ///
-/// Returns an error if the lockfile is unreadable or a direct dependency is not
-/// installed under `pds_modules/`.
+/// Returns an error if no workspace root is found, a fetch fails, the graph has
+/// a cycle, or a manifest cannot be read or written.
+pub fn update(start: &Path) -> Result<()> {
+    let root = crate::workspace::find_root(start)?;
+    let manifest_path = root.join(MANIFEST);
+    let deps = read_existing_dependencies(&manifest_path)?;
+
+    // Drop any cached checkouts so a moving ref re-resolves to its current tip
+    // rather than reusing the previously fetched commit.
+    let vendor = root.join(VENDOR_DIR);
+    if vendor.exists() {
+        fs::remove_dir_all(&vendor).with_context(|| format!("clearing `{}`", vendor.display()))?;
+    }
+
+    let (root_edges, packages) = resolve_all(&root, &deps)?;
+    write_lock(&root.join(LOCKFILE), &root_edges, &packages)?;
+    ensure_gitignore(&root)?;
+    println!(
+        "Updated {} git package(s); rewrote {LOCKFILE}.",
+        packages.len()
+    );
+    Ok(())
+}
+
+/// `pds remove`: drop a `[dependencies]` entry from `pds.toml`, then re-resolve
+/// and rewrite `pds.lock` for the remaining dependencies.
+///
+/// # Errors
+///
+/// Returns an error if no workspace root is found, the dependency is not
+/// declared, a fetch fails, or a manifest cannot be read or written.
+pub fn remove(start: &Path, name: &str) -> Result<()> {
+    let root = crate::workspace::find_root(start)?;
+    let manifest_path = root.join(MANIFEST);
+    let mut deps = read_existing_dependencies(&manifest_path)?;
+    if deps.remove(name).is_none() {
+        bail!("no dependency named `{name}` in {MANIFEST}");
+    }
+
+    remove_dependency(&manifest_path, name)?;
+    let (root_edges, packages) = resolve_all(&root, &deps)?;
+    write_lock(&root.join(LOCKFILE), &root_edges, &packages)?;
+    println!("Removed dependency `{name}`; rewrote {MANIFEST} and {LOCKFILE}.");
+    Ok(())
+}
+
+/// Loads the modules of every *direct* dependency (§8.4) for cross-workspace
+/// resolution, each module's FQN prefixed with the dependency name (so the
+/// consumer addresses `dep::module::Node`). Returns an empty list when the
+/// workspace declares no dependencies.
+///
+/// Git dependencies are read from `pds_modules/` (via `pds.lock`); local
+/// dependencies are read live from disk (ADR-026). Only direct dependencies are
+/// loaded; transitive packages are not addressable from the consumer.
+///
+/// # Errors
+///
+/// Returns an error if the lockfile or manifest is unreadable, a git dependency
+/// is not installed under `pds_modules/`, or a local dependency's path is not a
+/// workspace.
 pub fn dependency_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
+    let mut modules = Vec::new();
+    modules.extend(git_dependency_modules(root)?);
+    modules.extend(local_dependency_modules(root)?);
+    Ok(modules)
+}
+
+/// Loads each direct *git* dependency's modules from `pds_modules/`, prefixed
+/// with the dependency name. Empty when the workspace has no `pds.lock`.
+fn git_dependency_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
     let lock_path = root.join(LOCKFILE);
     if !lock_path.is_file() {
         return Ok(Vec::new());
@@ -336,6 +465,29 @@ pub fn dependency_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
     Ok(modules)
 }
 
+/// Loads each direct *local* dependency's modules live from disk (ADR-026),
+/// prefixed with the dependency name. Local sources are not lock-pinned, so they
+/// are read straight from the manifest's `[dependencies]` table.
+fn local_dependency_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
+    let manifest = root.join(MANIFEST);
+    if !manifest.is_file() {
+        return Ok(Vec::new());
+    }
+    let mut modules = Vec::new();
+    for (name, spec) in read_dependencies(&manifest)? {
+        if let Source::Local { path } = spec.source(&name)? {
+            let dir = resolve_local(root, &name, &path)?;
+            for module in crate::workspace::load_modules(&dir)? {
+                modules.push(WorkspaceModule::new(
+                    format!("{name}::{}", module.fqn),
+                    module.source,
+                ));
+            }
+        }
+    }
+    Ok(modules)
+}
+
 // ---------------------------------------------------------------------------
 // Resolution graph
 // ---------------------------------------------------------------------------
@@ -358,13 +510,22 @@ fn resolve_all(
     let mut stack = Vec::new();
     let mut root_edges = Vec::new();
     for (name, spec) in deps {
-        let id = ctx.resolve(name, spec, &mut stack)?;
-        root_edges.push(LockEdge {
-            name: name.clone(),
-            source: id.source,
-            rev: id.rev,
-            path: id.path,
-        });
+        match spec.source(name)? {
+            Source::Git { url, selector, sub } => {
+                let id = ctx.resolve(name, &url, &selector, &sub, &mut stack)?;
+                root_edges.push(LockEdge {
+                    name: name.clone(),
+                    source: id.source,
+                    rev: id.rev,
+                    path: id.path,
+                });
+            }
+            // A local source is read live and records no lock entry (ADR-026):
+            // resolve it now only to validate that it names a workspace.
+            Source::Local { path } => {
+                resolve_local(root, name, &path)?;
+            }
+        }
     }
     Ok((root_edges, ctx.packages.into_values().collect()))
 }
@@ -379,23 +540,27 @@ struct Resolver {
 }
 
 impl Resolver {
-    /// Fetches and resolves `spec` (introduced as `name`), recursing into its
-    /// own dependencies, and returns its package identity.
+    /// Fetches and resolves a git `spec` (introduced as `name`), recursing into
+    /// its own dependencies, and returns its package identity.
+    ///
+    /// A git dependency MUST NOT resolve a local-source dependency of its own:
+    /// a fetched checkout cannot follow a sibling `path` out of itself
+    /// (ADR-026). Such an entry is rejected when recursed into below.
     fn resolve(
         &mut self,
         name: &str,
-        spec: &DepSpec,
+        url: &str,
+        selector: &Rev,
+        sub: &str,
         stack: &mut Vec<PackageId>,
     ) -> Result<PackageId> {
-        let selector = spec.selector()?;
-        let sub = spec.sub_path();
-        let source = normalize_source(&spec.git);
+        let source = normalize_source(url);
 
-        let rev = self.fetch(&source, &selector, &sub)?;
+        let rev = self.fetch(&source, selector, sub)?;
         let id = PackageId {
             source,
             rev,
-            path: sub,
+            path: sub.to_owned(),
         };
 
         if self.packages.contains_key(&id) {
@@ -420,7 +585,18 @@ impl Resolver {
         stack.push(id.clone());
         let mut edges = Vec::new();
         for (child_name, child_spec) in read_dependencies(&manifest)? {
-            let child = self.resolve(&child_name, &child_spec, stack)?;
+            let child = match child_spec.source(&child_name)? {
+                Source::Git { url, selector, sub } => {
+                    self.resolve(&child_name, &url, &selector, &sub, stack)?
+                }
+                // A fetched checkout cannot follow a sibling `path` out of
+                // itself: a distributed git dependency must use a git source for
+                // its own dependencies (ADR-026).
+                Source::Local { .. } => bail!(
+                    "dependency `{name}` resolves a local `path` dependency `{child_name}`: \
+                     a git dependency cannot have local-source dependencies"
+                ),
+            };
             edges.push(LockEdge {
                 name: child_name,
                 source: child.source,
@@ -544,6 +720,16 @@ fn fetch_package(
     Ok(())
 }
 
+/// The checked-out HEAD commit of the git repository at `dir`.
+fn checkout_head(dir: &Path) -> Result<String> {
+    git(&["-C", &dir.to_string_lossy(), "rev-parse", "HEAD"], None)
+}
+
+/// A short, display-friendly prefix of a commit SHA.
+fn short_rev(rev: &str) -> &str {
+    &rev[..rev.len().min(12)]
+}
+
 /// Runs `git` with `args` (optionally in `cwd`), returning trimmed stdout.
 fn git(args: &[&str], cwd: Option<&Path>) -> Result<String> {
     let mut cmd = Command::new("git");
@@ -596,8 +782,8 @@ fn write_dependency(manifest: &Path, name: &str, spec: &DepSpec) -> Result<()> {
         .context("`[dependencies]` in pds.toml is not a table")?;
 
     let mut entry = InlineTable::new();
-    entry.insert("git", Value::from(spec.git.clone()));
     for (key, value) in [
+        ("git", &spec.git),
         ("tag", &spec.tag),
         ("rev", &spec.rev),
         ("branch", &spec.branch),
@@ -609,6 +795,24 @@ fn write_dependency(manifest: &Path, name: &str, spec: &DepSpec) -> Result<()> {
     }
     table.insert(name, Item::Value(Value::InlineTable(entry)));
 
+    fs::write(manifest, doc.to_string())
+        .with_context(|| format!("writing `{}`", manifest.display()))
+}
+
+/// Removes one `[dependencies]` entry from `pds.toml`, preserving the rest of
+/// the file via `toml_edit`.
+fn remove_dependency(manifest: &Path, name: &str) -> Result<()> {
+    use toml_edit::DocumentMut;
+
+    let text = fs::read_to_string(manifest)
+        .with_context(|| format!("reading `{}`", manifest.display()))?;
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .with_context(|| format!("parsing `{}`", manifest.display()))?;
+
+    if let Some(table) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+        table.remove(name);
+    }
     fs::write(manifest, doc.to_string())
         .with_context(|| format!("writing `{}`", manifest.display()))
 }
@@ -660,11 +864,11 @@ fn ensure_gitignore(root: &Path) -> Result<()> {
 // helpers
 // ---------------------------------------------------------------------------
 
-/// Builds a `DepSpec` from CLI inputs.
+/// Builds a git-source `DepSpec` from CLI inputs.
 fn spec_from(url: &str, selector: &Rev, path: Option<String>) -> DepSpec {
     let (tag, rev, branch) = selector.to_flags();
     DepSpec {
-        git: url.to_owned(),
+        git: Some(url.to_owned()),
         tag,
         rev,
         branch,
@@ -679,6 +883,52 @@ fn workspace_manifest(dir: &Path, sub: &str) -> PathBuf {
     } else {
         dir.join(sub).join(MANIFEST)
     }
+}
+
+/// Normalises a relative dependency path and rejects traversal: trims
+/// surrounding slashes, then ensures every component is a plain name (no `..`,
+/// no absolute root). Returns the cleaned path (`""` for the repo root).
+///
+/// A git `path` addresses a directory *inside* the cloned repository, so `..`
+/// and absolute components must be rejected — they would escape the checkout and
+/// `sparse-checkout` would reject them with an opaque error.
+///
+/// # Errors
+///
+/// Returns an error if the path is absolute or contains a `..` component.
+fn sanitize_rel_path(path: &str) -> Result<String> {
+    if Path::new(path).is_absolute() {
+        bail!("`{path}` must be a relative path inside the repo, not absolute");
+    }
+    let trimmed = path.trim_matches('/');
+    let ok = Path::new(trimmed).components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if !ok {
+        bail!("`{path}` must be a relative path inside the repo, without `..` or a leading `/`");
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Resolves a local-source dependency directory relative to the consumer root
+/// and confirms it is a workspace (ADR-026). Returns the resolved workspace dir.
+///
+/// # Errors
+///
+/// Returns an error if the resolved path is not a directory or has no `pds.toml`.
+fn resolve_local(root: &Path, name: &str, path: &str) -> Result<PathBuf> {
+    let dir = root.join(path);
+    let manifest = dir.join(MANIFEST);
+    if !manifest.is_file() {
+        bail!(
+            "local dependency `{name}` at `{}` is not a workspace (no `{MANIFEST}`)",
+            dir.display()
+        );
+    }
+    Ok(dir)
 }
 
 /// A dependency name MUST be a valid FQN root segment (it roots cross-workspace
@@ -782,11 +1032,75 @@ mod tests {
         "#;
         let deps = toml::from_str::<DepsManifest>(src).unwrap().dependencies;
         assert_eq!(deps.len(), 2);
-        let banking = &deps["banking"];
-        assert_eq!(banking.selector().unwrap(), Rev::Tag("v2.1.0".into()));
-        assert_eq!(banking.sub_path(), "model");
-        assert_eq!(deps["utils"].sub_path(), "");
-        assert_eq!(deps["utils"].selector().unwrap(), Rev::Default);
+        assert_eq!(
+            deps["banking"].source("banking").unwrap(),
+            Source::Git {
+                url: "https://x/acme/banking.git".into(),
+                selector: Rev::Tag("v2.1.0".into()),
+                sub: "model".into(),
+            }
+        );
+        assert_eq!(
+            deps["utils"].source("utils").unwrap(),
+            Source::Git {
+                url: "https://x/acme/utils".into(),
+                selector: Rev::Default,
+                sub: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn local_source_when_path_and_no_git() {
+        let src = r#"
+            [dependencies]
+            shared = { path = "../shared" }
+        "#;
+        let deps = toml::from_str::<DepsManifest>(src).unwrap().dependencies;
+        assert_eq!(
+            deps["shared"].source("shared").unwrap(),
+            Source::Local {
+                path: "../shared".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn no_source_is_rejected() {
+        let spec = toml::from_str::<DepSpec>(r#"tag = "v1""#).unwrap();
+        let err = spec.source("dep").unwrap_err().to_string();
+        assert!(err.contains("declares no source"), "{err}");
+    }
+
+    #[test]
+    fn local_source_rejects_revision_selector() {
+        let spec = toml::from_str::<DepSpec>(
+            r#"path = "../x"
+tag = "v1""#,
+        )
+        .unwrap();
+        let err = spec.source("dep").unwrap_err().to_string();
+        assert!(err.contains("takes no"), "{err}");
+    }
+
+    #[test]
+    fn path_traversal_is_rejected() {
+        assert!(sanitize_rel_path("../escape").is_err());
+        assert!(sanitize_rel_path("a/../../b").is_err());
+        assert!(sanitize_rel_path("/abs").is_err());
+        assert!(sanitize_rel_path("/model/").is_err());
+        assert_eq!(sanitize_rel_path("model/core").unwrap(), "model/core");
+        assert_eq!(sanitize_rel_path("").unwrap(), "");
+    }
+
+    #[test]
+    fn git_dep_rejects_traversal_path() {
+        let spec = toml::from_str::<DepSpec>(
+            r#"git = "https://x/y"
+path = "../../etc""#,
+        )
+        .unwrap();
+        assert!(spec.source("dep").is_err());
     }
 
     #[test]

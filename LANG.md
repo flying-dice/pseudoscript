@@ -378,8 +378,11 @@ Store.fetch(id)   // alias then invoke
 ```
 
 ### 8.4 Dependencies
-A `pds.toml` `[dependencies]` table declares other workspaces, distributed via git. Each entry is one dependency.
-- An entry carries a **git source**, at most one **revision selector** (`tag`, `rev`, or `branch`; default = the remote's default-branch HEAD), and an optional **`path`** — the dependency workspace's directory within its repository (default = repo root).
+A `pds.toml` `[dependencies]` table declares other workspaces. Each entry is one dependency with one **source**, selected by the presence of `git`: a **git source** when `git` is set, a **local source** otherwise.
+- A **git source** carries a git URL, at most one **revision selector** (`tag`, `rev`, or `branch`; default = the remote's default-branch HEAD), and an optional **`path`** — the dependency workspace's directory within its repository (default = repo root).
+- A **local source** carries a **`path`** and no `git` — a filesystem path to a sibling workspace, resolved relative to the declaring `pds.toml`. A local dependency is read live from disk; it is not version-pinned and records no `pds.lock` entry (§8.5).
+- A local source MUST NOT be the resolved source of a git dependency: a consumer fetching a git dependency cannot follow its local entries (ADR-026).
+- An entry with neither `git` nor `path` declares no source and MUST be rejected.
 - Each declared name is an **FQN root** (§8.1), scoped to the declaring workspace: `dep::module::Node` addresses the node at module path `module` within dependency `dep`. The same name MAY denote different dependencies in different workspaces.
 - A cross-workspace target MUST be `public`; a private or missing target MUST be rejected (extends §8.2).
 - Only **direct** dependencies are addressable. A dependency's own dependencies are resolved so it is internally well-formed, but MUST NOT be nameable from a workspace that does not declare them.
@@ -392,6 +395,7 @@ banking = { git = "https://example.com/acme/banking.git", tag = "v2.1.0", path =
 A dependency's **identity** is `(source, revision, path)`.
 - Entries resolving to one identity are the same package. Entries differing in revision or path are distinct packages and MAY coexist; there is no version unification.
 - `pds.lock` pins the resolved graph: one entry per package — source, resolved commit, path, and dependency edges — making resolution reproducible.
+- A **local** dependency (§8.4) has no commit and no `pds.lock` entry; the resolver reads it live from disk. Its identity is its resolved path.
 
 ---
 
