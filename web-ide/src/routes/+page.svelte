@@ -1418,7 +1418,9 @@ system ${pascalName(leaf)} {
       }
       const payload = bytesToBase64Url(bytes);
       const url = `${location.origin}${location.pathname}#w=${payload}`;
-      history.replaceState(null, "", `#w=${payload}`);
+      // `window.` qualified: the component's nav `history` $state array shadows
+      // the global `history`.
+      window.history.replaceState(null, "", `#w=${payload}`);
       try {
         await navigator.clipboard.writeText(url);
         flash("Share link copied to clipboard");
@@ -1476,12 +1478,12 @@ system ${pascalName(leaf)} {
     try {
       const bytes = base64UrlToBytes(m[1]);
       mountDecoded(await decodeWorkspace(bytes));
-      history.replaceState(null, "", location.pathname + location.search);
+      window.history.replaceState(null, "", location.pathname + location.search);
       flash("Restored shared workspace");
       return true;
     } catch (e) {
       notify("error", "Could not open shared link", String(e?.message ?? e));
-      history.replaceState(null, "", location.pathname + location.search);
+      window.history.replaceState(null, "", location.pathname + location.search);
       return false;
     }
   }
@@ -1575,6 +1577,7 @@ system ${pascalName(leaf)} {
     onpickrecent={openRecent}
     onopenfolder={openFolder}
     onnewproject={newProject}
+    onimport={onimport}
     onforget={forgetRecent}
     onclose={() => (projectOpen = false)}
   />

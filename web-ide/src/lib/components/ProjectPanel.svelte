@@ -10,6 +10,7 @@
     onpicksample,
     onpickrecent,
     onopenfolder,
+    onimport,
     onforget,
     onclose,
   } = $props();
@@ -95,8 +96,12 @@
           <span class="ico" aria-hidden="true">▢</span>
           Open a folder…
         </button>
+        <button class="folder" onclick={() => onimport?.()}>
+          <span class="ico" aria-hidden="true">↧</span>
+          Import a workspace…
+        </button>
         {#if !canOpenFolder}
-          <p class="note">Local folders need a Chromium browser (File System Access API). Examples work everywhere.</p>
+          <p class="note">Local folders need a Chromium browser (File System Access API). Examples work everywhere. Import a <code>.pdsx</code> file anywhere.</p>
         {/if}
       </div>
 
