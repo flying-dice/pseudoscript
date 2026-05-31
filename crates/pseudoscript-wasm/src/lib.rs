@@ -1008,6 +1008,19 @@ mod tests {
     }
 
     #[test]
+    fn symbol_scene_projects_a_black_box_callable_as_a_sequence() {
+        // A black-box callable (signature, no body) projects a sequence with at
+        // least one message, not its owner's structural C4 view (§9.2).
+        let input = r#"[
+            {"fqn":"sys","source":"//! sys\npublic system Maps {\n  public Eta(at: Point): Result<Eta, Err>;\n}"}
+        ]"#;
+        let json = symbol_scene_impl(input, "sys::Maps::Eta").expect("projects");
+        assert!(json.contains(r#""view":"sequence""#), "{json}");
+        assert!(json.contains(r#""kind":"call""#), "{json}");
+        assert!(json.contains("sys::Maps"), "{json}");
+    }
+
+    #[test]
     fn symbol_svg_renders_a_system_to_svg() {
         // A system's container view frames its containers — `Web` appears as a card.
         let svg = symbol_svg_impl(&workspace_json(), "sys::Shop").expect("renders");

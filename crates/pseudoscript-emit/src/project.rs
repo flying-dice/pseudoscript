@@ -50,8 +50,6 @@ pub enum EmitError {
         /// The kind the node actually is.
         found: NodeKind,
     },
-    /// The sequence entry is not a callable with a disclosed body.
-    NoBody(String),
 }
 
 impl std::fmt::Display for EmitError {
@@ -68,7 +66,6 @@ impl std::fmt::Display for EmitError {
                 found.keyword(),
                 expected.keyword()
             ),
-            EmitError::NoBody(fqn) => write!(f, "callable {fqn} has no disclosed body"),
         }
     }
 }
@@ -80,15 +77,16 @@ impl std::error::Error for EmitError {}
 /// # Errors
 ///
 /// Returns [`EmitError`] when the view's target FQN does not resolve to the
-/// required node kind, or a sequence entry has no disclosed body.
+/// required node kind.
 pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
     project_view(graph, view)
 }
 
 /// Projects the diagram that best explains a single symbol, picking the view
-/// from the symbol's kind: a callable with a disclosed body traces as a
-/// sequence; a system shows its containers, a container or component its
-/// components. A bodyless callable falls back to its owner's structural view; a
+/// from the symbol's kind: any callable traces as a sequence — a disclosed body
+/// expands into a full trace, a black-box (bodyless) callable into the single
+/// inbound call + return its declared signature describes (`LANG.md` §9.2). A
+/// system shows its containers, a container or component its components; a
 /// person or `data` symbol has no boundary, so the context overview stands in.
 ///
 /// This is the compiler's "what diagram fits this symbol" decision, so a host
@@ -102,22 +100,12 @@ pub fn project_symbol(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
         .node(fqn)
         .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
     if node.kind == NodeKind::Callable {
-        return match project_view(
+        return project_view(
             graph,
             View::Sequence {
                 entry: fqn.to_owned(),
             },
-        ) {
-            // A declared-but-bodyless callable cannot trace; show where it lives.
-            Err(EmitError::NoBody(_)) => {
-                let owner = node
-                    .parent
-                    .clone()
-                    .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
-                structural_view(graph, &owner)
-            }
-            other => other,
-        };
+        );
     }
     structural_view(graph, fqn)
 }
@@ -433,11 +421,15 @@ fn require_kind<'a>(
 /// the entry's return. Calls to disclosed callees expand inline — the active
 /// lifeline switches to the callee, whose `return`s flow back to its caller —
 /// while black-box callees and recursive calls stay single messages.
+///
+/// A black-box (bodyless) entry has no trace to walk, so it projects the same
+/// single message a black-box *callee* gets inside a larger trace (`LANG.md`
+/// §9.2): an initiator calls in and the entry returns its declared type.
 fn project_sequence(graph: &Graph, entry: &str) -> Result<SequenceScene, EmitError> {
     let node = require_kind(graph, entry, NodeKind::Callable)?;
-    let body = graph
-        .body(entry)
-        .ok_or_else(|| EmitError::NoBody(entry.to_owned()))?;
+    let Some(body) = graph.body(entry) else {
+        return Ok(project_black_box(graph, node, entry));
+    };
 
     // The owner (the callable's parent node) executes the entry body. A real
     // trigger actor (client/scheduler/event) is a meaningful lifeline that calls
@@ -504,6 +496,59 @@ fn project_sequence(graph: &Graph, entry: &str) -> Result<SequenceScene, EmitErr
         participants,
         items,
     })
+}
+
+/// The minimal sequence for a black-box (bodyless) callable: an initiator
+/// lifeline calls the entry on its owner's lifeline, and the owner returns the
+/// callable's declared type (`LANG.md` §9.2 — a black-box call is a single
+/// message with no expansion). The initiator is the trigger actor when the
+/// callable bears a trigger, else a generic `caller`; unlike a disclosed entry,
+/// the `caller` is never suppressed, so the diagram always carries one message.
+fn project_black_box(graph: &Graph, node: &GraphNode, entry: &str) -> SequenceScene {
+    let owner = node.parent.clone().unwrap_or_else(|| entry.to_owned());
+    let actor = node
+        .triggers
+        .first()
+        .map_or_else(|| "caller".to_owned(), Trigger::initiator);
+
+    let items = vec![
+        SeqItem::Message(Message {
+            from: actor.clone(),
+            to: owner.clone(),
+            kind: MessageKind::Call,
+            label: node.name.clone(),
+            detail: node.signature.as_ref().map(call_detail).unwrap_or_default(),
+        }),
+        SeqItem::Message(Message {
+            from: owner.clone(),
+            to: actor.clone(),
+            kind: MessageKind::Return,
+            label: String::new(),
+            detail: node
+                .signature
+                .as_ref()
+                .map(|sig| return_detail(&sig.ret, ""))
+                .unwrap_or_default(),
+        }),
+    ];
+
+    // An initiator is a synthesised token (no node) read as a person actor; the
+    // owner takes its declared kind, defaulting to a container when unresolved —
+    // the same lifeline-head rule the full trace uses.
+    SequenceScene {
+        entry: entry.to_owned(),
+        participants: vec![
+            Lifeline {
+                fqn: actor,
+                kind: NodeKind::Person,
+            },
+            Lifeline {
+                fqn: owner.clone(),
+                kind: graph.node(&owner).map_or(NodeKind::Container, |n| n.kind),
+            },
+        ],
+        items,
+    }
 }
 
 /// Traces the body of `active` (the executing node) into ordered items. `caller`
@@ -794,11 +839,39 @@ mod tests {
     }
 
     #[test]
-    fn project_symbol_falls_back_to_owner_view_for_a_bodyless_callable() {
-        // `warehouse::Stock::Read` is declared without a body — it cannot trace,
-        // so its owning system's structural (container) view stands in.
-        let scene = c4(project_symbol(&workspace(), "warehouse::Stock::Read").expect("projects"));
-        assert_eq!(scene.of.as_deref(), Some("warehouse::Stock"));
+    fn project_symbol_projects_a_black_box_callable_as_a_minimal_sequence() {
+        // `warehouse::Stock::Read` is a black-box callable (signature, no body).
+        // It still projects a sequence — a single inbound call and its return —
+        // rather than falling back to the owner's structural C4 view (§9.2).
+        let scene = project_symbol(&workspace(), "warehouse::Stock::Read").expect("projects");
+        let Scene::Sequence(seq) = scene else {
+            panic!("expected a sequence scene for a black-box callable");
+        };
+        assert_eq!(seq.entry, "warehouse::Stock::Read");
+        // At least one message: the caller's inbound call onto the owner.
+        let calls = seq
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    SeqItem::Message(Message {
+                        kind: MessageKind::Call,
+                        ..
+                    })
+                )
+            })
+            .count();
+        assert!(
+            calls >= 1,
+            "black-box sequence has at least one call message"
+        );
+        // The owner is a lifeline (the callable runs on its system).
+        assert!(
+            seq.participants.iter().any(|p| p.fqn == "warehouse::Stock"),
+            "owner lifeline present: {:?}",
+            seq.participants
+        );
     }
 
     #[test]
