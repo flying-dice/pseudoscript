@@ -2,7 +2,7 @@
 name = "clinical-records"
 
 [doc]
-title = "Caregraph"
+title = "ACME Care — Clinical Records Architecture"
 description = "Clinical records: appointment scheduling, consent-gated access, an event-sourced audit trail, referrals, and billing claims"
 
 [[doc.sidebar]]

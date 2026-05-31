@@ -1,4 +1,4 @@
-//! shared — value objects, payloads, and event/error families used across Caregraph.
+//! shared — value objects, payloads, and event/error families used across ACME Care.
 
 /// A reserved scheduling slot.
 public data SlotRef { id: uuid }

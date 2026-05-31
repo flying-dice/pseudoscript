@@ -1,4 +1,4 @@
-//! shared — value objects, payloads, and event/error families used across Wayfare.
+//! shared — value objects, payloads, and event/error families used across Rides.
 
 /// A latitude/longitude pair used for matching and routing.
 public data GeoPoint { lat: number, lng: number }

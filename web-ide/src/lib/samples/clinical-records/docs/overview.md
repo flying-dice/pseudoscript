@@ -1,6 +1,6 @@
-# Caregraph
+# ACME Care
 
-Caregraph is a clinical-records platform. It schedules encounters between patients and
+ACME Care is a clinical-records platform. It schedules encounters between patients and
 clinicians, holds the medical record, and — above all — controls and audits every access
 to that record. In healthcare, *who saw what, when, and why* is as important as the data.
 

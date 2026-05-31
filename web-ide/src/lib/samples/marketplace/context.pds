@@ -1,4 +1,4 @@
-//! context — the people who use Bazaar, the marketplace itself, and the third parties
+//! context — the people who use ACME Market, the marketplace itself, and the third parties
 //! it integrates with (C4 system context).
 
 /// A buyer browsing and purchasing across vendors.
@@ -22,9 +22,9 @@ public person Vendor {
 /// A warehouse / fulfilment operator confirming shipments.
 public person FulfilmentOp;
 
-/// Bazaar — the multi-vendor marketplace.
+/// ACME Market — the multi-vendor marketplace.
 /// #headline
-public system Bazaar;
+public system Market;
 
 /// Third-party identity / KYC service used to verify vendors before they can list.
 public system KycProvider {

@@ -2,7 +2,7 @@
 
 /// The matching engine: scores nearby drivers for a request and offers the trip.
 /// #critical
-public container Dispatch for context::Wayfare {
+public container Dispatch for context::Rides {
 
   /// Match a rider's request to a driver and produce a priced, time-boxed offer.
   ///

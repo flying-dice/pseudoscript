@@ -1,6 +1,6 @@
-# Wayfare
+# ACME Rides
 
-Wayfare is an on-demand ride-hailing platform. A rider opens the app, asks for a ride,
+ACME Rides is an on-demand ride-hailing platform. A rider opens the app, asks for a ride,
 and within seconds a nearby driver is on the way at a price both sides accept. Behind
 that simplicity is a real-time matching market with money on both ends.
 
@@ -20,7 +20,7 @@ Ride-hailing is a matching market under time pressure, with money on the line:
 
 ## The architecture at a glance
 
-The C4 context (`context.pds`) names the platform `Wayfare`, two actors — `Rider` and
+The C4 context (`context.pds`) names the platform `Rides`, two actors — `Rider` and
 `Driver` — and three external systems it does not own: a `MapsProvider`, a
 `PaymentProvider`, and a `PushProvider`. The work is split into bounded contexts, each
 its own module:

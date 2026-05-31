@@ -3,7 +3,7 @@
 
 /// Write side: vendors publish and restock listings; inventory is the no-oversell truth.
 /// #critical
-public container Catalog for context::Bazaar {
+public container Catalog for context::Market {
 
   /// Publish a listing so shoppers can find it. Emits an event for the search index.
   #[http("POST /listings")]
@@ -47,7 +47,7 @@ public component Inventory for Catalog {
 
 /// Read side (CQRS): a denormalised, queryable view of published listings, folded
 /// from catalog write-side events. Queries hit this, never the write aggregates.
-public container Search for context::Bazaar {
+public container Search for context::Market {
 
   /// Project a listing-published event into the search index.
   public projectPublished(event: shared::ListingPublished): void {

@@ -1,6 +1,6 @@
 # Consent & access
 
-The central question in Caregraph is "may this clinician see this record, right now?"
+The central question in ACME Care is "may this clinician see this record, right now?"
 The model answers it in exactly one place: `AccessPolicy`.
 
 ## One decision point

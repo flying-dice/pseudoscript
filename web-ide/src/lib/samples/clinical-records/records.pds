@@ -3,7 +3,7 @@
 
 /// Owns the clinical record and the single access-control decision point.
 /// #critical
-public container Records for context::Caregraph {
+public container Records for context::Care {
 
   /// Read a clinical record, gated by the access policy and audited.
   ///

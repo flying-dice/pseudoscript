@@ -1,4 +1,4 @@
-//! context — the people who use Wayfare, the platform itself, and the third parties
+//! context — the people who use Rides, the platform itself, and the third parties
 //! it integrates with (C4 system context).
 
 /// A passenger who requests rides through the app.
@@ -19,9 +19,9 @@ public person Driver {
   }
 }
 
-/// Wayfare — the ride-hailing platform.
+/// Rides — the ride-hailing platform.
 /// #headline
-public system Wayfare;
+public system Rides;
 
 /// Third-party mapping / ETA provider. Flaky and rate-limited — called behind a guard.
 public system MapsProvider {

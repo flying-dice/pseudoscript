@@ -3,7 +3,7 @@
 
 /// Credits vendors for fulfilled sub-orders. Triggered by shipment events.
 /// #critical
-public container Payouts for context::Bazaar {
+public container Payouts for context::Market {
 
   /// Accrue a vendor payout when their sub-order ships.
   ///

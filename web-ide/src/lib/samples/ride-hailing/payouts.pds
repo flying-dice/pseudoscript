@@ -3,7 +3,7 @@
 
 /// Settles driver earnings for completed trips. Triggered by trip completion.
 /// #critical
-public container Payouts for context::Wayfare {
+public container Payouts for context::Rides {
 
   /// Accrue and settle a payout when a trip completes.
   ///

@@ -1,6 +1,6 @@
-# Bazaar
+# ACME Market
 
-Bazaar is a multi-vendor marketplace. Shoppers browse one catalog and check out one basket,
+ACME Market is a multi-vendor marketplace. Shoppers browse one catalog and check out one basket,
 but that basket can span many independent sellers — each with their own stock, their own
 fulfilment, and their own payout. The marketplace is the trusted middle.
 
@@ -18,7 +18,7 @@ A marketplace is three hard problems wearing one storefront:
 
 ## The architecture at a glance
 
-The C4 context (`context.pds`) names the marketplace `Bazaar`, three actors — `Shopper`,
+The C4 context (`context.pds`) names the marketplace `Market`, three actors — `Shopper`,
 `Vendor`, `FulfilmentOp` — and two external systems: a `KycProvider` and a `PaymentProvider`.
 The work is split into bounded contexts, each its own module:
 

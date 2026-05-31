@@ -1,13 +1,13 @@
-# Wayfare — on-demand ride-hailing. `pds doc` documents every `.pds` file under
+# ACME Rides — on-demand ride-hailing. `pds doc` documents every `.pds` file under
 # this directory; module FQNs derive from each file's path (LANG.md §8.1).
 [doc]
-name  = "Wayfare — Ride-Hailing Platform Architecture"
+name  = "ACME Rides — On-Demand Ride-Hailing Architecture"
 out   = "target/doc"
 logo  = "logo.svg"
 theme = "light"
 
 [[doc.sidebar]]
-title = "Wayfare"
+title = "ACME Rides"
 items = [
   { title = "Overview", path = "docs/overview.md" },
   { title = "Dispatch & Pricing", path = "docs/dispatch.md" },

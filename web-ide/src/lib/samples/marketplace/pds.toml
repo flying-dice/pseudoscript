@@ -1,13 +1,13 @@
-# Bazaar — multi-vendor marketplace. `pds doc` documents every `.pds` file under
+# ACME Market — multi-vendor marketplace. `pds doc` documents every `.pds` file under
 # this directory; module FQNs derive from each file's path (LANG.md §8.1).
 [doc]
-name  = "Bazaar — Multi-Vendor Marketplace Architecture"
+name  = "ACME Market — Multi-Vendor Marketplace Architecture"
 out   = "target/doc"
 logo  = "logo.svg"
 theme = "light"
 
 [[doc.sidebar]]
-title = "Bazaar"
+title = "ACME Market"
 items = [
   { title = "Overview", path = "docs/overview.md" },
   { title = "Catalog & Search (CQRS)", path = "docs/catalog.md" },

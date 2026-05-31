@@ -1,7 +1,7 @@
 //! referrals — handing a patient's care to a specialist, gated by consent.
 
 /// Owns the referral workflow: request, accept or decline, then schedule.
-public container Referrals for context::Caregraph {
+public container Referrals for context::Care {
 
   /// Request a referral to a specialist.
   ///

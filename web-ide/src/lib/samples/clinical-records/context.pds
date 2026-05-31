@@ -1,4 +1,4 @@
-//! context — the people who use Caregraph, the platform itself, and the third parties
+//! context — the people who use ACME Care, the platform itself, and the third parties
 //! it integrates with (C4 system context).
 
 /// A person receiving care; the subject of clinical records.
@@ -16,9 +16,9 @@ public person Clinician {
 /// A compliance officer who reviews the audit trail.
 public person ComplianceOfficer;
 
-/// Caregraph — the clinical-records platform.
+/// ACME Care — the clinical-records platform.
 /// #headline
-public system Caregraph;
+public system Care;
 
 /// Backing scheduling store that holds clinician availability and slots.
 public system SchedulingProvider {

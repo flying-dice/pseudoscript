@@ -2,7 +2,7 @@
 
 /// Owns the appointment lifecycle: book, complete, or cancel a clinical encounter.
 /// #critical
-public container Scheduling for context::Caregraph {
+public container Scheduling for context::Care {
 
   /// Book an appointment into a free slot.
   ///

@@ -1,7 +1,7 @@
 //! pricing — surge-aware pricing: a base fare scaled by a per-zone demand multiplier.
 
 /// Quotes fares, locking the surge multiplier into the offer.
-public container Pricing for context::Wayfare {
+public container Pricing for context::Rides {
 
   /// Quote a fare for a request: base cost scaled by the live surge multiplier,
   /// then locked to the offer so it cannot climb while the rider checks out.

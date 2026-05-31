@@ -1,7 +1,7 @@
 # Audit trail
 
 In healthcare the audit trail is not a debugging convenience — it is a regulated, legal
-artefact. Caregraph models it as an event-sourced log so it is complete by construction.
+artefact. ACME Care models it as an event-sourced log so it is complete by construction.
 
 ## The log is the truth
 

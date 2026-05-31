@@ -1,4 +1,4 @@
-//! shared — value objects, payloads, and event/error families used across Bazaar.
+//! shared — value objects, payloads, and event/error families used across ACME Market.
 
 /// A vendor's signup details, awaiting verification.
 public data VendorApplication { name: string, payoutAccount: string }

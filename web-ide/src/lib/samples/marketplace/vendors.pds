@@ -1,7 +1,7 @@
 //! vendors — onboarding sellers through identity verification before they can list.
 
 /// Owns vendor onboarding: a seller applies, is KYC-verified, then becomes active.
-public container Vendors for context::Bazaar {
+public container Vendors for context::Market {
 
   /// Onboard a vendor: verify identity and payout account, then activate.
   ///

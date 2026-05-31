@@ -3,7 +3,7 @@
 
 /// Bills completed appointments. Triggered by appointment completion.
 /// #critical
-public container Claims for context::Caregraph {
+public container Claims for context::Care {
 
   /// Open and submit a claim when an appointment completes.
   ///

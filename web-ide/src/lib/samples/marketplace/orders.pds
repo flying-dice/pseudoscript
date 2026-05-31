@@ -2,7 +2,7 @@
 
 /// Orchestrates a multi-vendor checkout: hold all stock, take one payment, confirm.
 /// #critical
-public container Orders for context::Bazaar {
+public container Orders for context::Market {
 
   /// Place an order across vendors as a compensating saga.
   ///
