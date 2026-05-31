@@ -8,6 +8,26 @@
   const p = data.placed;
   const act = data.act;
 
+  // A synthesised initiator is not a declared node — it's the trigger that drives
+  // the entry: `event:<FQN>` (#[onevent]), `client` (#[http]), `scheduler`
+  // (#[schedule]), or a generic `caller` (a direct/untriggered call). The
+  // projector tags these as `person` for layout, but they aren't people — show
+  // the trigger kind as the eyebrow and a neutral card, not a person card.
+  function initiatorHead(id) {
+    if (!id) return null;
+    if (id.startsWith("event:")) return { kind: "onevent", title: id.slice(6) };
+    if (id === "client") return { kind: "http", title: "client" };
+    if (id === "scheduler") return { kind: "schedule", title: "scheduler" };
+    if (id === "caller") return { kind: "caller", title: "caller" };
+    return null;
+  }
+  const initiator = initiatorHead(p.id);
+  // Eyebrow + title + card-kind class: a declared node keeps its C4 kind/name; a
+  // synthetic initiator reads its trigger and renders as a neutral `.initiator`.
+  const kindLabel = initiator ? initiator.kind : p.kind;
+  const nameLabel = initiator ? initiator.title : p.label;
+  const cardKind = initiator ? "initiator" : p.kind;
+
   // Canvas interaction mirrors the editor: hover shows info, Cmd/Ctrl-click shows
   // usages. Every lifeline participates — declared nodes resolve to their doc and
   // usages; synthesised trigger actors (client/scheduler/event) get a blurb.
@@ -22,7 +42,7 @@
 
 <div class="seq-life">
   <div
-    class="seq-card c4-node {p.kind}"
+    class="seq-card c4-node {cardKind}"
     class:interactive
     style="left:{p.card.x}px; top:{p.card.y}px; width:{p.card.w}px; height:{p.card.h}px"
     role={interactive ? "button" : undefined}
@@ -31,8 +51,8 @@
     onmouseleave={() => interactive && data.oninfoend?.()}
     {onclick}
   >
-    <span class="seq-kind">{p.kind}</span>
-    <span class="seq-name">{p.label}</span>
+    <span class="seq-kind">{kindLabel}</span>
+    <span class="seq-name">{nameLabel}</span>
   </div>
 
   <svg class="seq-overlay" width="100%" height="100%">
@@ -84,6 +104,10 @@
   .seq-card.component { --k: var(--k-component); }
   .seq-card.data { --k: var(--k-data); }
   .seq-card.callable { --k: var(--k-callable); }
+  /* a synthesised trigger initiator (onevent/http/schedule/caller): not a
+     declared node, so it stays neutral rather than wearing the person colour */
+  .seq-card.initiator { --k: var(--ink-faint); }
+  .seq-card.initiator .seq-kind { font-style: italic; }
   .seq-kind {
     font-family: var(--font-mono);
     font-size: 0.52rem;
