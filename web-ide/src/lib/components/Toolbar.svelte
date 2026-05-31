@@ -122,6 +122,12 @@
     border-bottom: 1px solid var(--line);
     background: color-mix(in srgb, var(--surface) 78%, transparent);
     backdrop-filter: blur(10px) saturate(1.3);
+    /* `backdrop-filter` makes the toolbar a stacking context, so the share
+       dropdown's z-index is local to it. Lift the whole toolbar above the
+       workspace panes (z-index ≤ 41) — but below modals (≥ 50) — so the
+       dropdown isn't painted over by the main body. */
+    position: relative;
+    z-index: 45;
   }
 
   .brand {
