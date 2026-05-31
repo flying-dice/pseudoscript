@@ -1,0 +1,55 @@
+//! saga — exercised by Voyagr, a trip-booking site. Booking a trip reserves a
+//! flight, a hotel, and a car across three suppliers that share no transaction. An
+//! orchestrator runs the steps in order; if the car step fails, it cancels the
+//! hotel and the flight in reverse — no half-booked trip, no distributed lock.
+
+public data Trip { id: string }
+public data Itinerary { trip: string }
+public data StepFailed { step: string }
+
+/// A traveller booking a whole trip in one go.
+public person Traveller {
+  #[manual]
+  public book(trip: Trip): void {
+    Voyagr::Planner.book(trip)
+  }
+}
+
+/// Voyagr — the trip-booking site.
+public system Voyagr;
+
+/// Orchestrates the booking saga; on failure it compensates the completed steps in
+/// reverse order.
+public container Planner for Voyagr {
+  public book(trip: Trip): Result<Itinerary, StepFailed> {
+    flight = Flights.reserve(trip)
+    if (flight.isErr) {
+      return Err(StepFailed from { "flight" })
+    }
+    hotel = Hotels.reserve(trip)
+    if (hotel.isErr) {
+      Flights.cancel(trip)
+      return Err(StepFailed from { "hotel" })
+    }
+    car = Cars.reserve(trip)
+    if (car.isErr) {
+      Hotels.cancel(trip)
+      Flights.cancel(trip)
+      return Err(StepFailed from { "car" })
+    }
+    return Ok(Itinerary from { trip.id })
+  }
+}
+
+/// Supplier systems: each step has a `reserve` and a compensating `cancel`.
+public system Flights { reserve(trip: Trip): Result<void, StepFailed>; cancel(trip: Trip): void; }
+public system Hotels { reserve(trip: Trip): Result<void, StepFailed>; cancel(trip: Trip): void; }
+public system Cars { reserve(trip: Trip): Result<void, StepFailed>; cancel(trip: Trip): void; }
+
+/// A failed step rolls back the completed ones, in reverse.
+feature CompensateOnFailure for Planner {
+  given "Voyagr has reserved the flight and hotel but the car fails"
+  when  "the saga handles the failure"
+  then  "it cancels the hotel and then the flight, in reverse order"
+  but   "no distributed lock is held across the suppliers"
+}

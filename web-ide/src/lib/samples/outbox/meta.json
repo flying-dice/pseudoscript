@@ -1,0 +1,7 @@
+{
+  "name": "Transactional Outbox",
+  "category": "Messaging",
+  "order": 32,
+  "landing": "outbox",
+  "description": "Cartwheel (store) — the order and its event commit together; a relay publishes at least once."
+}

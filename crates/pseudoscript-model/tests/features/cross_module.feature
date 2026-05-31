@@ -50,3 +50,35 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
       | b     | //! b\npublic system Other;\npublic container Caller for b::Other {\n  go(): void {\n    a::Box.run()\n  }\n}   |
     When I check the workspace
     Then the workspace diagnostics include "call target `a::Box` is private to its module"
+
+  Scenario: A public cross-module return type resolves
+    Given the workspace modules:
+      | fqn   | source                                                                                                     |
+      | a     | //! a\npublic data Money { amount: number }                                                                 |
+      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return self.total() }\n} |
+    When I check the workspace
+    Then the workspace has no errors
+
+  Scenario: A private cross-module return type is rejected
+    Given the workspace modules:
+      | fqn   | source                                                                                          |
+      | a     | //! a\ndata Money { amount: number }                                                                        |
+      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return self.total() }\n} |
+    When I check the workspace
+    Then the workspace diagnostics include "type `a::Money` is private to its module"
+
+  Scenario: A dangling cross-module field type is rejected
+    Given the workspace modules:
+      | fqn   | source                                                            |
+      | a     | //! a\npublic data Wallet;                                        |
+      | b     | //! b\npublic data Account { balance: a::Missing }               |
+    When I check the workspace
+    Then the workspace diagnostics include "dangling cross-module reference `a::Missing`: target does not resolve"
+
+  Scenario: A cross-module generic argument is rejected
+    Given the workspace modules:
+      | fqn   | source                                                                                                       |
+      | a     | //! a\npublic system Sys;                                                                                     |
+      | b     | //! b\npublic system Other;\npublic container Box for b::Other {\n  find(): Option<a::Missing> { return self.find() }\n} |
+    When I check the workspace
+    Then the workspace diagnostics include "dangling cross-module reference `a::Missing`: target does not resolve"

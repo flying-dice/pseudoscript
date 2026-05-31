@@ -3,10 +3,11 @@
 //! The single-module checks ([`super`]) cannot see other files, so they skip
 //! references they cannot resolve locally. This pass runs over a whole
 //! [`Workspace`]: it walks each module's qualified references — `for` parents,
-//! `alias` targets, and body call targets — and against the global FQN index
-//! enforces §8.2: a reference from module A to a node in module B resolves only
-//! if that node is `public`. A cross-module reference to a private node, or a
-//! dangling cross-module FQN, is a diagnostic.
+//! `alias`/`feature` targets, body call targets, and type annotations (field,
+//! parameter, return, and generic-argument types) — and against the global FQN
+//! index enforces §8.2: a reference from module A to a symbol in module B
+//! resolves only if that symbol is `public`. A cross-module reference to a
+//! private symbol, or a dangling cross-module FQN, is a diagnostic.
 //!
 //! References whose target lives in the *same* module are left to the
 //! single-module checks; only genuinely cross-module FQNs are judged here, so
@@ -14,7 +15,8 @@
 
 use pseudoscript_syntax::Diagnostic;
 use pseudoscript_syntax::ast::{
-    Block, BodyMember, Callable, DeclKind, Expr, ExprKind, Item, Node, Path, Ref, Stmt, StmtKind,
+    Block, BodyMember, Callable, DataBody, DeclKind, Expr, ExprKind, Item, Node, Path, Ref, Stmt,
+    StmtKind, Type,
 };
 
 use crate::model::{ModuleEntry, Resolution, Workspace};
@@ -69,7 +71,7 @@ impl Ctx<'_> {
                 self.check_node_body(node);
             }
             DeclKind::Person(node) | DeclKind::System(node) => self.check_node_body(node),
-            DeclKind::Data(_) => {}
+            DeclKind::Data(data) => self.check_data_types(&data.body),
         }
     }
 
@@ -84,8 +86,42 @@ impl Ctx<'_> {
     }
 
     fn check_callable(&mut self, callable: &Callable) {
+        for param in &callable.params {
+            self.check_type(&param.ty);
+        }
+        if let Some(ret) = &callable.return_ty {
+            self.check_type(ret);
+        }
         if let Some(body) = &callable.body {
             self.check_block(body);
+        }
+    }
+
+    /// §3.3/§8.2: a qualified type — a field, parameter, or return type, and each
+    /// generic argument — resolves cross-module under the same visibility rule as
+    /// a node reference. A bare type is the single-module checks' business.
+    fn check_data_types(&mut self, body: &DataBody) {
+        match body {
+            DataBody::Record(fields) => {
+                for field in fields {
+                    self.check_type(&field.ty);
+                }
+            }
+            DataBody::Union(variants) => {
+                for variant in variants {
+                    for field in variant.record.iter().flatten() {
+                        self.check_type(&field.ty);
+                    }
+                }
+            }
+            DataBody::BlackBox => {}
+        }
+    }
+
+    fn check_type(&mut self, ty: &Type) {
+        self.check_ref(&ty.name, "type");
+        for generic in &ty.generics {
+            self.check_type(generic);
         }
     }
 

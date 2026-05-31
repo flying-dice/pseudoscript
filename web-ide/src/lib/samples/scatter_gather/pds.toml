@@ -1,0 +1,10 @@
+# Scatter-Gather — a system-design pattern, exercised by a small example.
+[doc]
+name = "Scatter-Gather"
+
+[[doc.sidebar]]
+title = "Scatter-Gather"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

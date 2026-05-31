@@ -1,0 +1,129 @@
+//! gateway — the customer-facing HTTP edge. Each route is a thin entry point
+//! that delegates into a domain service; routing and serialisation are the macro,
+//! not the body. The waiting room sits in front of the reservation and checkout
+//! routes, so traffic is shaped before it reaches inventory or payments.
+
+/// Why a queue-join was refused at the edge.
+public data QueueDenied =
+  | NotAuthenticated
+  | Closed
+
+/// Why an account read was refused at the edge.
+public data AccessError =
+  | NotAuthenticated
+  | NotFound
+
+/// `gateway` — the public API.
+public container Gateway for context::AcmeTickets;
+
+/// Event browsing — served from the cacheable storefront read model, not the
+/// authoritative catalog store, so a surge of anonymous browse traffic never
+/// hits the system of record.
+public component EventApi for Gateway {
+  /// Find one event's storefront listing by id.
+  #[http("GET /events/{eventId}")]
+  public getEvent(eventId: shared::EventId): Result<catalog::EventListing, AccessError> {
+    found = catalog::Listings.listing(eventId)
+    if (found.isNone) {
+      return Err(NotFound)
+    }
+    return Ok(found.value)
+  }
+
+  /// List the on-sale events' storefront listings.
+  #[http("GET /events")]
+  public listEvents(): catalog::EventListing[] {
+    return catalog::Listings.onSale()
+  }
+}
+
+/// Waiting-room endpoints.
+public component QueueApi for Gateway {
+  /// Join the queue for an event.
+  #[http("POST /events/{eventId}/queue")]
+  public join(eventId: shared::EventId, token: identity::SessionToken): Result<waitingroom::QueueTicket, QueueDenied> {
+    user = identity::Sessions.authenticate(token)
+    if (user.isErr) {
+      return Err(NotAuthenticated)
+    }
+    joined = waitingroom::Queue.join(eventId, user.value.id)
+    if (joined.isErr) {
+      return Err(Closed)
+    }
+    return Ok(joined.value)
+  }
+
+  /// Poll a queue position.
+  #[http("GET /queue/{ticket}")]
+  public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
+    return waitingroom::Queue.position(ticket)
+  }
+}
+
+/// Reservation endpoint (admission-gated).
+public component ReservationApi for Gateway {
+  /// Hold seats once admitted.
+  #[http("POST /reservations")]
+  public reserve(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
+    return orders::Reservation.hold(req)
+  }
+}
+
+/// Checkout endpoint (admission-gated).
+public component CheckoutApi for Gateway {
+  /// Pay for a held reservation.
+  #[http("POST /checkout")]
+  public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
+    return orders::OrderService.checkout(req)
+  }
+}
+
+/// Order and ticket reads, scoped to the authenticated caller.
+public component AccountApi for Gateway {
+  /// Fetch one of the caller's own orders. A caller cannot read another user's
+  /// order — ownership is checked, not assumed from the id.
+  #[http("GET /orders/{orderId}")]
+  public getOrder(token: identity::SessionToken, orderId: shared::OrderId): Result<orders::Order, AccessError> {
+    user = identity::Sessions.authenticate(token)
+    if (user.isErr) {
+      return Err(NotAuthenticated)
+    }
+    found = orders::OrderService.getFor(user.value.id, orderId)
+    if (found.isErr) {
+      return Err(NotFound)
+    }
+    return Ok(found.value)
+  }
+
+  /// List the caller's own tickets. The holder is taken from the session, never
+  /// from a caller-supplied id.
+  #[http("GET /tickets")]
+  public tickets(token: identity::SessionToken): Result<tickets::Ticket[], identity::AuthError> {
+    user = identity::Sessions.authenticate(token)
+    if (user.isErr) {
+      return Err(user.error)
+    }
+    return Ok(tickets::Issuer.mine(user.value.id))
+  }
+}
+
+/// User sign-up and sessions.
+public component UserApi for Gateway {
+  /// Register an attendee.
+  #[http("POST /users")]
+  public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
+    return identity::Users.register(form)
+  }
+
+  /// Sign in.
+  #[http("POST /sessions")]
+  public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
+    return identity::Sessions.login(creds)
+  }
+
+  /// Sign out.
+  #[http("DELETE /sessions")]
+  public logout(token: identity::SessionToken): void {
+    identity::Sessions.logout(token)
+  }
+}

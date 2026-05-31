@@ -6,7 +6,7 @@ Feature: pds doc
     Then the exit code is zero
     And the site has "index.html"
     And the site has "style.css"
-    And the site has "app.js"
+    And the site has "client.js"
     And the site has a "module/" page
     And the site index contains "Banking Fixture"
 

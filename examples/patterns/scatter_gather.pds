@@ -1,0 +1,46 @@
+//! scatter_gather — exercised by QuoteMesh, an insurance comparison site. A single
+//! quote request is fanned out to several insurers at once; their quotes are
+//! gathered and aggregated into the one best offer shown to the customer.
+
+public data Cover { driver: string, car: string }
+public data Quote { insurer: string, premium: number }
+public data Best { premium: number }
+
+/// A driver shopping for cover.
+public person Shopper {
+  #[manual]
+  public compare(car: string): void {
+    QuoteMesh::Compare.quote(Cover from { "me", car })
+  }
+}
+
+/// QuoteMesh — the insurance comparison site.
+public system QuoteMesh;
+
+/// Fans the request out to every insurer, then aggregates the quotes.
+public container Compare for QuoteMesh {
+  #[http("POST /quotes")]
+  public quote(cover: Cover): Best {
+    a = InsurerA.price(cover)
+    b = InsurerB.price(cover)
+    c = InsurerC.price(cover)
+    return self.best(a, b, c)
+  }
+
+  /// Combine the quotes into the best offer (e.g. lowest premium).
+  best(a: Quote, b: Quote, c: Quote): Best;
+}
+
+/// Independent insurers, each pricing the same cover.
+public system InsurerA { price(cover: Cover): Quote; }
+public system InsurerB { price(cover: Cover): Quote; }
+public system InsurerC { price(cover: Cover): Quote; }
+
+/// One request, many insurers, one aggregated best offer.
+feature FanOutAndAggregate for Compare {
+  given "several insurers that can each price the cover"
+  when  "a driver requests a comparison"
+  then  "the request is fanned out to every insurer"
+  and   "their quotes are aggregated into a single best offer"
+  but   "the driver sees one offer, not the individual quotes"
+}

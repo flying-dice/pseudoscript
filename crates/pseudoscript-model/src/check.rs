@@ -72,6 +72,7 @@ impl Checker<'_> {
         self.check_variant_collisions(module);
         self.check_feature_collisions(module);
         self.check_reserved_names(module);
+        self.check_type_refs(module);
         for item in &module.items {
             match item {
                 Item::Alias(alias) => self.check_alias(alias),
@@ -813,6 +814,102 @@ impl Checker<'_> {
                 format!("`from` target `{leaf}` is not a `data` record or variant"),
             );
         }
+    }
+
+    // --- §3.1/§3.3/§8 type-reference resolution --------------------------------
+
+    /// §3.3: every named type in a declaration — a field, parameter, or return
+    /// type, and each generic argument — must resolve. Walks every type
+    /// annotation in the module; [`Self::check_type`] judges each.
+    fn check_type_refs(&mut self, module: &Module) {
+        for item in &module.items {
+            if let Item::Decl(decl) = item {
+                self.check_decl_types(&decl.kind);
+            }
+        }
+    }
+
+    fn check_decl_types(&mut self, kind: &DeclKind) {
+        match kind {
+            DeclKind::Data(data) => self.check_data_field_types(&data.body),
+            DeclKind::Person(node)
+            | DeclKind::System(node)
+            | DeclKind::Container(node)
+            | DeclKind::Component(node) => {
+                for member in node.body.iter().flatten() {
+                    match member {
+                        BodyMember::Callable(callable) => {
+                            for param in &callable.params {
+                                self.check_type(&param.ty);
+                            }
+                            if let Some(ret) = &callable.return_ty {
+                                self.check_type(ret);
+                            }
+                        }
+                        BodyMember::Decl(decl) => self.check_decl_types(&decl.kind),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks the field types of a `data` record and of each record variant of a
+    /// union (§3.4, §3.5). A black box and a bare variant disclose no fields.
+    fn check_data_field_types(&mut self, body: &DataBody) {
+        match body {
+            DataBody::Record(fields) => {
+                for field in fields {
+                    self.check_type(&field.ty);
+                }
+            }
+            DataBody::Union(variants) => {
+                for variant in variants {
+                    for field in variant.record.iter().flatten() {
+                        self.check_type(&field.ty);
+                    }
+                }
+            }
+            DataBody::BlackBox => {}
+        }
+    }
+
+    /// §3.3: checks one type annotation's base name and every generic argument. A
+    /// single-segment base that resolves to nothing is reported; a `::`-qualified
+    /// base is left to cross-module resolution (§8.2), mirroring
+    /// [`Self::check_ref_at`].
+    fn check_type(&mut self, ty: &Type) {
+        if ty.name.is_simple() {
+            let leaf = ty.name.segments[0].name.as_str();
+            if !self.type_resolves(leaf) {
+                let hint = {
+                    let candidates: Vec<&str> = TokenKind::PRIMITIVE_TYPES
+                        .iter()
+                        .copied()
+                        .chain(["Result", "Option"])
+                        .chain(self.model.symbols().map(|s| s.name.as_str()))
+                        .chain(self.model.aliases().map(|(n, _)| n))
+                        .chain(self.variant_names.iter().map(String::as_str))
+                        .collect();
+                    suggest(leaf, &candidates)
+                };
+                self.error(ty.name.span, format!("unresolved type `{leaf}`{hint}"));
+            }
+        }
+        for generic in &ty.generics {
+            self.check_type(generic);
+        }
+    }
+
+    /// Whether a single-segment type name resolves (§3.1/§3.3): a primitive,
+    /// `Result`/`Option`, or an in-module symbol, alias, or union variant. A
+    /// node names a type as freely as a `data` record does (`owner: Person`).
+    fn type_resolves(&self, leaf: &str) -> bool {
+        is_primitive(leaf)
+            || leaf == "Result"
+            || leaf == "Option"
+            || self.model.symbol(leaf).is_some()
+            || self.model.alias(leaf).is_some()
+            || self.variant_names.contains(leaf)
     }
 
     fn check_rebinds(&mut self, block: &Block, bound: &mut FxHashMap<String, Span>) {

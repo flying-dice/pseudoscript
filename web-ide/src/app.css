@@ -1,9 +1,14 @@
+/* Svelte Flow base styles first, so the dark `.svelte-flow` overrides further
+ * down win the cascade (importing it inside the diagram components injects it
+ * after this sheet and leaves the pane white). */
+@import "@xyflow/svelte/dist/style.css";
+
 /* PseudoScript Web IDE — "Drafting Terminal".
  *
  * Ink-black canvas under a blueprint grid and a vermilion horizon glow.
  * Hairline-framed panes, drafting corner ticks, one hot accent, mono-forward
- * uppercase micro-labels. Diagrams sit on a warm paper "sheet". One staggered
- * reveal on load; everything else is restrained and precise.
+ * uppercase micro-labels. Diagrams render on a dark interactive canvas. One
+ * staggered reveal on load; everything else is restrained and precise.
  */
 
 :root {
@@ -47,6 +52,10 @@
   --k-data: #b87bf5;
   --k-callable: #f472b6;
 
+  /* sequence-diagram return markers (match render.rs SEQ_OK / SEQ_ERR) */
+  --seq-ok: #2ec5ad;
+  --seq-err: #ff6a5e;
+
   /* type — distinctive grotesque display, humanist body, mono for code/labels */
   --font-display: "Bricolage Grotesque", system-ui, sans-serif;
   --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
@@ -67,12 +76,9 @@ html, body { height: 100%; margin: 0; }
 body {
   color: var(--ink);
   background-color: var(--bg);
-  /* layered: vermilion glow over a fine blueprint grid */
-  background-image:
-    var(--glow),
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 100% 100%, 30px 30px, 30px 30px;
+  /* vermilion glow over a flat surface */
+  background-image: var(--glow);
+  background-size: 100% 100%;
   background-attachment: fixed;
   font-family: var(--font-sans);
   font-size: 15px;
@@ -132,7 +138,11 @@ button { font: inherit; cursor: pointer; color: inherit; }
 /* ---- Svelte Flow (interactive diagrams + timeline) ------------------------ */
 
 .svelte-flow {
-  background: transparent;
+  /* `!important` beats Svelte Flow's component-scoped white pane background
+     (a `.svelte-flow.svelte-xxxx` rule, higher specificity than a bare class);
+     the dark `.stage` then shows through. */
+  background: transparent !important;
+  --xy-background-color-default: transparent;
   --xy-edge-stroke-default: var(--line-strong);
   --xy-edge-stroke-selected-default: var(--accent);
   --xy-edge-label-color-default: var(--ink-soft);
@@ -146,7 +156,14 @@ button { font: inherit; cursor: pointer; color: inherit; }
   --xy-minimap-background-color-default: var(--surface);
 }
 .svelte-flow__background { color: var(--grid); }
-.svelte-flow__minimap { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.svelte-flow__minimap {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.svelte-flow__minimap-mask { fill: color-mix(in srgb, var(--bg) 62%, transparent); }
+.svelte-flow__minimap-node { fill: var(--line-strong); }
 .svelte-flow__controls { box-shadow: none; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .svelte-flow__edge-text { fill: var(--ink-soft); font-family: var(--font-mono); font-size: 10px; }
 .svelte-flow__edge-textbg { fill: var(--surface); }
@@ -172,18 +189,168 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .svelte-flow__node.c4-node.component { --k: var(--k-component); }
 .svelte-flow__node.c4-node.data { --k: var(--k-data); }
 .svelte-flow__node.c4-node.callable { --k: var(--k-callable); }
+.svelte-flow__edge.c4-edge .svelte-flow__edge-path { stroke-width: 2.5; }
 .svelte-flow__edge.c4-edge.trigger .svelte-flow__edge-path { stroke: var(--k-callable); }
 
-/* the timeline's growing node set reflows; animate the reposition */
-.timeline .svelte-flow__node { transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
-.timeline .svelte-flow__node.c4-node { animation: pop 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-.flow-edge.past .svelte-flow__edge-path { stroke: var(--line-strong); opacity: 0.4; }
-.flow-edge.current .svelte-flow__edge-path { stroke: var(--accent); stroke-width: 2.5; }
-.flow-edge.current .svelte-flow__edge-text { fill: var(--accent); font-weight: 600; }
+/* boundary box: the `of` node of a container/component view, drawn as an
+   enclosing frame (the C4 "system boundary" look) rather than a peer card */
+.svelte-flow__node.c4-boundary {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: left;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--k, var(--ink-faint)) 7%, transparent);
+  border: 1px dashed var(--k, var(--ink-faint));
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+.svelte-flow__node.c4-boundary.system { --k: var(--k-system); }
+.svelte-flow__node.c4-boundary.container { --k: var(--k-container); }
 
-@keyframes pop {
-  from { opacity: 0; transform: scale(0.85); }
-  to { opacity: 1; }
+/* sequence-diagram lifeline/fragment nodes are transparent shells — the card,
+   lifeline, activations and arrows paint themselves; strip Svelte Flow's node chrome */
+.svelte-flow__node.seq-shell {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  /* transparent projection shells: let pans/zooms pass through to the pane */
+  pointer-events: none;
+}
+
+/* Navigation flash: a brief accent wash over the lines a jump lands on, fading
+   to nothing. Applied as a line decoration; the animation clears it visually
+   while the editor drops the decoration shortly after. */
+@keyframes pds-nav-flash {
+  from { background-color: color-mix(in srgb, var(--accent) 26%, transparent); }
+  to { background-color: transparent; }
+}
+.cm-nav-flash { animation: pds-nav-flash 1.3s ease-out forwards; }
+
+/* Editor hover card: symbol info + its compiler-rendered diagram. The tooltip
+   wrapper CodeMirror injects (.cm-tooltip) is reset so the card paints itself.
+   CodeMirror dismisses a hover tooltip the moment the pointer leaves the symbol
+   range unless it stays within ~4px of the card's box, so crossing the gap to
+   the card dismisses it. The transparent vertical padding extends that hit box
+   up to the symbol (and below, when the card flips above); the equal negative
+   margin keeps the visible card where CodeMirror placed it. */
+.cm-tooltip:has(.pds-hover) {
+  border: none;
+  background: transparent;
+  padding: 16px 0;
+  margin: -16px 0;
+}
+.pds-hover {
+  width: 360px;
+  max-width: 80vw;
+  padding: 0.7rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+.pds-hover .ph-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.pds-hover .ph-title code {
+  color: var(--ink);
+  background: var(--surface-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm);
+}
+.pds-hover .ph-body {
+  margin-top: 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+  max-height: 7rem;
+  overflow: auto;
+}
+.pds-hover .ph-diagram {
+  margin-top: 0.6rem;
+  padding: 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  max-height: 220px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+.pds-hover .ph-diagram svg {
+  max-width: 100%;
+  height: auto;
+  max-height: 200px;
+}
+.pds-hover .ph-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+}
+.pds-hover .ph-actions button {
+  flex: none;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.03em;
+  padding: 0.18rem 0.4rem;
+  cursor: pointer;
+}
+.pds-hover .ph-actions button:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+/* Markdown live-preview (`.cm-md-live`): render prose in the readable grotesk
+   sans rather than the `.pds` monospace, headings in the display grotesk, and
+   keep only code in mono. The `.cm-editor.cm-md-live` selector outranks
+   CodeMirror's own `.cm-content` font theme. */
+.cm-editor.cm-md-live .cm-content {
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  /* Fixed prose measure: long lines wrap here (via lineWrapping) rather than
+     running the full pane width, while each stays one line in the gutter.
+     Centred in the pane rather than anchored left. Width is selectable
+     (Narrow default / Wide / Full) via the `data-doc-width` ancestor. */
+  max-width: 72ch;
+  margin-inline: auto;
+}
+[data-doc-width="wide"] .cm-editor.cm-md-live .cm-content {
+  max-width: 104ch;
+}
+[data-doc-width="full"] .cm-editor.cm-md-live .cm-content {
+  max-width: none;
+}
+.cm-editor.cm-md-live .cm-md-h1,
+.cm-editor.cm-md-live .cm-md-h2,
+.cm-editor.cm-md-live .cm-md-h3,
+.cm-editor.cm-md-live .cm-md-h4,
+.cm-editor.cm-md-live .cm-md-h5,
+.cm-editor.cm-md-live .cm-md-h6 {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+.cm-editor.cm-md-live .cm-md-code,
+.cm-editor.cm-md-live .cm-md-codeblock {
+  font-family: var(--font-mono);
+}
+/* Collapsed ``` fence lines have zero-height gutter rows; clip so their line
+   numbers don't overlap the next (the numbering just skips them, like folds). */
+.cm-editor.cm-md-live .cm-lineNumbers .cm-gutterElement {
+  overflow: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

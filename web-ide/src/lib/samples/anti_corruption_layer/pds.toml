@@ -1,0 +1,10 @@
+# Anti-Corruption Layer — a system-design pattern, exercised by a small example.
+[doc]
+name = "Anti-Corruption Layer"
+
+[[doc.sidebar]]
+title = "Anti-Corruption Layer"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

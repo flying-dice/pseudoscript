@@ -1,0 +1,7 @@
+{
+  "name": "Cache-Aside",
+  "category": "Data",
+  "order": 52,
+  "landing": "cache_aside",
+  "description": "Facecard (profiles) — a read-through cache shields the database from the read storm."
+}

@@ -1,0 +1,8 @@
+# Root of the Ticketing PseudoScript project. `pds doc` documents every `.pds`
+# file under this directory; module FQNs derive from each file's path
+# (LANG.md §8.1, ADR-017). One module per bounded context.
+[doc]
+name  = "ACME Tickets — Event Ticketing Platform Architecture"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"

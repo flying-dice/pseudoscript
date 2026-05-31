@@ -1,8 +1,0 @@
-//! email
-
-/// The internal Microsoft Exchange e-mail system.
-/// #external #existing
-public system EmailSystem {
-  /// Deliver a message to a recipient.
-  public Deliver(recipient: string): bool;
-}

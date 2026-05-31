@@ -1,0 +1,51 @@
+//! cache_aside — exercised by Facecard, the profile service behind a busy social
+//! app. Profiles are read constantly but change rarely. On a read Facecard checks
+//! its cache; on a miss it loads from the database, populates the cache, and
+//! returns — shielding the database from the read storm.
+
+public data Profile { id: string, handle: string }
+
+/// A visitor viewing someone's profile.
+public person Visitor {
+  #[manual]
+  public view(id: string): void {
+    Facecard::Profiles.get(id)
+  }
+}
+
+/// Facecard — the profile service.
+public system Facecard;
+
+/// Serves profiles through a cache it manages itself, loading on a miss.
+public container Profiles for Facecard {
+  #[http("GET /profiles/{id}")]
+  public get(id: string): Profile {
+    hit = Cache.read(id)
+    if (hit.isSome) {
+      return hit.value
+    }
+    loaded = Database.load(id)
+    Cache.write(id, loaded)
+    return loaded
+  }
+}
+
+/// The cache: a fast key-value store the app populates and invalidates.
+public system Cache {
+  read(id: string): Option<Profile>;
+  write(id: string, value: Profile): void;
+}
+
+/// The profile database, shielded from repeated reads by the cache.
+public system Database {
+  load(id: string): Profile;
+}
+
+/// A miss loads from the database and fills the cache; hits skip it.
+feature LoadOnMiss for Profiles {
+  given "a profile that is not yet cached"
+  when  "a visitor views it"
+  then  "Facecard loads it from the database and populates the cache"
+  and   "later views are served from the cache"
+  but   "the cache never reads the database itself"
+}

@@ -1,0 +1,37 @@
+//! sidecar (ambassador) — exercised by MeshMate, showing how a checkout service
+//! talks to payments in a service mesh. The checkout app makes a plain local call;
+//! a sidecar proxy deployed beside it adds mTLS, retries, timeouts, and tracing,
+//! then forwards to payments. The app stays pure business logic.
+
+public data Charge { order: string, amount: number }
+public data Receipt { ok: bool }
+
+/// The checkout service — pure business logic, no networking concerns.
+public system Checkout {
+  public pay(order: string): void {
+    Sidecar.forward(Charge from { order, 42 })
+  }
+}
+
+/// The sidecar proxy, co-deployed with checkout. It owns the cross-cutting
+/// concerns, then forwards to payments.
+public system Sidecar {
+  /// Add mTLS, retries, timeouts, and tracing, then forward.
+  public forward(charge: Charge): Receipt {
+    return Payments.charge(charge)
+  }
+}
+
+/// The payments service, reached only through the sidecar.
+public system Payments {
+  charge(charge: Charge): Receipt;
+}
+
+/// Cross-cutting concerns live in the sidecar, not the checkout code.
+feature ProxyCrossCutting for Sidecar {
+  given "checkout making a plain local call to pay"
+  when  "the call leaves the pod"
+  then  "the sidecar adds mTLS, retries, timeouts, and tracing"
+  and   "forwards it to the payments service"
+  but   "the checkout code contains none of that"
+}

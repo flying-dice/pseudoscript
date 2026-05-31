@@ -1,11 +1,12 @@
-//! Documentation-site generation harness for `pseudoscript-doc`.
+//! Svelte documentation-site generation harness for `pseudoscript-doc`.
 //!
-//! A hand-written `banking::core` model exercises every documented element — a
-//! person, a system with a container (via `for`), a container with a component,
-//! a `data`, and a `#[manual]` triggered callable with a body, all carrying
-//! `///` summaries and a `#tag`. The scenarios assert `render_site` produces the
-//! index, module pages, embedded diagrams, cross-links, shared assets, and
-//! deterministic output (`LANG.md` §9.3).
+//! Mirrors the `pseudoscript-doc` contract on the same `banking::core` model —
+//! every documented element, a `feature` scenario, and a triggered callable.
+//! Server-rendered text (names, summaries, tags, scenario steps, cross-links)
+//! is asserted directly; diagrams are client islands, so the assertions check
+//! the diagram container and its scene-kind hook rather than inline SVG. Output
+//! must stay byte-for-byte deterministic (`LANG.md` §9.3). Requires the prebuilt
+//! bundle (`src/assets/*`) to be present.
 
 use cucumber::{World, given, then, when};
 use pseudoscript_doc::{DocConfig, Site, render_site};
@@ -107,11 +108,12 @@ fn file_contains(world: &mut DocWorld, path: String, needle: String) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-#[then(regex = r#"^the file "([^"]*)" contains an inline SVG$"#)]
-fn file_contains_svg(world: &mut DocWorld, path: String) {
+#[then(regex = r#"^the file "([^"]*)" embeds a "([^"]*)" diagram$"#)]
+fn file_embeds_diagram(world: &mut DocWorld, path: String, kind: String) {
+    let needle = format!("data-diagram=\"{kind}\"");
     assert!(
-        world.contents(&path).contains("<svg"),
-        "{path:?} contains an inline <svg"
+        world.contents(&path).contains(&needle),
+        "{path:?} embeds a {kind:?} diagram container"
     );
 }
 
@@ -127,21 +129,20 @@ fn file_references(world: &mut DocWorld, path: String, asset: String) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-#[then(regex = r#"^the section "([^"]*)" on "([^"]*)" contains an inline SVG$"#)]
-fn section_contains_svg(world: &mut DocWorld, fqn: String, path: String) {
+#[then(regex = r#"^the section "([^"]*)" on "([^"]*)" embeds a "([^"]*)" diagram$"#)]
+fn section_embeds_diagram(world: &mut DocWorld, fqn: String, path: String, kind: String) {
     let contents = world.contents(&path);
     let id = anchor(&fqn);
     let start = contents
         .find(&format!("id=\"{id}\""))
         .unwrap_or_else(|| panic!("section {fqn:?} present in {path:?}"));
-    // the section runs to the next `<section class="node"` or end of doc
     let rest = &contents[start..];
     let end = rest[1..]
         .find("<section class=\"node\"")
         .map_or(rest.len(), |i| i + 1);
     assert!(
-        rest[..end].contains("<svg"),
-        "section {fqn:?} embeds an inline <svg"
+        rest[..end].contains(&format!("data-diagram=\"{kind}\"")),
+        "section {fqn:?} embeds a {kind:?} diagram"
     );
 }
 

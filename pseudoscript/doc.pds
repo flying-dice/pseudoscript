@@ -1,11 +1,13 @@
-//! doc — resolved graph to a static documentation site (crate `pseudoscript-doc`).
+//! doc — resolved graph to a Svelte-rendered documentation site (crate `pseudoscript-doc`).
 //!
 //! The headline subsystem (ADR-017). Sits above `model` and `emit`: turns a
-//! resolved `model::Graph` into a cargo-doc-style static site — an index, one page
-//! per module, a section per node carrying its `///` docs, tags, visibility, and
-//! relationships, with C4 and sequence diagrams embedded as inline SVG. Owns the
-//! site vocabulary (`Site`, `DocConfig`). Pure: returns in-memory files; the CLI
-//! writes them. No threads, no clock, no randomness, so output is deterministic.
+//! resolved `model::Graph` into a cargo-doc-style site. Each page is authored in
+//! Svelte and server-rendered through an embedded JavaScript engine at generation
+//! time, so the shipped tool needs no JS toolchain — only the prebuilt bundles. The
+//! server pass renders the page chrome and all text for first paint; diagrams ship
+//! as scene geometry and become interactive client islands. Owns the site
+//! vocabulary (`Site`, `DocConfig`, `PageProps`). Pure: returns in-memory files; the
+//! CLI writes them. No threads, no clock, no randomness, so output is deterministic.
 
 /// Site presentation, filled by the CLI from the `[doc]` table of `pds.toml`.
 /// `[doc]` tunes presentation only, never what is documented.
@@ -18,7 +20,7 @@ public data Theme =
   | Dark
 
 /// One generated file: a site-root-relative `/`-separated path (`index.html`,
-/// `module/banking.core.html`, `style.css`, `app.js`) and its complete contents.
+/// `module/banking.core.html`, `style.css`, `client.js`) and its complete contents.
 public data SiteFile { path: string, contents: string }
 
 /// The whole generated site as in-memory files, in deterministic order: the index,
@@ -31,229 +33,329 @@ public data Site { files: SiteFile[] }
 /// entry and renders as plain text.
 public data NodeUrl { page: string, anchor: string }
 
-/// `crates/pseudoscript-doc`. Turns a resolved graph into a cargo-doc-style static
-/// site, each node's `///` docs and relationships on its page, with C4 and
-/// sequence SVGs embedded inline. Pure: returns in-memory files, the CLI writes.
+/// The serialisable model for one page, handed to the Svelte renderer and embedded
+/// verbatim for hydration. Every derived value (resolved hrefs, anchors, edge
+/// labels, counts) is precomputed here so the Svelte components do no graph logic.
+/// User text is carried raw — the renderer escapes it on interpolation.
+public data PageProps { site: SiteInfo, sidebar: SidebarModule[], page: PageBody }
+
+/// Site-wide presentation, identical across pages: the title, the `light`/`dark`
+/// theme word, the optional logo filename, and the `../` prefix to the site root
+/// for this page's depth.
+public data SiteInfo { name: string, theme: string, logoFilename: string, prefix: string }
+
+/// One sidebar entry: a module-page link and its node tree, hrefs already prefixed
+/// for the page's depth.
+public data SidebarModule { label: string, href: string, nodes: SidebarNode[] }
+
+/// One node in the sidebar tree, recursing into its same-module children.
+public data SidebarNode { name: string, fqn: string, kind: string, href: string, children: SidebarNode[] }
+
+/// The page body: the landing index or one module's page.
+public data PageBody =
+  | IndexPage { title: string, contextDiagram: Diagram, cards: ModuleCard[] }
+  | ModulePage { name: string, sections: NodeSection[] }
+
+/// A module card on the index: its FQN, the (prefixed) href to its page, and an
+/// "N item(s)" line.
+public data ModuleCard { name: string, href: string, meta: string }
+
+/// One node's documentation section: head fields, `///` docs, tags, relationship
+/// groups, scenario cards, and embedded diagrams.
+public data NodeSection {
+  id: string,
+  kind: string,
+  name: string,
+  fqn: string,
+  visibility: string,
+  summary: string,
+  extended: string,
+  tags: string[],
+  relationships: RelGroup[],
+  scenarios: ScenarioCard[],
+  diagrams: Diagram[]
+}
+
+/// One relationship group ("Parent", "Inbound", or "Outbound") and its endpoints.
+public data RelGroup { title: string, items: RelItem[] }
+
+/// One relationship endpoint: the edge-kind word, whether to draw the outbound
+/// arrow, the endpoint FQN, its resolved href (absent → plain text), and any label.
+public data RelItem { edgeKind: string, arrow: bool, fqn: string, href: string, label: string }
+
+/// One BDD scenario card: name, `///` docs, tags, and the ordered steps.
+public data ScenarioCard { name: string, summary: string, extended: string, tags: string[], steps: Step[] }
+
+/// One scenario step: its keyword (given/when/then/and/but) and prose.
+public data Step { keyword: string, text: string }
+
+/// A diagram figure. A C4 or Sequence figure carries the laid-out `emit::Scene`
+/// geometry (not pre-rendered SVG) for a client island to draw; `Empty` marks a
+/// view that failed to project.
+public data Diagram =
+  | C4 { caption: string, scene: emit::Scene }
+  | Sequence { caption: string, scene: emit::Scene }
+  | Empty { caption: string, eyebrow: string }
+
+/// The server-render result for one page: the `<svelte:head>` contents and the
+/// rendered body markup, dropped into the document shell.
+public data RenderedPage { head: string, body: string }
+
+/// Why server-rendering a page failed. Every variant is a defect in the bundle, the
+/// engine, or the props codec — never user model data; well-formed props always
+/// render.
+public data RenderError =
+  | EngineFailed { message: string }
+  | RenderCallFailed { message: string }
+  | CodecFailed { message: string }
+
+/// `crates/pseudoscript-doc`. Turns a resolved graph into a Svelte-rendered,
+/// cargo-doc-style site: each node's `///` docs and relationships on its page, C4
+/// and sequence diagrams as interactive client islands. Pure: returns in-memory
+/// files, the CLI writes.
 /// #headline
 public container Doc for context::Pseudoscript;
 
-/// Orchestrates the whole site: build the URL map, then emit the index, the shared
-/// CSS/JS assets, and one HTML page per module (sorted by FQN). Pure: returns
-/// in-memory `Site` files, writes none.
+/// Orchestrates the whole site: build the URL map, project each page's props, server
+/// render it through the SSR engine, wrap it in the document shell, and ship the
+/// shared assets. Pure: returns in-memory `Site` files, writes none.
 public component SiteBuilder for Doc {
   /// Render the documentation site for `graph` under `config`: build the FQN→URL
-  /// map and the shared sidebar, emit the index and assets, then a page per module.
-  public render(graph: model::Graph, config: DocConfig): Site {
+  /// map, render the index and a page per module (sorted by FQN), then add the
+  /// shared assets. Any failed server-render aborts with its `RenderError`.
+  public render(graph: model::Graph, config: DocConfig): Result<Site, RenderError> {
     Doc::Urls.build(graph)
-    modules = self.sortedModules(graph)
-    sidebar = Doc::Pages.sidebar(graph, modules)
-    index = Doc::Pages.index(graph, config, modules, sidebar)
-    for (m in modules) {
-      Doc::Pages.modulePage(graph, config, m, sidebar)
+    modules = Doc::Pages.sortedModules(graph)
+    index = self.emitPage("index.html", Doc::Pages.index(graph, config, modules))
+    if (index.isErr) {
+      return Err(index.error)
     }
-    return Site from { index, modules }
+    for (m in modules) {
+      page = self.emitPage(Doc::Urls.modulePagePath(m), Doc::Pages.modulePage(graph, config, m, modules))
+      if (page.isErr) {
+        return Err(page.error)
+      }
+    }
+    assets = Doc::Assets.shared()
+    return Ok(Site from { index, modules, assets })
   }
+
+  /// Render one page: server-render its props through the engine, then wrap the
+  /// `{head, body}` result in the document shell. Propagates a `RenderError`.
+  emitPage(path: string, props: PageProps): Result<SiteFile, RenderError> {
+    rendered = Doc::Ssr.renderPage(props)
+    if (rendered.isErr) {
+      return Err(rendered.error)
+    }
+    html = Doc::Shell.wrap(path, props, rendered.value)
+    return Ok(SiteFile from { path, html })
+  }
+}
+
+/// Projects the resolved graph into per-page `PageProps` — pure data, no markup.
+/// Builds the index props (title, context diagram, module cards), each module page's
+/// node sections, and the depth-prefixed sidebar tree mirroring the C4 hierarchy.
+component Pages for Doc {
+  /// The index props: the shared sidebar, a card per module, and the system-context
+  /// diagram.
+  index(graph: model::Graph, config: DocConfig, modules: string[]): PageProps {
+    sidebar = self.sidebar(graph, modules, "")
+    cards = self.moduleCards(graph, modules)
+    context = Doc::Diagrams.context(graph)
+    body = IndexPage from { config, context, cards }
+    return PageProps from { config, sidebar, body }
+  }
+
+  /// One module page's props: the sidebar (prefixed `../` for the page's depth) and
+  /// a section per non-callable node declared in the module, sorted by FQN.
+  modulePage(graph: model::Graph, config: DocConfig, module: string, modules: string[]): PageProps {
+    sidebar = self.sidebar(graph, modules, "../")
+    nodes = self.moduleNodes(graph, module)
+    sections = self.sections(graph, nodes)
+    body = ModulePage from { module, sections }
+    return PageProps from { config, sidebar, body }
+  }
+
+  /// One node section: head fields, `///` docs, tags, relationships, scenario cards,
+  /// and embedded diagrams.
+  section(graph: model::Graph, node: model::GraphNode): NodeSection {
+    rels = Doc::Relationships.groups(graph, node)
+    cards = Doc::Scenarios.cards(graph, node)
+    diagrams = Doc::Diagrams.forNode(graph, node)
+    return NodeSection from { node, rels, cards, diagrams }
+  }
+
+  /// The brand + search + collapsible tree sidebar, identical on every page bar the
+  /// depth prefix. The tree mirrors the C4 hierarchy: each module holds its
+  /// top-level nodes, each node nests its same-module children recursively.
+  sidebar(graph: model::Graph, modules: string[], prefix: string): SidebarModule[];
+
+  /// A card per module: FQN, prefixed page href, and the "N items" line.
+  moduleCards(graph: model::Graph, modules: string[]): ModuleCard[];
 
   /// Every module FQN in the graph, de-duplicated and sorted, so pages emit in a
   /// stable order.
   sortedModules(graph: model::Graph): string[];
-}
-
-/// Renders the HTML pages and shell: the index, each module page, and the per-node
-/// sections (kind/visibility badges, `///` summary and body, tags, relationships).
-/// Each node declared in a module gets a section so every cross-link anchor
-/// resolves; the sidebar tree mirrors the C4 hierarchy.
-component Pages for Doc {
-  /// The index page: title, the system-context diagram, and a card per module.
-  index(graph: model::Graph, config: DocConfig, modules: string[], sidebar: string): string {
-    body = self.indexBody(graph, config, modules)
-    return self.shell(config, body, sidebar)
-  }
-
-  /// One module page: a header plus a section per node declared in the module,
-  /// top-level then nested, all sorted by FQN.
-  modulePage(graph: model::Graph, config: DocConfig, module: string, sidebar: string): string {
-    nodes = self.moduleNodes(graph, module)
-    body = self.sections(graph, nodes)
-    return self.shell(config, body, sidebar)
-  }
-
-  /// One node section: head (kind/visibility badges, FQN), `///` summary and
-  /// extended body, tags, relationships, scenario cards, and embedded diagram(s).
-  node(graph: model::Graph, node: model::GraphNode): string {
-    head = self.nodeHead(node)
-    rels = Doc::Relationships.render(graph, node)
-    cards = Doc::Scenarios.render(graph, node)
-    diagrams = Doc::Diagrams.forNode(graph, node)
-    return self.assemble(head, rels, cards, diagrams)
-  }
-
-  /// The brand + search + collapsible tree sidebar, identical on every page. The
-  /// tree mirrors the C4 hierarchy: each module holds its top-level nodes, each
-  /// node nests its same-module children recursively. Built once, depth-agnostic.
-  sidebar(graph: model::Graph, modules: string[]): string;
-
-  /// The index page body: header, context diagram, and the module card grid.
-  indexBody(graph: model::Graph, config: DocConfig, modules: string[]): string;
-
-  /// Wraps a page body in the shared HTML shell: head, `data-theme` attribute,
-  /// localized sidebar, and the root-relative asset links.
-  shell(config: DocConfig, body: string, sidebar: string): string;
 
   /// Every non-callable node declared in `module`, sorted by FQN. Callables are
   /// documented inside their owner's section, not as their own entries.
   moduleNodes(graph: model::Graph, module: string): model::GraphNode[];
 
-  /// Render each node's section in order and concatenate them.
-  sections(graph: model::Graph, nodes: model::GraphNode[]): string;
-
-  /// The node head: kind badge, name with self-link anchor, visibility badge, and
-  /// the monospaced FQN.
-  nodeHead(node: model::GraphNode): string;
-
-  /// Concatenate a node section's parts into its `<section>` element.
-  assemble(head: string, rels: string, cards: string, diagrams: string): string;
+  /// Render each node's section in order.
+  sections(graph: model::Graph, nodes: model::GraphNode[]): NodeSection[];
 }
 
-/// Renders a node's relationships block (LANG.md §9.3): its `for`/owner parent,
-/// inbound edges, and outbound edges, skipping the structural `for`-parent edge
-/// kind. Each endpoint is a cross-link when its FQN resolves, plain text otherwise.
+/// The server-side render boundary: a JSON-string-in / JSON-string-out seam to the
+/// JavaScript renderer. The native build embeds a `QuickJS` engine that evaluates the
+/// prebuilt `ssr.js` bundle (`Doc::Assets`) in-process; a wasm host implements the
+/// same seam against its own JS engine. A defect here is a build-asset fault, never
+/// user model data.
+/// #critical
+component Ssr for Doc {
+  /// Server-render one page from its props, returning the component's
+  /// `{head, body}` output. Fails with a `RenderError` when the engine call or the
+  /// props/result codec fails.
+  renderPage(props: PageProps): Result<RenderedPage, RenderError>;
+}
+
+/// Owns the document shell that wraps each server-rendered body — the part Rust
+/// renders, not Svelte: doctype, `<html data-theme>`, font + stylesheet links, the
+/// hydration data, and the client-bundle script. The rendered body mounts into
+/// `#app`, which the client hydrates.
+component Shell for Doc {
+  /// Wrap a server-rendered page in the full HTML document: escape the title and
+  /// theme into the document attributes, embed the props as `window.__DATA__` for
+  /// hydration, link the depth-relative `style.css` and `client.js`, and mount the
+  /// body into `#app`.
+  wrap(path: string, props: PageProps, rendered: RenderedPage): string {
+    title = Doc::Escape.text(props.site.name)
+    return self.document(path, title, props, rendered)
+  }
+
+  /// Assemble the document string from its escaped title, the hydration props, and
+  /// the rendered head/body — the static template around the rendered content.
+  document(path: string, title: string, props: PageProps, rendered: RenderedPage): string;
+}
+
+/// Renders a node's relationships (LANG.md §9.3): its `for`/owner parent, inbound
+/// edges, and outbound edges, skipping the structural `for`-parent edge kind. Each
+/// endpoint is a cross-link when its FQN resolves, plain text otherwise.
 component Relationships for Doc {
-  /// The relationships block for `node`: parent, inbound, then outbound groups.
-  /// Empty when the node has no parent and no edges.
-  render(graph: model::Graph, node: model::GraphNode): string {
+  /// The relationship groups for `node`: parent, inbound, then outbound. Empty when
+  /// the node has no parent and no edges.
+  groups(graph: model::Graph, node: model::GraphNode): RelGroup[] {
     parent = self.parentGroup(graph, node)
     inbound = self.inboundGroup(graph, node)
     outbound = self.outboundGroup(graph, node)
-    return self.wrap(parent, inbound, outbound)
+    return self.collect(parent, inbound, outbound)
   }
 
   /// The parent group: a `for` link for a container/component, an `in` link
   /// otherwise. Empty when the node has no parent.
-  parentGroup(graph: model::Graph, node: model::GraphNode): string;
+  parentGroup(graph: model::Graph, node: model::GraphNode): RelGroup[];
 
   /// The inbound group: every non-`for` edge whose `to` is this node, each as a
   /// cross-link from its source with the edge kind and any `· method` label.
-  inboundGroup(graph: model::Graph, node: model::GraphNode): string;
+  inboundGroup(graph: model::Graph, node: model::GraphNode): RelGroup[];
 
   /// The outbound group: every non-`for` edge whose `from` is this node, each an
   /// arrowed cross-link to its target with the edge kind and label.
-  outboundGroup(graph: model::Graph, node: model::GraphNode): string;
+  outboundGroup(graph: model::Graph, node: model::GraphNode): RelGroup[];
 
-  /// Wrap the non-empty groups in the relationships container; empty when all are.
-  wrap(parent: string, inbound: string, outbound: string): string;
+  /// Concatenate the non-empty groups in order.
+  collect(parent: RelGroup[], inbound: RelGroup[], outbound: RelGroup[]): RelGroup[];
 
-  /// A cross-link to `fqn` when it resolves to a node, the plain escaped FQN
-  /// otherwise (LANG.md §9.3).
-  fqnLink(fqn: string): string {
+  /// A `RelItem` for `fqn`: a resolved href when it names a node, absent (rendering
+  /// plain text) otherwise (LANG.md §9.3).
+  item(fqn: string, kind: model::EdgeKind, arrow: bool, label: string): RelItem {
+    edgeKind = self.edgeKindLabel(kind)
     href = Doc::Urls.hrefTo(fqn)
     if (href.isErr) {
-      return Doc::Escape.text(fqn)
+      return RelItem from { fqn, edgeKind, arrow, label }
     }
-    return self.anchorTag(href.value, fqn)
+    link = href.value
+    return RelItem from { fqn, edgeKind, arrow, label, link }
   }
 
   /// The display word for an `EdgeKind`: `for`/`call`/`trigger`/`from`.
   edgeKindLabel(kind: model::EdgeKind): string;
-
-  /// An `<a>` cross-link to `href` with the escaped FQN as its text.
-  anchorTag(href: string, fqn: string): string;
 }
 
-/// Renders the BDD scenario cards on a node's page (the recently added feature):
-/// each `feature` targeting the node becomes its given/when/then steps as a card
-/// (LANG.md §5.2, §9.3). The step keyword is a closed set, safe as a class; the
-/// prose is user text and is escaped. Empty when the node has no features.
+/// Renders the BDD scenario cards on a node's page: each `feature` targeting the node
+/// becomes its given/when/then steps as a card (LANG.md §5.2, §9.3). Empty when the
+/// node has no features.
 component Scenarios for Doc {
-  /// The scenario cards for `node`: one card per feature targeting it. Empty when
-  /// the node has no scenarios.
-  render(graph: model::Graph, node: model::GraphNode): string {
+  /// The scenario cards for `node`: one per feature targeting it, with name, `///`
+  /// docs, tags, and ordered steps. Empty when the node has no scenarios.
+  cards(graph: model::Graph, node: model::GraphNode): ScenarioCard[] {
     scenarios = self.scenariosOf(graph, node)
-    if (self.isEmpty(scenarios)) {
-      return self.none()
-    }
-    return self.cards(scenarios)
+    return self.toCards(scenarios)
   }
 
   /// The scenarios in the graph whose target FQN is this node.
   scenariosOf(graph: model::Graph, node: model::GraphNode): model::Scenario[];
 
-  /// Whether the scenario list is empty.
-  isEmpty(scenarios: model::Scenario[]): bool;
-
-  /// The empty rendering — no scenarios section.
-  none(): string;
-
-  /// Render every scenario as a card (name, optional `///` summary, step list)
-  /// inside the scenarios container.
-  cards(scenarios: model::Scenario[]): string;
-
-  /// One scenario card: its name, summary, and a `<li>` per given/when/then step.
-  card(scenario: model::Scenario): string;
-
-  /// One step `<li>`: the keyword as a styled label plus the escaped prose.
-  step(step: model::ScenarioStep): string;
+  /// Map each scenario to a card (name, docs, tags, given/when/then steps).
+  toCards(scenarios: model::Scenario[]): ScenarioCard[];
 }
 
-/// The bridge into `emit`: project a view, render it to inline SVG, embed it.
-/// A view that fails to project degrades to a placeholder rather than aborting the
-/// build — the cargo-doc stance that a partial model still documents.
+/// The bridge into `emit`: project a view into a `Scene` and carry its geometry as
+/// page data. A view that fails to project degrades to an `Empty` placeholder rather
+/// than aborting the build — the cargo-doc stance that a partial model still
+/// documents. The client islands lay out the geometry: C4 as a flow graph, sequences
+/// as an animated timeline.
 component Diagrams for Doc {
-  /// The embedded diagrams for a node: a container diagram on a `system`, a
-  /// component diagram on a `container`, and a sequence diagram per triggered
-  /// callable the node owns. Other kinds embed nothing.
-  forNode(graph: model::Graph, node: model::GraphNode): string {
+  /// The diagrams embedded on a node: a container diagram on a `system`, a component
+  /// diagram on a `container`, plus a sequence diagram per triggered callable it
+  /// owns. Other kinds embed nothing.
+  forNode(graph: model::Graph, node: model::GraphNode): Diagram[] {
+    return self.collect(self.boundary(graph, node), self.sequences(graph, node))
+  }
+
+  /// The boundary diagram for a node: a container view for a `system`, a component
+  /// view for a `container`, none for any other kind.
+  boundary(graph: model::Graph, node: model::GraphNode): Diagram[] {
     if (self.isSystem(node)) {
-      return self.containers(graph, node.fqn)
+      return self.one(self.figure(graph, self.containerView(node.fqn), "Containers", "Container diagram"))
     }
     if (self.isContainer(node)) {
-      return self.components(graph, node.fqn)
+      return self.one(self.figure(graph, self.componentView(node.fqn), "Components", "Component diagram"))
     }
-    return self.sequences(graph, node)
+    return self.none()
   }
 
-  /// Context diagram for the index page (persons and systems).
-  context(graph: model::Graph): string {
-    view = self.contextView()
-    return self.figure(graph, view, "Context")
+  /// The context diagram for the index page (persons and systems).
+  context(graph: model::Graph): Diagram {
+    return self.figure(graph, self.contextView(), "Context", "System context")
   }
 
-  /// Container diagram embedded on a `system` node's page.
-  containers(graph: model::Graph, systemFqn: string): string {
-    view = self.containerView(systemFqn)
-    return self.figure(graph, view, "Containers")
-  }
-
-  /// Component diagram embedded on a `container` node's page.
-  components(graph: model::Graph, host: string): string {
-    view = self.componentView(host)
-    return self.figure(graph, view, "Components")
-  }
-
-  /// The context view (`emit::Context`).
-  contextView(): emit::View;
-
-  /// The container boundary view (`emit::Container`) for the `system` node.
-  containerView(systemFqn: string): emit::View;
-
-  /// The component boundary view (`emit::Component`) for the host container.
-  componentView(host: string): emit::View;
-
-  /// A framed, zoom/pan-able diagram figure for `view`: project, then render the
-  /// inline SVG on success or a graceful placeholder on an `EmitError` (e.g. an
-  /// empty boundary), so a failed projection never aborts the build.
-  figure(graph: model::Graph, view: emit::View, eyebrow: string): string {
+  /// Project `view` into a `Diagram`: carry the laid-out scene on success, or an
+  /// `Empty` placeholder on an `EmitError` (e.g. an empty boundary), so a failed
+  /// projection never aborts the build.
+  figure(graph: model::Graph, view: emit::View, eyebrow: string, caption: string): Diagram {
     scene = emit::Projector.project(graph, view)
     if (scene.isErr) {
-      return self.placeholder(scene.error, eyebrow)
+      return Empty from { caption, eyebrow }
     }
-    svg = emit::SvgRenderer.render(scene.value)
-    return self.frame(svg, eyebrow)
+    return self.embed(scene.value, caption)
   }
+
+  /// Wrap a laid-out scene in its matching figure: a C4 scene as a `C4` diagram, a
+  /// sequence scene as a `Sequence` diagram.
+  embed(scene: emit::Scene, caption: string): Diagram;
 
   /// One sequence figure per triggered callable the node owns; a callable with no
   /// trigger is skipped, since only entry points get a sequence diagram.
-  sequences(graph: model::Graph, node: model::GraphNode): string;
+  sequences(graph: model::Graph, node: model::GraphNode): Diagram[];
+
+  /// The context view (`emit::View::Context`).
+  contextView(): emit::View;
+
+  /// The container boundary view for the `system` node.
+  containerView(systemFqn: string): emit::View;
+
+  /// The component boundary view for the host container.
+  componentView(host: string): emit::View;
 
   /// Whether a node is a `system` (gets a container diagram).
   isSystem(node: model::GraphNode): bool;
@@ -261,17 +363,20 @@ component Diagrams for Doc {
   /// Whether a node is a `container` (gets a component diagram).
   isContainer(node: model::GraphNode): bool;
 
-  /// Wrap rendered SVG in a `<figure>` with caption and zoom/pan controls.
-  frame(svg: string, caption: string): string;
+  /// Concatenate the boundary diagrams and the sequence diagrams in order.
+  collect(boundary: Diagram[], sequences: Diagram[]): Diagram[];
 
-  /// The fallback shown when a view cannot be projected: a no-diagram notice.
-  placeholder(err: emit::EmitError, eyebrow: string): string;
+  /// A single-figure list.
+  one(diagram: Diagram): Diagram[];
+
+  /// The empty list (no boundary diagram).
+  none(): Diagram[];
 }
 
-/// Maps every node FQN to its page path and anchor, and resolves cross-references
-/// to module-page-relative `href`s. A module page is `module/<dotted-fqn>.html`
-/// (`::` → `.`); a node is the `#<slug>` anchor within it. Only an FQN naming a
-/// real node produces a link (LANG.md §9.3).
+/// Maps every node FQN to its page path and anchor, and resolves cross-references to
+/// module-page-relative `href`s. A module page is `module/<dotted-fqn>.html`
+/// (`::` → `.`); a node is the `#<slug>` anchor within it. Only an FQN naming a real
+/// node produces a link (LANG.md §9.3).
 component Urls for Doc {
   /// Build the FQN→`NodeUrl` map over every node in the graph.
   build(graph: model::Graph): void;
@@ -279,8 +384,8 @@ component Urls for Doc {
   /// The resolved URL for `fqn`, or an error when no node carries that FQN.
   get(fqn: string): Result<NodeUrl, void>;
 
-  /// The module-page-relative `href` to `fqn` (`<file>.html#<anchor>`), or an
-  /// error when `fqn` resolves to no node.
+  /// The module-page-relative `href` to `fqn` (`<file>.html#<anchor>`), or an error
+  /// when `fqn` resolves to no node.
   hrefTo(fqn: string): Result<string, void> {
     url = self.get(fqn)
     if (url.isErr) {
@@ -292,29 +397,30 @@ component Urls for Doc {
   /// The page path for a module FQN: `module/<dotted-fqn>.html`.
   modulePagePath(moduleFqn: string): string;
 
-  /// The in-page anchor id for a node FQN: `::` and other non-id characters
-  /// become `-`, so the id is link-safe.
+  /// The in-page anchor id for a node FQN: `::` and other non-id characters become
+  /// `-`, so the id is link-safe.
   anchor(nodeFqn: string): string;
 
   /// The bare-filename `href` to a target from a sibling module page.
   hrefFromModulePage(url: NodeUrl): string;
 }
 
-/// Ships the static assets once at the site root, linked by every page rather than
-/// inlined per page (LANG.md §9.3). The CSS carries both light and dark variable
-/// sets, switched by `data-theme`; the JS is dependency-free vanilla — a
-/// collapsible tree, a client-side filter, and wheel/drag zoom-pan on diagrams.
+/// Ships the prebuilt presentation bundles, authored in the `web/` Svelte package and
+/// embedded at build time (LANG.md §9.3). `style.css` and `client.js` ship once at
+/// the site root and every page links them; `ssr.js` is build-time only — the engine
+/// (`Doc::Ssr`) evaluates it and it is never written to the site.
 component Assets for Doc {
-  /// The cargo-doc-style stylesheet: fixed left sidebar tree, neutral palette,
-  /// diagrams framed as figures, light and dark variable sets.
-  styleCss(): string;
+  /// The shared site-root assets: `style.css` (light + dark variable sets) and
+  /// `client.js` (hydration and the diagram islands).
+  shared(): SiteFile[];
 
-  /// The vanilla-JS script: collapsible tree, tree filter, and diagram zoom-pan.
-  appJs(): string;
+  /// The Svelte SSR bundle the engine evaluates to render a page.
+  ssrBundle(): string;
 }
 
-/// All user text — node names, `///` docs, tags, the site title — flows through
-/// the escaper before reaching the page, so a model can never inject markup.
+/// All user text — node names, `///` docs, tags, the site title — is carried raw in
+/// the props and escaped on interpolation by the renderer; this escaper guards the
+/// Rust-owned document shell, where the title and theme become HTML attributes.
 component Escape for Doc {
   /// Escape the five HTML-significant characters (`& < > " '`) in `text`.
   text(text: string): string;
@@ -337,19 +443,36 @@ feature DeterministicGeneration for SiteBuilder {
   and   "the file lists are byte-for-byte identical"
 }
 
-/// Diagrams embed as inline SVG.
-feature EmbedDiagrams for Diagrams {
+/// Pages are server-rendered through an embedded JS engine for first paint.
+feature ServerRenderedFirstPaint for Ssr {
+  given "a page's precomputed props"
+  when  "the page is server-rendered"
+  then  "the page chrome and all text content are present in the emitted HTML before any script runs"
+  and   "the renderer needs no JavaScript toolchain, only the embedded prebuilt bundle"
+}
+
+/// Each page embeds its props so client islands hydrate without refetching.
+feature HydrationDataEmbedded for Shell {
+  given "a server-rendered page"
+  when  "the document shell is assembled"
+  then  "the page props are embedded as window.__DATA__ and the client bundle is linked"
+  and   "the rendered body is mounted in #app for the client to hydrate"
+}
+
+/// Diagrams ship as scene geometry and render as interactive client islands.
+feature InteractiveDiagramIslands for Diagrams {
   given "a node that anchors a C4 boundary or owns a triggered callable"
   when  "its page is rendered"
-  then  "a system embeds a container diagram and a container embeds a component diagram"
-  and   "each triggered callable embeds its sequence diagram as inline SVG"
+  then  "a system carries a container diagram and a container carries a component diagram"
+  and   "each triggered callable carries its sequence diagram"
+  and   "each diagram's laid-out scene geometry is carried in the page data for a client island to draw"
 }
 
 /// A failed projection degrades to a placeholder rather than aborting.
 feature ProjectionFailureDegrades for Diagrams {
   given "a view that fails to project with an EmitError"
-  when  "the figure is rendered"
-  then  "a placeholder notice is emitted in place of the diagram"
+  when  "the figure is built"
+  then  "an Empty placeholder figure is produced in place of the diagram"
   but   "the build continues and the rest of the site still renders"
 }
 
@@ -373,23 +496,23 @@ feature CrossLinksResolve for Urls {
 feature SharedAssetsShipOnce for Assets {
   given "a multi-page site"
   when  "it is generated"
-  then  "style.css and app.js are emitted once at the site root"
+  then  "style.css and client.js are emitted once at the site root"
   and   "every page links them by a depth-relative path rather than inlining them"
 }
 
 /// The theme is chosen from the `[doc]` configuration.
-feature ThemeFromConfig for Pages {
+feature ThemeFromConfig for Shell {
   given "a DocConfig carrying a light or dark theme"
-  when  "a page shell is rendered"
+  when  "the document shell is rendered"
   then  "the root html carries the matching data-theme attribute"
 }
 
-/// All user text is HTML-escaped.
-feature EscapeUserText for Escape {
-  given "a node name, doc string, or tag containing HTML-significant characters"
-  when  "it is written into a page"
-  then  "the five significant characters are escaped"
-  but   "text with no significant characters passes through unchanged"
+/// Document attributes are HTML-escaped; content is escaped by the renderer.
+feature EscapeDocumentText for Escape {
+  given "a site title containing HTML-significant characters"
+  when  "the document shell is assembled"
+  then  "the five significant characters are escaped in the document attributes"
+  but   "page content text is carried raw and escaped by the renderer on interpolation"
 }
 
 /// The sidebar tree mirrors the C4 hierarchy.

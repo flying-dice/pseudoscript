@@ -1,423 +1,309 @@
-//! Site rendering: the resolved [`Graph`] → a [`Site`] of HTML/CSS/JS files.
+//! Projects a resolved [`Graph`] into per-page [`PageProps`].
 //!
-//! Generation is a pure, deterministic projection (`LANG.md` §9.3): modules and
-//! nodes are sorted by FQN, no clock or randomness is consulted, and every
-//! piece of user text is escaped through [`crate::escape`]. The output is
-//! `index.html`, the shared `style.css` / `app.js`, and one page per module.
+//! Pure and deterministic: modules and nodes are sorted by FQN, callables
+//! document under their owner, and same-module children nest. No clock, no
+//! randomness, no I/O.
 
-use std::fmt::Write as _;
-
-use pseudoscript_emit::{View, project, render_svg};
-use pseudoscript_model::{Edge, EdgeKind, Graph, GraphNode, NodeKind, Visibility};
-
-use crate::assets::{APP_JS, STYLE_CSS};
-use crate::config::DocConfig;
-use crate::escape::escape;
+use crate::config::{DocConfig, DocPage};
 use crate::nav::{callables_of, child_nodes, module_top_level, sorted_modules};
-use crate::site::{Site, SiteFile};
-use crate::url::{UrlMap, anchor, module_page_path};
+use crate::url::{UrlMap, anchor, doc_page_path, module_page_path};
+use pseudoscript_emit::{Scene, View, project};
+use pseudoscript_model::{Edge, EdgeKind, Graph, GraphNode, NodeKind, Visibility};
+use pulldown_cmark::{BlockQuoteKind, Event, Options, Parser, Tag, TagEnd, html};
 
-/// Renders the whole documentation site for `graph` under `config`.
-#[must_use]
-pub fn render_site(graph: &Graph, config: &DocConfig) -> Site {
+use crate::props::{
+    Diagram, DocPageProps, IndexProps, ModuleCard, ModuleProps, NodeSection, PageBody, PageProps,
+    RelGroup, RelItem, ScenarioCard, SidebarDocGroup, SidebarDocItem, SidebarModule, SidebarNode,
+    SiteInfo, Step,
+};
+
+/// Builds every page's props in deterministic file order: `index.html` first,
+/// then one page per authored doc (`[[doc.sidebar]]`, in declaration order),
+/// then one module page per module sorted by FQN. The returned path is the
+/// site-relative output path.
+pub(crate) fn build_pages(graph: &Graph, config: &DocConfig) -> Vec<(String, PageProps)> {
     let urls = UrlMap::build(graph);
     let modules = sorted_modules(graph);
-    let sidebar = render_sidebar(graph, &modules, &urls);
 
-    let mut files = Vec::with_capacity(modules.len() + 3);
-    files.push(SiteFile::new(
-        "index.html",
-        render_index(graph, config, &modules, &sidebar),
+    let doc_pages: Vec<&DocPage> = config.docs.iter().flat_map(|group| &group.pages).collect();
+    let mut pages = Vec::with_capacity(modules.len() + doc_pages.len() + 1);
+    pages.push((
+        "index.html".to_owned(),
+        build_index(graph, config, &modules, &urls),
     ));
-    files.push(SiteFile::new("style.css", STYLE_CSS));
-    files.push(SiteFile::new("app.js", APP_JS));
+    for page in &doc_pages {
+        pages.push((doc_page_path(&page.path), build_doc(config, page)));
+    }
     for module in &modules {
-        files.push(SiteFile::new(
+        pages.push((
             module_page_path(module),
-            render_module_page(graph, config, module, &urls, &sidebar),
+            build_module(graph, config, module, &modules, &urls),
         ));
     }
-    Site { files }
+    pages
 }
 
-// ---- page shell -----------------------------------------------------------
+/// The site info for a page at the given root `prefix`.
+fn site_info(config: &DocConfig, prefix: &str) -> SiteInfo {
+    SiteInfo {
+        name: config.name.clone(),
+        theme: config.theme.attr().to_owned(),
+        logo_filename: config.logo_filename().map(ToOwned::to_owned),
+        prefix: prefix.to_owned(),
+    }
+}
 
-/// Wraps page `body` in the shared HTML shell (head, theme attr, sidebar, asset
-/// links). `depth` is how many directories deep the page sits, fixing the
-/// relative prefix to the root-level assets.
-fn page_shell(config: &DocConfig, depth: usize, sidebar: &str, body: &str) -> String {
-    let prefix = "../".repeat(depth);
-    let title = escape(&config.name);
-    let mut html = String::with_capacity(body.len() + sidebar.len() + 1024);
-    let _ = write!(
-        html,
-        "<!doctype html>\n\
-<html lang=\"en\" data-theme=\"{theme}\">\n\
-<head>\n\
-<meta charset=\"utf-8\">\n\
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-<title>{title}</title>\n\
-<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n\
-<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n\
-<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?\
-family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&\
-family=Hanken+Grotesk:wght@400;500;600&\
-family=JetBrains+Mono:wght@400;500;600&display=swap\">\n\
-<link rel=\"stylesheet\" href=\"{prefix}style.css\">\n\
-</head>\n\
-<body>\n\
-<div class=\"layout\">\n\
-{sidebar}\
-<main class=\"main\">\n\
-{body}\
-</main>\n\
-</div>\n\
-<script src=\"{prefix}app.js\"></script>\n\
-</body>\n\
-</html>\n",
-        theme = config.theme.attr(),
-    );
+// ---- authored doc pages ----------------------------------------------------
+
+/// One authored Markdown page (`[[doc.sidebar]]`). Doc pages sit one directory
+/// deep (`docs/<slug>.html`), so their sidebar/asset links take a `../` prefix.
+fn build_doc(config: &DocConfig, page: &DocPage) -> PageProps {
+    PageProps {
+        site: site_info(config, "../"),
+        doc_groups: build_doc_groups(config, "../"),
+        sidebar: Vec::new(),
+        page: PageBody::Doc(DocPageProps {
+            title: page.title.clone(),
+            html: render_markdown(&page.markdown),
+        }),
+    }
+}
+
+/// The authored-doc sidebar groups, every page href prefixed for the page depth.
+fn build_doc_groups(config: &DocConfig, prefix: &str) -> Vec<SidebarDocGroup> {
+    config
+        .docs
+        .iter()
+        .map(|group| SidebarDocGroup {
+            title: group.title.clone(),
+            items: group
+                .pages
+                .iter()
+                .map(|page| SidebarDocItem {
+                    title: page.title.clone(),
+                    href: format!("{prefix}{}", doc_page_path(&page.path)),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Renders authored Markdown to HTML. GitHub-flavoured extensions (tables,
+/// strikethrough, task lists, footnotes, and `> [!NOTE]`-style alerts) are
+/// enabled; the content is project-authored and trusted, so raw inline HTML
+/// passes through.
+fn render_markdown(markdown: &str) -> String {
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_SMART_PUNCTUATION
+        | Options::ENABLE_GFM;
+    // Rewrite GitHub alert blockquotes into titled callout `<div>`s, matching
+    // the IDE live preview. A non-alert blockquote passes through unchanged.
+    let events = Parser::new_ext(markdown, options).map(|event| match event {
+        Event::Start(Tag::BlockQuote(Some(kind))) => {
+            let (slug, label) = callout_meta(kind);
+            Event::Html(
+                format!("<div class=\"callout callout-{slug}\">\n<p class=\"callout-title\">{label}</p>\n").into(),
+            )
+        }
+        Event::End(TagEnd::BlockQuote(Some(_))) => Event::Html("</div>\n".into()),
+        other => other,
+    });
+    let mut html = String::with_capacity(markdown.len() * 3 / 2);
+    html::push_html(&mut html, events);
     html
 }
 
-/// The brand + search + tree sidebar, identical on every page (paths use the
-/// page-depth-agnostic module-page form, which is correct from both `index.html`
-/// — via the relative prefix — and sibling module pages).
-///
-/// The tree mirrors the C4 hierarchy: each module holds its top-level nodes, and
-/// every node nests its same-module children (a `system`'s containers, a
-/// container's components, a node's nested declarations) recursively.
-fn render_sidebar(graph: &Graph, modules: &[String], urls: &UrlMap) -> String {
-    let mut tree = String::new();
-    for module in modules {
-        let _ = write!(
-            tree,
-            "<li class=\"module\" data-search=\"{search}\">\
-<div class=\"row\"><span class=\"toggle\">&#9662;</span>\
-<a class=\"label\" href=\"PREFIX{href}\">{label}</a></div>\
-<ul class=\"children\">",
-            search = escape(module),
-            href = module_page_path(module),
-            label = escape(module),
-        );
-        for node in module_top_level(graph, module) {
-            render_tree_node(graph, node, urls, &mut tree);
-        }
-        tree.push_str("</ul></li>");
+/// The CSS slug and display title for a GitHub alert kind.
+fn callout_meta(kind: BlockQuoteKind) -> (&'static str, &'static str) {
+    match kind {
+        BlockQuoteKind::Note => ("note", "Note"),
+        BlockQuoteKind::Tip => ("tip", "Tip"),
+        BlockQuoteKind::Important => ("important", "Important"),
+        BlockQuoteKind::Warning => ("warning", "Warning"),
+        BlockQuoteKind::Caution => ("caution", "Caution"),
     }
-    format!(
-        "<aside class=\"sidebar\">\
-<div class=\"brand\">BRAND</div>\
-<div class=\"search\"><input type=\"search\" placeholder=\"Filter nodes…\" \
-aria-label=\"Filter nodes\" autocomplete=\"off\" spellcheck=\"false\"></div>\
-<ul class=\"tree\">{tree}</ul>\
-</aside>\n",
-    )
-}
-
-/// Renders one node as a tree `<li>`, recursing into its same-module children.
-/// A node with children carries a collapse toggle; a leaf gets a spacer so its
-/// label aligns with its siblings'.
-fn render_tree_node(graph: &Graph, node: &GraphNode, urls: &UrlMap, out: &mut String) {
-    let Some(url) = urls.get(&node.fqn) else {
-        return;
-    };
-    let children = child_nodes(graph, node);
-    let toggle = if children.is_empty() {
-        "<span class=\"toggle-spacer\"></span>"
-    } else {
-        "<span class=\"toggle\">&#9662;</span>"
-    };
-    let _ = write!(
-        out,
-        "<li data-search=\"{search}\"><div class=\"row\">{toggle}\
-<a class=\"node-link\" href=\"PREFIX{page}#{anchor}\">\
-<span class=\"kind-dot {kind}\"></span>\
-<span class=\"label\">{name}</span></a></div>",
-        search = escape(&node.fqn),
-        page = url.page,
-        anchor = url.anchor,
-        kind = node.kind.keyword(),
-        name = escape(&node.name),
-    );
-    if !children.is_empty() {
-        out.push_str("<ul class=\"children\">");
-        for child in children {
-            render_tree_node(graph, child, urls, out);
-        }
-        out.push_str("</ul>");
-    }
-    out.push_str("</li>");
-}
-
-/// Resolves the `PREFIX`/`BRAND` placeholders in the shared sidebar for a page
-/// at `depth`. Keeping the tree string depth-agnostic lets us build it once.
-fn localize_sidebar(sidebar: &str, config: &DocConfig, depth: usize) -> String {
-    let prefix = "../".repeat(depth);
-    let brand = render_brand(config, depth);
-    sidebar.replace("PREFIX", &prefix).replace("BRAND", &brand)
-}
-
-/// The brand block: optional logo image plus the site title.
-fn render_brand(config: &DocConfig, depth: usize) -> String {
-    let prefix = "../".repeat(depth);
-    let logo = config.logo_filename().map_or(String::new(), |file| {
-        format!("<img src=\"{prefix}{file}\" alt=\"\">", file = escape(file))
-    });
-    format!(
-        "<a class=\"brand-link\" href=\"{prefix}index.html\">\
-{logo}<span class=\"title\">{name}<small>PseudoScript</small></span></a>",
-        name = escape(&config.name),
-    )
 }
 
 // ---- index ----------------------------------------------------------------
 
-/// The index page: title, the context diagram, and module cards.
-fn render_index(graph: &Graph, config: &DocConfig, modules: &[String], sidebar: &str) -> String {
-    let mut body = String::new();
-    let _ = write!(
-        body,
-        "<div class=\"content\">\
-<header class=\"page-head\">\
-<div class=\"eyebrow\">Architecture documentation</div>\
-<h1>{name}</h1>\
-<p class=\"lead\">A C4 model of the workspace: persons, systems, and their \
-containers and components, with relationships and sequence flows.</p>\
-</header>",
-        name = escape(&config.name),
-    );
-
-    body.push_str(&render_diagram(
-        graph,
-        View::Context,
-        "Context",
-        "System context — persons and systems",
-    ));
-
-    body.push_str("<section class=\"card-grid\">");
-    for module in modules {
-        let count = module_top_level(graph, module).len();
-        let _ = write!(
-            body,
-            "<a class=\"card\" href=\"{href}\">\
-<div class=\"card-title\">{name}</div>\
-<div class=\"card-meta\">{count} item{plural}</div></a>",
-            href = module_page_path(module),
-            name = escape(module),
-            plural = if count == 1 { "" } else { "s" },
-        );
+fn build_index(graph: &Graph, config: &DocConfig, modules: &[String], urls: &UrlMap) -> PageProps {
+    // The index sits at the site root: no `../` prefix on its links.
+    let sidebar = build_sidebar(graph, modules, urls, "");
+    let cards = modules
+        .iter()
+        .map(|module| {
+            let count = module_top_level(graph, module).len();
+            ModuleCard {
+                name: module.clone(),
+                href: module_page_path(module),
+                meta: format!("{count} item{}", if count == 1 { "" } else { "s" }),
+            }
+        })
+        .collect();
+    let page = PageBody::Index(IndexProps {
+        title: config.name.clone(),
+        context_diagram: build_diagram(graph, View::Context, "Context", "System context"),
+        cards,
+    });
+    PageProps {
+        site: site_info(config, ""),
+        doc_groups: build_doc_groups(config, ""),
+        sidebar,
+        page,
     }
-    body.push_str("</section>");
-
-    body.push_str(&render_footer());
-    body.push_str("</div>\n");
-
-    let sidebar = localize_sidebar(sidebar, config, 0);
-    page_shell(config, 0, &sidebar, &body)
 }
 
-// ---- module page ----------------------------------------------------------
+// ---- module page -----------------------------------------------------------
 
-/// A module's page: header plus a section per node declared in it.
-fn render_module_page(
+fn build_module(
     graph: &Graph,
     config: &DocConfig,
     module: &str,
+    modules: &[String],
     urls: &UrlMap,
-    sidebar: &str,
-) -> String {
-    let mut body = String::new();
-    let _ = write!(
-        body,
-        "<div class=\"content\">\
-<header class=\"page-head\">\
-<div class=\"eyebrow\">Module</div>\
-<h1 class=\"mono\">{name}</h1></header>",
-        name = escape(module),
-    );
+) -> PageProps {
+    // Module pages sit one directory deep (`module/<fqn>.html`): links to the
+    // root assets and to other module pages take a `../` prefix.
+    let sidebar = build_sidebar(graph, modules, urls, "../");
 
-    // Every node declared in this module gets a section, top-level first then
-    // nested, all sorted by FQN, so every anchor a cross-link points at exists.
     let mut nodes: Vec<&GraphNode> = graph
         .nodes()
         .iter()
         .filter(|n| n.module == module && n.kind != NodeKind::Callable)
         .collect();
     nodes.sort_by(|a, b| a.fqn.cmp(&b.fqn));
+    let sections = nodes
+        .iter()
+        .map(|node| build_section(graph, node, urls))
+        .collect();
 
-    for node in nodes {
-        body.push_str(&render_node(graph, node, urls));
+    let page = PageBody::Module(ModuleProps {
+        name: module.to_owned(),
+        sections,
+    });
+    PageProps {
+        site: site_info(config, "../"),
+        doc_groups: build_doc_groups(config, "../"),
+        sidebar,
+        page,
     }
-
-    body.push_str(&render_footer());
-    body.push_str("</div>\n");
-
-    let sidebar = localize_sidebar(sidebar, config, 1);
-    page_shell(config, 1, &sidebar, &body)
 }
 
-/// One node section: head (kind/visibility badges, FQN), docs, tags,
-/// relationships, and any embedded diagram(s).
-fn render_node(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> String {
-    let id = anchor(&node.fqn);
-    let mut html = String::new();
-    let _ = write!(
-        html,
-        "<section class=\"node\" id=\"{id}\">\
-<div class=\"node-head\">\
-<span class=\"kind-badge {kind}\">{kind}</span>\
-<h2><a href=\"#{id}\">{name}</a> \
-<span class=\"self-link\">#</span></h2>\
-<span class=\"vis-badge\">{vis}</span>\
-</div>\
-<code class=\"node-fqn\">{fqn}</code>",
-        kind = node.kind.keyword(),
-        name = escape(&node.name),
-        vis = visibility_label(node.visibility),
-        fqn = escape(&node.fqn),
-    );
-
-    if let Some(summary) = &node.doc.summary {
-        let _ = write!(html, "<p class=\"summary\">{}</p>", escape(summary));
+/// One node's section: head, docs, tags, relationships, scenarios, diagrams.
+fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> NodeSection {
+    NodeSection {
+        id: anchor(&node.fqn),
+        kind: node.kind.keyword().to_owned(),
+        name: node.name.clone(),
+        fqn: node.fqn.clone(),
+        visibility: visibility_label(node.visibility).to_owned(),
+        summary: node.doc.summary.clone(),
+        extended: node.doc.extended.clone(),
+        tags: node.doc.tags.clone(),
+        relationships: build_relationships(graph, node, urls),
+        scenarios: build_scenarios(graph, node),
+        diagrams: build_node_diagrams(graph, node),
     }
-    if let Some(extended) = &node.doc.extended {
-        let _ = write!(html, "<p class=\"extended\">{}</p>", escape(extended));
-    }
-    if !node.doc.tags.is_empty() {
-        html.push_str("<div class=\"tags\">");
-        for tag in &node.doc.tags {
-            let _ = write!(html, "<span class=\"chip\">{}</span>", escape(tag));
-        }
-        html.push_str("</div>");
-    }
-
-    html.push_str(&render_relationships(graph, node, urls));
-    html.push_str(&render_node_scenarios(graph, node));
-    html.push_str(&render_node_diagrams(graph, node));
-
-    html.push_str("</section>");
-    html
 }
 
-/// The BDD scenario cards for a node: each `feature` targeting it, rendered as
-/// its given/when/then steps (`LANG.md` §5.2, §9.3). Empty when the node has no
-/// features.
-fn render_node_scenarios(graph: &Graph, node: &GraphNode) -> String {
-    let scenarios: Vec<_> = graph.scenarios_of(&node.fqn).collect();
-    if scenarios.is_empty() {
-        return String::new();
-    }
-    let mut out = String::from("<div class=\"scenarios\"><h3>Scenarios</h3>");
-    for scenario in scenarios {
-        let _ = write!(
-            out,
-            "<div class=\"scenario\"><div class=\"scenario-name\">{name}</div>",
-            name = escape(&scenario.name),
-        );
-        if let Some(summary) = &scenario.doc.summary {
-            let _ = write!(out, "<p class=\"summary\">{}</p>", escape(summary));
-        }
-        if let Some(extended) = &scenario.doc.extended {
-            let _ = write!(out, "<p class=\"extended\">{}</p>", escape(extended));
-        }
-        if !scenario.doc.tags.is_empty() {
-            out.push_str("<div class=\"tags\">");
-            for tag in &scenario.doc.tags {
-                let _ = write!(out, "<span class=\"chip\">{}</span>", escape(tag));
-            }
-            out.push_str("</div>");
-        }
-        out.push_str("<ul class=\"steps\">");
-        for step in &scenario.steps {
-            // The keyword is a closed set (given/when/then/and/but), safe as a
-            // class and label; the prose is user text and is escaped.
-            let _ = write!(
-                out,
-                "<li><span class=\"step-kw {kw}\">{kw}</span> \
-<span class=\"step-text\">{text}</span></li>",
-                kw = step.keyword,
-                text = escape(&step.text),
-            );
-        }
-        out.push_str("</ul></div>");
-    }
-    out.push_str("</div>");
-    out
-}
+// ---- relationships ---------------------------------------------------------
 
-/// The relationships block: the `for`/owner parent, inbound edges, and outbound
-/// edges (`LANG.md` §9.3). Each endpoint is a cross-link when it resolves.
-fn render_relationships(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> String {
-    let mut groups = String::new();
+fn build_relationships(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> Vec<RelGroup> {
+    let mut groups = Vec::new();
 
     if let Some(parent) = &node.parent {
-        let label = if matches!(node.kind, NodeKind::Container | NodeKind::Component) {
+        let edge_kind = if matches!(node.kind, NodeKind::Container | NodeKind::Component) {
             "for"
         } else {
             "in"
         };
-        let _ = write!(
-            groups,
-            "<div class=\"rel-group\"><h3>Parent</h3><ul class=\"rel-list\">\
-<li><span class=\"edge-kind\">{label}</span>{link}</li></ul></div>",
-            link = fqn_link(parent, urls),
-        );
+        groups.push(RelGroup {
+            title: "Parent".to_owned(),
+            items: vec![RelItem {
+                edge_kind: edge_kind.to_owned(),
+                arrow: false,
+                fqn: parent.clone(),
+                href: urls.href_to(parent),
+                label: None,
+            }],
+        });
     }
 
-    let inbound: Vec<&Edge> = graph
+    let inbound: Vec<RelItem> = graph
         .edges()
         .iter()
         .filter(|e| e.to == node.fqn && e.kind != EdgeKind::ForParent)
+        .map(|edge| rel_item(edge, &edge.from, false, urls))
         .collect();
     if !inbound.is_empty() {
-        groups.push_str("<div class=\"rel-group\"><h3>Inbound</h3><ul class=\"rel-list\">");
-        for edge in inbound {
-            let _ = write!(
-                groups,
-                "<li><span class=\"edge-kind\">{kind}</span>{from}{label}</li>",
-                kind = edge_kind_label(edge.kind),
-                from = fqn_link(&edge.from, urls),
-                label = edge_label(&edge.label),
-            );
-        }
-        groups.push_str("</ul></div>");
+        groups.push(RelGroup {
+            title: "Inbound".to_owned(),
+            items: inbound,
+        });
     }
 
-    let outbound: Vec<&Edge> = graph
+    let outbound: Vec<RelItem> = graph
         .edges()
         .iter()
         .filter(|e| e.from == node.fqn && e.kind != EdgeKind::ForParent)
+        .map(|edge| rel_item(edge, &edge.to, true, urls))
         .collect();
     if !outbound.is_empty() {
-        groups.push_str("<div class=\"rel-group\"><h3>Outbound</h3><ul class=\"rel-list\">");
-        for edge in outbound {
-            let _ = write!(
-                groups,
-                "<li><span class=\"edge-kind\">{kind}</span>\
-<span class=\"arrow\">&rarr;</span> {to}{label}</li>",
-                kind = edge_kind_label(edge.kind),
-                to = fqn_link(&edge.to, urls),
-                label = edge_label(&edge.label),
-            );
-        }
-        groups.push_str("</ul></div>");
+        groups.push(RelGroup {
+            title: "Outbound".to_owned(),
+            items: outbound,
+        });
     }
 
-    if groups.is_empty() {
-        return String::new();
-    }
-    format!("<div class=\"rel\">{groups}</div>")
+    groups
 }
 
-/// The embedded diagrams for a node: a container diagram on a `system`, a
-/// component diagram on a `container`, and a sequence diagram per triggered
-/// callable the node owns. A view that fails to project is skipped gracefully.
-fn render_node_diagrams(graph: &Graph, node: &GraphNode) -> String {
-    let mut out = String::new();
+/// A relationship item for `edge`, pointing at `endpoint` (`from` for inbound,
+/// `to` for outbound; `arrow` flags the outbound direction).
+fn rel_item(edge: &Edge, endpoint: &str, arrow: bool, urls: &UrlMap) -> RelItem {
+    RelItem {
+        edge_kind: edge_kind_label(edge.kind).to_owned(),
+        arrow,
+        fqn: endpoint.to_owned(),
+        href: urls.href_to(endpoint),
+        label: (!edge.label.is_empty()).then(|| edge.label.clone()),
+    }
+}
+
+// ---- scenarios -------------------------------------------------------------
+
+fn build_scenarios(graph: &Graph, node: &GraphNode) -> Vec<ScenarioCard> {
+    graph
+        .scenarios_of(&node.fqn)
+        .map(|scenario| ScenarioCard {
+            name: scenario.name.clone(),
+            summary: scenario.doc.summary.clone(),
+            extended: scenario.doc.extended.clone(),
+            tags: scenario.doc.tags.clone(),
+            steps: scenario
+                .steps
+                .iter()
+                .map(|step| Step {
+                    keyword: step.keyword.clone(),
+                    text: step.text.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+// ---- diagrams --------------------------------------------------------------
+
+/// The diagrams embedded on a node: a C4 sub-view for a system/container, plus a
+/// sequence diagram for each triggered callable it owns.
+fn build_node_diagrams(graph: &Graph, node: &GraphNode) -> Vec<Diagram> {
+    let mut diagrams = Vec::new();
 
     match node.kind {
-        NodeKind::System => out.push_str(&render_diagram(
+        NodeKind::System => diagrams.push(build_diagram(
             graph,
             View::Container {
                 of: node.fqn.clone(),
@@ -425,7 +311,7 @@ fn render_node_diagrams(graph: &Graph, node: &GraphNode) -> String {
             "Containers",
             "Container diagram",
         )),
-        NodeKind::Container => out.push_str(&render_diagram(
+        NodeKind::Container => diagrams.push(build_diagram(
             graph,
             View::Component {
                 of: node.fqn.clone(),
@@ -440,69 +326,83 @@ fn render_node_diagrams(graph: &Graph, node: &GraphNode) -> String {
         if callable.triggers.is_empty() {
             continue;
         }
-        let caption = format!("Sequence — {}", callable.name);
-        out.push_str(&render_diagram(
+        diagrams.push(build_diagram(
             graph,
             View::Sequence {
                 entry: callable.fqn.clone(),
             },
             "Sequence",
-            &caption,
+            &format!("Sequence — {}", callable.name),
         ));
     }
 
-    out
+    diagrams
 }
 
-// ---- diagram figure --------------------------------------------------------
-
-/// A framed, zoom/pan-able diagram figure for `view`. Renders the inline SVG on
-/// success; on an [`EmitError`](pseudoscript_emit::EmitError) (e.g. an empty
-/// boundary) it emits a graceful placeholder instead.
-fn render_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> String {
+/// Projects `view` into a [`Diagram`]; an un-projectable view becomes an
+/// `Empty` placeholder rather than failing the page.
+fn build_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> Diagram {
     match project(graph, view) {
-        Ok(scene) => format!(
-            "<figure class=\"figure\">\
-<figcaption><span class=\"cap-title\">{caption}</span>\
-<span class=\"hint\">scroll to zoom · drag to pan</span></figcaption>\
-<div class=\"diagram\">\
-<div class=\"controls\">\
-<button type=\"button\" class=\"fs-toggle\" aria-label=\"Toggle fullscreen\" \
-title=\"Fullscreen\">&#9974;</button>\
-<button type=\"button\" class=\"zoom-reset\">reset</button>\
-</div>\
-<div class=\"pan\">{svg}</div></div></figure>",
-            caption = escape(caption),
-            svg = render_svg(&scene),
-        ),
-        Err(_) => format!(
-            "<div class=\"no-diagram\">No {eyebrow} diagram available.</div>",
-            eyebrow = escape(eyebrow).to_lowercase(),
-        ),
+        Ok(Scene::C4(scene)) => Diagram::C4 {
+            caption: caption.to_owned(),
+            scene,
+        },
+        Ok(Scene::Sequence(scene)) => Diagram::Sequence {
+            caption: caption.to_owned(),
+            scene,
+        },
+        Err(_) => Diagram::Empty {
+            caption: caption.to_owned(),
+            eyebrow: eyebrow.to_lowercase(),
+        },
     }
 }
 
-// ---- small helpers ---------------------------------------------------------
+// ---- sidebar ---------------------------------------------------------------
 
-/// A cross-link to `fqn` (a module-page-relative `href`), or the plain escaped
-/// FQN when it resolves to no node (`LANG.md` §9.3).
-fn fqn_link(fqn: &str, urls: &UrlMap) -> String {
-    match urls.href_to(fqn) {
-        Some(href) => format!("<a class=\"fqn\" href=\"{href}\">{}</a>", escape(fqn)),
-        None => format!("<span class=\"fqn\">{}</span>", escape(fqn)),
-    }
+/// The sidebar tree, with every href prefixed by `prefix` for the page depth.
+fn build_sidebar(
+    graph: &Graph,
+    modules: &[String],
+    urls: &UrlMap,
+    prefix: &str,
+) -> Vec<SidebarModule> {
+    modules
+        .iter()
+        .map(|module| SidebarModule {
+            label: module.clone(),
+            href: format!("{prefix}{}", module_page_path(module)),
+            nodes: module_top_level(graph, module)
+                .iter()
+                .filter_map(|node| build_sidebar_node(graph, node, urls, prefix))
+                .collect(),
+        })
+        .collect()
 }
 
-/// The trailing `· method` label for a `Call` edge, empty otherwise.
-fn edge_label(label: &str) -> String {
-    if label.is_empty() {
-        String::new()
-    } else {
-        format!(" <span class=\"edge-label\">· {}</span>", escape(label))
-    }
+/// One sidebar node, recursing into its same-module children. `None` when the
+/// node has no resolvable URL (it cannot be linked).
+fn build_sidebar_node(
+    graph: &Graph,
+    node: &GraphNode,
+    urls: &UrlMap,
+    prefix: &str,
+) -> Option<SidebarNode> {
+    let url = urls.get(&node.fqn)?;
+    Some(SidebarNode {
+        name: node.name.clone(),
+        fqn: node.fqn.clone(),
+        kind: node.kind.keyword().to_owned(),
+        href: format!("{prefix}{}#{}", url.page, url.anchor),
+        children: child_nodes(graph, node)
+            .iter()
+            .filter_map(|child| build_sidebar_node(graph, child, urls, prefix))
+            .collect(),
+    })
 }
 
-/// The display word for an [`EdgeKind`].
+// ---- small label helpers ---------------------------------------------------
+
 fn edge_kind_label(kind: EdgeKind) -> &'static str {
     match kind {
         EdgeKind::ForParent => "for",
@@ -512,7 +412,6 @@ fn edge_kind_label(kind: EdgeKind) -> &'static str {
     }
 }
 
-/// The display word for a [`Visibility`].
 fn visibility_label(visibility: Visibility) -> &'static str {
     match visibility {
         Visibility::Public => "public",
@@ -520,7 +419,81 @@ fn visibility_label(visibility: Visibility) -> &'static str {
     }
 }
 
-/// The shared page footer.
-fn render_footer() -> String {
-    "<footer class=\"foot\">Generated by <code>pds doc</code>.</footer>".to_owned()
+#[cfg(test)]
+mod tests {
+    use super::{build_pages, render_markdown};
+    use crate::config::{DocConfig, DocGroup, DocPage};
+    use crate::props::PageBody;
+    use pseudoscript_model::{WorkspaceModule, graph};
+
+    fn config_with_docs() -> DocConfig {
+        DocConfig {
+            docs: vec![DocGroup {
+                title: "Getting Started".to_owned(),
+                pages: vec![DocPage {
+                    title: "Introduction".to_owned(),
+                    path: "docs/introduction.md".to_owned(),
+                    markdown: "# Hi\n\nSome **bold** text.".to_owned(),
+                }],
+            }],
+            ..DocConfig::default()
+        }
+    }
+
+    #[test]
+    fn doc_page_emitted_after_index_before_modules() {
+        let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
+        let pages = build_pages(&g, &config_with_docs());
+        let paths: Vec<&str> = pages.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths[0], "index.html");
+        assert_eq!(paths[1], "docs/introduction.html");
+        assert!(paths.iter().any(|p| p.starts_with("module/")));
+    }
+
+    #[test]
+    fn doc_page_carries_rendered_markdown_and_sidebar_group() {
+        let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
+        let pages = build_pages(&g, &config_with_docs());
+        let (_, doc) = pages
+            .iter()
+            .find(|(p, _)| p == "docs/introduction.html")
+            .expect("doc page present");
+        // The body is rendered HTML; the sidebar group links it with a `../` prefix.
+        let PageBody::Doc(body) = &doc.page else {
+            panic!("expected a doc page body");
+        };
+        assert!(body.html.contains("<strong>bold</strong>"), "{}", body.html);
+        let group = &doc.doc_groups[0];
+        assert_eq!(group.title, "Getting Started");
+        assert_eq!(group.items[0].href, "../docs/introduction.html");
+    }
+
+    #[test]
+    fn markdown_renders_gfm_tables() {
+        let html = render_markdown("| a | b |\n|---|---|\n| 1 | 2 |");
+        assert!(html.contains("<table>"), "{html}");
+    }
+
+    #[test]
+    fn markdown_renders_github_alerts_as_titled_callouts() {
+        let html = render_markdown("> [!WARNING]\n> Be careful.");
+        assert!(
+            html.contains(r#"<div class="callout callout-warning">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="callout-title">Warning</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("Be careful."), "{html}");
+        // The `[!WARNING]` marker is consumed, not rendered as content.
+        assert!(!html.contains("[!WARNING]"), "{html}");
+    }
+
+    #[test]
+    fn markdown_plain_blockquote_stays_a_blockquote() {
+        let html = render_markdown("> just a quote");
+        assert!(html.contains("<blockquote>"), "{html}");
+        assert!(!html.contains("callout"), "{html}");
+    }
 }

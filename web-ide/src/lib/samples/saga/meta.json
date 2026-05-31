@@ -1,0 +1,7 @@
+{
+  "name": "Saga (Orchestrated)",
+  "category": "Transactions",
+  "order": 40,
+  "landing": "saga",
+  "description": "Voyagr (trip booking) — flight, hotel, and car across suppliers, compensated in reverse on failure."
+}

@@ -134,8 +134,6 @@ pub struct Lifeline {
     pub fqn: String,
     /// The participant node's C4 kind, for the lifeline-head card styling.
     pub kind: NodeKind,
-    /// Layout x-position of the lifeline, for the renderer.
-    pub x: i32,
 }
 
 /// One ordered item in a sequence trace: a message or a frame.
@@ -183,6 +181,10 @@ pub struct Message {
     pub kind: MessageKind,
     /// The message label (method name, or `Ok`/`Err`/empty for a return).
     pub label: String,
+    /// The type detail shown after the label — a call's `(params): ret`
+    /// signature, or a return's concrete type. Carried for the renderer only;
+    /// never serialised by [`Scene::to_golden`]. Empty when unknown.
+    pub detail: String,
 }
 
 /// The kind of a sequence frame.

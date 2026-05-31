@@ -1,6 +1,8 @@
 // LANG.md §9.2: a triggered callable (`#[manual]`) is a sequence entry point.
-// Its body trace becomes lifelines, messages, and an `alt` frame: a call to
-// another container, then an `if (r.isErr)` branch (§7).
+// Its `#[manual]` trigger contributes the `caller` initiator lifeline, which
+// calls the entry and receives its returns. The body trace becomes messages and
+// an `alt` frame: a call to a black-box container, then an `if (r.isErr)` branch
+// whose returns flow back to the caller (§7).
 
 //! shop
 

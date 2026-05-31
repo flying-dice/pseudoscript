@@ -1,0 +1,7 @@
+{
+  "name": "Retry with Backoff",
+  "category": "Resilience",
+  "order": 23,
+  "landing": "retry",
+  "description": "Postbird (email sender) — rides out transient provider failures with exponential backoff."
+}

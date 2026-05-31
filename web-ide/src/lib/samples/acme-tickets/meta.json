@@ -1,0 +1,7 @@
+{
+  "name": "ACME Tickets",
+  "category": "Application",
+  "order": 1,
+  "landing": "context",
+  "description": "Surge-aware event ticketing: a virtual waiting room, atomic no-oversell holds, demand-based surge pricing, and a hardened third-party payments saga."
+}

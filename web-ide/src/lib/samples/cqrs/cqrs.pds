@@ -1,0 +1,55 @@
+//! cqrs — exercised by Kudos, a peer-recognition app. Giving kudos is a trickle of
+//! writes; the team leaderboard is hammered by reads. So Kudos splits them: a
+//! command side records kudos and emits events; a projector keeps a denormalised
+//! leaderboard; queries hit the leaderboard, which scales on its own.
+
+public data GiveKudos { giver: string, to: string }
+public data Leaderboard { rows: string[] }
+public data KudosGiven { to: string }
+
+/// A teammate giving recognition.
+public person Teammate {
+  #[manual]
+  public thank(mate: string): void {
+    Kudos::Commands.give(GiveKudos from { "me", mate })
+  }
+}
+
+/// Kudos — the recognition app.
+public system Kudos;
+
+/// Write side: records kudos and emits an event. Tuned for consistent writes.
+public container Commands for Kudos {
+  #[http("POST /kudos")]
+  public give(cmd: GiveKudos): void {
+    WriteModel.apply(cmd)
+  }
+}
+
+/// The normalised write model and the events it emits.
+public container WriteModel for Kudos { apply(cmd: GiveKudos): void; }
+
+/// Projects write-side events into the read-side leaderboard.
+public container Projector for Kudos {
+  #[onevent(KudosGiven)]
+  public on(event: KudosGiven): void {
+    Standings.bump(event)
+  }
+}
+
+/// Read side: the denormalised leaderboard, tuned for heavy reads.
+public container Standings for Kudos {
+  bump(event: KudosGiven): void;
+
+  #[http("GET /leaderboard")]
+  public board(): Leaderboard;
+}
+
+/// Reads and writes scale and deploy independently.
+feature SplitReadAndWrite for Kudos {
+  given "a write-optimised kudos model and a read-optimised leaderboard"
+  when  "someone gives kudos"
+  then  "a projector updates the leaderboard from the emitted event"
+  and   "the leaderboard serves all the read traffic"
+  but   "the two sides scale and deploy independently"
+}

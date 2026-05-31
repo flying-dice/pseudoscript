@@ -23,6 +23,25 @@ export function byteToChar(source, byteOffset) {
   return source.length;
 }
 
+/**
+ * Converts a UTF-16 code-unit offset into `source` to a UTF-8 byte offset — the
+ * inverse of {@link byteToChar}, for handing an editor position to the compiler.
+ * Clamps to the document's byte length.
+ * @param {string} source
+ * @param {number} charOffset
+ * @returns {number}
+ */
+export function charToByte(source, charOffset) {
+  if (charOffset <= 0) return 0;
+  let bytes = 0;
+  for (let i = 0; i < source.length && i < charOffset; i++) {
+    const code = source.codePointAt(i);
+    bytes += utf8Len(code);
+    if (code > 0xffff) i++; // surrogate pair: two code units, one code point
+  }
+  return bytes;
+}
+
 /** UTF-8 byte length of a single Unicode code point. */
 function utf8Len(code) {
   if (code <= 0x7f) return 1;

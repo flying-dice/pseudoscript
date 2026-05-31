@@ -8,11 +8,11 @@
 /// root `<html>` and selecting between the light/dark CSS variable sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// The default neutral light palette.
+    /// The default dark palette (matches the IDE and the interactive diagrams).
     #[default]
-    Light,
-    /// The dark palette.
     Dark,
+    /// The neutral light palette.
+    Light,
 }
 
 impl Theme {
@@ -37,14 +37,40 @@ pub struct DocConfig {
     /// directory; this crate embeds it by its **filename** (`<img src="...">`),
     /// so the value here is the source path the CLI resolves.
     pub logo: Option<String>,
+    /// Authored Markdown pages grouped for the sidebar (`[[doc.sidebar]]`),
+    /// rendered above the auto-generated module tree. Empty unless configured.
+    pub docs: Vec<DocGroup>,
+}
+
+/// One `[[doc.sidebar]]` group: a heading and its ordered pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocGroup {
+    /// The group heading shown in the sidebar.
+    pub title: String,
+    /// The group's pages, in declaration order.
+    pub pages: Vec<DocPage>,
+}
+
+/// One authored Markdown page within a [`DocGroup`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocPage {
+    /// The page title shown in the sidebar and as the page heading.
+    pub title: String,
+    /// The source path (relative to `pds.toml`), e.g. `docs/guides/setup.md`.
+    /// Drives the page's stable output URL — the host that loaded the content
+    /// and this crate derive the same slug from it.
+    pub path: String,
+    /// The page's raw Markdown, rendered to HTML at build time.
+    pub markdown: String,
 }
 
 impl Default for DocConfig {
     fn default() -> Self {
         Self {
             name: "Documentation".to_owned(),
-            theme: Theme::Light,
+            theme: Theme::Dark,
             logo: None,
+            docs: Vec::new(),
         }
     }
 }
@@ -68,10 +94,10 @@ mod tests {
     use super::{DocConfig, Theme};
 
     #[test]
-    fn default_is_light_named_documentation_no_logo() {
+    fn default_is_dark_named_documentation_no_logo() {
         let config = DocConfig::default();
         assert_eq!(config.name, "Documentation");
-        assert_eq!(config.theme, Theme::Light);
+        assert_eq!(config.theme, Theme::Dark);
         assert!(config.logo.is_none());
     }
 

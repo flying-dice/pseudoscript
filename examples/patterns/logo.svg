@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="System Design Patterns">
+  <rect x="8" y="8" width="20" height="20" rx="3" fill="#3552b5"/>
+  <rect x="36" y="8" width="20" height="20" rx="3" fill="none" stroke="#3552b5" stroke-width="2.5"/>
+  <rect x="8" y="36" width="20" height="20" rx="3" fill="none" stroke="#3552b5" stroke-width="2.5"/>
+  <rect x="36" y="36" width="20" height="20" rx="3" fill="#3552b5"/>
+  <line x1="28" y1="18" x2="36" y2="18" stroke="#3552b5" stroke-width="2.5"/>
+  <line x1="18" y1="28" x2="18" y2="36" stroke="#3552b5" stroke-width="2.5"/>
+  <line x1="46" y1="28" x2="46" y2="36" stroke="#3552b5" stroke-width="2.5"/>
+  <line x1="28" y1="46" x2="36" y2="46" stroke="#3552b5" stroke-width="2.5"/>
+</svg>

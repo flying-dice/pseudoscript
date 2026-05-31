@@ -1,71 +1,44 @@
 <script>
   let {
-    view = $bindable("context"),
-    target = $bindable(""),
-    targets = [],
     errorCount = 0,
     workspaceName = null,
-    canOpenFolder = false,
+    building = false,
     onformat,
-    onopenfolder,
+    onproject,
+    onbuilddocs,
+    onopensettings,
   } = $props();
-
-  // `sequence` is the compiler's view name; an app owner reads it as a "flow".
-  const VIEWS = [
-    { value: "context", label: "context" },
-    { value: "container", label: "container" },
-    { value: "component", label: "component" },
-    { value: "sequence", label: "flow" },
-  ];
-  const needsTarget = $derived(view !== "context");
-  const emptyLabel = $derived(
-    view === "sequence" ? "no triggered callables" : view === "component" ? "no containers" : "no systems",
-  );
 </script>
 
 <header class="toolbar">
-  <a class="brand" href="https://c4model.com" target="_blank" rel="noreferrer" aria-label="PseudoScript Web IDE">
+  <a class="brand" href="https://github.com/flying-dice/pseudoscript" target="_blank" rel="noreferrer" aria-label="PseudoScript Web IDE">
     <span class="dot" aria-hidden="true"></span>
     <span class="word">PseudoScript</span>
-    <span class="eyebrow">C4 · WASM</span>
   </a>
 
-  <button
-    class="ghost open-folder"
-    onclick={onopenfolder}
-    disabled={!canOpenFolder}
-    title={canOpenFolder
-      ? "Open a folder as a workspace"
-      : "Folder workspaces need a Chromium browser (File System Access API)"}
-  >
-    <span class="ico" aria-hidden="true">▢</span>
-    {workspaceName ?? "Open folder"}
+  <button class="ghost project" onclick={onproject} title="Projects — recent &amp; examples">
+    <span class="ico" aria-hidden="true">◳</span>
+    {workspaceName ?? "Open project"}
+    <span class="chev" aria-hidden="true">▾</span>
   </button>
 
   <div class="spacer"></div>
 
-  <div class="controls">
-    <label class="field">
-      <span class="lbl">view</span>
-      <select bind:value={view}>
-        {#each VIEWS as v}<option value={v.value}>{v.label}</option>{/each}
-      </select>
-    </label>
-    {#if needsTarget}
-      <label class="field">
-        <span class="lbl">target</span>
-        {#if targets.length}
-          <select bind:value={target}>
-            {#each targets as t}<option value={t.fqn}>{t.name}</option>{/each}
-          </select>
-        {:else}
-          <select disabled aria-label="no targets in this module">
-            <option>{emptyLabel}</option>
-          </select>
-        {/if}
-      </label>
-    {/if}
-  </div>
+  <p class="hint">Hover a symbol for its diagram</p>
+
+  <button class="ghost build" onclick={onbuilddocs} disabled={building} title="Build the static documentation site (pds doc)">
+    <span class="ico" aria-hidden="true">⚙</span>
+    {building ? "Building…" : "Build docs"}
+  </button>
+
+  <button
+    class="ghost icon-only settings"
+    onclick={onopensettings}
+    title="Keyboard shortcuts"
+    aria-label="Keyboard shortcuts"
+  >
+    <span class="ico" aria-hidden="true">⌨</span>
+  </button>
 
   <button class="format" onclick={onformat}>Format</button>
 
@@ -108,14 +81,6 @@
     font-size: 1.12rem;
     letter-spacing: -0.025em;
   }
-  .brand .eyebrow {
-    font-family: var(--font-mono);
-    font-size: 0.58rem;
-    font-weight: 600;
-    letter-spacing: 0.28em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-  }
 
   .ghost {
     display: inline-flex;
@@ -134,47 +99,22 @@
     font-size: 0.78rem;
   }
   .ghost .ico { color: var(--accent); font-size: 0.8rem; }
+  .ghost .chev { color: var(--ink-faint); font-size: 0.7rem; margin-left: 0.1rem; }
   .ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
+  .ghost:hover:not(:disabled) .chev { color: var(--ink-soft); }
   .ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+  .icon-only { padding: 0.42rem 0.6rem; }
+  .icon-only .ico { font-size: 0.95rem; }
 
   .spacer { flex: 1; }
 
-  .controls {
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-  .field {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0 0.6rem;
-  }
-  .field + .field { border-left: 1px solid var(--line-strong); }
-  .field .lbl {
+  .hint {
+    margin: 0;
     font-family: var(--font-mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
     color: var(--ink-faint);
   }
-  .field select {
-    appearance: none;
-    border: none;
-    background: transparent;
-    color: var(--ink);
-    font-family: var(--font-mono);
-    font-size: 0.82rem;
-    padding: 0.46rem 0.2rem;
-    cursor: pointer;
-  }
-  .field select:disabled { color: var(--ink-faint); cursor: not-allowed; }
-  .field select:focus { outline: none; color: var(--accent); }
-  .field option { background: var(--surface-2); color: var(--ink); }
 
   .format {
     color: var(--accent-ink);

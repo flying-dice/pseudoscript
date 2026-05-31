@@ -1,0 +1,7 @@
+{
+  "name": "Strangler Fig",
+  "category": "Evolution",
+  "order": 60,
+  "landing": "strangler_fig",
+  "description": "ACME Bank — a façade routes migrated features to a modern core and the rest to the mainframe."
+}

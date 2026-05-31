@@ -124,6 +124,8 @@ Option<T>        // optional value:   Some(T) | None
 ### 3.3 Type expressions
 A named type (`BankingInfo`), generic (`Result<BankingInfo, NotFound>`, `Option<Person>`), or array (`T[]`). `[]` is the only type suffix; an absent value is modeled with `Option<T>` (§6).
 
+Every named type — a field, parameter, or return type, and each generic argument — MUST resolve to a primitive (§3.1), `Result`/`Option` (§3.2), or a declared type or node (§3.4, §3.5, §4); an unresolved type MUST be rejected (ADR-022). A `::`-qualified type resolves cross-module (§8.2).
+
 ### 3.4 Data declarations
 A `data` type models any payload — DTOs, entities, messages alike. It MAY stay a **black box** with `;` (fields not yet disclosed).
 ```pds
@@ -404,10 +406,14 @@ A dependency's **identity** is `(source, revision, path)`.
 - `from` composition can render as data-flow/provenance edges in a dedicated view.
 
 ### 9.2 Sequence diagrams (bodies)
-From disclosed callables per §7. A **triggered** callable (one bearing a trigger macro) is an entry point. Black-box callables render as single messages with no expansion (§5.1). In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
+From disclosed callables per §7. A **triggered** callable (one bearing a trigger macro) is an entry point. Its trigger initiator (§9.1) is the first lifeline: it calls the entry and receives the entry's `return`. A non-triggered callable projected directly takes a `caller` initiator.
+
+A call to a **disclosed** callee expands inline: the callee becomes the active lifeline, its body traces in place, and each of its `return`s is a return message to its caller's lifeline. A call to a **black-box** callable renders as a single message with no expansion (§5.1). A callee already in flight on the call path (direct or mutual recursion) MUST NOT re-expand; it renders as a single message.
+
+In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
 
 ### 9.3 Documentation site (`pds doc`)
-`pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded as inline SVG.
+`pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded on the relevant pages.
 
 The site MUST contain:
 - An **index** page: the workspace name and the C4 context diagram (persons, systems, inter-system edges).
@@ -417,17 +423,28 @@ The site MUST contain:
 - A **scenario** card for each `feature` (§5.2), rendered as its given/when/then steps on the target node's section.
 - **Cross-links**: every FQN reference links to the referenced node.
 
+The site MAY also carry **authored documentation pages**: Markdown files declared in `[[doc.sidebar]]` groups (below). Each page renders as its own HTML page; its sidebar group sits **above** the auto-generated module tree. A page whose file cannot be read MUST be skipped, not abort generation.
+
 `[doc]` in `pds.toml` configures the site; all keys are optional:
 - `name` — site title. Defaults to the root directory name.
 - `out` — output directory, relative to `pds.toml`. Defaults to `target/doc`.
 - `logo` — path to a logo image, relative to `pds.toml`.
 - `theme` — `light` or `dark`. Defaults to `light`.
 
+Each `[[doc.sidebar]]` table is one sidebar group: a `title` and an ordered `items` array of `{ title, path }` entries. Each `path` names a Markdown file relative to `pds.toml`.
+
 ```toml
 [doc]
 name = "Banking Architecture"
 out  = "target/doc"
 logo = "media/pds-logo.svg"
+
+[[doc.sidebar]]
+title = "Getting Started"
+items = [
+  { title = "Introduction", path = "docs/introduction.md" },
+  { title = "Installation", path = "docs/installation.md" },
+]
 ```
 
 ---

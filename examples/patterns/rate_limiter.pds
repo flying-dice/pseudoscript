@@ -1,0 +1,46 @@
+//! rate_limiter — exercised by SkyCast, a public weather API. Each developer key
+//! gets a request budget per minute; a key that floods the API is throttled so it
+//! can't degrade the forecast service for everyone else.
+
+public data Lookup { apiKey: string, city: string }
+public data Forecast { summary: string }
+public data Throttled { apiKey: string }
+
+/// A developer calling the public API with their key.
+public person Developer {
+  #[manual]
+  public forecast(key: string): void {
+    SkyCast::Limiter.lookup(Lookup from { key, "London" })
+  }
+}
+
+/// SkyCast — the public weather API.
+public system SkyCast;
+
+/// Admits a call only within the key's per-minute budget; sheds the rest fast.
+public container Limiter for SkyCast {
+  #[http("GET /forecast")]
+  public lookup(call: Lookup): Result<Forecast, Throttled> {
+    ok = self.withinBudget(call.apiKey)
+    if (ok.isErr) {
+      return Err(Throttled from { call.apiKey })
+    }
+    return Forecasts.lookup(call.city)
+  }
+
+  /// `Err` once the key's per-window budget is spent (token bucket).
+  withinBudget(key: string): Result<void, Throttled>;
+}
+
+/// The forecast service, shielded from any single key's spikes.
+public system Forecasts {
+  lookup(city: string): Result<Forecast, Throttled>;
+}
+
+/// A flooding key is throttled without harming other developers.
+feature ExcessIsShed for Limiter {
+  given "a developer key that has spent its per-minute budget"
+  when  "it makes another call"
+  then  "the call is rejected as throttled before reaching the forecast service"
+  but   "other keys within budget are unaffected"
+}

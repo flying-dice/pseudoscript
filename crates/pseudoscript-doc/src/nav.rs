@@ -1,5 +1,5 @@
 //! Graph navigation shared by the documentation renderers (this crate and
-//! `pseudoscript-doc-svelte`): which nodes a module page lists, the nesting
+//! `pseudoscript-doc`): which nodes a module page lists, the nesting
 //! rule, owned callables, and a node's documented children.
 //!
 //! Pure and deterministic — every result is sorted by FQN, no clock or

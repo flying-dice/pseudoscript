@@ -1,5 +1,6 @@
 // CodeMirror 6 language support for PseudoScript: a stream tokenizer for
 // highlighting plus a linter that delegates to the wasm compiler's `check`.
+import { autocompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, LanguageSupport, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { linter } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
@@ -26,6 +27,7 @@ const tokenTable = {
   atom: t.atom,
   typeName: t.typeName,
   primitive: t.standard(t.typeName),
+  member: t.propertyName,
   variableName: t.variableName,
   macro: t.meta,
   tag: t.tagName,
@@ -34,6 +36,8 @@ const tokenTable = {
 const streamLang = StreamLanguage.define({
   name: "pseudoscript",
   tokenTable,
+  // `//` line comments — drives the toggle-comment command (Mod-/).
+  languageData: { commentTokens: { line: "//" } },
   token(stream) {
     if (stream.eatSpace()) return null;
     // `//!` module doc, `///` item doc, `//` comment.
@@ -45,10 +49,16 @@ const streamLang = StreamLanguage.define({
     if (stream.match(/^[0-9]+(?:\.[0-9]+)?/)) return "number";
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const word = stream.current();
+      // An identifier right after a `.` is a member access (a method or field) —
+      // coloured distinctly from the receiving type, like Class vs Method.
+      if (stream.start > 0 && stream.string[stream.start - 1] === ".") return "member";
       if (KEYWORDS.has(word)) return "keyword";
       if (STEP_KEYWORDS.has(word)) return "step";
       if (ATOMS.has(word)) return "atom";
       if (PRIMITIVES.has(word)) return "primitive";
+      // An identifier directly before `(` is a callable — its definition
+      // (`Summary(): …`) or a call (`Summary()`) — coloured as a member too.
+      if (stream.peek() === "(") return "member";
       if (/^[A-Z]/.test(word)) return "typeName";
       return "variableName";
     }
@@ -60,13 +70,24 @@ const streamLang = StreamLanguage.define({
 const highlightStyle = HighlightStyle.define([
   { tag: t.keyword, color: "var(--accent)", fontWeight: "600" },
   { tag: t.controlKeyword, color: "#9a7bff", fontWeight: "600" },
-  { tag: [t.lineComment], color: "var(--ink-faint)", fontStyle: "italic" },
-  { tag: t.docComment, color: "var(--ok)" },
+  {
+    tag: [t.lineComment],
+    color: "var(--ink-faint)",
+    fontStyle: "italic",
+    fontFamily: "var(--font-prose, ui-sans-serif, system-ui, sans-serif)",
+  },
+  {
+    tag: t.docComment,
+    color: "#5a736c",
+    fontStyle: "italic",
+    fontFamily: "var(--font-prose, ui-sans-serif, system-ui, sans-serif)",
+  },
   { tag: t.string, color: "#7fd88f" },
   { tag: t.number, color: "#e0a93f" },
   { tag: t.atom, color: "#6e8bff" },
   { tag: t.typeName, color: "#2dd4bf" },
   { tag: t.standard(t.typeName), color: "#b87bf5" },
+  { tag: t.propertyName, color: "#dcc98a" },
   { tag: t.variableName, color: "var(--ink)" },
   { tag: t.meta, color: "#e0a93f" },
   { tag: t.tagName, color: "var(--accent-hi)" },
@@ -75,6 +96,55 @@ const highlightStyle = HighlightStyle.define([
 /** The PseudoScript language + highlight styling. */
 export function pseudoscript() {
   return new LanguageSupport(streamLang, [syntaxHighlighting(highlightStyle)]);
+}
+
+// The completion type CodeMirror tags each option with (drives its icon).
+const KIND_TYPE = {
+  person: "variable",
+  system: "class",
+  container: "class",
+  component: "class",
+  data: "type",
+  callable: "function",
+};
+
+// Every reserved word, offered as a keyword completion.
+const KEYWORD_OPTIONS = [...KEYWORDS, ...STEP_KEYWORDS, ...PRIMITIVES, ...ATOMS].map((label) => ({
+  label,
+  type: "keyword",
+}));
+
+/**
+ * Autocomplete from the language's keywords plus the workspace's declared
+ * symbols. `getSymbols()` returns `[{ name, fqn, kind }]` (the live outline), so
+ * both a node's simple name and its full `::` path complete. Matches a word that
+ * may include `::`, so `orders::OrderService` completes mid-path.
+ */
+export function pseudoscriptCompletion(getSymbols) {
+  return autocompletion({
+    activateOnTyping: true,
+    icons: true,
+    override: [
+      (context) => {
+        const word = context.matchBefore(/[A-Za-z_][\w:]*/);
+        if (!word || (word.from === word.to && !context.explicit)) return null;
+        const seen = new Set();
+        const options = [];
+        const add = (label, type, detail) => {
+          if (seen.has(label)) return;
+          seen.add(label);
+          options.push(detail ? { label, type, detail } : { label, type });
+        };
+        for (const o of KEYWORD_OPTIONS) add(o.label, o.type);
+        for (const s of getSymbols?.() ?? []) {
+          const type = KIND_TYPE[s.kind] ?? "variable";
+          add(s.name, type, s.kind);
+          add(s.fqn, type, s.kind);
+        }
+        return { from: word.from, options, validFor: /^[\w:]*$/ };
+      },
+    ],
+  });
 }
 
 /** A linter that surfaces the wasm compiler's diagnostics inline. */

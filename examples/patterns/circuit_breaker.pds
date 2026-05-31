@@ -1,0 +1,59 @@
+//! circuit_breaker — exercised by RateWatch, a currency-converter widget. It prices
+//! conversions from a third-party FX feed that occasionally goes down. A breaker
+//! wraps the feed: after repeated failures it trips OPEN and the widget shows the
+//! last-known rate instead of hammering a struggling provider; a trial call probes
+//! recovery.
+
+public data Pair { base: string, term: string }
+public data Rate { value: number }
+
+/// Returned when the breaker is open — the widget serves the cached rate instead.
+public data FeedDown;
+/// Why an FX feed call failed.
+public data Timeout;
+
+/// A trader checking a live rate.
+public person Trader {
+  #[manual]
+  public convert(pair: Pair): void {
+    RateWatch::Breaker.rate(pair)
+  }
+}
+
+/// RateWatch — the currency-converter widget.
+public system RateWatch;
+
+/// Guards every call to the FX feed. Trips open after repeated failures and fails
+/// fast; a single trial request probes whether the feed has recovered.
+public container Breaker for RateWatch {
+  public rate(pair: Pair): Result<Rate, FeedDown> {
+    open = self.isOpen()
+    if (open.isOk) {
+      return Err(FeedDown)
+    }
+    attempt = FxFeed.quote(pair)
+    if (attempt.isErr) {
+      return Err(self.record(attempt.error))
+    }
+    return Ok(attempt.value)
+  }
+
+  /// `Ok` while the breaker is open (or half-open and already probing).
+  isOpen(): Result<void, FeedDown>;
+  /// Record a failure toward the trip threshold; returns the trip marker.
+  record(e: Timeout): FeedDown;
+}
+
+/// The third-party FX rate feed — fast when healthy, flaky under load.
+public system FxFeed {
+  quote(pair: Pair): Result<Rate, Timeout>;
+}
+
+/// Repeated feed failures trip the breaker; the widget degrades, not stalls.
+feature TripsOpenThenRecovers for Breaker {
+  given "the FX feed has failed past the threshold"
+  when  "a trader requests a rate"
+  then  "the breaker fails fast and the widget shows the last-known rate"
+  and   "after a cool-down a single trial call probes the feed"
+  but   "only a successful trial closes the breaker again"
+}

@@ -1,0 +1,58 @@
+//! claim_check — exercised by Reelbox, a video-sharing site. A raw upload can be
+//! gigabytes — far too big to put on the message queue. So Reelbox stores the file
+//! in blob storage and queues only a small claim (a storage key); the transcoder
+//! redeems the claim to stream the file when it is ready to work.
+
+/// A small reference standing in for a large stored file.
+public data Claim { key: string }
+
+/// A creator uploading a video.
+public person Creator {
+  #[manual]
+  public upload(bytes: string): void {
+    Reelbox::Ingest.receive(bytes)
+  }
+}
+
+/// Reelbox — the video platform.
+public system Reelbox;
+
+/// Stashes the raw upload in blob storage and queues only a small claim.
+public container Ingest for Reelbox {
+  #[http("POST /upload")]
+  public receive(bytes: string): void {
+    claim = BlobStore.put(bytes)
+    Queue.publish(claim)
+  }
+}
+
+/// Blob storage for the heavy files — outside the message pipeline.
+public system BlobStore {
+  put(bytes: string): Claim;
+  fetch(claim: Claim): string;
+}
+
+/// The job queue carries only small claims, never the video bytes.
+public container Queue for Reelbox {
+  publish(claim: Claim): void;
+}
+
+/// Redeems the claim to fetch the file when it transcodes it.
+public container Transcoder for Reelbox {
+  #[onevent(Claim)]
+  public on(claim: Claim): void {
+    self.transcode(BlobStore.fetch(claim))
+  }
+
+  /// Transcode the fetched file into stream-ready renditions.
+  transcode(bytes: string): void;
+}
+
+/// Heavy files bypass the queue; only a small claim flows through it.
+feature ReferenceNotPayload for Ingest {
+  given "a multi-gigabyte video upload"
+  when  "Reelbox ingests it"
+  then  "the file is stored in blob storage and only a small claim is queued"
+  and   "the transcoder redeems the claim to fetch the file"
+  but   "the queue never carries the video bytes"
+}

@@ -32,8 +32,12 @@
 mod check;
 mod graph;
 mod model;
+pub mod resolve;
 
-pub use graph::{Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, Step, Trigger, Visibility};
+pub use graph::{
+    Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
+    Visibility,
+};
 pub use model::{
     Alias, Member, MemberKind, Model, ModuleEntry, Resolution, Symbol, SymbolKind, Workspace,
 };

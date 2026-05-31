@@ -1,29 +1,20 @@
 <script>
-  // The system, shown live. Structure views (context/container/component) render
-  // an interactive C4 graph; the flow view renders the animated timeline. Both
-  // are fed the compiler's laid-out scene (emit_scene), so the pane is the
-  // model itself, not a picture of it.
+  // The system, shown live. A node scene renders an interactive C4 graph; a
+  // sequence scene renders the animated timeline. The scene comes from the
+  // compiler (emit_scene / symbol_scene), so the diagram type is read off the
+  // scene itself — the pane is the model, not a picture of it.
   import C4Flow from "./C4Flow.svelte";
   import FlowTimeline from "./FlowTimeline.svelte";
+  import { DEPTHS } from "$lib/sequence.js";
 
-  let { scene = null, error = "", view = "context", hasTargets = true } = $props();
+  let { scene = null, layout = null, error = "", hint = "Nothing to draw.", onpick, onup, flows = null, depth = "component", ondepth = null, oninfo = null, oninfoend = null, onusages = null, typeFqn = null } = $props();
 
-  const isFlow = $derived(view === "sequence");
+  const isFlow = $derived(!!scene && Array.isArray(scene.participants));
   const hasC4 = $derived(!!scene && Array.isArray(scene.nodes) && scene.nodes.length > 0);
-  const hasFlow = $derived(!!scene && Array.isArray(scene.participants) && scene.participants.length > 0);
+  const hasFlow = $derived(isFlow && scene.participants.length > 0);
   const ready = $derived(isFlow ? hasFlow : hasC4);
-  // Remount the flow when the scene content changes so layout/animation reset.
-  const sig = $derived(scene ? JSON.stringify(scene) : "");
-
-  const hint = $derived(
-    view === "context"
-      ? "No persons or systems declared in this module — the context view draws systems and people."
-      : !hasTargets
-        ? isFlow
-          ? "No triggered entry points in this module. Mark a callable with #[http], #[schedule], or #[manual] to trace its flow."
-          : `No ${view === "component" ? "containers" : "systems"} in this module for a ${view} view.`
-        : "Nothing to draw for this selection.",
-  );
+  // Remount the flow when the rendered content changes so the view resets.
+  const sig = $derived(isFlow ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
 </script>
 
 <div class="stage" class:framed={ready}>
@@ -33,12 +24,19 @@
       <p>{error}</p>
     </div>
   {:else if ready}
+    {#if isFlow && ondepth}
+      <div class="depth" role="group" aria-label="Sequence depth">
+        {#each DEPTHS as d (d.id)}
+          <button class:active={depth === d.id} onclick={() => ondepth(d.id)}>{d.label}</button>
+        {/each}
+      </div>
+    {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline {scene} />{:else}<C4Flow {scene} />{/if}
+      {#if isFlow}<FlowTimeline {scene} {layout} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow {scene} {onpick} {onup} {flows} />{/if}
     {/key}
   {:else}
     <div class="note">
-      <span class="kicker">{isFlow ? "flow" : view} view</span>
+      <span class="kicker">diagram</span>
       <p>{hint}</p>
     </div>
   {/if}
@@ -46,6 +44,7 @@
 
 <style>
   .stage {
+    position: relative;
     height: 100%;
     min-height: 0;
     background:
@@ -58,6 +57,36 @@
     place-items: center;
     padding: 1.6rem;
   }
+  /* depth selector: a segmented control floating over the sequence canvas */
+  .depth {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    z-index: 5;
+    display: flex;
+    gap: 1px;
+    padding: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.8);
+  }
+  .depth button {
+    padding: 0.28rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    background: transparent;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 2px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .depth button:hover { color: var(--ink); }
+  .depth button.active { background: var(--accent); color: var(--accent-ink); }
+
   .note { max-width: 30rem; text-align: center; color: var(--ink-soft); }
   .note .kicker {
     display: inline-block;

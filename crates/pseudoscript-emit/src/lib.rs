@@ -40,8 +40,8 @@ mod project;
 mod render;
 mod scene;
 
-pub use project::{EmitError, View, project};
-pub use render::render_svg;
+pub use project::{EmitError, View, project, project_symbol};
+pub use render::{layout_sequence_scene, render_svg};
 pub use scene::{
     C4EdgeKind, C4Scene, C4View, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
     Rect, RoutedEdge, Scene, SeqItem, SequenceScene,

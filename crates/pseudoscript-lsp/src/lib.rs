@@ -21,7 +21,7 @@ mod complete;
 mod convert;
 mod infer;
 mod refs;
-mod resolve;
+use pseudoscript_model::resolve;
 mod semantic;
 mod server;
 mod symbols;

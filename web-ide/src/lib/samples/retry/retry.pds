@@ -1,0 +1,51 @@
+//! retry — exercised by Postbird, a transactional-email sender. It dispatches
+//! through a third-party provider that occasionally returns a transient error.
+//! Postbird retries with exponential backoff and jitter up to a budget; only a
+//! permanent failure (a bad address) surfaces. Pairs with an idempotent receiver
+//! so a retried send doesn't double-email.
+
+public data Message { to: string, body: string }
+public data Sent;
+/// Why a send failed, and whether it is worth retrying.
+public data SendFailed { transient: bool }
+/// Returned once the retry budget is spent.
+public data GaveUp;
+
+/// An app asking Postbird to send a notification.
+public person App {
+  #[manual]
+  public notify(to: string): void {
+    Postbird::Dispatcher.send(Message from { to, "Welcome!" })
+  }
+}
+
+/// Postbird — the notification sender.
+public system Postbird;
+
+/// Sends through the provider with bounded, backed-off retries on transient fails.
+public container Dispatcher for Postbird {
+  public send(msg: Message): Result<Sent, GaveUp> {
+    attempt = Provider.deliver(msg)
+    if (attempt.isOk) {
+      return Ok(attempt.value)
+    }
+    return self.retry(msg, attempt.error)
+  }
+
+  /// Retry with exponential backoff + jitter until the budget is spent; a
+  /// permanent failure (a bad address) is not retried.
+  retry(msg: Message, e: SendFailed): Result<Sent, GaveUp>;
+}
+
+/// The third-party email/SMS provider — mostly fine, sometimes a transient blip.
+public system Provider {
+  deliver(msg: Message): Result<Sent, SendFailed>;
+}
+
+/// Transient provider failures are ridden out; permanent ones surface.
+feature RetryWithBackoff for Dispatcher {
+  given "a provider that returns a transient error then recovers"
+  when  "Postbird sends a message"
+  then  "it retries with exponential backoff until the send succeeds"
+  but   "a permanent failure like a bad address is surfaced without retrying"
+}

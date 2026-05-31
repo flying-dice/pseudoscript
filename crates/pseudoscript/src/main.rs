@@ -6,8 +6,9 @@
 //! - `pds check <FILE>` — report diagnostics; exit non-zero on any error.
 //! - `pds fmt <FILE> [--write]` — canonical formatting.
 //! - `pds tokens <FILE>` — the lexical token stream, for debugging.
-//! - `pds doc [PATH]` — generate the static documentation site
-//!   ([`pseudoscript_doc`]) for the workspace rooted at the nearest `pds.toml`.
+//! - `pds doc [PATH]` — generate the documentation site
+//!   ([`pseudoscript_doc`]) for the workspace rooted at the nearest
+//!   `pds.toml`.
 //! - `pds init [PATH]` — bootstrap a new workspace (`pds.toml` + a starter module).
 //! - `pds upgrade [VERSION]` — replace the binary with a GitHub release.
 //! - `pds add <URL>` — add a git workspace dependency and resolve it ([`deps`]).
@@ -71,7 +72,7 @@ enum Command {
         /// The `.pds` file to tokenize.
         file: PathBuf,
     },
-    /// Generate the static documentation site for the workspace.
+    /// Generate the documentation site for the workspace.
     Doc {
         /// A file or directory inside the workspace; the project root is the
         /// nearest enclosing `pds.toml`. Defaults to the current directory.
@@ -346,8 +347,8 @@ fn cmd_tokens(path: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `pds doc`: generate the static documentation site for the workspace rooted
-/// at the nearest `pds.toml`.
+/// `pds doc`: generate the documentation site for the workspace rooted at the
+/// nearest `pds.toml`.
 ///
 /// Model diagnostics are reported to stderr but, like `cargo doc`, never abort
 /// generation — a model with warnings still documents. Only I/O and load errors
@@ -390,7 +391,8 @@ fn build_site(path: &Path, announce: bool) -> Result<PathBuf> {
         &project.dependencies,
     ));
 
-    let site = pseudoscript_doc::render_site(&graph(&project.modules), &project.config);
+    let site = pseudoscript_doc::try_render_site(&graph(&project.modules), &project.config)
+        .context("rendering the documentation site")?;
     for file in &site.files {
         let dest = project.out_dir.join(&file.path);
         if let Some(parent) = dest.parent() {

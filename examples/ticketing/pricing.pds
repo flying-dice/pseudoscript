@@ -1,0 +1,132 @@
+//! pricing — surge pricing. The price an attendee pays is the tier's base price
+//! scaled by a surge multiplier derived from live demand (sell-through rate,
+//! remaining inventory, queue depth). The composition is disclosed — price is a
+//! function of base × surge(demand) — while the demand model itself is a black
+//! box the pricing team tunes.
+
+/// A surge multiplier and the demand condition that produced it.
+public data SurgeFactor { multiplier: number, reason: string }
+
+/// A priced order line: the unit price after surge, the factor applied, and the
+/// line total for the quantity.
+public data Quote {
+  event: shared::EventId,
+  tier: shared::TierId,
+  unit: shared::Money,
+  surge: SurgeFactor,
+  total: shared::Money
+}
+
+/// Why a quote could not be produced.
+public data PricingError =
+  | TierUnavailable { tier: shared::TierId }
+
+/// `pricing` — the dynamic pricing engine.
+/// #headline
+public container Pricing for context::AcmeTickets;
+
+/// Produces quotes at the current surge rate.
+/// #headline
+public component Quotes for Pricing {
+  /// Quote a line: take the tier's base price, scale it by the current surge
+  /// factor for the event, and total it for the quantity.
+  /// #headline
+  public quote(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<Quote, PricingError> {
+    base = catalog::Tiers.priceOf(tier)
+    if (base.isErr) {
+      return Err(TierUnavailable from { tier })
+    }
+    surge = self.surgeFor(event, tier)
+    unit = self.apply(base.value, surge)
+    total = self.lineTotal(unit, quantity)
+    return Ok(Quote from { event, tier, unit, surge, total })
+  }
+
+  /// The current surge factor: read a demand snapshot, then map it onto a
+  /// multiplier. Pricing FAILS OPEN — if the demand signal is unavailable the
+  /// quote falls back to a neutral (no-surge) factor and checkout proceeds,
+  /// rather than blocking a sale on a non-critical signal.
+  surgeFor(event: shared::EventId, tier: shared::TierId): SurgeFactor {
+    snap = Pricing::Demand.snapshot(event, tier)
+    if (snap.isNone) {
+      return self.neutral()
+    }
+    return self.curve(snap.value.pressure)
+  }
+
+  /// The no-surge factor (multiplier 1.0) used when demand is unknown.
+  neutral(): SurgeFactor;
+  /// Map a demand-pressure index onto a surge multiplier (the pricing curve).
+  curve(pressure: number): SurgeFactor;
+  /// Scale a base unit price by a surge factor.
+  apply(base: shared::Money, surge: SurgeFactor): shared::Money;
+  /// Multiply a unit price by a quantity.
+  lineTotal(unit: shared::Money, quantity: shared::Quantity): shared::Money;
+}
+
+/// Locks a surge price to a hold at reservation time. The buyer pays the price
+/// they were quoted when they reserved, not a higher price if surge climbs while
+/// they check out — the price lock is the fairness guarantee of surge pricing.
+public component Locks for Pricing {
+  /// Lock a quote to a hold (set when seats are reserved).
+  lock(hold: shared::HoldId, quote: Quote): void;
+  /// The price locked to a hold, if the lock is still live.
+  priceFor(hold: shared::HoldId): Option<Quote>;
+}
+
+/// A point-in-time demand reading: a pressure index plus the version it was
+/// taken at, so a quote is a pure function of (base price, snapshot) and two
+/// buyers a moment apart get the same explainable price.
+public data DemandSnapshot { pressure: number, version: number }
+
+/// The demand signal behind surge pricing. It ingests confirmed sales
+/// asynchronously off the checkout hot path — `onConfirmed` reacts to the same
+/// `OrderConfirmed` event tickets and notifications already consume, so the
+/// surge counter is never a synchronous write on the path it prices. The
+/// snapshot it serves is an aggregate the quote path can read stale and cache.
+public component Demand for Pricing {
+  /// Ingest a confirmed sale into the demand signal (event-driven, not inline).
+  /// De-duplicated by order id: the saga sweeper may re-publish `OrderConfirmed`,
+  /// and folding a sale twice would lift surge on phantom volume — so this
+  /// consumer owns its own idempotency rather than trusting the producer.
+  #[onevent(orders::OrderConfirmed)]
+  public onConfirmed(event: orders::OrderConfirmed): void {
+    fresh = Pricing::DemandLog.seen(event.order.id)
+    if (fresh.isNone) {
+      self.record(event.order.event, event.order.tier, event.order.quantity)
+      Pricing::DemandLog.mark(event.order.id)
+    }
+  }
+
+  /// Fold a confirmed sale into the demand aggregate.
+  record(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): void;
+  /// A cacheable, point-in-time demand snapshot, or `None` if unavailable.
+  snapshot(event: shared::EventId, tier: shared::TierId): Option<DemandSnapshot>;
+}
+
+/// De-duplicates demand ingestion by order id. Surge feeds price, and price is
+/// money, so a sale folded twice would raise the surge every later buyer pays.
+/// Idempotent consumption is owned by the consumer — mirroring
+/// `payments::EventLog` — not assumed of the producer.
+component DemandLog for Pricing {
+  /// The order id if this sale was already folded in (a duplicate delivery).
+  seen(order: shared::OrderId): Option<shared::OrderId>;
+  /// Mark a sale folded in.
+  mark(order: shared::OrderId): void;
+}
+
+/// Surge multiplier rises with demand pressure.
+feature SurgeReflectsDemand for Quotes {
+  given "a tier whose demand pressure is high"
+  when  "a quote is requested"
+  then  "the surge multiplier is above one"
+  and   "the quoted unit price exceeds the base price"
+}
+
+/// Price eases back as demand cools.
+feature SurgeEasesAsDemandCools for Quotes {
+  given "a tier whose demand pressure has fallen back to normal"
+  when  "a quote is requested"
+  then  "the surge multiplier returns toward one"
+  and   "the quoted unit price approaches the base price"
+}

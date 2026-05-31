@@ -1,0 +1,28 @@
+// LANG.md §9.2: a call to a disclosed callee expands inline — the active
+// lifeline switches to the callee, whose `return` flows back to its caller.
+// `Handle` calls `Worker.Do` (disclosed, expands), `Do` calls `Store.Save`
+// (black box, single message), and each disclosed `return Ok` lands on its
+// caller's lifeline. The `#[http]` trigger contributes the `client` initiator.
+
+//! shop
+
+public system Shop;
+
+public container Api for Shop {
+  #[http]
+  public Handle(): Result<bool, string> {
+    Worker.Do()
+    return Ok(true)
+  }
+}
+
+public container Worker for Shop {
+  public Do(): Result<bool, string> {
+    Store.Save()
+    return Ok(true)
+  }
+}
+
+public container Store for Shop {
+  public Save(): void;
+}

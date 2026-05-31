@@ -1,0 +1,52 @@
+//! bulkhead — exercised by Wanderlust, a travel meta-search. One search fans out to
+//! flight, hotel, and car providers — each through its OWN connection pool. When
+//! the hotel provider stalls and exhausts its pool, flights and cars still come
+//! back; only hotels degrade. The pools are watertight compartments.
+
+public data Query { destination: string }
+public data Results { options: string[] }
+public data PoolFull { lane: string }
+
+/// A traveller searching a destination.
+public person Traveller {
+  #[manual]
+  public search(destination: string): void {
+    Wanderlust::Meta.flights(Query from { destination })
+  }
+}
+
+/// Wanderlust — the travel meta-search.
+public system Wanderlust;
+
+/// Runs a search across providers, each call confined to that provider's own pool.
+public container Meta for Wanderlust {
+  #[http("GET /search/flights")]
+  public flights(q: Query): Result<Results, PoolFull> {
+    return FlightsPool.query(q)
+  }
+
+  #[http("GET /search/hotels")]
+  public hotels(q: Query): Result<Results, PoolFull> {
+    return HotelsPool.query(q)
+  }
+
+  #[http("GET /search/cars")]
+  public cars(q: Query): Result<Results, PoolFull> {
+    return CarsPool.query(q)
+  }
+}
+
+/// The flights provider's own bounded pool — exhaustion here cannot reach hotels.
+public container FlightsPool for Wanderlust { query(q: Query): Result<Results, PoolFull>; }
+/// The hotels provider's own bounded pool, isolated from the others.
+public container HotelsPool for Wanderlust { query(q: Query): Result<Results, PoolFull>; }
+/// The cars provider's own bounded pool, isolated from the others.
+public container CarsPool for Wanderlust { query(q: Query): Result<Results, PoolFull>; }
+
+/// One exhausted pool does not starve the others.
+feature OnePoolFailsAlone for Meta {
+  given "the hotel provider has stalled and exhausted its pool"
+  when  "a traveller's search runs"
+  then  "the flight and car lanes return results on their own pools"
+  but   "only the hotel lane is rejected as pool-full"
+}

@@ -145,3 +145,9 @@ Read in full for the two rules and the still-open operator question.
 A `pds.toml` `[dependencies]` table declares other workspaces via git; each name is an FQN root scoped to the declaring workspace. Cross-workspace targets MUST be `public`; only direct dependencies are addressable; identity is `(source, revision, path)` so versions coexist; `pds.lock` pins the graph. `alias` MAY target a cross-workspace node.
 
 Read in full for the resolution model, the side-by-side identity rule, and the rejected `use`-statement / flat-namespace / version-solver alternatives.
+
+## [025 — The Svelte-rendered site is the sole doc renderer](025-svelte-doc-renderer.md)
+
+`pds doc` has one renderer: a Svelte presentation, prebuilt and embedded, server-rendered through an embedded `QuickJS` engine (a wasm host supplies its own). Diagrams ship as `Scene` geometry and hydrate into interactive client islands. The Rust HTML renderer, the `--static` flag, and the `[doc].renderer` key are removed. Amends ADR-017; the `Scene` IR stays the conformance surface.
+
+Read in full for the SSR seam, the embedded-bundle stance, and the rejected two-renderer / server-SVG / JS-toolchain alternatives.

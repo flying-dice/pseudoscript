@@ -1,16 +1,16 @@
 //! The filesystem edge for `pds doc` (`LANG.md` §8.1, §9.3, ADR-017).
 //!
-//! The library crates ([`pseudoscript_model`], [`pseudoscript_doc`]) stay pure
-//! over in-memory modules. This module is where the toolchain touches disk: it
-//! finds the project root (`pds.toml`), parses its `[doc]` table into a
-//! [`pseudoscript_doc::DocConfig`] plus a resolved output directory, and walks
-//! the tree for `*.pds` files, deriving each module's FQN from its path
+//! The library crates ([`pseudoscript_model`], [`pseudoscript_doc`]) stay
+//! pure over in-memory modules. This module is where the toolchain touches disk:
+//! it finds the project root (`pds.toml`), parses its `[doc]` table into a
+//! [`pseudoscript_doc::DocConfig`] plus a resolved output directory, and
+//! walks the tree for `*.pds` files, deriving each module's FQN from its path
 //! relative to the root.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use pseudoscript_doc::{DocConfig, Theme};
+use pseudoscript_doc::{DocConfig, DocGroup, DocPage, Theme};
 use pseudoscript_model::WorkspaceModule;
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -49,6 +49,25 @@ struct DocTable {
     out: Option<String>,
     logo: Option<String>,
     theme: Option<String>,
+    #[serde(default)]
+    sidebar: Vec<SidebarTable>,
+}
+
+/// One `[[doc.sidebar]]` group: a heading and its ordered page items.
+#[derive(Debug, Default, Deserialize)]
+struct SidebarTable {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    items: Vec<SidebarItem>,
+}
+
+/// One `{ title, path }` entry in a `[[doc.sidebar]]` group's `items`.
+#[derive(Debug, Default, Deserialize)]
+struct SidebarItem {
+    #[serde(default)]
+    title: String,
+    path: String,
 }
 
 /// Walks up from `start` (a file or directory) through its ancestors until a
@@ -107,20 +126,56 @@ fn load_manifest(root: &Path) -> Result<(DocConfig, PathBuf)> {
 
 impl DocTable {
     /// Maps the parsed `[doc]` table into a [`DocConfig`] and the root-relative
-    /// output directory, applying defaults.
+    /// output directory, applying defaults. Reads each `[[doc.sidebar]]` page's
+    /// Markdown from disk, relative to `root`.
     fn resolve(self, root: &Path) -> Result<(DocConfig, PathBuf)> {
         let name = self.name.unwrap_or_else(|| default_name(root));
-        let theme = self
-            .theme
-            .as_deref()
-            .map_or(Ok(Theme::Light), parse_theme)?;
+        let theme = self.theme.as_deref().map_or(Ok(Theme::Dark), parse_theme)?;
         let out = self.out.unwrap_or_else(|| "target/doc".to_owned());
+        let docs = self
+            .sidebar
+            .into_iter()
+            .map(|group| load_doc_group(root, group))
+            .collect();
         let config = DocConfig {
             name,
             theme,
             logo: self.logo,
+            docs,
         };
         Ok((config, PathBuf::from(out)))
+    }
+}
+
+/// Reads a `[[doc.sidebar]]` group's pages from disk into a [`DocGroup`]. A page
+/// whose file cannot be read warns and is skipped — like a missing logo, it does
+/// not fail `pds doc` (`LANG.md` §9.3). An item's title defaults to its path.
+fn load_doc_group(root: &Path, group: SidebarTable) -> DocGroup {
+    let pages = group
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            let source = root.join(&item.path);
+            match std::fs::read_to_string(&source) {
+                Ok(markdown) => Some(DocPage {
+                    title: if item.title.is_empty() {
+                        item.path.clone()
+                    } else {
+                        item.title
+                    },
+                    path: item.path,
+                    markdown,
+                }),
+                Err(err) => {
+                    eprintln!("warning: doc page `{}`: {err}", source.display());
+                    None
+                }
+            }
+        })
+        .collect();
+    DocGroup {
+        title: group.title,
+        pages,
     }
 }
 
@@ -244,7 +299,7 @@ mod tests {
             .resolve(Path::new("/tmp/my-project"))
             .unwrap();
         assert_eq!(config.name, "my-project");
-        assert_eq!(config.theme, Theme::Light);
+        assert_eq!(config.theme, Theme::Dark);
         assert!(config.logo.is_none());
         assert_eq!(out, Path::new("target/doc"));
     }
@@ -277,5 +332,46 @@ mod tests {
             .resolve(Path::new("/tmp/proj"))
             .unwrap_err();
         assert!(err.to_string().contains("sepia"), "{err}");
+    }
+
+    #[test]
+    fn manifest_has_no_docs_when_sidebar_absent() {
+        let (config, _) = toml::from_str::<Manifest>("[doc]\nname = \"X\"\n")
+            .unwrap()
+            .doc
+            .resolve(Path::new("/tmp/proj"))
+            .unwrap();
+        assert!(config.docs.is_empty());
+    }
+
+    #[test]
+    fn manifest_reads_sidebar_pages_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/intro.md"), "# Intro\n\nHello.").unwrap();
+        let src = r#"
+            [doc]
+            name = "X"
+
+            [[doc.sidebar]]
+            title = "Start"
+            items = [
+              { title = "Intro", path = "docs/intro.md" },
+              { title = "Gone",  path = "docs/missing.md" },
+            ]
+        "#;
+        let (config, _) = toml::from_str::<Manifest>(src)
+            .unwrap()
+            .doc
+            .resolve(dir.path())
+            .unwrap();
+        assert_eq!(config.docs.len(), 1);
+        let group = &config.docs[0];
+        assert_eq!(group.title, "Start");
+        // The missing page is warned-and-skipped; only the readable one survives.
+        assert_eq!(group.pages.len(), 1);
+        assert_eq!(group.pages[0].title, "Intro");
+        assert_eq!(group.pages[0].path, "docs/intro.md");
+        assert!(group.pages[0].markdown.contains("# Intro"));
     }
 }

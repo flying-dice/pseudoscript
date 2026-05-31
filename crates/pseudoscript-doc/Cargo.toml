@@ -13,6 +13,19 @@ path = "src/lib.rs"
 [dependencies]
 pseudoscript-model = { path = "../pseudoscript-model" }
 pseudoscript-emit = { path = "../pseudoscript-emit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Renders `[[doc.sidebar]]` markdown pages to HTML. Pure Rust (no C), so it
+# builds for the wasm host alongside the native CLI; default features dropped to
+# keep only the library `html` path (no CLI `getopts`).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# The embedded QuickJS engine is native-only: rquickjs vendors and compiles
+# QuickJS C (needs a C compiler), which does not build for wasm targets. A wasm
+# host implements `SsrEngine` against its own JS engine instead, so this dep is
+# gated out there. Pinned exactly — the eval/call API is version-sensitive.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rquickjs = "=0.12.0"
 
 [dev-dependencies]
 cucumber = "0.21"

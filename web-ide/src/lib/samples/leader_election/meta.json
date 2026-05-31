@@ -1,0 +1,7 @@
+{
+  "name": "Leader Election",
+  "category": "Coordination",
+  "order": 72,
+  "landing": "leader_election",
+  "description": "Cronicle (scheduler) — nodes elect a leader via a lease; one fires jobs and a standby takes over."
+}

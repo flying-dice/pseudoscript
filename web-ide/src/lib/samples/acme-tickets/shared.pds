@@ -1,0 +1,25 @@
+//! shared — value objects used across every context (a shared kernel).
+
+/// Money in minor units (e.g. cents) with an ISO currency code.
+public data Money { currency: string, minor: number }
+
+/// A user's stable identifier.
+public data UserId { value: string }
+
+/// An event's stable identifier.
+public data EventId { value: string }
+
+/// A price tier (section / band) within an event.
+public data TierId { value: string }
+
+/// An order's stable identifier.
+public data OrderId { value: string }
+
+/// An inventory hold's stable identifier.
+public data HoldId { value: string }
+
+/// An issued ticket's stable identifier.
+public data TicketId { value: string }
+
+/// A count of tickets on one order line.
+public data Quantity { value: number }

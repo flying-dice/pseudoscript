@@ -1,0 +1,57 @@
+//! sharding — exercised by Snip, a URL shortener storing billions of links. No
+//! single database can hold them, so links are partitioned across shards by their
+//! short code. A router sends each read or write to the shard that owns the code;
+//! capacity grows by adding shards, and no node is the bottleneck.
+
+public data Link { code: string, target: string }
+
+/// Someone following a short link.
+public person Surfer {
+  #[manual]
+  public follow(code: string): void {
+    Snip::Router.resolve(code)
+  }
+}
+
+/// Snip — the URL shortener.
+public system Snip;
+
+/// Routes each request to the shard that owns its code — the only part that knows
+/// the partitioning scheme.
+public container Router for Snip {
+  #[http("POST /links")]
+  public shorten(link: Link): void {
+    Shards.write(link)
+  }
+
+  #[http("GET /{code}")]
+  public resolve(code: string): Option<Link> {
+    return Shards.read(code)
+  }
+}
+
+/// The shard set: resolves a code to its owning shard and dispatches there.
+public container Shards for Snip {
+  public write(link: Link): void {
+    Shard.put(link)
+  }
+
+  public read(code: string): Option<Link> {
+    return Shard.get(code)
+  }
+}
+
+/// One partition — an independent owner of the codes that map to it.
+public component Shard for Shards {
+  put(link: Link): void;
+  get(code: string): Option<Link>;
+}
+
+/// Each code lives on one shard; capacity grows by adding shards.
+feature PartitionByCode for Router {
+  given "links partitioned across shards by short code"
+  when  "a request for a code arrives"
+  then  "the router sends it to the one shard that owns that code"
+  and   "other shards serve unrelated codes in parallel"
+  but   "no single node is the bottleneck"
+}

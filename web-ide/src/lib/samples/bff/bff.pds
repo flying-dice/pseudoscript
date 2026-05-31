@@ -1,0 +1,60 @@
+//! bff — exercised by Bingewatch, a video-streaming service. The living-room TV app
+//! and the phone app each get their own backend: the TV BFF returns rich artwork
+//! and many rows; the phone BFF returns a lean list to save cellular data — both
+//! over the same catalogue and recommendation services.
+
+/// A home screen of shows.
+public data Lineup { rows: string[] }
+
+/// A viewer on the big screen.
+public person TvViewer {
+  #[manual]
+  public open(): void {
+    Bingewatch::TvBff.home()
+  }
+}
+
+/// A viewer on a phone, on cellular data.
+public person PhoneViewer {
+  #[manual]
+  public open(): void {
+    Bingewatch::PhoneBff.home()
+  }
+}
+
+/// Bingewatch — the streaming platform.
+public system Bingewatch;
+
+/// TV BFF: a rich home screen — many rows, large artwork, autoplay previews.
+public container TvBff for Bingewatch {
+  #[http("GET /tv/home")]
+  public home(): Lineup {
+    catalog = Catalog.rows()
+    picks = Recommendations.forYou()
+    return self.compose(catalog, picks)
+  }
+
+  /// Stitch the sources into one rich lineup.
+  compose(a: Lineup, b: Lineup): Lineup;
+}
+
+/// Phone BFF: a lean home screen — one column, small images, no autoplay.
+public container PhoneBff for Bingewatch {
+  #[http("GET /phone/home")]
+  public home(): Lineup {
+    return Recommendations.forYou()
+  }
+}
+
+/// Shared services, unchanged behind both BFFs.
+public system Catalog { rows(): Lineup; }
+public system Recommendations { forYou(): Lineup; }
+
+/// Each device gets a home screen shaped for it, over the same services.
+feature TailoredPerDevice for Bingewatch {
+  given "a TV viewer and a phone viewer"
+  when  "each opens the home screen"
+  then  "the TV BFF returns a rich, artwork-heavy lineup"
+  and   "the phone BFF returns a lean, data-saving lineup"
+  but   "both read the same catalogue and recommendations"
+}

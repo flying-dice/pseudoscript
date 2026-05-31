@@ -28,12 +28,23 @@
 //! and reuse [`pseudoscript_model`] without the native `tower-lsp`/`tokio`
 //! transport.
 
-use pseudoscript_emit::{Scene, View, graph_of_source, project, render_svg};
+use std::collections::HashMap;
+
+use pseudoscript_doc::{
+    DocConfig, DocGroup, DocPage, RenderError, RenderedPage, SsrEngine, Theme, ssr_bundle,
+    try_render_site_with,
+};
+use pseudoscript_emit::{
+    Scene, View, graph_of_source, layout_sequence_scene, project, project_symbol, render_svg,
+};
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
-    NodeKind, WorkspaceModule, check as check_source, check_workspace_modules,
+    Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
+    graph as build_graph, resolve::resolve_at,
 };
-use pseudoscript_syntax::{Diagnostic, LineIndex, Severity, parse as parse_source};
+use pseudoscript_syntax::{
+    Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
+};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -132,21 +143,452 @@ pub fn emit_svg(source: &str, view: &str, target: &str) -> Result<String, JsErro
 #[wasm_bindgen]
 #[must_use]
 pub fn outline(source: &str) -> String {
-    let graph = graph_of_source(source);
-    let nodes: Vec<OutlineNode> = graph
-        .nodes()
+    let index = LineIndex::new(source);
+    to_json(&outline_nodes(
+        &graph_of_source(source),
+        |_module, offset| index.line_col(offset),
+    ))
+}
+
+/// Like [`outline`], but over a whole workspace (`modules_json` is the same
+/// `[{fqn, source}]` shape as [`check_modules`]), so a cross-module container or
+/// system is a valid diagram target.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn outline_modules(modules_json: &str) -> Result<String, JsError> {
+    let modules = modules_from_json(modules_json).map_err(|e| JsError::new(&e))?;
+    let indices: HashMap<&str, LineIndex> = modules
         .iter()
-        .map(|n| OutlineNode {
-            fqn: n.fqn.clone(),
-            name: n.name.clone(),
-            kind: n.kind,
-            triggered: !n.triggers.is_empty(),
+        .map(|m| (m.fqn.as_str(), LineIndex::new(&m.source)))
+        .collect();
+    let graph = build_graph(&modules);
+    Ok(to_json(&outline_nodes(&graph, |module, offset| {
+        indices
+            .get(module)
+            .map_or((1, 1), |index| index.line_col(offset))
+    })))
+}
+
+/// Projects a diagram view over a whole workspace graph, so it shows nodes and
+/// edges across modules (a container's components, cross-system calls). Same
+/// `view`/`target` arguments as [`emit_scene`]; `modules_json` is `[{fqn,
+/// source}]`.
+///
+/// # Errors
+///
+/// Returns an error for invalid JSON, an unknown `view`, or a view that cannot
+/// be projected.
+#[wasm_bindgen]
+pub fn emit_scene_modules(modules_json: &str, view: &str, target: &str) -> Result<String, JsError> {
+    emit_scene_modules_impl(modules_json, view, target).map_err(|e| JsError::new(&e))
+}
+
+/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
+/// and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
+/// the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
+/// diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
+/// trace for a callable, a structural view for a node. `modules_json` is the
+/// `[{fqn, source}]` workspace shape.
+///
+/// The host (an editor hover) shows the info and diagram together; it never
+/// decides which diagram a symbol gets — the compiler does.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn hover(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
+    hover_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
+}
+
+/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn` to
+/// the FQN of its declaration, for go-to-definition. Returns the FQN as a JSON
+/// string, or `null` when the cursor rests on no resolvable symbol. Unlike
+/// [`hover`] it renders no diagram, so it is cheap enough for a click handler.
+/// `modules_json` is the `[{fqn, source}]` workspace shape.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn definition(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
+    definition_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
+}
+
+/// Finds every occurrence of the symbol under `offset` in module `module_fqn`
+/// across the whole workspace — find-usages. Returns JSON
+/// `{ fqn, title, occurrences: [{ fqn, line, col, end_line, end_col, text, decl }] }`,
+/// where each occurrence carries its 1-based position, the trimmed source line
+/// for a preview, and `decl` marking the declaration site. Returns `null` when
+/// the cursor rests on no resolvable symbol. `modules_json` is `[{fqn, source}]`.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn references(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
+    references_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
+}
+
+/// Projects the fitting diagram for the symbol `fqn` over the whole workspace
+/// and returns its laid-out [`Scene`] as JSON (the interactive counterpart of
+/// [`hover`]'s `svg`, for a side panel or full-screen view). See
+/// [`project_symbol`] for how the view is chosen.
+///
+/// # Errors
+///
+/// Returns an error for invalid JSON, an unknown symbol, or a symbol that
+/// cannot be projected.
+#[wasm_bindgen]
+pub fn symbol_scene(modules_json: &str, fqn: &str) -> Result<String, JsError> {
+    symbol_scene_impl(modules_json, fqn).map_err(|e| JsError::new(&e))
+}
+
+/// Renders the fitting diagram for the symbol `fqn` (see [`project_symbol`]) to
+/// a self-contained SVG string over the whole workspace — the live, re-derivable
+/// form of [`hover`]'s `svg` for a docked side panel. `modules_json` is `[{fqn,
+/// source}]`.
+///
+/// # Errors
+///
+/// Returns an error for invalid JSON, an unknown symbol, or a symbol that
+/// cannot be projected.
+#[wasm_bindgen]
+pub fn symbol_svg(modules_json: &str, fqn: &str) -> Result<String, JsError> {
+    symbol_svg_impl(modules_json, fqn).map_err(|e| JsError::new(&e))
+}
+
+/// Positions a sequence [`Scene`] (as JSON) into absolute coordinates, returning
+/// the layout as JSON. The host collapses the scene to a chosen depth first,
+/// then hands it here; the layout engine owns all geometry. A non-sequence scene
+/// is an error.
+///
+/// # Errors
+///
+/// Returns an error for invalid JSON or a non-sequence scene.
+#[wasm_bindgen]
+pub fn layout_scene(scene_json: &str) -> Result<String, JsError> {
+    layout_scene_impl(scene_json).map_err(|e| JsError::new(&e))
+}
+
+/// The Svelte SSR bundle (`ssr.js`) the host evaluates in its own JavaScript
+/// engine — the browser — to define `globalThis.SSR.renderPage`. Hand that
+/// function back to [`render_doc_site`] as the `render` callback.
+#[wasm_bindgen]
+#[must_use]
+pub fn doc_ssr_bundle() -> String {
+    ssr_bundle().to_owned()
+}
+
+/// Renders the whole documentation site for a workspace, exactly as the CLI's
+/// `pds doc` does, driving server-side rendering through the host's JavaScript
+/// engine rather than an embedded one.
+///
+/// `render` is a JS function `(propsJson: string) => string` returning one
+/// page's `{head, body}` JSON — typically `SSR.renderPage` from the evaluated
+/// [`doc_ssr_bundle`]. `config_json` is `{ name, theme?, logo? }`. Returns the
+/// site as JSON `[{ path, contents }]` for the host to write.
+///
+/// # Errors
+///
+/// Returns an error for invalid `modules_json`/`config_json`, or when a page
+/// fails to render (a bundle/engine defect — not user model data).
+#[wasm_bindgen]
+pub fn render_doc_site(
+    modules_json: &str,
+    config_json: &str,
+    render: &js_sys::Function,
+) -> Result<String, JsError> {
+    let modules = modules_from_json(modules_json).map_err(|e| JsError::new(&e))?;
+    let config = doc_config(config_json).map_err(|e| JsError::new(&e))?;
+    let engine = HostEngine {
+        render: render.clone(),
+    };
+    let site = try_render_site_with(&build_graph(&modules), &config, &engine)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let files: Vec<SiteFileOut> = site
+        .files
+        .iter()
+        .map(|f| SiteFileOut {
+            path: f.path.clone(),
+            contents: f.contents.clone(),
         })
         .collect();
-    to_json(&nodes)
+    Ok(to_json(&files))
+}
+
+/// Backs [`SsrEngine`] with a host JavaScript function: each page's props JSON
+/// is handed to `render`, which returns the `{head, body}` JSON string.
+struct HostEngine {
+    render: js_sys::Function,
+}
+
+impl SsrEngine for HostEngine {
+    fn render_page(&self, props_json: &str) -> Result<RenderedPage, RenderError> {
+        let out = self
+            .render
+            .call1(&JsValue::NULL, &JsValue::from_str(props_json))
+            .map_err(|e| RenderError::Call(format!("{e:?}")))?;
+        let json = out.as_string().ok_or_else(|| {
+            RenderError::Call("render callback did not return a string".to_owned())
+        })?;
+        serde_json::from_str(&json).map_err(|e| RenderError::Codec(e.to_string()))
+    }
+}
+
+/// Builds a [`DocConfig`] from the host's `{ name, theme?, logo?, docs? }` JSON.
+/// `docs` groups carry each page's already-loaded Markdown `content` — the host
+/// reads the files the manifest names; this crate (and the CLI) only render.
+fn doc_config(config_json: &str) -> Result<DocConfig, String> {
+    let input: DocConfigInput = serde_json::from_str(config_json).map_err(|e| e.to_string())?;
+    Ok(DocConfig {
+        theme: if input.theme.as_deref() == Some("light") {
+            Theme::Light
+        } else {
+            Theme::Dark
+        },
+        name: input.name,
+        logo: input.logo,
+        docs: input
+            .docs
+            .into_iter()
+            .map(|group| DocGroup {
+                title: group.title,
+                pages: group
+                    .items
+                    .into_iter()
+                    .map(|item| DocPage {
+                        title: item.title,
+                        path: item.path,
+                        markdown: item.content,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+/// Parses a `pds.toml` string into the doc manifest the host needs to build the
+/// sidebar and read its pages: JSON
+/// `{ name?, theme?, logo?, lang?, sidebar: [{ title, items: [{ title, path }] }] }`.
+/// The host loads each `path`, then hands the assembled config (with page
+/// `content`) back to [`render_doc_site`]. Uses the same `toml` parser as the
+/// native CLI, so the two agree on the schema.
+///
+/// # Errors
+///
+/// Returns an error when `toml` is not valid TOML of the `[doc]` shape.
+#[wasm_bindgen]
+pub fn doc_manifest(toml: &str) -> Result<String, JsError> {
+    doc_manifest_impl(toml).map_err(|e| JsError::new(&e))
+}
+
+fn doc_manifest_impl(toml_src: &str) -> Result<String, String> {
+    let manifest: ManifestInput = toml::from_str(toml_src).map_err(|e| e.to_string())?;
+    Ok(to_json(&manifest.doc))
 }
 
 // ---- logic (host-testable; no `JsError`, which cannot exist off-wasm) ------
+
+/// Projects a graph's nodes to outline entries. `line_col` maps a node's owning
+/// module and byte offset to a 1-based position — single-source callers ignore
+/// the module; workspace callers index per module.
+fn outline_nodes(
+    graph: &Graph,
+    mut line_col: impl FnMut(&str, u32) -> (u32, u32),
+) -> Vec<OutlineNode> {
+    graph
+        .nodes()
+        .iter()
+        .map(|n| {
+            let (line, col) = line_col(&n.module, n.span.start);
+            OutlineNode {
+                fqn: n.fqn.clone(),
+                name: n.name.clone(),
+                kind: n.kind,
+                triggered: !n.triggers.is_empty(),
+                line,
+                col,
+                parent: n.parent.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Parses the `[{fqn, source}]` workspace JSON into modules.
+fn modules_from_json(modules_json: &str) -> Result<Vec<WorkspaceModule>, String> {
+    let inputs: Vec<InputModule> = serde_json::from_str(modules_json).map_err(|e| e.to_string())?;
+    Ok(inputs
+        .into_iter()
+        .map(|m| WorkspaceModule::new(m.fqn, m.source))
+        .collect())
+}
+
+/// Resolves a `view`/`target` pair into an emit [`View`].
+fn view_of(view: &str, target: &str) -> Result<View, String> {
+    match view {
+        "context" => Ok(View::Context),
+        "container" => Ok(View::Container {
+            of: target.to_owned(),
+        }),
+        "component" => Ok(View::Component {
+            of: target.to_owned(),
+        }),
+        "sequence" => Ok(View::Sequence {
+            entry: target.to_owned(),
+        }),
+        other => Err(format!("unknown view `{other}`")),
+    }
+}
+
+fn emit_scene_modules_impl(modules_json: &str, view: &str, target: &str) -> Result<String, String> {
+    let graph = build_graph(&modules_from_json(modules_json)?);
+    let scene = project(&graph, view_of(view, target)?).map_err(|e| e.to_string())?;
+    Ok(to_json(&scene))
+}
+
+fn hover_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
+    let modules = modules_from_json(modules_json)?;
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    let Some(hit) = resolve_at(&workspace, module_fqn, src, offset) else {
+        return Ok("null".to_owned()); // cursor on no resolvable symbol
+    };
+    // A symbol may have no diagram (a `data` shape, an unresolved owner); the
+    // hover still shows its info, with an empty `svg`.
+    let svg = project_symbol(&Graph::build(&workspace), &hit.target_fqn)
+        .map(|scene| render_svg(&scene))
+        .unwrap_or_default();
+    Ok(to_json(&HoverResult {
+        info: SymbolInfo {
+            fqn: hit.target_fqn,
+            title: hit.title,
+            body: hit.body,
+        },
+        svg,
+    }))
+}
+
+fn definition_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
+    let modules = modules_from_json(modules_json)?;
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    Ok(match resolve_at(&workspace, module_fqn, src, offset) {
+        Some(hit) => to_json(&hit.target_fqn),
+        None => "null".to_owned(),
+    })
+}
+
+fn references_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
+    let modules = modules_from_json(modules_json)?;
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    let Some(target) = resolve_at(&workspace, module_fqn, src, offset) else {
+        return Ok("null".to_owned()); // cursor on no resolvable symbol
+    };
+
+    // Scan every name-position identifier in the workspace, keeping those that
+    // resolve to the same definition (mirrors pseudoscript-lsp's refs engine; a
+    // `::` qualifier names a module, never the symbol).
+    let mut occurrences = Vec::new();
+    for module in &modules {
+        let index = LineIndex::new(&module.source);
+        let lines: Vec<&str> = module.source.lines().collect();
+        let tokens = tokenize(&module.source);
+        for (i, token) in tokens.iter().enumerate() {
+            if token.kind != TokenKind::Ident
+                || tokens
+                    .get(i + 1)
+                    .is_some_and(|t| t.kind == TokenKind::ColonColon)
+            {
+                continue;
+            }
+            let Some(hit) = resolve_at(&workspace, &module.fqn, &module.source, token.span.start)
+            else {
+                continue;
+            };
+            if hit.target_module != target.target_module || hit.target_span != target.target_span {
+                continue;
+            }
+            let (line, col) = index.line_col(token.span.start);
+            let (end_line, end_col) = index.line_col(token.span.end);
+            // Trim the preview line for display, then map the token's byte span
+            // (a 1-based byte column) into char offsets within the trimmed text,
+            // so a host can highlight the symbol inside the preview.
+            let raw = lines.get(line as usize - 1).copied().unwrap_or("");
+            let lead = raw.len() - raw.trim_start().len();
+            let text = raw.trim().to_owned();
+            let char_off = |byte: usize| {
+                text.get(..byte)
+                    .map_or_else(|| text.chars().count(), |s| s.chars().count())
+                    as u32
+            };
+            let match_start = char_off((col as usize).saturating_sub(1).saturating_sub(lead));
+            let match_end = char_off((end_col as usize).saturating_sub(1).saturating_sub(lead));
+            occurrences.push(RefOccurrence {
+                fqn: module.fqn.clone(),
+                line,
+                col,
+                end_line,
+                end_col,
+                text,
+                match_start,
+                match_end,
+                decl: module.fqn == target.target_module && token.span == target.target_span,
+            });
+        }
+    }
+
+    Ok(to_json(&ReferencesResult {
+        fqn: target.target_fqn,
+        title: target.title,
+        occurrences,
+    }))
+}
+
+fn symbol_scene_impl(modules_json: &str, fqn: &str) -> Result<String, String> {
+    let graph = build_graph(&modules_from_json(modules_json)?);
+    let scene = project_symbol(&graph, fqn).map_err(|e| e.to_string())?;
+    Ok(to_json(&scene))
+}
+
+fn symbol_svg_impl(modules_json: &str, fqn: &str) -> Result<String, String> {
+    let graph = build_graph(&modules_from_json(modules_json)?);
+    let scene = project_symbol(&graph, fqn).map_err(|e| e.to_string())?;
+    Ok(render_svg(&scene))
+}
+
+fn layout_scene_impl(scene_json: &str) -> Result<String, String> {
+    let scene: Scene = serde_json::from_str(scene_json).map_err(|e| e.to_string())?;
+    match scene {
+        Scene::Sequence(seq) => Ok(to_json(&layout_sequence_scene(&seq))),
+        Scene::C4(_) => Err("layout_scene expects a sequence scene".to_owned()),
+    }
+}
 
 fn check_modules_impl(modules_json: &str) -> Result<String, String> {
     let inputs: Vec<InputModule> = serde_json::from_str(modules_json).map_err(|e| e.to_string())?;
@@ -178,30 +620,96 @@ fn format_impl(source: &str) -> Result<String, String> {
 
 /// Builds the graph for a single source and projects `view`/`target`.
 fn project_view(source: &str, view: &str, target: &str) -> Result<Scene, String> {
-    let graph = graph_of_source(source);
-    let view = match view {
-        "context" => View::Context,
-        "container" => View::Container {
-            of: target.to_owned(),
-        },
-        "component" => View::Component {
-            of: target.to_owned(),
-        },
-        "sequence" => View::Sequence {
-            entry: target.to_owned(),
-        },
-        other => return Err(format!("unknown view `{other}`")),
-    };
-    project(&graph, view).map_err(|e| e.to_string())
+    project(&graph_of_source(source), view_of(view, target)?).map_err(|e| e.to_string())
 }
 
 // ---- DTOs ------------------------------------------------------------------
 
 /// One input module for [`check_modules`].
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct InputModule {
     fqn: String,
     source: String,
+}
+
+/// The host's documentation config for [`render_doc_site`]: site name, optional
+/// theme word (`dark`/`light`, default `dark`), optional logo path, and the
+/// authored doc groups with their pages' already-loaded Markdown `content`.
+#[derive(Deserialize)]
+struct DocConfigInput {
+    name: String,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    logo: Option<String>,
+    #[serde(default)]
+    docs: Vec<DocGroupInput>,
+}
+
+/// One doc group in [`DocConfigInput`]: a heading and its pages (with content).
+#[derive(Deserialize)]
+struct DocGroupInput {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    items: Vec<DocItemInput>,
+}
+
+/// One page in a [`DocGroupInput`]: its title, source path, and Markdown body.
+#[derive(Deserialize)]
+struct DocItemInput {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    content: String,
+}
+
+/// A `pds.toml` for [`doc_manifest`]: only its `[doc]` table is read.
+#[derive(Deserialize)]
+struct ManifestInput {
+    #[serde(default)]
+    doc: DocManifest,
+}
+
+/// The `[doc]` table parsed for the host (no page content — the host loads it).
+/// Serialised straight back out as the manifest JSON.
+#[derive(Default, Deserialize, Serialize)]
+struct DocManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logo: Option<String>,
+    #[serde(default)]
+    sidebar: Vec<DocManifestGroup>,
+}
+
+/// One `[[doc.sidebar]]` group in the host-facing manifest.
+#[derive(Default, Deserialize, Serialize)]
+struct DocManifestGroup {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    items: Vec<DocManifestItem>,
+}
+
+/// One `{ title, path }` page entry in the host-facing manifest.
+#[derive(Default, Deserialize, Serialize)]
+struct DocManifestItem {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    path: String,
+}
+
+/// One rendered site file returned by [`render_doc_site`].
+#[derive(Serialize)]
+struct SiteFileOut {
+    path: String,
+    contents: String,
 }
 
 /// One module's diagnostics in the [`check_modules`] result.
@@ -211,15 +719,65 @@ struct ModuleResult {
     diagnostics: Vec<WasmDiagnostic>,
 }
 
+/// The symbol a [`hover`] resolves to, with its diagram. `info` describes the
+/// symbol (its graph `fqn`, a Markdown title, an optional doc/signature body);
+/// `svg` is its fitting diagram rendered to a self-contained string.
+#[derive(Serialize)]
+struct HoverResult {
+    info: SymbolInfo,
+    svg: String,
+}
+
+/// A resolved symbol's identity and description, for an editor hover.
+#[derive(Serialize)]
+struct SymbolInfo {
+    fqn: String,
+    title: String,
+    body: Option<String>,
+}
+
 /// One declared node, for the [`outline`] target picker. `kind` serialises
 /// lowercase (`person`/`system`/`container`/`component`/`data`/`callable`);
 /// `triggered` marks a callable that carries a trigger macro (a sequence entry).
+/// `line`/`col` are the 1-based position of the node's name in its own module,
+/// for an editor to jump to the declaration. `parent` is the FQN of the
+/// enclosing node (the `for`/owning parent, §6) — the C4 containment, not the
+/// `::` path — or `null` for a top-level person/system/data.
 #[derive(Serialize)]
 struct OutlineNode {
     fqn: String,
     name: String,
     kind: NodeKind,
     triggered: bool,
+    line: u32,
+    col: u32,
+    parent: Option<String>,
+}
+
+/// The result of [`references`]: the resolved symbol's `fqn`/`title` plus every
+/// occurrence across the workspace.
+#[derive(Serialize)]
+struct ReferencesResult {
+    fqn: String,
+    title: String,
+    occurrences: Vec<RefOccurrence>,
+}
+
+/// One find-usages hit: its module `fqn`, 1-based span, the trimmed source line
+/// for a preview, and `decl` marking the declaration site. `match_start`/
+/// `match_end` are char offsets into `text` bounding the symbol token, so a host
+/// can highlight the occurrence within the line.
+#[derive(Serialize)]
+struct RefOccurrence {
+    fqn: String,
+    line: u32,
+    col: u32,
+    end_line: u32,
+    end_col: u32,
+    text: String,
+    match_start: u32,
+    match_end: u32,
+    decl: bool,
 }
 
 /// A diagnostic enriched with 1-based line/column for both span ends, in
@@ -277,7 +835,62 @@ fn to_json<T: Serialize>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, check_modules_impl, format_impl, outline, parse, project_view};
+    use super::{
+        check, check_modules_impl, doc_config, doc_manifest_impl, emit_scene_modules_impl,
+        format_impl, hover_impl, outline, parse, project_view, references_impl, symbol_scene_impl,
+        symbol_svg_impl, to_json,
+    };
+
+    #[test]
+    fn doc_manifest_parses_doc_table_and_sidebar() {
+        let toml = r#"
+            [doc]
+            name = "Banking"
+
+            [[doc.sidebar]]
+            title = "Start"
+            items = [{ title = "Intro", path = "docs/intro.md" }]
+        "#;
+        let json = doc_manifest_impl(toml).expect("valid manifest");
+        assert!(json.contains(r#""name":"Banking""#), "{json}");
+        assert!(json.contains(r#""path":"docs/intro.md""#), "{json}");
+        // Absent keys are omitted, not null.
+        assert!(!json.contains("logo"), "{json}");
+    }
+
+    #[test]
+    fn doc_config_maps_page_content() {
+        let config = r##"{
+            "name": "X",
+            "docs": [{ "title": "G", "items": [
+              { "title": "Intro", "path": "docs/intro.md", "content": "# Hi" }
+            ]}]
+        }"##;
+        let built = doc_config(config).expect("valid config");
+        assert_eq!(built.docs[0].title, "G");
+        assert_eq!(built.docs[0].pages[0].markdown, "# Hi");
+        assert_eq!(built.docs[0].pages[0].path, "docs/intro.md");
+    }
+
+    /// `ctx`'s source: a person calling a container in `sys`.
+    const CTX_SRC: &str =
+        "//! ctx\npublic person User {\n  public Use(): void { sys::Web.View() }\n}";
+    /// `sys`'s source: a system with one container that has a bodied callable.
+    const SYS_SRC: &str = "//! sys\npublic system Shop;\npublic container Web for Shop {\n  public View(): void {}\n}";
+
+    /// The two modules as a `[{fqn, source}]` workspace JSON.
+    fn workspace_json() -> String {
+        to_json(&[
+            super::InputModule {
+                fqn: "ctx".to_owned(),
+                source: CTX_SRC.to_owned(),
+            },
+            super::InputModule {
+                fqn: "sys".to_owned(),
+                source: SYS_SRC.to_owned(),
+            },
+        ])
+    }
 
     #[test]
     fn check_reports_an_error_with_line_col() {
@@ -287,6 +900,25 @@ mod tests {
         assert!(json.contains(r#""severity":"error""#), "{json}");
         assert!(json.contains("ghost"), "{json}");
         assert!(json.contains(r#""start_line""#), "{json}");
+    }
+
+    #[test]
+    fn references_span_modules_and_flag_the_declaration() {
+        // `Web` is declared in `sys` and called (`sys::Web.View()`) from `ctx`.
+        let offset = SYS_SRC.find("Web").expect("Web in sys") as u32;
+        let json = references_impl(&workspace_json(), "sys", offset).expect("references");
+        // declaration in sys + qualified use in ctx
+        assert!(json.contains(r#""fqn":"sys""#), "{json}");
+        assert!(json.contains(r#""fqn":"ctx""#), "{json}");
+        assert!(json.contains(r#""decl":true"#), "{json}");
+    }
+
+    #[test]
+    fn references_on_blank_offset_is_null() {
+        assert_eq!(
+            references_impl(&workspace_json(), "sys", 0).expect("ok"),
+            "null"
+        );
     }
 
     #[test]
@@ -327,6 +959,60 @@ mod tests {
         assert!(json.contains(r#""kind":"container""#), "{json}");
         // the triggered callable is flagged for the sequence picker
         assert!(json.contains(r#""triggered":true"#), "{json}");
+    }
+
+    #[test]
+    fn emit_scene_modules_spans_modules() {
+        // A container in one module, its components (with a call between them) in
+        // another — the workspace component view shows both and their edge.
+        let input = r#"[
+            {"fqn":"sys","source":"//! sys\npublic system S;\npublic container C for S;"},
+            {"fqn":"comp","source":"//! comp\ncomponent A for sys::C {\n  public Run(): void { B.Go() }\n}\ncomponent B for sys::C {\n  public Go(): void;\n}"}
+        ]"#;
+        let json = emit_scene_modules_impl(input, "component", "sys::C").expect("projects");
+        assert!(json.contains("comp::A"), "{json}");
+        assert!(json.contains("comp::B"), "{json}");
+    }
+
+    #[test]
+    fn hover_on_a_node_reference_returns_info_and_a_diagram() {
+        // Cursor on `Web` in `sys::Web.View()` — resolves to the container.
+        let offset = (CTX_SRC.find("Web").expect("Web present") + 1) as u32;
+        let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
+        assert!(json.contains(r#""fqn":"sys::Web""#), "{json}");
+        assert!(json.contains("container `sys::Web`"), "{json}");
+        // A container resolves to its (structural) component view as an SVG.
+        assert!(json.contains("<svg"), "{json}");
+    }
+
+    #[test]
+    fn hover_on_a_member_call_traces_a_sequence() {
+        // Cursor on `View` in `sys::Web.View()` — resolves to the callable; a
+        // bodied callable's fitting diagram is a sequence trace.
+        let offset = (CTX_SRC.find("View").expect("View present") + 1) as u32;
+        let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
+        assert!(json.contains(r#""fqn":"sys::Web::View""#), "{json}");
+        assert!(json.contains("callable `Web.View`"), "{json}");
+    }
+
+    #[test]
+    fn hover_on_blank_space_is_null() {
+        let json = hover_impl(&workspace_json(), "ctx", 0).expect("hovers");
+        assert_eq!(json, "null");
+    }
+
+    #[test]
+    fn symbol_scene_projects_a_container() {
+        let json = symbol_scene_impl(&workspace_json(), "sys::Web").expect("projects");
+        assert!(json.contains("sys::Web"), "{json}");
+    }
+
+    #[test]
+    fn symbol_svg_renders_a_system_to_svg() {
+        // A system's container view frames its containers — `Web` appears as a card.
+        let svg = symbol_svg_impl(&workspace_json(), "sys::Shop").expect("renders");
+        assert!(svg.contains("<svg"), "{svg}");
+        assert!(svg.contains("Web"), "{svg}");
     }
 
     #[test]

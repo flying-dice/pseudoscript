@@ -1,0 +1,131 @@
+//! identity — user accounts, sessions, and the role checks every gated action runs.
+
+/// A registered user of the platform.
+public data User { id: shared::UserId, email: string, name: string, role: Role }
+
+/// What a user is allowed to do.
+public data Role =
+  | Attendee
+  | Organizer
+  | Support
+
+/// A new-user registration request.
+public data Registration { email: string, name: string, password: string }
+
+/// Login credentials.
+public data Credentials { email: string, password: string }
+
+/// An opaque session handle issued on login and presented on each request.
+public data SessionToken { value: string }
+
+/// Why authentication or authorisation failed.
+public data AuthError =
+  | BadCredentials
+  | NoSession
+  | Forbidden
+
+/// Why a registration was refused.
+public data SignupError =
+  | EmailTaken { email: string }
+
+/// `identity` — accounts and access.
+public container Identity for context::AcmeTickets;
+
+/// User lifecycle.
+public component Users for Identity {
+  /// Register a new attendee account; the email must not already be in use.
+  public register(form: Registration): Result<User, SignupError> {
+    existing = Identity::UserStore.find(form.email)
+    if (existing.isSome) {
+      return Err(EmailTaken from { form.email })
+    }
+    id = Identity::UserStore.nextId()
+    user = User from { id, form, Attendee }
+    Identity::UserStore.save(user)
+    return Ok(user)
+  }
+}
+
+/// Sign-in, sign-out, and the authentication and authorisation checks.
+public component Sessions for Identity {
+  /// Sign in with credentials, issuing a session token.
+  public login(creds: Credentials): Result<SessionToken, AuthError> {
+    user = Identity::UserStore.find(creds.email)
+    if (user.isNone) {
+      return Err(BadCredentials)
+    }
+    ok = self.verify(creds, user.value)
+    if (ok.isErr) {
+      return Err(BadCredentials)
+    }
+    return Ok(Identity::SessionStore.issue(user.value))
+  }
+
+  /// Sign out, revoking the session token.
+  public logout(token: SessionToken): void {
+    Identity::SessionStore.revoke(token)
+  }
+
+  /// Resolve a session token to its user, or `Err(NoSession)`.
+  public authenticate(token: SessionToken): Result<User, AuthError> {
+    user = Identity::SessionStore.resolve(token)
+    if (user.isNone) {
+      return Err(NoSession)
+    }
+    return Ok(user.value)
+  }
+
+  /// Authenticate, then require the `Organizer` role.
+  public requireOrganizer(token: SessionToken): Result<User, AuthError> {
+    user = self.authenticate(token)
+    if (user.isErr) {
+      return Err(user.error)
+    }
+    allowed = self.ensureOrganizer(user.value)
+    if (allowed.isErr) {
+      return Err(allowed.error)
+    }
+    return Ok(user.value)
+  }
+
+  /// Authenticate, then require the `Support` role.
+  public requireSupport(token: SessionToken): Result<User, AuthError> {
+    user = self.authenticate(token)
+    if (user.isErr) {
+      return Err(user.error)
+    }
+    allowed = self.ensureSupport(user.value)
+    if (allowed.isErr) {
+      return Err(allowed.error)
+    }
+    return Ok(user.value)
+  }
+
+  /// `Err(BadCredentials)` if the password does not match.
+  verify(creds: Credentials, user: User): Result<void, AuthError>;
+  /// `Err(Forbidden)` if the user is not an organiser.
+  ensureOrganizer(user: User): Result<void, AuthError>;
+  /// `Err(Forbidden)` if the user is not support staff.
+  ensureSupport(user: User): Result<void, AuthError>;
+}
+
+/// Durable user records.
+component UserStore for Identity {
+  nextId(): shared::UserId;
+  save(user: User): void;
+  find(email: string): Option<User>;
+}
+
+/// Issues and resolves session tokens.
+component SessionStore for Identity {
+  issue(user: User): SessionToken;
+  revoke(token: SessionToken): void;
+  resolve(token: SessionToken): Option<User>;
+}
+
+/// A non-organiser cannot perform organiser actions.
+feature OrganizerRoleEnforced for Sessions {
+  given "a session that belongs to an attendee, not an organiser"
+  when  "an organiser-only action is attempted"
+  then  "the action is refused as forbidden"
+}

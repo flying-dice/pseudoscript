@@ -1,138 +1,120 @@
 <script>
-  // The animated code-flow timeline — the behavioral lens. Pick a triggered
-  // entry point (a "flow", e.g. SignIn) and play it: the components it touches
-  // appear and reposition as the request travels, the current call is
-  // highlighted, past calls dim. Built for an owner to read a journey, not code.
-  import { onDestroy } from "svelte";
-  import { Background, SvelteFlow } from "@xyflow/svelte";
-  import "@xyflow/svelte/dist/style.css";
+  // The behavioural lens: a triggered entry point's call sequence drawn as a UML
+  // sequence diagram. All positioning is done by the `pseudoscript-layout` crate
+  // (shared with the static SVG renderer); this component is a dumb renderer of
+  // the positioned `Layout` — it computes no geometry. Participants are lifeline
+  // nodes (kind-coloured C4 head card, dashed lifeline, activation bar), messages
+  // are a single overlay of arrows, and alt/loop render as combined fragments.
+  import { Background, Controls, MiniMap, SvelteFlow } from "@xyflow/svelte";
+  import SequenceLifeline from "./SequenceLifeline.svelte";
+  import SequenceFragment from "./SequenceFragment.svelte";
+  import SequenceMessages from "./SequenceMessages.svelte";
 
-  let { scene } = $props();
+  let { scene, layout, oninfo = null, oninfoend = null, onusages = null, typeFqn = null } = $props();
 
-  const leaf = (fqn) => fqn.split("::").pop();
-
-  // Flatten ordered items (messages + alt/loop frames) into linear steps,
-  // carrying any enclosing frame label for context.
-  function flatten(items, frame, out) {
-    for (const item of items) {
-      if (item.Message) out.push({ ...item.Message, frame });
-      else if (item.Frame) flatten(item.Frame.body, `${item.Frame.kind} ${item.Frame.cond}`, out);
-    }
-    return out;
-  }
-  const steps = flatten(scene.items, null, []);
-  const kindOf = new Map(scene.participants.map((p) => [p.fqn, p.kind]));
-
-  const COL = 230;
-  const NODE_W = 168;
-
-  let cursor = $state(0); // 0 = entry only; n = first n calls played
-  let playing = $state(false);
-  let timer = null;
-
-  function stop() {
-    if (timer) clearInterval(timer);
-    timer = null;
-    playing = false;
-  }
-  function play() {
-    if (cursor >= steps.length) cursor = 0;
-    playing = true;
-    timer = setInterval(() => (cursor >= steps.length ? stop() : (cursor += 1)), 1150);
-  }
-  const toggle = () => (playing ? stop() : play());
-  const step = (delta) => {
-    stop();
-    cursor = Math.max(0, Math.min(steps.length, cursor + delta));
+  const nodeTypes = {
+    lifeline: SequenceLifeline,
+    fragment: SequenceFragment,
+    messages: SequenceMessages,
   };
-  onDestroy(stop);
 
-  // Entries visible so far: the entry, then every endpoint the played steps
-  // touch, in first-appearance order.
-  function visibleSet(n) {
-    const seen = [];
-    const add = (fqn) => {
-      if (!seen.includes(fqn)) seen.push(fqn);
-    };
-    add(scene.entry);
-    for (let i = 0; i < n; i++) {
-      add(steps[i].from);
-      add(steps[i].to);
-    }
-    return seen;
+  const leaf = (fqn) => (fqn ?? "").split("::").pop();
+
+  // Map the positioned Layout into Svelte Flow nodes. Fragments sit behind
+  // (zIndex 0), lifelines in the middle, the message overlay on top.
+  function build(l) {
+    if (!l || !Array.isArray(l.participants)) return { nodes: [], edges: [] };
+    const actByPid = new Map((l.activations ?? []).map((a) => [a.participant, a]));
+    const lifelineX = Object.fromEntries(l.participants.map((p) => [p.id, p.lifeline_x]));
+
+    const nodes = [
+      ...l.fragments.map((f, k) => ({
+        id: `frag${k}`,
+        type: "fragment",
+        position: { x: f.rect.x, y: f.rect.y },
+        width: f.rect.w,
+        height: f.rect.h,
+        // Divider y's are absolute; make them relative to the fragment box.
+        data: {
+          kind: f.kind,
+          label: f.label,
+          dividers: f.dividers.map((d) => ({ guard: d.guard, y: d.y - f.rect.y })),
+        },
+        class: "seq-shell",
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        // Above the lifelines/activation bars so the operator tab, guard, and
+        // else labels read over them (the box fill is faint enough to see through).
+        zIndex: 2,
+      })),
+      ...l.participants.map((p) => ({
+        id: p.id,
+        type: "lifeline",
+        // The node spans the canvas; the card sits at its absolute x inside.
+        position: { x: 0, y: 0 },
+        width: l.width,
+        height: l.height,
+        data: { placed: p, act: actByPid.get(p.id) ?? null, oninfo, oninfoend, onusages },
+        class: "seq-shell",
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        zIndex: 1,
+      })),
+      {
+        id: "__messages",
+        type: "messages",
+        position: { x: 0, y: 0 },
+        width: l.width,
+        height: l.height,
+        data: { messages: l.messages, width: l.width, height: l.height, lifelineX, oninfo, oninfoend, onusages, typeFqn },
+        class: "seq-shell",
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        zIndex: 3,
+      },
+    ];
+    return { nodes, edges: [] };
   }
 
+  const built = $derived(build(layout));
   let nodes = $state([]);
   let edges = $state([]);
-
   $effect(() => {
-    const visible = visibleSet(cursor);
-    nodes = visible.map((fqn, i) => ({
-      id: fqn,
-      position: { x: i * COL + 30, y: 80 },
-      data: { label: leaf(fqn), kind: kindOf.get(fqn) ?? "component" },
-      class: `c4-node ${kindOf.get(fqn) ?? "component"}`,
-      width: NODE_W,
-      height: 58,
-      selectable: false,
-      draggable: false,
-    }));
-    edges = steps.slice(0, cursor).map((s, i) => ({
-      id: `m${i}`,
-      source: s.from,
-      target: s.to,
-      label: s.label || undefined,
-      type: "smoothstep",
-      animated: i === cursor - 1,
-      class: `flow-edge ${i === cursor - 1 ? "current" : "past"}`,
-    }));
+    nodes = built.nodes;
+    edges = built.edges;
   });
-
-  const current = $derived(cursor > 0 ? steps[cursor - 1] : null);
-  const done = $derived(cursor >= steps.length && steps.length > 0);
 </script>
 
 <div class="timeline">
   <header class="flow-head">
     <div class="title">
       <span class="kicker">flow</span>
-      <span class="name">{leaf(scene.entry)}</span>
+      <span class="name">{leaf(scene?.entry)}</span>
     </div>
-    <div class="narration">
-      {#if current}
-        <span class="chip {kindOf.get(current.from) ?? 'component'}">{leaf(current.from)}</span>
-        <span class="arrow">&rarr;</span>
-        <span class="chip {kindOf.get(current.to) ?? 'component'}">{leaf(current.to)}</span>
-        {#if current.label}<span class="method">{current.label}</span>{/if}
-        {#if current.frame}<span class="frame">{current.frame}</span>{/if}
-      {:else}
-        <span class="muted">triggered entry point — press play to trace the request</span>
-      {/if}
-    </div>
+    <span class="hint">sequence diagram — scroll to zoom · drag to pan</span>
   </header>
 
   <div class="flow">
     <SvelteFlow
       bind:nodes
       bind:edges
+      {nodeTypes}
       fitView
+      colorMode="dark"
       minZoom={0.2}
-      maxZoom={2}
+      maxZoom={2.5}
       nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable={false}
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={24} />
+      <MiniMap pannable zoomable />
+      <Controls showLock={false} />
     </SvelteFlow>
-  </div>
-
-  <div class="transport">
-    <button class="ctrl" onclick={() => step(-1)} disabled={cursor === 0} aria-label="Previous step">◀</button>
-    <button class="play" onclick={toggle} aria-label={playing ? "Pause" : "Play"}>
-      {playing ? "❚❚" : done ? "↺" : "▶"}
-    </button>
-    <button class="ctrl" onclick={() => step(1)} disabled={cursor >= steps.length} aria-label="Next step">▶</button>
-    <input class="scrub" type="range" min="0" max={steps.length} bind:value={cursor} oninput={stop} aria-label="Scrub the flow" />
-    <span class="count">{cursor}/{steps.length}</span>
   </div>
 </div>
 
@@ -165,79 +147,12 @@
     font-size: 1rem;
     color: var(--ink);
   }
-  .narration {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    min-width: 0;
-    overflow: hidden;
+  .hint {
+    margin-left: auto;
     font-family: var(--font-mono);
-    font-size: 0.78rem;
-  }
-  .narration .chip {
-    padding: 0.1rem 0.45rem;
-    border-radius: 5px;
-    color: var(--ink);
-    background: var(--surface-3);
-    border-left: 2px solid var(--k, var(--ink-faint));
-    white-space: nowrap;
-  }
-  .narration .chip.person { --k: var(--k-person); }
-  .narration .chip.system { --k: var(--k-system); }
-  .narration .chip.container { --k: var(--k-container); }
-  .narration .chip.component { --k: var(--k-component); }
-  .narration .chip.data { --k: var(--k-data); }
-  .narration .chip.callable { --k: var(--k-callable); }
-  .narration .arrow { color: var(--accent); }
-  .narration .method { color: var(--ink-soft); }
-  .narration .frame {
-    margin-left: 0.3rem;
-    padding: 0.05rem 0.4rem;
-    border: 1px dashed var(--line-strong);
-    border-radius: 4px;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
     color: var(--ink-faint);
-    font-size: 0.7rem;
   }
-  .narration .muted { color: var(--ink-faint); }
-
   .flow { flex: 1; min-height: 0; }
-
-  .transport {
-    display: flex;
-    align-items: center;
-    gap: 0.7rem;
-    padding: 0.55rem 1rem;
-    border-top: 1px solid var(--line);
-    background: var(--surface);
-  }
-  .transport .ctrl,
-  .transport .play {
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--line-strong);
-    background: var(--surface-2);
-    color: var(--ink-soft);
-    border-radius: 6px;
-  }
-  .transport .ctrl { width: 1.8rem; height: 1.8rem; font-size: 0.7rem; }
-  .transport .ctrl:disabled { opacity: 0.35; cursor: not-allowed; }
-  .transport .ctrl:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
-  .transport .play {
-    width: 2.1rem;
-    height: 2.1rem;
-    font-size: 0.75rem;
-    color: var(--accent-ink);
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .transport .play:hover { background: var(--accent-hi); }
-  .transport .scrub { flex: 1; accent-color: var(--accent); cursor: pointer; }
-  .transport .count {
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    color: var(--ink-faint);
-    min-width: 3rem;
-    text-align: right;
-  }
 </style>

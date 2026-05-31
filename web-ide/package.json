@@ -17,14 +17,19 @@
     "vite": "^8"
   },
   "dependencies": {
-    "@dagrejs/dagre": "3.0.0",
-    "@xyflow/svelte": "1.5.2",
+    "@codemirror/autocomplete": "^6.20.2",
     "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-markdown": "^6.5.0",
     "@codemirror/language": "^6.12.3",
+    "@codemirror/language-data": "^6.5.2",
     "@codemirror/lint": "^6.9.6",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.0",
+    "@dagrejs/dagre": "3.0.0",
     "@lezer/highlight": "^1.2.3",
+    "@lezer/markdown": "^1.6.4",
+    "@lucide/svelte": "^1.17.0",
+    "@xyflow/svelte": "1.5.2",
     "codemirror": "^6.0.2"
   }
 }

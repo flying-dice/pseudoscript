@@ -1,14 +1,16 @@
 //! The generated-site value types.
 //!
-//! [`render_site`](crate::render_site) returns a [`Site`] — a list of in-memory
-//! [`SiteFile`]s. This crate performs no filesystem I/O; the CLI writes each
-//! file under the configured output directory, joining `SiteFile::path` to it.
+//! [`try_render_site_with`](crate::try_render_site_with) returns a [`Site`] — a
+//! list of in-memory [`SiteFile`]s. This crate performs no filesystem I/O; the
+//! CLI writes each file under the configured output directory, joining
+//! `SiteFile::path` to it.
 
 /// One generated file: a site-relative path and its full contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteFile {
     /// The path relative to the site root, e.g. `index.html`,
-    /// `module/banking.core.html`, `style.css`, `app.js`. Always `/`-separated.
+    /// `module/banking.core.html`, `style.css`, `client.js`. Always
+    /// `/`-separated.
     pub path: String,
     /// The file's complete contents.
     pub contents: String,

@@ -1,0 +1,533 @@
+//! Cursor resolution shared by hover and go-to-definition.
+//!
+//! Works at the token level so it survives partial parses, then consults the
+//! resolved [`Workspace`] for the answer. It understands three reference forms:
+//!
+//! - a `::` path (bare name or full FQN) → the node/data it names (§8.2);
+//! - a `.` member after `self` or a node name → that node's callable/field;
+//! - an `alias` name → the node its target expands to (§8.3).
+//!
+//! A caret resting just past an identifier's last character still resolves it.
+
+use crate::{Member, Symbol, Workspace, ast};
+use pseudoscript_syntax::{Span, Token, TokenKind, tokenize};
+
+/// A resolved cursor hit: where its definition lives and how to describe it.
+pub struct Hit {
+    /// Span of the clicked identifier in the active source (the hover range).
+    pub clicked: Span,
+    /// FQN of the module the definition lives in (maps to a file).
+    pub target_module: String,
+    /// Span of the definition within `target_module`'s source.
+    pub target_span: Span,
+    /// The resolved symbol's graph FQN — a node/data FQN, or for a member the
+    /// owning node's FQN with `::member` appended (`banking::Ledger::Fetch`).
+    /// The key a diagram projection (`pseudoscript_emit::project_symbol`) uses.
+    pub target_fqn: String,
+    /// A Markdown title line, e.g. ``system `banking::Bank` `` or ``run(id): uuid``.
+    pub title: String,
+    /// Doc summary or signature detail, shown under the title on hover.
+    pub body: Option<String>,
+}
+
+/// Resolves the identifier under `offset` in module `from_fqn`'s `src`.
+#[must_use]
+pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Option<Hit> {
+    let tokens = tokenize(src);
+    let idx = ident_index(&tokens, offset)?;
+    let clicked = tokens[idx].span;
+
+    // `.member` — resolve against the base's owning node.
+    if idx >= 1 && tokens[idx - 1].kind == TokenKind::Dot {
+        return resolve_member(ws, from_fqn, &tokens, idx).map(|hit| Hit { clicked, ..hit });
+    }
+
+    // A member's own declaration name (a callable or field) resolves to itself;
+    // members live in the member index, not the symbol table, so this is the
+    // only bare-name form that reaches them (ADR-004: no bare member references).
+    if let Some((owner, member)) = ws
+        .module(from_fqn)
+        .and_then(|entry| entry.model.member_at(clicked))
+    {
+        let owner_fqn = ws
+            .module(from_fqn)
+            .and_then(|entry| entry.model.symbol(owner))
+            .map_or_else(|| owner.to_owned(), |s| s.fqn.clone());
+        return Some(Hit {
+            clicked,
+            ..member_hit(member, owner, &owner_fqn, from_fqn.to_owned())
+        });
+    }
+
+    // Otherwise the clicked token is part of a `::` path (possibly one segment).
+    let segments = path_segments(&tokens, idx);
+    resolve_path(ws, from_fqn, &segments, 0).map(|hit| Hit { clicked, ..hit })
+}
+
+/// Bound on alias-following, so a cyclic `alias A = B; alias B = A;` cannot
+/// drive resolution into unbounded recursion.
+const MAX_ALIAS_DEPTH: u32 = 32;
+
+/// The index of the identifier token at `offset`, or the one ending exactly at
+/// `offset` (caret just past the word).
+fn ident_index(tokens: &[Token], offset: u32) -> Option<usize> {
+    let is_ident = |t: &Token| t.kind == TokenKind::Ident;
+    tokens
+        .iter()
+        .position(|t| is_ident(t) && t.span.start <= offset && offset < t.span.end)
+        .or_else(|| {
+            offset.checked_sub(1).and_then(|prev| {
+                tokens
+                    .iter()
+                    .position(|t| is_ident(t) && t.span.start <= prev && prev < t.span.end)
+            })
+        })
+}
+
+/// The contiguous `Ident (:: Ident)*` path the token at `idx` belongs to, as
+/// segment texts in source order.
+fn path_segments(tokens: &[Token], idx: usize) -> Vec<&str> {
+    let mut start = idx;
+    while start >= 2
+        && tokens[start - 1].kind == TokenKind::ColonColon
+        && tokens[start - 2].kind == TokenKind::Ident
+    {
+        start -= 2;
+    }
+    let mut end = idx;
+    while end + 2 < tokens.len()
+        && tokens[end + 1].kind == TokenKind::ColonColon
+        && tokens[end + 2].kind == TokenKind::Ident
+    {
+        end += 2;
+    }
+    (start..=end)
+        .step_by(2)
+        .map(|i| tokens[i].text.as_str())
+        .collect()
+}
+
+/// Resolves a `::` path to its declared node/data symbol.
+fn resolve_path(ws: &Workspace, from_fqn: &str, segments: &[&str], depth: u32) -> Option<Hit> {
+    let symbol = resolve_node(ws, from_fqn, segments, depth)?;
+    Some(symbol_hit(ws, symbol, module_of(&symbol.fqn)))
+}
+
+/// Resolves a `::` path to the node/data [`Symbol`] it names: an alias or local
+/// symbol for a bare name (following alias chains, bounded by
+/// [`MAX_ALIAS_DEPTH`]), the global FQN index for a qualified one.
+fn resolve_node<'a>(
+    ws: &'a Workspace,
+    from_fqn: &str,
+    segments: &[&str],
+    depth: u32,
+) -> Option<&'a Symbol> {
+    if let [name] = segments {
+        let model = &ws.module(from_fqn)?.model;
+        if let Some(alias) = model.alias(name) {
+            if depth >= MAX_ALIAS_DEPTH {
+                return None; // cyclic alias chain — give up rather than recurse forever
+            }
+            let target: Vec<&str> = alias.target.split("::").collect();
+            return resolve_node(ws, from_fqn, &target, depth + 1);
+        }
+        if let Some(symbol) = model.symbol(name) {
+            return Some(symbol);
+        }
+        // Best-effort: a bare name declared in another module — an
+        // under-qualified cross-module reference (§8 wants an FQN or alias) —
+        // navigates to its declaration when exactly one workspace symbol bears
+        // that name. Goto leniency only; the static checker still flags the
+        // missing qualifier, and an ambiguous name is left unresolved.
+        return unique_symbol(ws, name);
+    }
+    if let Some(symbol) = ws.symbol(&segments.join("::")) {
+        return Some(symbol);
+    }
+    // A qualified path whose FQN is not indexed — a wrong or non-module
+    // qualifier, e.g. a container name (`Syntax::Lexer` for module `syntax`) —
+    // falls back to the unique symbol named by its leaf segment. Same goto
+    // leniency as the bare-name case.
+    unique_symbol(ws, segments.last().copied()?)
+}
+
+/// The `(module, name)` of the node/data a `::` path names, for type inference
+/// (the owner whose members a `.` chain walks).
+#[must_use]
+pub fn resolve_owner(
+    ws: &Workspace,
+    from_fqn: &str,
+    segments: &[&str],
+) -> Option<(String, String)> {
+    let symbol = resolve_node(ws, from_fqn, segments, 0)?;
+    Some((module_of(&symbol.fqn).to_owned(), symbol.name.clone()))
+}
+
+/// The single workspace symbol named `name`, or `None` if there are zero or
+/// more than one (an ambiguous bare reference is not guessed).
+fn unique_symbol<'a>(ws: &'a Workspace, name: &str) -> Option<&'a Symbol> {
+    let mut matches = ws.symbols().filter(|s| s.name == name);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+/// Resolves `.member` after a `self` or node/data base — including a qualified,
+/// cross-module base (`a::Svc.op`) and an alias base.
+fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) -> Option<Hit> {
+    let member_name = tokens[idx].text.as_str();
+    // `idx - 1` is the `.`; the base ends at `idx - 2`.
+    let base_idx = idx.checked_sub(2)?;
+    let base = tokens.get(base_idx)?;
+
+    let symbol = match base.kind {
+        TokenKind::KwSelf => {
+            let node = enclosing_node(&ws.module(from_fqn)?.ast, base.span.start)?;
+            ws.module(from_fqn)?.model.symbol(&node)?
+        }
+        TokenKind::Ident => {
+            let segments = path_segments(tokens, base_idx);
+            resolve_node(ws, from_fqn, &segments, 0)?
+        }
+        _ => return None,
+    };
+
+    let owner_module = module_of(&symbol.fqn);
+    let member = ws
+        .module(owner_module)?
+        .model
+        .members(&symbol.name)
+        .iter()
+        .find(|m| m.name == member_name)?;
+    Some(member_hit(
+        member,
+        &symbol.name,
+        &symbol.fqn,
+        owner_module.to_owned(),
+    ))
+}
+
+/// Builds a [`Hit`] for a declared node/data symbol, with its doc summary.
+fn symbol_hit(ws: &Workspace, symbol: &Symbol, target_module: &str) -> Hit {
+    let body = ws
+        .module(target_module)
+        .and_then(|entry| doc_summary(&entry.ast, &symbol.name));
+    Hit {
+        clicked: Span::new(0, 0),
+        target_module: target_module.to_owned(),
+        target_span: symbol.span,
+        target_fqn: symbol.fqn.clone(),
+        title: format!("{} `{}`", symbol.kind.keyword(), symbol.fqn),
+        body,
+    }
+}
+
+/// Builds a [`Hit`] for a node member (callable or field): its signature, then
+/// the callable's `///` summary when present. `owner_fqn` is the owning node's
+/// FQN; the member's graph FQN is that with `::member` appended.
+fn member_hit(member: &Member, owner: &str, owner_fqn: &str, owner_module: String) -> Hit {
+    let kind = match member.kind {
+        crate::MemberKind::Callable => "callable",
+        crate::MemberKind::Field => "field",
+    };
+    let mut body = member.detail.clone();
+    if let Some(doc) = &member.doc {
+        body.push_str("\n\n");
+        body.push_str(doc);
+    }
+    Hit {
+        clicked: Span::new(0, 0),
+        target_module: owner_module,
+        target_span: member.span,
+        target_fqn: format!("{owner_fqn}::{}", member.name),
+        title: format!("{kind} `{owner}.{}`", member.name),
+        body: Some(body),
+    }
+}
+
+/// The module portion of an FQN (`a::b::C` → `a::b`); empty for a bare name.
+#[must_use]
+pub fn module_of(fqn: &str) -> &str {
+    fqn.rsplit_once("::").map_or("", |(module, _)| module)
+}
+
+/// The name of the innermost node whose span contains `offset` (the enclosing
+/// node for a `self` reference).
+#[must_use]
+pub fn enclosing_node(module: &ast::Module, offset: u32) -> Option<String> {
+    fn visit(decl: &ast::Decl, offset: u32, found: &mut Option<String>) {
+        let (ast::DeclKind::Person(node)
+        | ast::DeclKind::System(node)
+        | ast::DeclKind::Container(node)
+        | ast::DeclKind::Component(node)) = &decl.kind
+        else {
+            return;
+        };
+        if node.span.start <= offset && offset < node.span.end {
+            *found = Some(node.name.name.clone());
+            for member in node.body.iter().flatten() {
+                if let ast::BodyMember::Decl(inner) = member {
+                    visit(inner, offset, found);
+                }
+            }
+        }
+    }
+
+    let mut found = None;
+    for item in &module.items {
+        if let ast::Item::Decl(decl) = item {
+            visit(decl, offset, &mut found);
+        }
+    }
+    found
+}
+
+/// The `///` summary of the declaration named `name` in `module`, if any.
+fn doc_summary(module: &ast::Module, name: &str) -> Option<String> {
+    fn from_decl(decl: &ast::Decl, name: &str) -> Option<String> {
+        let decl_name = match &decl.kind {
+            ast::DeclKind::Person(n)
+            | ast::DeclKind::System(n)
+            | ast::DeclKind::Container(n)
+            | ast::DeclKind::Component(n) => &n.name.name,
+            ast::DeclKind::Data(d) => &d.name.name,
+        };
+        if decl_name == name && !decl.doc.summary.is_empty() {
+            return Some(decl.doc.summary.join(" "));
+        }
+        if let ast::DeclKind::Person(n)
+        | ast::DeclKind::System(n)
+        | ast::DeclKind::Container(n)
+        | ast::DeclKind::Component(n) = &decl.kind
+        {
+            for member in n.body.iter().flatten() {
+                if let ast::BodyMember::Decl(inner) = member
+                    && let Some(found) = from_decl(inner, name)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    module.items.iter().find_map(|item| match item {
+        ast::Item::Decl(decl) => from_decl(decl, name),
+        ast::Item::Alias(_) | ast::Item::Feature(_) => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pseudoscript_syntax::parse;
+
+    /// Builds a workspace from `(fqn, source)` modules.
+    fn workspace(modules: &[(&str, &str)]) -> Workspace {
+        Workspace::build(
+            modules
+                .iter()
+                .map(|(fqn, src)| ((*fqn).to_owned(), parse(src).ast)),
+        )
+    }
+
+    /// Resolves the cursor at the first occurrence of `needle` (plus `at` bytes
+    /// into it) in module `from`.
+    fn hit_at(ws: &Workspace, from: &str, src: &str, needle: &str, at: u32) -> Hit {
+        let offset = src.find(needle).expect("needle present") as u32 + at;
+        resolve_at(ws, from, src, offset).unwrap_or_else(|| panic!("no hit at {needle:?}"))
+    }
+
+    /// The source slice the target span covers, for asserting where goto lands.
+    fn slice<'a>(modules: &[(&'a str, &'a str)], hit: &Hit) -> &'a str {
+        let src = modules
+            .iter()
+            .find(|(fqn, _)| *fqn == hit.target_module)
+            .expect("target module present")
+            .1;
+        &src[hit.target_span.start as usize..hit.target_span.end as usize]
+    }
+
+    #[test]
+    fn cross_file_fqn_resolves_to_other_module() {
+        let mods = [
+            ("a", "//! a\n\npublic system Svc;\n"),
+            ("b", "//! b\n\npublic container C for a::Svc;\n"),
+        ];
+        let ws = workspace(&mods);
+        let hit = hit_at(&ws, "b", mods[1].1, "Svc", 1);
+        assert_eq!(hit.target_module, "a");
+        assert_eq!(slice(&mods, &hit), "Svc");
+        assert!(hit.title.contains("system `a::Svc`"));
+    }
+
+    #[test]
+    fn self_member_resolves_to_callable() {
+        let src = "//! m\n\nsystem S {\n  run() { self.helper() }\n  helper() {}\n}\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        let hit = hit_at(&ws, "m", src, "helper", 1);
+        assert_eq!(slice(&mods, &hit), "helper");
+        assert!(hit.title.contains("callable `S.helper`"));
+    }
+
+    #[test]
+    fn node_qualified_member_resolves_to_callable() {
+        let src = "//! m\n\nsystem Repo {\n  fetch() {}\n}\n\nsystem App {\n  run() { Repo.fetch() }\n}\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        // click `fetch` in the `Repo.fetch()` call, not the declaration
+        let call = src.find("Repo.fetch").unwrap() + "Repo.".len();
+        let hit = resolve_at(&ws, "m", src, call as u32 + 1).expect("member resolves");
+        assert_eq!(slice(&mods, &hit), "fetch");
+        assert!(hit.title.contains("callable `Repo.fetch`"), "{}", hit.title);
+    }
+
+    #[test]
+    fn qualified_component_member_call_resolves_cross_module() {
+        // Mirrors `cli::DocCmd.run(path)` called from another module.
+        let cli = "//! cli\n\npublic container Cli;\n\npublic component DocCmd for Cli {\n  public run(path: string): void {\n    self.write(path)\n  }\n  write(p: string): void;\n}\n";
+        let ctx = "//! context\n\npublic person Developer {\n  public renderDocs(path: string): void {\n    cli::DocCmd.run(path)\n  }\n}\n";
+        let mods = [("cli", cli), ("context", ctx)];
+        let ws = workspace(&mods);
+        let call = ctx.find("cli::DocCmd.run").unwrap() + "cli::DocCmd.".len();
+        let hit = resolve_at(&ws, "context", ctx, call as u32 + 1).expect("member call resolves");
+        assert_eq!(hit.target_module, "cli");
+        assert_eq!(slice(&mods, &hit), "run");
+        assert!(hit.title.contains("callable `DocCmd.run`"), "{}", hit.title);
+    }
+
+    #[test]
+    fn cross_module_member_resolves() {
+        let mods = [
+            ("a", "//! a\n\npublic system Svc {\n  op() {}\n}\n"),
+            ("b", "//! b\n\nsystem App {\n  run() { a::Svc.op() }\n}\n"),
+        ];
+        let ws = workspace(&mods);
+        let src = mods[1].1;
+        let call = src.find("a::Svc.op").unwrap() + "a::Svc.".len();
+        let hit = resolve_at(&ws, "b", src, call as u32 + 1).expect("cross-module member resolves");
+        assert_eq!(hit.target_module, "a");
+        assert_eq!(slice(&mods, &hit), "op");
+    }
+
+    #[test]
+    fn member_hover_includes_signature_and_docstring() {
+        let src = "//! m\n\nsystem S {\n  /// The token stream a parser consumes.\n  tokenize(text: string): string;\n}\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        let hit = hit_at(&ws, "m", src, "tokenize", 1);
+        let body = hit.body.expect("member body");
+        assert!(
+            body.contains("tokenize(text: string): string"),
+            "signature: {body}"
+        );
+        assert!(
+            body.contains("The token stream a parser consumes."),
+            "doc: {body}"
+        );
+    }
+
+    #[test]
+    fn callable_declaration_resolves_to_itself() {
+        let src = "//! m\n\nsystem S {\n  op() {}\n}\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        let hit = hit_at(&ws, "m", src, "op", 1);
+        assert_eq!(slice(&mods, &hit), "op");
+        assert!(hit.title.contains("callable `S.op`"), "{}", hit.title);
+    }
+
+    #[test]
+    fn field_declaration_resolves_to_itself() {
+        let src = "//! m\n\ndata Rec { id: uuid }\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        let hit = hit_at(&ws, "m", src, "id", 1);
+        assert_eq!(slice(&mods, &hit), "id");
+        assert!(hit.title.contains("field `Rec.id`"), "{}", hit.title);
+    }
+
+    #[test]
+    fn container_qualified_member_resolves_via_leaf() {
+        // `Syntax::Lexer.tokenize` where `Syntax` is the container name, not the
+        // module (`syntax`): the leaf fallback still reaches `Lexer.tokenize`.
+        let src = "//! syntax\n\npublic component Lexer for Syntax {\n  tokenize(text: string): string;\n}\n\npublic component Parser for Syntax {\n  public parse(text: string): string {\n    return Syntax::Lexer.tokenize(text)\n  }\n}\n";
+        let mods = [("syntax", src)];
+        let ws = workspace(&mods);
+        let call = src.find("Syntax::Lexer.tokenize").unwrap() + "Syntax::Lexer.".len();
+        let hit =
+            resolve_at(&ws, "syntax", src, call as u32 + 1).expect("member resolves via leaf");
+        assert_eq!(slice(&mods, &hit), "tokenize");
+        assert!(
+            hit.title.contains("callable `Lexer.tokenize`"),
+            "{}",
+            hit.title
+        );
+    }
+
+    #[test]
+    fn bare_cross_module_type_resolves_when_unique() {
+        // `ast: Module` where `Module` is declared in another module: an
+        // under-qualified reference still navigates to the one matching shape.
+        let mods = [
+            ("syntax", "//! syntax\n\npublic data Module;\n"),
+            (
+                "parser",
+                "//! parser\n\npublic data Parsed { ast: Module }\n",
+            ),
+        ];
+        let ws = workspace(&mods);
+        let offset = mods[1].1.find("ast: Module").unwrap() + "ast: ".len();
+        let hit = resolve_at(&ws, "parser", mods[1].1, offset as u32 + 1).expect("type resolves");
+        assert_eq!(hit.target_module, "syntax");
+        assert_eq!(slice(&mods, &hit), "Module");
+        assert!(hit.title.contains("data `syntax::Module`"), "{}", hit.title);
+    }
+
+    #[test]
+    fn ambiguous_bare_type_is_not_guessed() {
+        // Two `Module`s in different modules: a bare reference resolves to
+        // neither (the FQN is required to disambiguate, §8).
+        let mods = [
+            ("a", "//! a\n\npublic data Module;\n"),
+            ("b", "//! b\n\npublic data Module;\n"),
+            ("c", "//! c\n\npublic data Parsed { ast: Module }\n"),
+        ];
+        let ws = workspace(&mods);
+        let offset = mods[2].1.find("ast: Module").unwrap() + "ast: ".len();
+        assert!(resolve_at(&ws, "c", mods[2].1, offset as u32 + 1).is_none());
+    }
+
+    #[test]
+    fn alias_follows_to_target_node() {
+        let src = "//! m\n\npublic system Svc;\n\nalias Repo = Svc;\n\ncontainer C for Repo;\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        // click `Repo` in `for Repo`
+        let offset = src.rfind("Repo").unwrap() as u32 + 1;
+        let hit = resolve_at(&ws, "m", src, offset).expect("alias resolves");
+        assert_eq!(slice(&mods, &hit), "Svc");
+    }
+
+    #[test]
+    fn cyclic_alias_does_not_overflow() {
+        // `alias A = B; alias B = A;` — resolution must bail, not recurse forever.
+        let src = "//! m\n\nalias A = B;\n\nalias B = A;\n\ncontainer C for A;\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        let offset = src.rfind('A').unwrap() as u32; // the `A` in `for A`
+        // Returns None rather than overflowing the stack.
+        assert!(resolve_at(&ws, "m", src, offset).is_none());
+    }
+
+    #[test]
+    fn caret_just_past_identifier_still_resolves() {
+        let src = "//! m\n\npublic system Banking;\n";
+        let mods = [("m", src)];
+        let ws = workspace(&mods);
+        // offset at the character just after "Banking"
+        let end = (src.find("Banking").unwrap() + "Banking".len()) as u32;
+        let hit = resolve_at(&ws, "m", src, end).expect("end caret resolves");
+        assert_eq!(slice(&mods, &hit), "Banking");
+    }
+}

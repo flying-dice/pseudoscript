@@ -1,0 +1,10 @@
+# Saga (Orchestrated) — a system-design pattern, exercised by a small example.
+[doc]
+name = "Saga (Orchestrated)"
+
+[[doc.sidebar]]
+title = "Saga (Orchestrated)"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

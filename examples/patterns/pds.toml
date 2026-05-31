@@ -1,0 +1,9 @@
+# A handbook of system-design patterns. Each `.pds` module is one self-contained
+# pattern at the system level: the participants and their interfaces, plus a
+# `feature` stating the guarantee the pattern buys you. `pds doc` renders one C4
+# diagram per pattern — flip through them like a patterns catalogue.
+[doc]
+name  = "System Design Patterns — A Handbook"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"

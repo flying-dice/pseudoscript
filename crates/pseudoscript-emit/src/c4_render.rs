@@ -39,16 +39,18 @@ use pseudoscript_model::NodeKind;
 
 use crate::scene::{C4EdgeKind, C4Scene, PlacedNode, RoutedEdge};
 
-/// Stroke colour for routed edges (matches the crate's subtle dark stroke).
-const STROKE: &str = "#333";
-/// Card border colour (thin light gray).
-const CARD_BORDER: &str = "#d8d9dd";
+// Shared ink-on-paper palette (matches the sequence renderer for a cohesive
+// look across the static site's diagrams).
+/// Stroke colour for routed edges and arrowheads.
+const STROKE: &str = "#2a2f3a";
+/// Card border colour (cool hairline).
+const CARD_BORDER: &str = "#c3c8d2";
 /// Card background fill.
 const CARD_FILL: &str = "#ffffff";
-/// Title text colour (near-black).
-const TITLE_FILL: &str = "#1a1a1a";
-/// Description text colour (muted gray).
-const DESC_FILL: &str = "#80828a";
+/// Title text colour.
+const TITLE_FILL: &str = "#2a2f3a";
+/// Description text colour (muted).
+const DESC_FILL: &str = "#6b7280";
 /// Margin added around the laid-out extent and inside the document.
 const MARGIN: f64 = 24.0;
 /// Font size handed to the layout engine for edge-label sizing.
@@ -224,15 +226,16 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         }
         let _ = write!(
             out,
-            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"10\" fill=\"#f4f4f8\" \
-             stroke=\"#99a\" stroke-dasharray=\"5 4\"/>\
-             <text x=\"{tx}\" y=\"{ty}\" font-weight=\"bold\" fill=\"#445\">{label}</text>",
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" fill=\"#f6f7fa\" \
+             stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
+             <text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" font-weight=\"700\" \
+             fill=\"{TITLE_FILL}\">{label}</text>",
             x = node.rect.x,
             y = node.rect.y,
             w = node.rect.w,
             h = node.rect.h,
-            tx = node.rect.x + 10,
-            ty = node.rect.y + 18,
+            tx = node.rect.x + 12,
+            ty = node.rect.y + 19,
             label = escape_xml(&node.label),
         );
     }
@@ -535,17 +538,18 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
     let by_fqn: HashMap<&str, &PlacedNode> =
         scene.nodes.iter().map(|n| (n.fqn.as_str(), n)).collect();
 
-    let boundary_frame = boundary
-        .and_then(|of| boundary_title(scene, of))
-        .map(|title| {
-            let (min, max) = content_bbox(capture);
-            let pad = MARGIN;
-            (
-                Point::new(min.x - pad, min.y - pad),
-                Point::new(max.x + pad, max.y + pad),
-                title,
-            )
-        });
+    let boundary_frame = boundary.and_then(|of| {
+        let title = boundary_title(scene, of)?;
+        // Frame only the boundary's own children, never the external actors the
+        // view draws alongside them (`boundary: None`).
+        let (min, max) = children_bbox(capture, scene, of)?;
+        let pad = MARGIN;
+        Some((
+            Point::new(min.x - pad, min.y - pad),
+            Point::new(max.x + pad, max.y + pad),
+            title,
+        ))
+    });
 
     // The document extent covers the content plus any boundary frame.
     let (_, mut max) = content_bbox(capture);
@@ -566,11 +570,12 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
         let fh = round(frame_max.y - frame_min.y);
         let _ = write!(
             &mut out,
-            "<rect x=\"{x}\" y=\"{y}\" width=\"{fw}\" height=\"{fh}\" rx=\"10\" \
-             fill=\"#f4f4f8\" stroke=\"#99a\" stroke-dasharray=\"5 4\"/>\
-             <text x=\"{tx}\" y=\"{ty}\" font-weight=\"bold\" fill=\"#445\">{label}</text>",
-            tx = x + 10,
-            ty = y + 18,
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{fw}\" height=\"{fh}\" rx=\"12\" \
+             fill=\"#f6f7fa\" stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
+             <text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" font-weight=\"700\" \
+             fill=\"{TITLE_FILL}\">{label}</text>",
+            tx = x + 12,
+            ty = y + 19,
             label = escape_xml(title),
         );
     }
@@ -628,9 +633,11 @@ pub(crate) fn draw_card(
     let r = CARD_RADIUS;
 
     // 1. Base rounded rect in the kind colour — its left strip shows as the rule.
+    //    Carries the soft drop shadow so the whole card lifts off the canvas.
     let _ = write!(
         out,
-        "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{r}\" fill=\"{accent}\"/>",
+        "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{r}\" fill=\"{accent}\" \
+         filter=\"url(#cardlift)\"/>",
     );
 
     // 2. White interior covering everything past the rule, right corners rounded,
@@ -694,6 +701,33 @@ fn boundary_title<'a>(scene: &'a C4Scene, of: &str) -> Option<&'a str> {
         .map(|n| n.label.as_str())
 }
 
+/// The bounding box of the rects belonging to `of`'s children (the nodes whose
+/// `boundary` is `of`). `None` when no child rect was captured.
+fn children_bbox(capture: &Capture, scene: &C4Scene, of: &str) -> Option<(Point, Point)> {
+    let children: std::collections::HashSet<&str> = scene
+        .nodes
+        .iter()
+        .filter(|n| n.boundary.as_deref() == Some(of))
+        .map(|n| n.fqn.as_str())
+        .collect();
+    let mut min = Point::new(f64::MAX, f64::MAX);
+    let mut max = Point::new(f64::MIN, f64::MIN);
+    for rect in &capture.rects {
+        if !rect
+            .properties
+            .as_deref()
+            .is_some_and(|p| children.contains(p))
+        {
+            continue;
+        }
+        min.x = min.x.min(rect.xy.x);
+        min.y = min.y.min(rect.xy.y);
+        max.x = max.x.max(rect.xy.x + rect.size.x);
+        max.y = max.y.max(rect.xy.y + rect.size.y);
+    }
+    (min.x <= max.x).then_some((min, max))
+}
+
 /// The bounding box of all captured content (rects and arrow points).
 fn content_bbox(capture: &Capture) -> (Point, Point) {
     let mut min = Point::new(f64::MAX, f64::MAX);
@@ -732,9 +766,13 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
         h = h,
     );
     out.push_str(
-        "<defs><marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" \
+        "<defs>\
+         <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" \
          orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,0 L9,3 L0,6 z\" \
-         fill=\"#333\"/></marker></defs>",
+         fill=\"#2a2f3a\"/></marker>\
+         <filter id=\"cardlift\" x=\"-12%\" y=\"-12%\" width=\"124%\" height=\"140%\">\
+         <feDropShadow dx=\"0\" dy=\"2\" stdDeviation=\"3.5\" flood-color=\"#1a1f2a\" \
+         flood-opacity=\"0.12\"/></filter></defs>",
     );
 }
 
@@ -773,9 +811,10 @@ fn draw_edge_label(out: &mut String, label: &CapturedText) {
     let plate_w = chars * 7 + 8;
     let _ = write!(
         out,
-        "<rect x=\"{rx}\" y=\"{ry}\" width=\"{plate_w}\" height=\"16\" rx=\"3\" \
-         fill=\"#ffffffcc\"/>\
-         <text x=\"{lx}\" y=\"{ty}\" text-anchor=\"middle\">{text}</text>",
+        "<rect x=\"{rx}\" y=\"{ry}\" width=\"{plate_w}\" height=\"16\" rx=\"4\" \
+         fill=\"#ffffffe6\"/>\
+         <text x=\"{lx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"11.5\" \
+         fill=\"{DESC_FILL}\">{text}</text>",
         rx = lx - plate_w / 2,
         ry = ly - 8,
         ty = ly + 4,

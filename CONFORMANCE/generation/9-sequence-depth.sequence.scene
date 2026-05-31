@@ -1,0 +1,12 @@
+view sequence
+entry shop::Api::Handle
+participant client
+participant shop::Api
+participant shop::Worker
+participant shop::Store
+message client -> shop::Api call "Handle"
+message shop::Api -> shop::Worker call "Do"
+message shop::Worker -> shop::Store call "Save"
+message shop::Store -> shop::Worker return ""
+message shop::Worker -> shop::Api return "Ok"
+message shop::Api -> client return "Ok"

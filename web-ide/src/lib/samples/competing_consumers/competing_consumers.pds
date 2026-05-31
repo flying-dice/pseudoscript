@@ -1,0 +1,55 @@
+//! competing_consumers — exercised by Thumbly, an image-thumbnail service. Every
+//! upload is dropped on a queue; a pool of identical resizer workers pull from it,
+//! each handling one image. Traffic spikes are absorbed by adding workers, and a
+//! slow hundred-megapixel image ties up only its own worker.
+
+public data Upload { id: string }
+
+/// A user uploading a photo.
+public person Uploader {
+  #[manual]
+  public upload(id: string): void {
+    Thumbly::Intake.submit(Upload from { id })
+  }
+}
+
+/// Thumbly — the thumbnailing service.
+public system Thumbly;
+
+/// Accepts uploads and enqueues a resize job — it resizes nothing itself.
+public container Intake for Thumbly {
+  #[http("POST /upload")]
+  public submit(upload: Upload): void {
+    Queue.enqueue(upload)
+  }
+}
+
+/// The resize-job queue; each job goes to exactly one worker.
+public container Queue for Thumbly {
+  enqueue(job: Upload): void;
+  /// Hand the next job to a free worker; `None` when empty.
+  dequeue(): Option<Upload>;
+}
+
+/// One of a pool of interchangeable resizer workers, each pulling jobs.
+public container Resizer for Thumbly {
+  #[schedule = "* * * * *"]
+  public poll(): void {
+    next = Queue.dequeue()
+    if (next.isSome) {
+      self.resize(next.value)
+    }
+  }
+
+  /// Produce the thumbnail for one upload.
+  resize(job: Upload): void;
+}
+
+/// Throughput scales with workers; each upload is resized once.
+feature OneJobOneWorker for Queue {
+  given "a backlog of uploads and several resizer workers"
+  when  "the workers pull from the queue"
+  then  "each upload is resized by exactly one worker"
+  and   "adding workers clears the backlog faster"
+  but   "a huge image ties up only its own worker"
+}

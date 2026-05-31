@@ -1,14 +1,13 @@
-//! The static site assets: `style.css` and `app.js`.
+//! The prebuilt Svelte bundles, embedded at compile time.
 //!
-//! These ship once at the site root and every page links them, rather than
-//! inlining them per page (`LANG.md` §9.3). The CSS carries both the light and
-//! dark variable sets, switched by the `data-theme` attribute on `<html>`; the
-//! JS is dependency-free vanilla — a collapsible sidebar tree, a client-side
-//! filter over the tree, and wheel/drag zoom-pan on each inline diagram.
+//! `build.rs` guarantees these files exist (with a regeneration hint when they
+//! do not), so the `include_str!`s below always resolve in a checked-out tree.
 
-/// The site stylesheet. Clean-technical, cargo-doc-like: a fixed left sidebar
-/// tree, a neutral palette, a system font stack, and diagrams framed as figures.
-pub const STYLE_CSS: &str = include_str!("assets/style.css");
+/// The Svelte SSR bundle: an IIFE exposing `globalThis.SSR.renderPage`.
+pub(crate) const SSR_JS: &str = include_str!("assets/ssr.js");
 
-/// The site script: collapsible tree, search filter, and diagram zoom-pan.
-pub const APP_JS: &str = include_str!("assets/app.js");
+/// The client hydration + diagram-island bundle.
+pub(crate) const CLIENT_JS: &str = include_str!("assets/client.js");
+
+/// The site stylesheet (design tokens, layout, Svelte Flow, timeline).
+pub(crate) const STYLE_CSS: &str = include_str!("assets/style.css");

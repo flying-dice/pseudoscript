@@ -1,0 +1,29 @@
+# Root of the Ticketing PseudoScript project. `pds doc` documents every `.pds`
+# file under this directory; module FQNs derive from each file's path
+# (LANG.md §8.1, ADR-017). One module per bounded context.
+[doc]
+name  = "ACME Tickets — Event Ticketing Platform Architecture"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"
+
+[[doc.sidebar]]
+title = "ACME Tickets"
+items = [
+  { title = "Overview", path = "docs/overview.md" },
+  { title = "Bounded Contexts", path = "docs/contexts.md" },
+]
+
+[[doc.sidebar]]
+title = "Deep Dives"
+items = [
+  { title = "Surge: Waiting Room & Pricing", path = "docs/surge.md" },
+  { title = "The Checkout Saga", path = "docs/checkout-saga.md" },
+  { title = "Third-Party Payments", path = "docs/payments.md" },
+]
+
+[[doc.sidebar]]
+title = "Review"
+items = [
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

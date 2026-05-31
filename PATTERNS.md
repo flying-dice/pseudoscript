@@ -76,7 +76,7 @@ The reference architecture throughout is **rust-analyzer** — shared core, LSP 
 
 ### Guiding constraints
 
-1. **Pure, I/O-free core.** `Syntax`, `Model`, `Emit`, and `Doc` are pure functions of their inputs and touch no filesystem, clock, or network. `Doc::render_site` returns in-memory files; the CLI writes them. I/O lives at the edges (`Cli`, `Lsp`).
+1. **Pure, I/O-free core.** `Syntax`, `Model`, `Emit`, and `Doc` are pure functions of their inputs and touch no filesystem, clock, or network. `Doc`'s renderer returns in-memory files; the CLI writes them. I/O lives at the edges (`Cli`, `Lsp`).
 2. **One core, two frontends.** `Cli` and `Lsp` are thin shells over the same `Syntax → Model → Emit`/`Doc` pipeline. Anything frontend-specific (argv, JSON-RPC, HTTP serving) stays out of the core.
 3. **Diagnostics as data; `Result` only where it fails.** The core never panics on user input. Parsing and checking always return a value plus a `Vec<Diagnostic>` (LANG.md §6 is the *language's* error model; the compiler's own is diagnostics). Only projection (`EmitError`) and formatting (`FormatError`) return `Result`.
 4. **Incremental-friendly.** `Lsp` reruns the pipeline on every keystroke, so the core is shaped as pure functions (`fn graph(modules) -> Graph`) that a memoiser could wrap later.
@@ -182,14 +182,15 @@ render_svg(scene)     -> String                       // draw the positioned sce
 
 ---
 
-### `Doc` — static documentation site (`pseudoscript-doc`)
+### `Doc` — Svelte-rendered documentation site (`pseudoscript-doc`)
 
-The headline subsystem (ADR-017). `render_site(graph, config) -> Site` turns the resolved graph into a cargo-doc-style static site. Maps to `SiteBuilder`, `Pages`, `Diagrams`, `Urls`, `Assets`.
+The headline subsystem (ADR-017, ADR-025). `try_render_site_with(graph, config, engine) -> Result<Site, RenderError>` projects the resolved graph into per-page props, server-renders each through an SSR engine, and wraps it in the document shell. Maps to `SiteBuilder`, `Pages`, `Ssr`, `Shell`, `Diagrams`, `Urls`, `Assets`.
 
-- **Pure, no I/O.** Returns a `Site` of in-memory `SiteFile { path, contents }`; the CLI writes them. Deterministic and unit-testable.
-- **One page per module**, a section per node (its `///` docs, tags, visibility, relationships), an index carrying the C4 context diagram (LANG.md §9.3).
-- **Diagrams embedded inline.** `Diagrams` is the bridge into `Emit`: build a `View` with `from`, call `project` + `render_svg`, embed the SVG. A failed projection degrades to a placeholder rather than aborting the build — the cargo-doc stance that a partial model still documents.
-- **`Urls`** maps every FQN to a page path + anchor for cross-links; **`Assets`** ships the stylesheet and the sidebar/search/zoom-pan script; **`config`** carries the `[doc]` table (`name`/`out`/`logo`/`theme`).
+- **Pure, no I/O.** Returns a `Site` of in-memory `SiteFile { path, contents }`; the CLI writes them. The page model is precomputed data (`PageProps`) — deterministic, byte-identical across runs.
+- **Presentation in Svelte, embedded prebuilt.** `web/` builds `ssr.js`/`client.js`/`style.css`, committed and `include_str!`'d into the binary, so `pds doc` needs no JS toolchain; `build.rs` only checks the bundles exist.
+- **SSR for first paint.** `Ssr` is the JSON-in/JSON-out seam: the native `QuickJsEngine` (`rquickjs`) evaluates `ssr.js` in-process; a wasm host implements the same trait against its own JS engine, so QuickJS never enters a wasm build. `Shell` owns the Rust-side document — `data-theme`, asset links, and the `window.__DATA__` hydration payload.
+- **Diagrams as client islands.** `Diagrams` projects an `emit::View` and carries the laid-out `Scene` geometry (not server-embedded SVG); the client renders C4 as a Svelte Flow graph and sequences as an animated timeline. A failed projection degrades to an `Empty` placeholder — the cargo-doc stance that a partial model still documents.
+- **`Urls`** maps every FQN to a page path + anchor for cross-links; **`Assets`** ships `style.css` + `client.js` once at the root and feeds `ssr.js` to the engine; **`config`** carries the `[doc]` table (`name`/`out`/`logo`/`theme`).
 
 ---
 
@@ -208,7 +209,7 @@ A thin frontend over the libraries. Maps to `Args`, `Workspace`, the command com
 
 - **`clap`** derive subcommands (`doc`/`check`/`fmt`/`tokens`/`lsp`) — the **Command pattern**: each handler reads input, calls the core, renders the result.
 - **`Workspace`** resolves the project root by walking up to the nearest `pds.toml` (`find_root`) and loads the `[doc]` config + every `.pds` module (`load`, via `walkdir` + `toml`/`serde`).
-- **`pds doc`** is the headline: `find_root` → `load` → `check_workspace` (reported, non-fatal, like `cargo doc`) → `graph` → `render_site` → write files.
+- **`pds doc`** is the headline: `find_root` → `load` → `check_workspace` (reported, non-fatal, like `cargo doc`) → `graph` → `try_render_site` → write files.
 - **`--serve`** hosts the site over **`tiny_http`** on `127.0.0.1`; **`--watch`** adds a **`notify`** filesystem watcher that rebuilds and bumps a live-reload version the browser polls.
 - **I/O at the edge.** The CLI owns reading and writing; `anyhow` carries I/O errors to the exit code.
 

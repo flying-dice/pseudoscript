@@ -1,0 +1,10 @@
+# Bulkhead — a system-design pattern, exercised by a small example.
+[doc]
+name = "Bulkhead"
+
+[[doc.sidebar]]
+title = "Bulkhead"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

@@ -1,0 +1,10 @@
+# Circuit Breaker — a system-design pattern, exercised by a small example.
+[doc]
+name = "Circuit Breaker"
+
+[[doc.sidebar]]
+title = "Circuit Breaker"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

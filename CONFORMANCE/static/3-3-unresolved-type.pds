@@ -1,0 +1,12 @@
+// LANG.md §3.3 (ADR-022): a named type must resolve. `Ghost` names no
+// primitive, `Result`/`Option`, or in-module symbol, so the return type of
+// `ping` is unresolved.
+
+//! example
+
+public system S;
+
+public container C for S {
+  ping(): Ghost { return self.pong() }
+  pong(): number { return 1 }
+}

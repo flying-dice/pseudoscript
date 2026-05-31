@@ -69,6 +69,40 @@ pub fn module_page_path(module_fqn: &str) -> String {
     format!("module/{}.html", flatten(module_fqn))
 }
 
+/// The page path for an authored doc page, from its source path:
+/// `docs/<slug>.html`. A leading `docs/` and the `.md` extension are stripped,
+/// then every non-alphanumeric run collapses to a single `-`, so
+/// `docs/guides/configuration.md` → `docs/guides-configuration.html`. Pure and
+/// host-agnostic: the CLI and a wasm host derive the same URL from the same
+/// configured path, so cross-page links stay stable.
+#[must_use]
+pub fn doc_page_path(source_path: &str) -> String {
+    let stem = source_path
+        .strip_suffix(".md")
+        .unwrap_or(source_path)
+        .trim_start_matches("docs/");
+    format!("docs/{}.html", slugify(stem))
+}
+
+/// Collapses a path stem to a link-safe slug: each maximal run of
+/// non-`[A-Za-z0-9]` characters becomes one `-`, with no leading/trailing `-`.
+fn slugify(stem: &str) -> String {
+    let mut slug = String::with_capacity(stem.len());
+    let mut pending_dash = false;
+    for c in stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(c);
+        } else {
+            pending_dash = true;
+        }
+    }
+    slug
+}
+
 /// The [`NodeUrl`] a node FQN in `module_fqn` resolves to.
 fn node_url(module_fqn: &str, node_fqn: &str) -> NodeUrl {
     NodeUrl {
@@ -101,7 +135,7 @@ fn flatten(fqn: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{UrlMap, anchor, module_page_path};
+    use super::{UrlMap, anchor, doc_page_path, module_page_path};
     use pseudoscript_model::{WorkspaceModule, graph};
 
     #[test]
@@ -109,6 +143,23 @@ mod tests {
         assert_eq!(
             module_page_path("banking::core"),
             "module/banking.core.html"
+        );
+    }
+
+    #[test]
+    fn doc_path_strips_prefix_and_slugs_nested_paths() {
+        assert_eq!(
+            doc_page_path("docs/guides/configuration.md"),
+            "docs/guides-configuration.html"
+        );
+        assert_eq!(
+            doc_page_path("docs/introduction.md"),
+            "docs/introduction.html"
+        );
+        // A path outside `docs/` still slugs; no leading/trailing dashes.
+        assert_eq!(
+            doc_page_path("Getting Started.md"),
+            "docs/Getting-Started.html"
         );
     }
 

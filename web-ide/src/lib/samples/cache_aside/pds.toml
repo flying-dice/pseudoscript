@@ -1,0 +1,10 @@
+# Cache-Aside — a system-design pattern, exercised by a small example.
+[doc]
+name = "Cache-Aside"
+
+[[doc.sidebar]]
+title = "Cache-Aside"
+items = [
+  { title = "The Pattern", path = "docs/the-pattern.md" },
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

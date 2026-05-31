@@ -1,9 +1,0 @@
-//! mainframe
-
-/// Stores the core banking information about customers, accounts,
-/// transactions, etc.
-/// #external #existing
-public system MainframeBanking {
-  /// Return a customer's account summary.
-  public Accounts(customerId: number): string;
-}

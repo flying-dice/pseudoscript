@@ -9,8 +9,19 @@ import init, {
   parse as wasmParse,
   format as wasmFormat,
   emit_scene as wasmEmitScene,
+  emit_scene_modules as wasmEmitSceneModules,
+  layout_scene as wasmLayoutScene,
   emit_svg as wasmEmitSvg,
+  hover as wasmHover,
+  definition as wasmDefinition,
+  references as wasmReferences,
+  doc_ssr_bundle as wasmDocSsrBundle,
+  doc_manifest as wasmDocManifest,
   outline as wasmOutline,
+  outline_modules as wasmOutlineModules,
+  render_doc_site as wasmRenderDocSite,
+  symbol_scene as wasmSymbolScene,
+  symbol_svg as wasmSymbolSvg,
   version as wasmVersion,
 } from "./pds-wasm/pseudoscript_wasm.js";
 
@@ -58,12 +69,128 @@ export function outline(source) {
   return JSON.parse(wasmOutline(source));
 }
 
+/** Like {@link outline}, but over a whole workspace (`[{ fqn, source }]`). */
+export function outlineModules(modules) {
+  return JSON.parse(wasmOutlineModules(JSON.stringify(modules)));
+}
+
+/**
+ * Project a diagram view over the whole workspace, so it shows nodes and edges
+ * across modules (a container's components, cross-system calls).
+ */
+export function emitSceneModules(modules, view, target = "") {
+  return JSON.parse(wasmEmitSceneModules(JSON.stringify(modules), view, target));
+}
+
+/**
+ * Position a (sequence) scene into absolute coordinates with the layout engine.
+ * `scene` is a sequence Scene object (optionally depth-collapsed first); returns
+ * the positioned `Layout` the renderer draws verbatim.
+ */
+export function layoutScene(scene) {
+  return JSON.parse(wasmLayoutScene(JSON.stringify(scene)));
+}
+
 /** Project a diagram view to an SVG string. */
 export function emitSvg(source, view, target = "") {
   return wasmEmitSvg(source, view, target);
 }
 
+/**
+ * Resolve the symbol under a byte `offset` in module `moduleFqn`, returning
+ * `{ info: { fqn, title, body }, svg }` (the symbol's info and its fitting
+ * diagram as SVG), or `null` when the cursor rests on no symbol. The compiler
+ * chooses the diagram — a sequence trace for a callable, a structural view for
+ * a node. `modules` is `[{ fqn, source }]`.
+ */
+export function hover(modules, moduleFqn, offset) {
+  return JSON.parse(wasmHover(JSON.stringify(modules), moduleFqn, offset));
+}
+
+/**
+ * Resolve the symbol under a byte `offset` in module `moduleFqn` to the FQN of
+ * its declaration (go-to-definition), or `null` when the cursor rests on no
+ * resolvable symbol. Cheaper than {@link hover} — no diagram. `modules` is
+ * `[{ fqn, source }]`.
+ */
+export function definition(modules, moduleFqn, offset) {
+  return JSON.parse(wasmDefinition(JSON.stringify(modules), moduleFqn, offset));
+}
+
+/**
+ * Find every usage of the symbol under a byte `offset` in module `moduleFqn`
+ * across the workspace. Returns `{ fqn, title, occurrences: [{ fqn, line, col,
+ * end_line, end_col, text, decl }] }` (1-based positions, a trimmed source-line
+ * preview, `decl` marking the declaration), or `null` when the cursor rests on
+ * no resolvable symbol. `modules` is `[{ fqn, source }]`.
+ */
+export function references(modules, moduleFqn, offset) {
+  return JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset));
+}
+
+/**
+ * Project the fitting diagram for a symbol to its laid-out scene object (the
+ * interactive counterpart of {@link hover}'s `svg`, for a side panel or
+ * full-screen view). `modules` is `[{ fqn, source }]`.
+ */
+export function symbolScene(modules, fqn) {
+  return JSON.parse(wasmSymbolScene(JSON.stringify(modules), fqn));
+}
+
+/**
+ * Render the fitting diagram for a symbol to a self-contained SVG string (the
+ * live, re-derivable form of {@link hover}'s `svg`, for a docked side panel).
+ * `modules` is `[{ fqn, source }]`.
+ */
+export function symbolSvg(modules, fqn) {
+  return wasmSymbolSvg(JSON.stringify(modules), fqn);
+}
+
 /** The compiler crate version. */
 export function version() {
   return wasmVersion();
+}
+
+let ssrLoaded = false;
+
+/**
+ * Evaluate the embedded Svelte SSR bundle once, defining `globalThis.SSR`. The
+ * browser is the JavaScript engine the compiler's site generator renders
+ * through (the native CLI uses an embedded QuickJS instead).
+ */
+function ensureSsr() {
+  if (ssrLoaded) return;
+  // The bundle is an esbuild IIFE that defines a top-level `var SSR`; that only
+  // becomes the global `SSR` when run at global scope, so inject it as a
+  // <script> (executes synchronously on append) rather than via `new Function`.
+  const script = document.createElement("script");
+  script.textContent = wasmDocSsrBundle();
+  document.head.appendChild(script);
+  script.remove();
+  ssrLoaded = true;
+}
+
+/**
+ * Parse a `pds.toml` string into its doc manifest:
+ * `{ name?, theme?, logo?, sidebar: [{ title, items: [{ title, path }] }] }`.
+ * The caller loads each page's `path` and folds the content into the config it
+ * hands {@link renderDocSite}. Uses the same TOML parser as the CLI. Returns an
+ * empty manifest (`{ sidebar: [] }`) for a `pds.toml` with no `[doc]` table;
+ * throws only on malformed TOML.
+ */
+export function docManifest(toml) {
+  return JSON.parse(wasmDocManifest(toml));
+}
+
+/**
+ * Render the whole documentation site for a workspace — the browser equivalent
+ * of the CLI's `pds doc`. `modules` is `[{ fqn, source }]`; `config` is
+ * `{ name, theme?, logo?, docs?: [{ title, items: [{ title, path, content }] }] }`
+ * — `docs` carries each authored page's Markdown `content`. Returns
+ * `[{ path, contents }]`.
+ */
+export function renderDocSite(modules, config) {
+  ensureSsr();
+  const render = (propsJson) => globalThis.SSR.renderPage(propsJson);
+  return JSON.parse(wasmRenderDocSite(JSON.stringify(modules), JSON.stringify(config), render));
 }

@@ -1,0 +1,7 @@
+{
+  "name": "Publish / Subscribe",
+  "category": "Messaging",
+  "order": 30,
+  "landing": "pub_sub",
+  "description": "PriceDrop (price alerts) — a price change fans out to alerts, search, and analytics via a broker."
+}

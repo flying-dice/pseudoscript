@@ -1,0 +1,97 @@
+//! backoffice — the staff console. Organisers configure and launch events;
+//! support agents issue refunds. Every action is gated on a role, so the
+//! authorisation decision is disclosed here rather than left to the channel.
+
+/// Why a console action was refused.
+public data ConsoleError =
+  | Unauthorized
+  | Rejected { reason: string }
+
+/// `backoffice` — internal staff tooling.
+public container Backoffice for context::AcmeTickets;
+
+/// Organiser and support actions, each gated on the caller's role.
+public component Console for Backoffice {
+  /// Create a new event (organisers only).
+  public createEvent(token: identity::SessionToken, draft: catalog::NewEvent): Result<catalog::Event, ConsoleError> {
+    staff = identity::Sessions.requireOrganizer(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    return Ok(catalog::Events.create(draft))
+  }
+
+  /// Add a price tier to an event (organisers only), provisioning its seat pool
+  /// from the tier's capacity.
+  public addTier(token: identity::SessionToken, tier: catalog::NewTier): Result<catalog::Tier, ConsoleError> {
+    staff = identity::Sessions.requireOrganizer(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    created = catalog::Tiers.add(tier)
+    inventory::Holds.provision(created.event, created.id, created.capacity)
+    return Ok(created)
+  }
+
+  /// Put an event on sale (organisers only).
+  public putOnSale(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, ConsoleError> {
+    staff = identity::Sessions.requireOrganizer(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    live = catalog::Events.putOnSale(event)
+    if (live.isErr) {
+      return Err(self.notFound(live.error))
+    }
+    return Ok(live.value)
+  }
+
+  /// Cancel an event (organisers only). Triggers bulk refunds and holder alerts.
+  public cancelEvent(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, ConsoleError> {
+    staff = identity::Sessions.requireOrganizer(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    dead = catalog::Events.cancel(event)
+    if (dead.isErr) {
+      return Err(self.notFound(dead.error))
+    }
+    return Ok(dead.value)
+  }
+
+  /// Refund a customer's order (support only).
+  public refundOrder(token: identity::SessionToken, order: shared::OrderId): Result<orders::Order, ConsoleError> {
+    staff = identity::Sessions.requireSupport(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    refunded = orders::OrderService.refund(order)
+    if (refunded.isErr) {
+      return Err(self.refundRejected(refunded.error))
+    }
+    return Ok(refunded.value)
+  }
+
+  /// Review orders stranded by failed ticket issuance (support only), so a
+  /// charged buyer with un-issuable tickets surfaces as a work item.
+  public reviewStranded(token: identity::SessionToken): Result<shared::OrderId[], ConsoleError> {
+    staff = identity::Sessions.requireSupport(token)
+    if (staff.isErr) {
+      return Err(Unauthorized)
+    }
+    return Ok(tickets::Quarantine.pending())
+  }
+
+  /// Map an event-lookup failure to a console error.
+  notFound(e: catalog::EventNotFound): ConsoleError;
+  /// Map an order refund failure to a console error.
+  refundRejected(e: orders::CheckoutError): ConsoleError;
+}
+
+/// Only an organiser can put an event on sale.
+feature OnSaleIsOrganizerOnly for Console {
+  given "a session that does not belong to an organiser"
+  when  "putting an event on sale is attempted"
+  then  "the action is refused as unauthorised"
+  and   "the event stays in draft"
+}

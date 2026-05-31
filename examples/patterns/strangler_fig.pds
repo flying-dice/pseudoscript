@@ -1,0 +1,49 @@
+//! strangler_fig — exercised by ACME Bank, replacing a thirty-year-old mainframe
+//! core without a big-bang rewrite. A façade fronts every channel and routes each
+//! request to either the modern core or the legacy mainframe. Features migrate one
+//! at a time; when the last one moves, the mainframe is switched off.
+
+public data Request { path: string }
+public data Reply { body: string }
+public data NotMigrated;
+
+/// A customer using online banking, unaware of the migration underneath.
+public person Customer {
+  #[manual]
+  public useApp(path: string): void {
+    AcmeBank::Facade.handle(Request from { path })
+  }
+}
+
+/// ACME Bank's online-banking platform.
+public system AcmeBank;
+
+/// The façade every channel hits: migrated features go to the modern core, the
+/// rest to the mainframe — so migration is invisible to customers.
+public container Facade for AcmeBank {
+  #[http("ANY /*")]
+  public handle(req: Request): Reply {
+    migrated = self.isMigrated(req.path)
+    if (migrated.isOk) {
+      return Core.serve(req)
+    }
+    return Mainframe.serve(req)
+  }
+
+  /// `Ok` if this feature has been migrated to the modern core.
+  isMigrated(path: string): Result<void, NotMigrated>;
+}
+
+/// The legacy mainframe core, retired one feature at a time.
+public system Mainframe { serve(req: Request): Reply; }
+/// The modern core, growing feature by feature until it owns everything.
+public system Core { serve(req: Request): Reply; }
+
+/// Migration is incremental and invisible behind the façade.
+feature RouteOldOrNew for Facade {
+  given "some features moved to the modern core and the rest still on the mainframe"
+  when  "a customer request arrives at the façade"
+  then  "a migrated feature is served by the modern core"
+  and   "an unmigrated one is served by the mainframe"
+  but   "the customer cannot tell which served it"
+}

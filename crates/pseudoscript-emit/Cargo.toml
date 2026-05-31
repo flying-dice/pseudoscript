@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-model = { path = "../pseudoscript-model" }
+pseudoscript-layout = { path = "../pseudoscript-layout" }
 serde = { version = "1", features = ["derive"] }
 layout-rs = "0.1.3"
 

@@ -117,6 +117,26 @@ impl Trigger {
     }
 }
 
+/// A callable's signature, in source form: its parameters and return type
+/// (`void` when absent). Populated only for callables; drives the type detail on
+/// sequence-diagram messages (`LANG.md` §9.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature {
+    /// The parameters, in declaration order.
+    pub params: Vec<SigParam>,
+    /// The rendered return type (`Result<Order, Rejected>`, `void`, …).
+    pub ret: String,
+}
+
+/// One parameter of a [`Signature`]: its name and rendered type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigParam {
+    /// The parameter name.
+    pub name: String,
+    /// The rendered parameter type.
+    pub ty: String,
+}
+
 /// One node in the resolved graph: a structural declaration, a `data` type, or
 /// a callable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,6 +160,8 @@ pub struct GraphNode {
     pub span: Span,
     /// Trigger macros on the node — only ever populated for callables (§2.4).
     pub triggers: Vec<Trigger>,
+    /// The callable's signature — `None` for non-callable nodes (§9.2).
+    pub signature: Option<Signature>,
     /// Documentation lifted from the declaration's `///` block (§2.1).
     pub doc: NodeDoc,
 }
@@ -423,6 +445,7 @@ impl Builder<'_> {
                     visibility: Visibility::from_bool(decl.is_public),
                     span: data.name.span,
                     triggers: Vec::new(),
+                    signature: None,
                     doc: node_doc(&decl.doc),
                 });
                 if let ast::DataBody::Union(variants) = &data.body {
@@ -438,6 +461,7 @@ impl Builder<'_> {
                                 visibility: Visibility::from_bool(decl.is_public),
                                 span: variant.name.span,
                                 triggers: Vec::new(),
+                                signature: None,
                                 // A union variant carries no `///` block of its
                                 // own; its docs live on the parent `data`.
                                 doc: NodeDoc::default(),
@@ -466,6 +490,7 @@ impl Builder<'_> {
             visibility: Visibility::from_bool(decl.is_public),
             span: node.name.span,
             triggers: Vec::new(),
+            signature: None,
             doc: node_doc(&decl.doc),
         });
         fqn
@@ -509,6 +534,7 @@ impl Builder<'_> {
             visibility: Visibility::from_bool(callable.is_public),
             span: callable.name.span,
             triggers: triggers.clone(),
+            signature: Some(signature_of(callable)),
             doc: node_doc(&callable.doc),
         });
 
@@ -823,6 +849,45 @@ fn expr_node_fqn(expr: &Expr, owner_fqn: &str, _module: &str) -> Option<String> 
         ExprKind::Ref(Ref::SelfNode(_)) => Some(owner_fqn.to_owned()),
         _ => None,
     }
+}
+
+/// The [`Signature`] of a callable: its parameters and rendered return type
+/// (`void` when absent). Drives the type detail on sequence-diagram messages.
+fn signature_of(callable: &Callable) -> Signature {
+    Signature {
+        params: callable
+            .params
+            .iter()
+            .map(|p| SigParam {
+                name: p.name.name.clone(),
+                ty: render_type(&p.ty),
+            })
+            .collect(),
+        ret: callable
+            .return_ty
+            .as_ref()
+            .map_or_else(|| "void".to_owned(), render_type),
+    }
+}
+
+/// Renders a type to its source form: `Result<Order, Rejected>`, `Account[]`.
+fn render_type(ty: &ast::Type) -> String {
+    let mut out = path_str(&ty.name);
+    if !ty.generics.is_empty() {
+        let args = ty
+            .generics
+            .iter()
+            .map(render_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push('<');
+        out.push_str(&args);
+        out.push('>');
+    }
+    if ty.is_array {
+        out.push_str("[]");
+    }
+    out
 }
 
 /// The `Trigger` a macro denotes, or `None` if it is not a trigger macro.

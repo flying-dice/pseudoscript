@@ -1,0 +1,7 @@
+{
+  "name": "Sharding",
+  "category": "Data",
+  "order": 53,
+  "landing": "sharding",
+  "description": "Snip (URL shortener) — links partitioned across shards by short code."
+}
