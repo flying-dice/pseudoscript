@@ -636,20 +636,23 @@
   // (from disk for a folder, from the bundled map for a sample) into the doc
   // state the FileTree and the site build read.
   let docLoadSeq = 0;
+  // Returns the loaded doc groups (`[{ title, items:[{title,path,handle}] }]`)
+  // so the caller can prefer a docs landing page, `[]` when the workspace has no
+  // (or malformed) manifest, or `null` when a faster mount superseded this load.
   async function loadWorkspaceDocs(ws) {
     const seq = (docLoadSeq += 1);
-    if (!ws.manifestToml) return;
+    if (!ws.manifestToml) return [];
     let manifest;
     try {
       manifest = docManifest(ws.manifestToml);
     } catch {
-      return; // malformed pds.toml — the auto docs still build
+      return []; // malformed pds.toml — the auto docs still build
     }
     const groups = ws.root
       ? await readDocPages(ws.root, ws.base, manifest.sidebar)
       : sampleDocPages(manifest.sidebar, ws.docs ?? {});
     // A later workspace may have mounted while we awaited; ignore a stale load.
-    if (seq !== docLoadSeq) return;
+    if (seq !== docLoadSeq) return null;
     const sources = {};
     for (const g of groups) for (const it of g.items) sources[it.path] = it.content;
     docSources = sources;
@@ -665,6 +668,7 @@
       for (const g of groups) for (const it of g.items) if (it.handle) docBaseline.push({ key: it.path, text: it.content });
       seedBaseline(docBaseline);
     }
+    return docGroups;
   }
 
   // ---- shared file-set mutation (T9/T10/T11) -------------------------------
