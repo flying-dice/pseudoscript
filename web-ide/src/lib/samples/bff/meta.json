@@ -2,6 +2,6 @@
   "name": "Backends for Frontends",
   "category": "Edge",
   "order": 11,
-  "landing": "bff",
-  "description": "Bingewatch (streaming) — a rich TV backend and a lean phone backend over the same shared services."
+  "landing": "docs/the-pattern.md",
+  "description": "Bingewatch (streaming) \u2014 a rich TV backend and a lean phone backend over the same shared services."
 }

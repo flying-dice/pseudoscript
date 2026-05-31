@@ -1,0 +1,59 @@
+//! shared — value objects, payloads, and event/error families used across Caregraph.
+
+/// A reserved scheduling slot.
+public data SlotRef { id: uuid }
+
+/// A scheduled clinical encounter between a patient and a clinician.
+public data Appointment { id: uuid, patient: uuid, clinician: uuid, at: datetime }
+
+/// A patient's medical record.
+public data ClinicalRecord { id: uuid, patient: uuid, summary: string }
+
+/// A patient's grant of record access to a clinician.
+public data Consent { id: uuid, patient: uuid, grantee: uuid }
+
+/// A request to transfer a slice of care to a specialist.
+public data Referral { id: uuid, patient: uuid, referrer: uuid, specialist: uuid, reason: string }
+
+/// An insurance claim for a completed appointment.
+public data Claim { id: uuid, patient: uuid, appointment: uuid, amount: number }
+
+/// A payer's eligibility determination.
+public data Eligibility { covered: bool }
+
+/// A payer's reference for a submitted claim.
+public data ClaimRef { ref: string }
+
+/// An access decision, recorded for audit and the patient's right-to-know.
+public data AccessRecord { record: uuid, by: uuid, granted: bool }
+
+/// Event: an appointment was booked into a slot.
+public data AppointmentBooked { appointment: uuid }
+
+/// Event: an appointment completed — the trigger for billing.
+public data AppointmentCompleted { appointment: uuid }
+
+/// Event: a clinical record was read (a clinician viewed a patient's record).
+public data RecordViewed { record: uuid, by: uuid }
+
+/// Event: a clinical record was amended.
+public data RecordAmended { record: uuid, by: uuid }
+
+/// Why an appointment transition was rejected.
+public data ScheduleError =
+  | SlotTaken  { at: datetime }
+  | NotInState { appointment: Appointment }
+
+/// Why record access was denied.
+public data AccessError =
+  | NotPermitted { record: ClinicalRecord }
+
+/// Why a referral was rejected.
+public data ReferralError =
+  | NoConsent    { referral: Referral }
+  | NotRequested { referral: Referral }
+
+/// Why a claim could not be processed.
+public data ClaimError =
+  | Ineligible    { reason: string }
+  | PayerRejected { reason: string }

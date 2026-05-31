@@ -1,0 +1,7 @@
+{
+  "name": "Caregraph",
+  "category": "Application",
+  "order": 4,
+  "landing": "docs/overview.md",
+  "description": "Clinical records: an appointment state machine, a consent-gated access-control policy, an event-sourced tamper-evident audit trail, a referral workflow, and a billing-claims saga."
+}

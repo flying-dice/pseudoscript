@@ -2,6 +2,6 @@
   "name": "Circuit Breaker",
   "category": "Resilience",
   "order": 20,
-  "landing": "circuit_breaker",
-  "description": "RateWatch (FX widget) — trips open on a failing rate feed and serves the last-known rate."
+  "landing": "docs/the-pattern.md",
+  "description": "RateWatch (FX widget) \u2014 trips open on a failing rate feed and serves the last-known rate."
 }

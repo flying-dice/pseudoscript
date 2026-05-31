@@ -2,6 +2,6 @@
   "name": "Sidecar / Ambassador",
   "category": "Edge",
   "order": 12,
-  "landing": "sidecar",
-  "description": "MeshMate — a proxy beside the app adds mTLS, retries, timeouts, and tracing; the app stays pure logic."
+  "landing": "docs/the-pattern.md",
+  "description": "MeshMate \u2014 a proxy beside the app adds mTLS, retries, timeouts, and tracing; the app stays pure logic."
 }

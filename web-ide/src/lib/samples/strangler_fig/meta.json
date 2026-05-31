@@ -2,6 +2,6 @@
   "name": "Strangler Fig",
   "category": "Evolution",
   "order": 60,
-  "landing": "strangler_fig",
-  "description": "ACME Bank — a façade routes migrated features to a modern core and the rest to the mainframe."
+  "landing": "docs/the-pattern.md",
+  "description": "ACME Bank \u2014 a fa\u00e7ade routes migrated features to a modern core and the rest to the mainframe."
 }

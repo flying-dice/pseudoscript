@@ -2,6 +2,6 @@
   "name": "Saga (Choreographed)",
   "category": "Transactions",
   "order": 41,
-  "landing": "choreography_saga",
-  "description": "Marketplace — order, paid, and shipped emerge from services reacting to events, with no orchestrator."
+  "landing": "docs/the-pattern.md",
+  "description": "Marketplace \u2014 order, paid, and shipped emerge from services reacting to events, with no orchestrator."
 }

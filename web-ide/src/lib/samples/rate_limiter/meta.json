@@ -2,6 +2,6 @@
   "name": "Rate Limiter",
   "category": "Resilience",
   "order": 22,
-  "landing": "rate_limiter",
-  "description": "SkyCast (weather API) — per-key request budgets shed a flooding caller."
+  "landing": "docs/the-pattern.md",
+  "description": "SkyCast (weather API) \u2014 per-key request budgets shed a flooding caller."
 }

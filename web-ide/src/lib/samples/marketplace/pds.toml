@@ -1,0 +1,26 @@
+# Bazaar — multi-vendor marketplace. `pds doc` documents every `.pds` file under
+# this directory; module FQNs derive from each file's path (LANG.md §8.1).
+[doc]
+name  = "Bazaar — Multi-Vendor Marketplace Architecture"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"
+
+[[doc.sidebar]]
+title = "Bazaar"
+items = [
+  { title = "Overview", path = "docs/overview.md" },
+  { title = "Catalog & Search (CQRS)", path = "docs/catalog.md" },
+]
+
+[[doc.sidebar]]
+title = "Deep Dives"
+items = [
+  { title = "Checkout & Payouts", path = "docs/checkout.md" },
+]
+
+[[doc.sidebar]]
+title = "Review"
+items = [
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+]

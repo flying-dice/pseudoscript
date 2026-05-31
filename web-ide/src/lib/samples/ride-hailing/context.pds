@@ -1,0 +1,46 @@
+//! context — the people who use Wayfare, the platform itself, and the third parties
+//! it integrates with (C4 system context).
+
+/// A passenger who requests rides through the app.
+public person Rider {
+  /// Request a ride between two points.
+  #[manual]
+  public requestRide(req: shared::RideRequest): void {
+    dispatch::Dispatch.requestRide(req)
+  }
+}
+
+/// A driver who accepts trips and is paid out for completed ones.
+public person Driver {
+  /// Accept an offered trip.
+  #[manual]
+  public accept(offer: shared::Offer): void {
+    trips::Trips.accept(offer)
+  }
+}
+
+/// Wayfare — the ride-hailing platform.
+/// #headline
+public system Wayfare;
+
+/// Third-party mapping / ETA provider. Flaky and rate-limited — called behind a guard.
+public system MapsProvider {
+  /// Estimated time of arrival between two points; fails when the provider is down.
+  public eta(origin: shared::GeoPoint, destination: shared::GeoPoint): Result<shared::Eta, shared::DispatchError>;
+}
+
+/// Third-party payment service provider: fare capture and driver transfers.
+public system PaymentProvider {
+  /// Capture a fare from the rider. May be declined.
+  public charge(fare: shared::Fare): Result<shared::Receipt, shared::PaymentError>;
+  /// Reverse a captured fare — the saga's compensation for a failed payout.
+  public refund(fare: shared::Fare): Result<shared::Receipt, shared::PaymentError>;
+  /// Transfer a payout to a driver's account. May fail and be retried.
+  public transfer(payout: shared::Payout): Result<shared::Receipt, shared::PaymentError>;
+}
+
+/// Push-notification provider for ride status and receipts.
+public system PushProvider {
+  /// Send a notification to a rider.
+  public notify(rider: shared::RideRequest, message: string): void;
+}

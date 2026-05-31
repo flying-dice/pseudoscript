@@ -1,0 +1,56 @@
+//! referrals — handing a patient's care to a specialist, gated by consent.
+
+/// Owns the referral workflow: request, accept or decline, then schedule.
+public container Referrals for context::Caregraph {
+
+  /// Request a referral to a specialist.
+  ///
+  /// The patient must have consented to share their record with the receiving
+  /// clinician — the record is never exposed to an unconsented party. The guard is
+  /// a disclosed authorization decision.
+  #[http("POST /referrals")]
+  public request(referral: shared::Referral): Result<shared::Referral, shared::ReferralError> {
+    consented = records::ConsentStore.activeBetween(referral.patient, referral.specialist)
+    if (consented.isNone) {
+      return Err(shared::NoConsent from { referral })
+    }
+    Referrals::ReferralStore.save(referral)
+    return Ok(referral)
+  }
+
+  /// A specialist accepts a requested referral. Accepting one not in the requested
+  /// state is rejected.
+  #[http("POST /referrals/accept")]
+  public accept(referral: shared::Referral): Result<shared::Referral, shared::ReferralError> {
+    requested = Referrals::ReferralStore.requested(referral)
+    if (requested.isNone) {
+      return Err(shared::NotRequested from { referral })
+    }
+    Referrals::ReferralStore.markAccepted(referral)
+    return Ok(referral)
+  }
+}
+
+/// Durable store of referrals and their state.
+public component ReferralStore for Referrals {
+  save(referral: shared::Referral): void;
+  /// The referral if it is still in the requested state.
+  requested(referral: shared::Referral): Option<shared::Referral>;
+  markAccepted(referral: shared::Referral): void;
+}
+
+/// A referral with patient consent is accepted by the specialist.
+feature AcceptReferral for Referrals {
+  given "the patient has consented to share with the specialist"
+  and   "the referral has been requested"
+  when  "the specialist accepts the referral"
+  then  "the referral is marked accepted"
+}
+
+/// A referral without consent to share is blocked at request.
+feature ReferralWithoutConsent for Referrals {
+  given "the patient has not consented to share with the specialist"
+  when  "a clinician requests the referral"
+  then  "the request is rejected with NoConsent"
+  but   "the record is never exposed to the specialist"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Bazaar",
+  "category": "Application",
+  "order": 3,
+  "landing": "docs/overview.md",
+  "description": "Multi-vendor marketplace: vendor onboarding via KYC, a CQRS catalog with a search projection, a cross-vendor checkout saga with no-oversell inventory holds, and an outbox payout ledger with an idempotent receiver."
+}

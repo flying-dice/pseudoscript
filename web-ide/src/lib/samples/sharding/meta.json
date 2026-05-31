@@ -2,6 +2,6 @@
   "name": "Sharding",
   "category": "Data",
   "order": 53,
-  "landing": "sharding",
-  "description": "Snip (URL shortener) — links partitioned across shards by short code."
+  "landing": "docs/the-pattern.md",
+  "description": "Snip (URL shortener) \u2014 links partitioned across shards by short code."
 }

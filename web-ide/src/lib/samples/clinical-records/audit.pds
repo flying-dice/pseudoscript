@@ -1,0 +1,56 @@
+//! audit — an append-only, event-sourced log of every clinical-data access, with CQRS
+//! projections for the patient's right-to-know and for compliance review.
+
+/// The event-sourced source of truth for who touched what, when. Append-only and
+/// tamper-evident: in healthcare the audit trail is a legal artefact.
+/// #critical
+public container AccessLog for context::Caregraph {
+  /// Append a record-view event, chained to the previous for tamper evidence.
+  public viewed(event: shared::RecordViewed): number;
+  /// Append a record-amend event.
+  public amended(event: shared::RecordAmended): number;
+}
+
+/// CQRS read model: a single patient's access history, folded from the access log.
+public container PatientAccessTrail for context::Caregraph {
+
+  /// Project an access event into each patient's trail.
+  #[onevent(shared::RecordViewed)]
+  public onViewed(event: shared::RecordViewed): void {
+    PatientAccessTrail::TrailStore.record(event)
+  }
+
+  /// The access history for one patient — answering their right to know.
+  #[http("GET /patients/access-trail")]
+  public forPatient(patient: context::Patient): shared::AccessRecord[] {
+    return PatientAccessTrail::TrailStore.forPatient(patient)
+  }
+}
+
+/// Denormalised store backing the patient access trail.
+public component TrailStore for PatientAccessTrail {
+  record(event: shared::RecordViewed): void;
+  forPatient(patient: context::Patient): shared::AccessRecord[];
+}
+
+/// CQRS read model: anomalous-access detection for compliance, over the same log.
+public container AccessAnomalies for context::Caregraph {
+
+  /// Fold the access log to surface unusual access patterns.
+  #[onevent(shared::RecordViewed)]
+  public onViewed(event: shared::RecordViewed): void {
+    AccessAnomalies::AnomalyStore.evaluate(event)
+  }
+
+  /// The currently-flagged anomalous accesses.
+  #[http("GET /compliance/anomalies")]
+  public flagged(): shared::AccessRecord[] {
+    return AccessAnomalies::AnomalyStore.flagged()
+  }
+}
+
+/// Denormalised store backing anomaly detection.
+public component AnomalyStore for AccessAnomalies {
+  evaluate(event: shared::RecordViewed): void;
+  flagged(): shared::AccessRecord[];
+}

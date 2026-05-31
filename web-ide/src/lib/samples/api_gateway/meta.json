@@ -2,6 +2,6 @@
   "name": "API Gateway",
   "category": "Edge",
   "order": 10,
-  "landing": "api_gateway",
-  "description": "Nomnom (food delivery) — one gateway fronts menus, ordering, and couriers; the services never face the internet."
+  "landing": "docs/the-pattern.md",
+  "description": "Nomnom (food delivery) \u2014 one gateway fronts menus, ordering, and couriers; the services never face the internet."
 }

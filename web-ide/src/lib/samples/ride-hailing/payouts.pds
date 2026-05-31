@@ -1,0 +1,83 @@
+//! payouts — settle a completed trip to its driver as a compensating saga, and pay
+//! out reliably through a transactional outbox.
+
+/// Settles driver earnings for completed trips. Triggered by trip completion.
+/// #critical
+public container Payouts for context::Wayfare {
+
+  /// Accrue and settle a payout when a trip completes.
+  ///
+  /// Settlement is a saga: capture the platform fee, credit the driver ledger,
+  /// then queue the bank transfer through the outbox. A failed ledger credit
+  /// refunds the captured fee, so a partial failure never strands money. Keyed on
+  /// the trip, so a replayed event never double-pays.
+  #[onevent(shared::TripCompleted)]
+  public onTripCompleted(event: shared::TripCompleted): Result<shared::Payout, shared::PaymentError> {
+    payout = self.accrue(event)
+    captured = context::PaymentProvider.charge(event.fare)
+    if (captured.isErr) {
+      return Err(shared::Declined from { captured })
+    }
+    credited = Payouts::Ledger.credit(payout)
+    if (credited.isErr) {
+      context::PaymentProvider.refund(event.fare)
+      return Err(shared::TransferFailed from { credited })
+    }
+    Payouts::Outbox.enqueue(payout)
+    return Ok(payout)
+  }
+
+  /// Drain undelivered payouts to the bank, marking each delivered on success.
+  /// Idempotent on payout id, so a crashed-then-retried drain never pays twice.
+  #[schedule = "*/1 * * * *"]
+  public drain(): void {
+    pending = Payouts::Outbox.undelivered()
+    for (payout in pending) {
+      sent = context::PaymentProvider.transfer(payout)
+      if (sent.isErr) {
+        Payouts::Outbox.markFailed(payout)
+      }
+      Payouts::Outbox.markDelivered(payout)
+    }
+  }
+
+  /// Accrue the amount owed from the trip's fare — gross less platform fee.
+  accrue(event: shared::TripCompleted): shared::Payout;
+}
+
+/// Double-entry record of driver earnings.
+/// #critical
+public component Ledger for Payouts {
+  /// Credit a driver's balance; fails if the ledger rejects the entry.
+  credit(payout: shared::Payout): Result<void, shared::PaymentError>;
+}
+
+/// Transactional outbox: a payout row committed with the ledger entry, then drained
+/// to the bank rails by a relay. Guarantees at-least-once, deduplicated transfers.
+/// #critical
+public component Outbox for Payouts {
+  /// Enqueue a payout, committed atomically with the ledger write.
+  enqueue(payout: shared::Payout): void;
+  /// Payout rows not yet confirmed delivered to the bank.
+  undelivered(): shared::Payout[];
+  markDelivered(payout: shared::Payout): void;
+  markFailed(payout: shared::Payout): void;
+}
+
+/// A completed trip pays its driver exactly once.
+feature SettlePayout for Payouts {
+  given "a trip has completed"
+  when  "the payout saga runs"
+  then  "the platform fee is captured"
+  and   "the driver ledger is credited"
+  and   "a payout is enqueued in the outbox for transfer"
+}
+
+/// A failed ledger credit unwinds the captured fee.
+feature CompensateOnFailure for Payouts {
+  given "the platform fee has been captured"
+  when  "crediting the driver ledger fails"
+  then  "the fee capture is refunded"
+  and   "the payout fails with a PaymentError"
+  but   "no money is left stranded"
+}

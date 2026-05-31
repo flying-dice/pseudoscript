@@ -1,0 +1,46 @@
+//! shared — value objects, payloads, and event/error families used across Wayfare.
+
+/// A latitude/longitude pair used for matching and routing.
+public data GeoPoint { lat: number, lng: number }
+
+/// A rider's request to travel between two points.
+public data RideRequest { rider: uuid, origin: GeoPoint, destination: GeoPoint }
+
+/// An estimated time of arrival, in seconds, from the maps provider.
+public data Eta { seconds: number }
+
+/// A priced quote for a trip, locked when the offer is made.
+public data Fare { id: uuid, base: number, surgeMultiplier: number, total: number }
+
+/// A time-boxed offer of a trip to one driver.
+public data Offer { id: uuid, request: RideRequest, driver: uuid, fare: Fare }
+
+/// A single ride from pickup to drop-off.
+public data Trip { id: uuid, rider: uuid, driver: uuid, fare: Fare }
+
+/// What a driver is owed for a completed trip.
+public data Payout { id: uuid, driver: uuid, trip: uuid, gross: number, net: number }
+
+/// A provider's confirmation of a money movement.
+public data Receipt { ref: string }
+
+/// Event: a driver began heading to pickup; the ride has started.
+public data TripStarted { trip: uuid }
+
+/// Event: a trip finished and its fare is final — the trigger for settlement.
+public data TripCompleted { trip: uuid, driver: uuid, fare: Fare }
+
+/// Why dispatch could not place a request.
+public data DispatchError =
+  | NoDriverAvailable { request: RideRequest }
+  | MapsDown          { detail: string }
+
+/// Why a money movement failed.
+public data PaymentError =
+  | Declined       { reason: string }
+  | TransferFailed { reason: string }
+
+/// Why a trip transition was rejected.
+public data TripError =
+  | NotInState  { trip: Trip }
+  | OfferExpired { offer: Offer }

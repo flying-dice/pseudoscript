@@ -1,0 +1,72 @@
+//! records — the clinical record and the consent-gated access decision. No record is
+//! read without an explicit authorization decision; every read is audited.
+
+/// Owns the clinical record and the single access-control decision point.
+/// #critical
+public container Records for context::Caregraph {
+
+  /// Read a clinical record, gated by the access policy and audited.
+  ///
+  /// Access is decided in ONE place (`permits`) — the authorization rule is disclosed
+  /// here, not buried in a controller. A denied read is rejected and still audited.
+  #[http("GET /records")]
+  public read(record: shared::ClinicalRecord, by: context::Clinician): Result<shared::ClinicalRecord, shared::AccessError> {
+    allowed = self.permits(record, by)
+    viewed = shared::RecordViewed from { record, by }
+    audit::AccessLog.viewed(viewed)
+    if (allowed) {
+      return Ok(record)
+    }
+    return Err(shared::NotPermitted from { record })
+  }
+
+  /// The single access decision: permit a read on active consent OR a live care
+  /// relationship (an in-progress appointment — break-glass). Deny by default.
+  permits(record: shared::ClinicalRecord, by: context::Clinician): bool {
+    granted = Records::ConsentStore.activeFor(record, by)
+    if (granted.isSome) {
+      return true
+    }
+    caring = scheduling::AppointmentStore.between(record.patient, by)
+    if (caring.isSome) {
+      return true
+    }
+    return false
+  }
+
+  /// Amend a record; the amender must have a care relationship to the patient.
+  #[http("POST /records/amend")]
+  public amend(record: shared::ClinicalRecord, by: context::Clinician): Result<shared::ClinicalRecord, shared::AccessError> {
+    caring = scheduling::AppointmentStore.between(record.patient, by)
+    if (caring.isNone) {
+      return Err(shared::NotPermitted from { record })
+    }
+    amended = shared::RecordAmended from { record, by }
+    audit::AccessLog.amended(amended)
+    return Ok(record)
+  }
+}
+
+/// Durable store of patient consents.
+public component ConsentStore for Records {
+  /// The active consent for this record and clinician, if any (None once withdrawn).
+  activeFor(record: shared::ClinicalRecord, by: context::Clinician): Option<shared::Consent>;
+  /// Active consent for a patient to share with a clinician, if any.
+  public activeBetween(patient: uuid, clinician: uuid): Option<shared::Consent>;
+}
+
+/// A clinician with consent reads a patient's record.
+feature PermittedRead for Records {
+  given "the patient has granted consent to the clinician"
+  when  "the clinician reads the record"
+  then  "the record is returned"
+  and   "the read is appended to the access log"
+}
+
+/// A clinician without consent or a care relationship is denied.
+feature DeniedRead for Records {
+  given "the clinician has no consent and no care relationship"
+  when  "the clinician tries to read the record"
+  then  "the read is rejected with NotPermitted"
+  but   "the denied attempt is still audited"
+}

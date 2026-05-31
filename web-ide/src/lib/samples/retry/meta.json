@@ -2,6 +2,6 @@
   "name": "Retry with Backoff",
   "category": "Resilience",
   "order": 23,
-  "landing": "retry",
-  "description": "Postbird (email sender) — rides out transient provider failures with exponential backoff."
+  "landing": "docs/the-pattern.md",
+  "description": "Postbird (email sender) \u2014 rides out transient provider failures with exponential backoff."
 }

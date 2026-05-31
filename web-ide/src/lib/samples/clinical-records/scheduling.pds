@@ -1,0 +1,67 @@
+//! scheduling — appointments between patients and clinicians as a state machine.
+
+/// Owns the appointment lifecycle: book, complete, or cancel a clinical encounter.
+/// #critical
+public container Scheduling for context::Caregraph {
+
+  /// Book an appointment into a free slot.
+  ///
+  /// A slot already taken is an explicit rejection, not a double-booking. Booking
+  /// emits an event the rest of the system keys off.
+  #[http("POST /appointments")]
+  public book(appointment: shared::Appointment): Result<shared::Appointment, shared::ScheduleError> {
+    slot = context::SchedulingProvider.reserve(appointment)
+    if (slot.isErr) {
+      return Err(slot.error)
+    }
+    Scheduling::AppointmentStore.save(appointment)
+    booked = shared::AppointmentBooked from { appointment }
+    Scheduling::EventLog.booked(booked)
+    return Ok(appointment)
+  }
+
+  /// Complete an in-progress appointment. Completion is the trigger for record
+  /// finalisation and billing. Completing one not in progress is rejected.
+  #[http("POST /appointments/complete")]
+  public complete(appointment: shared::Appointment): Result<shared::Appointment, shared::ScheduleError> {
+    current = Scheduling::AppointmentStore.inProgress(appointment)
+    if (current.isNone) {
+      return Err(shared::NotInState from { appointment })
+    }
+    done = shared::AppointmentCompleted from { appointment }
+    Scheduling::EventLog.completed(done)
+    return Ok(appointment)
+  }
+}
+
+/// Durable store of appointments and their current state.
+public component AppointmentStore for Scheduling {
+  save(appointment: shared::Appointment): void;
+  /// The appointment if it is currently in progress.
+  inProgress(appointment: shared::Appointment): Option<shared::Appointment>;
+  /// An active (in-progress) appointment between a patient and a clinician, if any.
+  public between(patient: uuid, clinician: uuid): Option<shared::Appointment>;
+}
+
+/// Append-only log of appointment events.
+/// #critical
+public component EventLog for Scheduling {
+  booked(event: shared::AppointmentBooked): number;
+  completed(event: shared::AppointmentCompleted): number;
+}
+
+/// A free slot is booked into an appointment.
+feature BookAppointment for Scheduling {
+  given "the clinician's slot is free"
+  when  "the patient books the appointment"
+  then  "the appointment is stored"
+  and   "an AppointmentBooked event is appended"
+}
+
+/// A taken slot cannot be double-booked.
+feature SlotConflict for Scheduling {
+  given "the clinician's slot is already taken"
+  when  "the patient tries to book it"
+  then  "booking is rejected with SlotTaken"
+  but   "no appointment is created"
+}

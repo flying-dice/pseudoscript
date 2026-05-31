@@ -1,0 +1,49 @@
+//! dispatch — match open requests to nearby drivers, priced by surge.
+
+/// The matching engine: scores nearby drivers for a request and offers the trip.
+/// #critical
+public container Dispatch for context::Wayfare {
+
+  /// Match a rider's request to a driver and produce a priced, time-boxed offer.
+  ///
+  /// Scarcity (no driver) and a downstream maps outage are distinct, explicit
+  /// failures — the rider is told which, and the request is never left dangling.
+  #[http("POST /requests")]
+  public requestRide(req: shared::RideRequest): Result<shared::Offer, shared::DispatchError> {
+    candidate = Dispatch::NearestQuery.nearest(req.origin)
+    if (candidate.isNone) {
+      return Err(shared::NoDriverAvailable from { req })
+    }
+    estimate = context::MapsProvider.eta(req.origin, req.destination)
+    if (estimate.isErr) {
+      return Err(shared::MapsDown from { estimate })
+    }
+    fare = pricing::Pricing.quote(req, estimate.value)
+    offer = shared::Offer from { req, candidate, fare }
+    return Ok(offer)
+  }
+}
+
+/// A spatial index of live driver locations; answers nearest-neighbour queries.
+/// #critical
+public component NearestQuery for Dispatch {
+  /// The closest online driver to a point, if any are available.
+  nearest(at: shared::GeoPoint): Option<context::Driver>;
+}
+
+/// A rider requests a ride and is matched to a nearby driver.
+feature RequestRide for Dispatch {
+  given "an online driver is nearby"
+  and   "the maps provider is reachable"
+  when  "the rider requests a ride"
+  then  "a priced offer is returned for the nearest driver"
+  and   "the fare is locked to the offer"
+}
+
+/// No driver is available to take the request.
+feature NoDriver for Dispatch {
+  given "no online driver is near the rider"
+  when  "the rider requests a ride"
+  then  "the request is rejected with NoDriverAvailable"
+  but   "no offer and no trip are created"
+}

@@ -2,6 +2,6 @@
   "name": "CQRS",
   "category": "Data",
   "order": 50,
-  "landing": "cqrs",
+  "landing": "docs/the-pattern.md",
   "description": "Kudos (recognition) — light writes and a hammered leaderboard; separate read and write models."
 }
