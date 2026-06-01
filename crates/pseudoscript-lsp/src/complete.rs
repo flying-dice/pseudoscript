@@ -29,10 +29,7 @@ pub fn completion(
 ) -> Vec<CompletionItem> {
     let offset = position_to_offset(src, position);
     let tokens = tokenize(src);
-    // The token whose context governs completion is the last one ending at or
-    // before the caret (an identifier under the caret ends after it, so its
-    // predecessor — the trigger — is selected instead).
-    let trigger = tokens.iter().rposition(|t| t.span.end <= offset);
+    let trigger = governing_trigger(&tokens, offset);
 
     match trigger.map(|i| (i, tokens[i].kind)) {
         Some((i, TokenKind::Dot)) => member_items(ws, from_fqn, src, &tokens, i),
@@ -40,6 +37,23 @@ pub fn completion(
         Some((_, TokenKind::HashLBracket)) => macro_items(),
         Some((_, TokenKind::Colon | TokenKind::LAngle)) => type_items(ws),
         _ => general_items(ws, from_fqn),
+    }
+}
+
+/// Index of the token whose kind governs completion at `offset`.
+///
+/// The trigger is the rightmost token ending at or before the caret — except
+/// for a partial identifier typed *under* the caret, which ends exactly at
+/// `offset` (`span.end == offset`). That identifier is the prefix the client
+/// filters on, not the context, so its predecessor is the real trigger. A caret
+/// strictly inside an identifier (`span.end > offset`) is already excluded by
+/// the `<= offset` bound, so only the boundary case needs skipping.
+fn governing_trigger(tokens: &[Token], offset: u32) -> Option<usize> {
+    let last = tokens.iter().rposition(|t| t.span.end <= offset)?;
+    if tokens[last].kind == TokenKind::Ident && tokens[last].span.end == offset {
+        last.checked_sub(1)
+    } else {
+        Some(last)
     }
 }
 
@@ -263,5 +277,69 @@ mod tests {
         let labels = labels_at(&ws, "m", src, src.len() as u32);
         assert!(labels.contains(&"system".to_owned()), "{labels:?}");
         assert!(labels.contains(&"public".to_owned()), "{labels:?}");
+    }
+
+    // With a prefix typed, the caret sits at the end of a partial identifier.
+    // Each narrowing context must stay scoped — the trigger before the prefix
+    // governs — and must not leak the general keyword set.
+
+    #[test]
+    fn members_after_self_dot_with_prefix() {
+        let src =
+            "//! m\n\nsystem S {\n  run() {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
+        let ws = workspace(&[("m", src)]);
+        let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"helper".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"run".to_owned()), "{labels:?}");
+        assert!(
+            !labels.contains(&"system".to_owned()),
+            "general scope leaked: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn types_after_colon_with_prefix() {
+        let src = "//! m\n\ndata D { x: numb }\n";
+        let ws = workspace(&[("m", src)]);
+        let offset = (src.find("numb").unwrap() + "numb".len()) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"number".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"D".to_owned()), "{labels:?}");
+        assert!(
+            !labels.contains(&"system".to_owned()),
+            "general scope leaked: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn macros_after_hash_bracket_with_prefix() {
+        let src = "//! m\n\n#[ht\nsystem S;\n";
+        let ws = workspace(&[("m", src)]);
+        let offset = (src.find("#[ht").unwrap() + "#[ht".len()) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"http".to_owned()), "{labels:?}");
+        assert!(
+            !labels.contains(&"system".to_owned()),
+            "general scope leaked: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn public_symbols_after_module_path_with_prefix() {
+        let mods = [
+            ("a", "//! a\n\npublic system Svc;\n\nsystem Hidden;\n"),
+            ("b", "//! b\n\ncontainer C for a::Sv\n"),
+        ];
+        let ws = workspace(&mods);
+        let src = mods[1].1;
+        let offset = (src.find("a::Sv").unwrap() + "a::Sv".len()) as u32;
+        let labels = labels_at(&ws, "b", src, offset);
+        assert!(labels.contains(&"Svc".to_owned()), "{labels:?}");
+        assert!(!labels.contains(&"Hidden".to_owned()), "{labels:?}");
+        assert!(
+            !labels.contains(&"system".to_owned()),
+            "general scope leaked: {labels:?}"
+        );
     }
 }
