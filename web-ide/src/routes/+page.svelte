@@ -17,6 +17,9 @@
   import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
   import type { MountableWorkspace } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
+  import * as nav from "$lib/core/navigation.js";
+  import { computeDiagnostics } from "$lib/core/diagnostics.js";
+  import * as ops from "$lib/core/workspace-ops.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -82,32 +85,23 @@
   // recording. New jumps truncate the forward tail (browser-history semantics).
   let history = $state<Loc[]>([]);
   let histIndex = $state(-1);
-  const canBack = $derived(histIndex > 0);
-  const canForward = $derived(histIndex >= 0 && histIndex < history.length - 1);
+  const canBack = $derived(nav.canBack({ history, index: histIndex }));
+  const canForward = $derived(nav.canForward({ history, index: histIndex }));
 
-  // Record a visited location, dropping any forward tail and collapsing a repeat
-  // of the current location (label may refresh). Capped so the list stays bounded.
+  // Record a visited location (forward-tail truncation, repeat collapse, cap).
   function recordLocation(loc: Loc) {
-    const trail = history.slice(0, histIndex + 1);
-    const last = trail.at(-1);
-    if (last && last.fileFqn === loc.fileFqn && last.line === loc.line && last.col === loc.col) {
-      trail[trail.length - 1] = loc;
-      history = trail;
-    } else {
-      history = [...trail, loc].slice(-50);
-    }
-    histIndex = history.length - 1;
+    const next = nav.recordLocation({ history, index: histIndex }, loc);
+    history = next.history;
+    histIndex = next.index;
   }
 
   // Before a jump, record where the caret currently is so Back returns to the
-  // starting point — otherwise the first jump only records its destination and
-  // the origin is lost. Skips when the caret already sits at the history cursor.
+  // starting point. Skips when the caret already sits at the history cursor.
   function recordOrigin() {
     const loc = editorApi?.location?.();
     if (!loc || !openFile?.fqn) return;
-    const here: Loc = { fileFqn: openFile.fqn, line: loc.line, col: loc.col, label: `${openFile.fqn.split("::").at(-1)}:${loc.line}` };
-    const cur = history[histIndex];
-    if (cur && cur.fileFqn === here.fileFqn && cur.line === here.line && cur.col === here.col) return;
+    const here = nav.originLoc(openFile.fqn, loc.line, loc.col);
+    if (nav.samePosition(history[histIndex], here)) return;
     recordLocation(here);
   }
 
@@ -125,8 +119,18 @@
     pendingGoto = { line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
   }
 
-  const goBack = () => canBack && (histIndex -= 1, applyLocation(history[histIndex]));
-  const goForward = () => canForward && (histIndex += 1, applyLocation(history[histIndex]));
+  function goBack() {
+    const step = nav.stepBack({ history, index: histIndex });
+    if (!step) return;
+    histIndex = step.state.index;
+    applyLocation(step.loc);
+  }
+  function goForward() {
+    const step = nav.stepForward({ history, index: histIndex });
+    if (!step) return;
+    histIndex = step.state.index;
+    applyLocation(step.loc);
+  }
 
   // Open a find-usages occurrence: jump to it and record it in history.
   function openUsage(occ: Occurrence) {
@@ -304,39 +308,15 @@
     workspace ? workspace.files.map((f) => ({ fqn: f.fqn ?? "", source: moduleSources[f.fqn ?? ""] ?? "" })) : [],
   );
 
-  const workspaceResults = $derived.by(() => {
-    if (!ready || !workspace) return null;
-    try {
-      return checkModules(allModules);
-    } catch {
-      return null;
-    }
-  });
-
-  const problems = $derived.by<Problem[]>(() => {
-    if (workspace && workspaceResults) {
-      return workspaceResults.flatMap((m) =>
-        (m.diagnostics as unknown as Problem[]).map((d) => ({ ...d, file: m.fqn })),
-      );
-    }
-    return [];
-  });
-  const errorCount = $derived(problems.filter((d) => d.severity === "error").length);
-
-  const errorPaths = $derived.by(() => {
-    const paths = new Set<string>();
-    if (workspace && workspaceResults) {
-      const byFqn = new Map<string, string | undefined>();
-      for (const f of workspace.files) if (f.fqn) byFqn.set(f.fqn, f.path);
-      for (const m of workspaceResults) {
-        if (m.diagnostics.some((d) => d.severity === "error")) {
-          const p = byFqn.get(m.fqn);
-          if (p) paths.add(p);
-        }
-      }
-    }
-    return paths;
-  });
+  // Static-check the whole workspace; the view reads its problems/errors/paths.
+  const diag = $derived.by(() =>
+    ready && workspace
+      ? computeDiagnostics(allModules, workspace.files, checkModules)
+      : { results: null, problems: [], errorCount: 0, errorPaths: new Set<string>() },
+  );
+  const problems = $derived(diag.problems);
+  const errorCount = $derived(diag.errorCount);
+  const errorPaths = $derived(diag.errorPaths);
 
   const nodes = $derived.by<StructureNode[]>(() => {
     if (!ready || !workspace) return [];
@@ -862,58 +842,13 @@
 
   // A minimal valid `.pds` module: a system shell with one container and one
   // behaviour, mirroring the new-workspace starter so it resolves clean.
-  function pdsSkeleton(fqn: string): string {
-    const leaf = fqn.split("::").pop() ?? "";
-    const title = leaf.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const sys = pascalName(leaf);
-    return `//! ${leaf}
-
-/// The ${title} system — describe this module's architecture here.
-public system ${sys};
-
-/// A first container. Add components, data, and callables beneath it.
-public container Api for ${sys} {
-  /// A first behaviour. Replace with your own flows.
-  public Health(): void {
-    // Describe what happens here.
-  }
-}
-`;
-  }
-
-  function pascalName(s: string): string {
-    return s.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\s+/g, "") || "Module";
-  }
-
   // ---- T9: new .pds file ---------------------------------------------------
-  // Normalise a typed name into a base-relative leaf path: trim, drop a leading
-  // slash, append `.pds` when no extension is given.
-  function normalizePdsPath(name: string): string {
-    let p = name.trim().replace(/^\/+/, "");
-    if (!/\.[a-z0-9]+$/i.test(p)) p += ".pds";
-    return p;
-  }
-
-  // Validate a new .pds path against the file set + reserved names. `/` is a
-  // directory separator (subdirectory placement); `\` and empty are rejected.
-  function validateNewFile(name: string): string | null {
-    const raw = name.trim();
-    if (!raw) return "Name can't be empty.";
-    if (raw.includes("\\")) return "Use forward slashes for folders.";
-    if (raw.endsWith("/")) return "Name a file, not a folder.";
-    const lower = raw.toLowerCase();
-    if (lower.endsWith(".md")) return "Use New doc for Markdown files.";
-    if (/(^|\/)pds\.toml$/i.test(raw)) return "pds.toml is reserved.";
-    if (/\.[a-z0-9]+$/i.test(raw) && !lower.endsWith(".pds")) return "Only .pds files are supported here.";
-    const path = withBase(normalizePdsPath(raw));
-    if ((workspace?.files ?? []).some((f) => f.path === path)) return "A file with that path already exists.";
-    return null;
-  }
-
-  // Prefix a base-relative path with the workspace base dir (the manifest dir).
-  function withBase(rel: string): string {
-    return workspace?.base ? `${workspace.base}/${rel}` : rel;
-  }
+  // Thin view wrappers over the pure `core/workspace-ops` helpers, supplying the
+  // live workspace context (file set, base dir) the pure functions take as args.
+  const pdsSkeleton = (fqn: string) => ops.pdsSkeleton(fqn);
+  const normalizePdsPath = (name: string) => ops.normalizePdsPath(name);
+  const withBase = (rel: string) => ops.withBase(workspace?.base, rel);
+  const validateNewFile = (name: string) => ops.validateNewFile(name, workspace?.files ?? [], workspace?.base);
 
   function startNewFile() {
     if (!workspace) return;
@@ -953,25 +888,9 @@ public container Api for ${sys} {
   }
 
   // ---- T10: new doc (.md + [[doc.sidebar]] registration) -------------------
-  function slugify(title: string): string {
-    return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  }
-
-  // Every doc path already in the live sidebar (base-relative).
-  function docPathSet(): Set<string> {
-    const set = new Set<string>();
-    for (const g of docGroups) for (const it of g.items) set.add(it.path);
-    return set;
-  }
-
-  function validateNewDoc(title: string): string | null {
-    const t = title.trim();
-    if (!t) return "Title can't be empty.";
-    const slug = slugify(t);
-    if (!slug) return "Title needs at least one letter or number.";
-    if (docPathSet().has(`docs/${slug}.md`)) return `A doc at docs/${slug}.md already exists.`;
-    return null;
-  }
+  const slugify = (title: string) => ops.slugify(title);
+  const docPathSet = () => ops.docPathSet(docGroups);
+  const validateNewDoc = (title: string) => ops.validateNewDoc(title, docPathSet());
 
   function startNewDoc() {
     if (!workspace) return;
@@ -1041,16 +960,8 @@ public container Api for ${sys} {
   }
 
   // ---- T11: rename / move / delete .pds ------------------------------------
-  function validateRename(file: OpenFile, name: string): string | null {
-    const err = validateNewFile(name);
-    if (!err) return null;
-    // Allow the unchanged name, and a collision only against the file itself.
-    if (err === "A file with that path already exists.") {
-      const target = withBase(normalizePdsPath(name));
-      if (!(workspace?.files ?? []).some((f) => f !== file && f.path === target)) return null;
-    }
-    return err;
-  }
+  const validateRename = (file: OpenFile, name: string) =>
+    ops.validateRename(file, name, workspace?.files ?? [], workspace?.base);
 
   function startRenameFile(file: OpenFile) {
     if (!workspace || !file.path) return;
@@ -1112,15 +1023,8 @@ public container Api for ${sys} {
     else notify("success", `Renamed to ${newFqn}`);
   }
 
-  // Best-effort scan for modules whose source still references the old FQN — a
-  // warn-only signal (we do not auto-rewrite importers; see T11 decision). An
-  // FQN appears verbatim in import/alias statements, so a substring test suffices.
-  function danglingImporters(newFqn: string, oldFqn: string): string[] {
-    if (!workspace) return [];
-    return workspace.files
-      .filter((f) => f.fqn !== newFqn && (moduleSources[f.fqn ?? ""] ?? "").includes(oldFqn))
-      .map((f) => f.fqn ?? "");
-  }
+  const danglingImporters = (newFqn: string, oldFqn: string) =>
+    ops.danglingImporters(workspace?.files ?? [], moduleSources, newFqn, oldFqn);
 
   function requestDeleteFile(file: OpenFile) {
     if (!workspace) return;
