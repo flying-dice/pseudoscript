@@ -1,0 +1,15 @@
+{
+  // Marketing landing → Cloudflare Workers static assets (no server worker).
+  // Output produced by `npm run build` (Vite) into ./dist.
+  // Account is supplied via the CLOUDFLARE_ACCOUNT_ID env var (local + CI).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pdscript-landing",
+  "compatibility_date": "2025-05-05",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [
+    { "pattern": "pdscript.dev", "custom_domain": true }
+  ]
+}
