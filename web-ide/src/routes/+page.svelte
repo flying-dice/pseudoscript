@@ -28,94 +28,27 @@
   import PromptDialog from "$lib/components/PromptDialog.svelte";
 
   // ── Page-local types ──────────────────────────────────────────────────────
-  // A structural node listed by `outline`/`outlineModules`. The wasm payload
-  // carries `line`, `col` and `parent` beyond the lib's `OutlineNode` shape.
-  type StructureNode = {
-    fqn: string;
-    name: string;
-    kind: string;
-    triggered: boolean;
-    line: number;
-    col: number;
-    parent?: string | null;
-  };
-
-  // A symbol entry: a structure node tagged with its declaring file's FQN.
-  type Symbol = StructureNode & { fileFqn: string };
-
-  // A workspace diagnostic, as produced by `checkModules` (1-based start
-  // positions) then tagged with its owning module's FQN by the page.
-  type Problem = {
-    severity: string;
-    message: string;
-    start_line: number;
-    start_col: number;
-    end_line?: number;
-    end_col?: number;
-    code?: string;
-    file?: string;
-  };
-
-  // The page's open-file descriptor — a module, an authored doc page, or the
-  // manifest. The discriminants (`isDoc`/`isManifest`) gate which fields apply.
-  type OpenFile = {
-    path?: string;
-    fqn?: string;
-    handle?: FileSystemFileHandle | null;
-    title?: string;
-    isDoc?: boolean;
-    isManifest?: boolean;
-  };
-
-  // The live workspace: a real on-disk `Workspace` or an in-memory sample/share
-  // shape. The superset of fields the page reads; on-disk-only fields optional.
-  type PageWorkspace = {
-    name: string;
-    files: OpenFile[];
-    manifestToml?: string | null;
-    root?: FileSystemDirectoryHandle | null;
-    base?: string;
-    manifest?: { handle?: FileSystemFileHandle | null; path: string } | null;
-    docs?: Record<string, string>;
-  };
-
-  // A live doc sidebar item / group (handles optional for sample pages).
-  type LiveDocItem = { title: string; path: string; handle?: FileSystemFileHandle | null };
-  type LiveDocGroup = { title: string; items: LiveDocItem[] };
-
-  // A code location recorded in / replayed from navigation history.
-  type Loc = { fileFqn: string; line: number; col: number; label?: string; fqn?: string };
-
-  // The editor's imperative API handed back via `onready`.
-  type EditorApi = {
-    goto: (line: number, col: number) => void;
-    location: () => { line: number; col: number } | null;
-    openSettings: () => void;
-  };
-
-  // Canvas pointer popovers.
-  type CanvasInfo = { kind: string; title: string; body: string; fqn?: string; x: number; y: number };
-  type CanvasUsages = { name: string; items: Occurrence[]; x: number; y: number };
-
-  // A FileTree name-prompt dialog config, and the destructive-confirm config.
-  type Dialog = {
-    title: string;
-    label: string;
-    placeholder: string;
-    value: string;
-    confirmLabel: string;
-    hint: string;
-    validate: (name: string) => string | null;
-    run: (name: string) => void;
-  };
-  type ConfirmDialog = { title: string; message: string; confirmLabel?: string; run: () => void };
-
-  // A toast notification.
-  type NoteKind = "success" | "error" | "info";
-  type Note = { id: number; kind: NoteKind; title: string; body: string };
-
-  // A pending debounced disk write.
-  type PendingWrite = { handle: FileSystemFileHandle; key: string; text: string };
+  // Shared shapes live in the framework-agnostic core (`$lib/core/types`); the
+  // page keeps only the view-specific `MountInput`. `WorkspaceModel` is aliased
+  // to the page's historical `PageWorkspace` name.
+  import type {
+    StructureNode,
+    Symbol,
+    Problem,
+    OpenFile,
+    WorkspaceModel as PageWorkspace,
+    LiveDocItem,
+    LiveDocGroup,
+    Loc,
+    EditorApi,
+    CanvasInfo,
+    CanvasUsages,
+    Dialog,
+    ConfirmDialog,
+    NoteKind,
+    Note,
+    PendingWrite,
+  } from "$lib/core/types.js";
 
   // The in-memory mount payload `mountWorkspace` consumes (sample / decoded).
   type MountInput = { workspace: PageWorkspace; landing?: string | null };
