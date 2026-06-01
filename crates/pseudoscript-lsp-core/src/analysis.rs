@@ -80,7 +80,7 @@ pub fn hover(ws: &Workspace, from_fqn: &str, src: &str, position: Position) -> O
 
     // Fallback: a local binding shows its inferred type (`tokens: Token[]`).
     let (name, span) = ident_at(src, offset)?;
-    let local = crate::infer::binding_type_at(ws, from_fqn, &name)?;
+    let local = pseudoscript_model::infer::binding_type_at(ws, from_fqn, &name)?;
     Some(markup_hover(
         format!("**`{name}: {}`**\n\nlocal binding", local.ty),
         span_to_range(src, &index, span),
@@ -91,7 +91,7 @@ pub fn hover(ws: &Workspace, from_fqn: &str, src: &str, position: Position) -> O
 #[must_use]
 pub fn inlay_hints(ws: &Workspace, from_fqn: &str, src: &str) -> Vec<InlayHint> {
     let index = LineIndex::new(src);
-    crate::infer::local_types(ws, from_fqn)
+    pseudoscript_model::infer::local_types(ws, from_fqn)
         .into_iter()
         .map(|local| InlayHint {
             position: offset_to_position(src, &index, local.name_span.end),

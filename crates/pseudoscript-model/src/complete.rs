@@ -64,9 +64,18 @@ pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec
         Some((i, TokenKind::Dot)) => member_items(ws, from_fqn, &tokens, i),
         Some((i, TokenKind::ColonColon)) => path_items(ws, from_fqn, &tokens, i),
         Some((_, TokenKind::HashLBracket)) => macro_items(),
+        // A built-in macro's argument is a type path (`#[onevent(Event)]`).
+        Some((i, TokenKind::LParen)) if is_macro_arg(&tokens, i) => type_items(ws),
         Some((_, TokenKind::Colon | TokenKind::LAngle)) => type_items(ws),
         _ => general_items(ws, from_fqn),
     }
+}
+
+/// Whether `tokens[lparen]` opens a built-in macro's argument list (`#[name(`).
+fn is_macro_arg(tokens: &[Token], lparen: usize) -> bool {
+    lparen >= 2
+        && tokens[lparen - 1].kind == TokenKind::Ident
+        && tokens[lparen - 2].kind == TokenKind::HashLBracket
 }
 
 /// Index of the token whose kind governs completion at `offset`.
@@ -137,8 +146,14 @@ fn owner_before(
             (module == from_fqn || symbol.is_public).then(|| (module, symbol.name.clone()))
         }
         TokenKind::Ident => {
-            let symbol = ws.module(from_fqn)?.model.symbol(&base.text)?;
-            Some((module_of(&symbol.fqn).to_owned(), symbol.name.clone()))
+            let module = ws.module(from_fqn)?;
+            if let Some(symbol) = module.model.symbol(&base.text) {
+                return Some((module_of(&symbol.fqn).to_owned(), symbol.name.clone()));
+            }
+            // Not a declared node — a local binding (`a = Repo.fetch(id); a.`):
+            // resolve its inferred type to the node whose members it offers.
+            let local = crate::infer::binding_type_at(ws, from_fqn, &base.text)?;
+            crate::infer::type_owner(ws, from_fqn, &local.ty)
         }
         _ => None,
     }
@@ -187,14 +202,13 @@ fn macro_items() -> Vec<CompletionItem> {
 
 /// Primitive types, `Result`, and every declared node/data type.
 fn type_items(ws: &Workspace) -> Vec<CompletionItem> {
+    let generics = ["Result", "Option"]
+        .into_iter()
+        .map(|g| item(g, CompletionKind::Type, "built-in generic"));
     let primitives = TokenKind::PRIMITIVE_TYPES
         .iter()
         .map(|t| item(t, CompletionKind::Type, "primitive type"))
-        .chain(std::iter::once(item(
-            "Result",
-            CompletionKind::Type,
-            "built-in generic",
-        )));
+        .chain(generics);
     let declared = ws
         .symbols()
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
@@ -297,6 +311,28 @@ mod tests {
             !labels.contains(&"system".to_owned()),
             "general scope leaked: {labels:?}"
         );
+    }
+
+    #[test]
+    fn members_after_local_binding() {
+        // `a = Repo.fetch(x); a.` — the binding's inferred type (Account) drives
+        // member completion, even though `a` is not a declared node.
+        let src = "//! m\n\ndata Account { id: uuid, owner: string }\n\nsystem Repo {\n  fetch(x: uuid): Account;\n}\n\nsystem S {\n  run() {\n    a = Repo.fetch(x)\n    a.\n  }\n}\n";
+        let ws = workspace(&[("m", src)]);
+        let offset = (src.find("a.\n").unwrap() + 2) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"id".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"owner".to_owned()), "{labels:?}");
+    }
+
+    #[test]
+    fn option_offered_in_type_position() {
+        let src = "//! m\n\ndata D { x: }\n";
+        let ws = workspace(&[("m", src)]);
+        let offset = (src.find("x:").unwrap() + 2) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"Option".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"Result".to_owned()), "{labels:?}");
     }
 
     #[test]

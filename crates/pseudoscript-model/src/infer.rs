@@ -6,7 +6,7 @@
 //! `x: Token[]` without the author writing it. Inference is best-effort: an
 //! expression it can't type yields no hint rather than a guess.
 
-use pseudoscript_model::{Workspace, ast};
+use crate::{Workspace, ast};
 use pseudoscript_syntax::Span;
 
 use crate::resolve::{enclosing_node, resolve_owner};
@@ -170,7 +170,8 @@ fn base_owner(ws: &Workspace, from_fqn: &str, base: &ast::Expr) -> Option<(Strin
 
 /// The node/data named by a type string (`Token[]` → `Token`, `a::T<U>` → `a::T`),
 /// for continuing a postfix chain.
-fn type_owner(ws: &Workspace, from_fqn: &str, ty: &str) -> Option<(String, String)> {
+#[must_use]
+pub fn type_owner(ws: &Workspace, from_fqn: &str, ty: &str) -> Option<(String, String)> {
     let base = ty.trim_end_matches("[]");
     let base = base.split('<').next().unwrap_or(base).trim();
     let segments: Vec<&str> = base.split("::").collect();

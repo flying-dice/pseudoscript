@@ -14,7 +14,6 @@
 pub mod analysis;
 pub mod complete;
 pub mod convert;
-pub mod infer;
 pub mod refs;
 pub mod semantic;
 pub mod symbols;

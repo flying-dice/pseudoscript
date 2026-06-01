@@ -33,6 +33,7 @@ mod check;
 pub mod complete;
 pub mod fold;
 mod graph;
+pub mod infer;
 mod model;
 pub mod resolve;
 pub mod semantic;
