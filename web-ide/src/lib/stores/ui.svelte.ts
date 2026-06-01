@@ -21,6 +21,9 @@ class UiStore {
   projectOpen = $state(false);
   settingsOpen = $state(false);
   mdHelpOpen = $state(false);
+  // The right-hand Structure panel (open by default) and the Problems popover.
+  structureOpen = $state(true);
+  problemsOpen = $state(false);
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   docWidth = $state(readDocWidth());
   // Doc-build progress + the example-vs-folder modal.

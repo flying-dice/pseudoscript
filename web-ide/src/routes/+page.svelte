@@ -32,8 +32,11 @@
   import { ui } from "$lib/stores/ui.svelte.js";
   import { shareStore } from "$lib/stores/share.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
-  import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
+  import TopBar from "$lib/components/shell/TopBar.svelte";
+  import ActivityBar from "$lib/components/shell/ActivityBar.svelte";
+  import StructurePanel from "$lib/components/shell/StructurePanel.svelte";
+  import StatusBar from "$lib/components/shell/StatusBar.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
   import ProblemsPane from "$lib/components/ProblemsPane.svelte";
   import Notifications from "$lib/components/Notifications.svelte";
@@ -221,6 +224,7 @@
   // The project panel (recent projects + examples + open folder): opens on start
   // and from the toolbar's project button. Never autoloads an architecture.
   const projectOpen = $derived(ui.projectOpen);
+  const structureOpen = $derived(ui.structureOpen);
   // Whether the keyboard-shortcuts settings modal is open (toolbar gear or the
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
   const settingsOpen = $derived(ui.settingsOpen);
@@ -228,7 +232,9 @@
   // Only persisted projects (folders) are recents; in-memory samples re-open
   // from the catalogue, so they're never recorded — and legacy sample entries
   // are filtered out of the list.
-  const refreshRecents = () => (ui.recents = getRecents().filter((r) => r.kind !== "sample"));
+  const refreshRecents = () => {
+    ui.recents = getRecents().filter((r) => r.kind !== "sample");
+  };
 
   const source = $derived(
     openFile?.isManifest
@@ -974,6 +980,27 @@
     await persistFile(w.handle, w.key, w.text).catch(() => {});
   }
 
+  // Save every dirty buffer to disk (File ▸ Save all). Flushes any pending
+  // debounce, then persists each dirty module / doc / manifest by its handle.
+  async function saveAll() {
+    await flushSave();
+    for (const key of [...dirty]) {
+      let handle: FileSystemFileHandle | null | undefined;
+      let text: string | undefined;
+      if (key === manifestKey) {
+        handle = workspace?.manifest?.handle;
+        text = manifestSource;
+      } else if (key in moduleSources) {
+        handle = workspace?.files.find((f) => f.fqn === key)?.handle;
+        text = moduleSources[key];
+      } else {
+        handle = docGroups.flatMap((g) => g.items).find((i) => i.path === key)?.handle;
+        text = docSources[key];
+      }
+      if (handle && text !== undefined) await persistFile(handle, key, text).catch(() => {});
+    }
+  }
+
   // Manual save (Cmd/Ctrl-S): flush a pending debounce, else write the active
   // file's current buffer straight away. A clean file is a no-op cue.
   async function saveActiveFile() {
@@ -1575,66 +1602,66 @@ show('index.html');
   </div>
 {/snippet}
 
-<!-- The CODE | CANVAS view toggle, with a Problems tab carrying the error count. -->
-{#snippet viewToggle()}
-  <div class="view-toggle" role="tablist" aria-label="View">
-    <button role="tab" aria-selected={view === "code"} class:active={view === "code"} onclick={() => (selection.view = "code")}>Code</button>
-    <button role="tab" aria-selected={view === "canvas"} class:active={view === "canvas"} onclick={() => (selection.view = "canvas")}>Canvas</button>
-    <button role="tab" aria-selected={view === "problems"} class:active={view === "problems"} class:has-errors={errorCount > 0} onclick={() => (selection.view = "problems")}>
-      Problems{#if problems.length}<span class="count" class:bad={errorCount > 0}>{problems.length}</span>{/if}
-    </button>
-  </div>
-{/snippet}
-
-<div class="app">
-  <Toolbar
-    {errorCount}
+<div class="ide">
+  <TopBar
     workspaceName={workspace?.name ?? null}
     {building}
-    {dirtyCount}
+    {base}
     {saveState}
-    {onformat}
-    onproject={() => (ui.projectOpen = true)}
-    {onbuilddocs}
+    {dirtyCount}
+    {problems}
+    {errorCount}
+    onproblempick={onProblemPick}
+    onopenfolder={() => (ui.projectOpen = true)}
+    onnewfile={startNewFile}
+    onnewdoc={startNewDoc}
+    onsave={saveActiveFile}
+    onsaveall={saveAll}
     {onshare}
     {onexport}
     {onimport}
-    onopensettings={() => (ui.settingsOpen = true)}
+    {onbuilddocs}
+    {onformat}
   />
 
-  {#if wasmError}
-    <div class="curtain">
-      <div class="kicker">compiler failed to load</div>
-      <p class="msg">{wasmError}</p>
-      <button class="retry" onclick={boot}>Retry</button>
-    </div>
-  {:else if !fsSupported}
-    <div class="curtain">
-      <div class="kicker">browser not supported</div>
-      <p class="msg">
-        The PseudoScript IDE reads and writes your project as real files on disk, which needs the File
-        System Access API. That's available in Chromium browsers — Chrome, Edge, Brave, Arc. Firefox and
-        Safari don't support it yet.
-      </p>
-    </div>
-  {:else if ready && workspace}
-    <main class="workspace has-tree">
-      <section class="pane tree-pane reveal r1">
+  <div class="body" class:loaded={ready && !!workspace && !wasmError && fsSupported} class:no-structure={!structureOpen}>
+    <ActivityBar
+      active={view === "canvas" ? "canvas" : "explorer"}
+      {structureOpen}
+      onselect={(a) => (selection.view = a === "canvas" ? "canvas" : "code")}
+      ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)}
+      onsettings={() => (ui.settingsOpen = true)}
+    />
+
+    {#if wasmError}
+      <div class="curtain span">
+        <div class="kicker">compiler failed to load</div>
+        <p class="msg">{wasmError}</p>
+        <button class="retry" onclick={boot}>Retry</button>
+      </div>
+    {:else if !fsSupported}
+      <div class="curtain span">
+        <div class="kicker">browser not supported</div>
+        <p class="msg">
+          The PseudoScript IDE reads and writes your project as real files on disk, which needs the File
+          System Access API. That's available in Chromium browsers — Chrome, Edge, Brave, Arc. Firefox and
+          Safari don't support it yet.
+        </p>
+      </div>
+    {:else if ready && workspace}
+      <section class="explorer island reveal r1">
         <FileTree
           workspaceName={workspace.name}
           files={workspace.files as { fqn: string; path: string }[]}
           openPath={openFile?.path ?? null}
           {docGroups}
           ondocopen={openDoc}
-          symbols={symbols as never}
-          selectedFqn={selected?.fqn ?? null}
           {errorPaths}
           {dirtyPaths}
           manifestPath={workspace?.manifest?.path ?? null}
           base={workspace?.base ?? ""}
           onmanifestopen={openManifest}
           onopen={selectFile}
-          onpicknode={(fqn) => selectNode(fqn, { goto: true })}
           oncreatefile={startNewFile}
           oncreatedoc={startNewDoc}
           onrenamefile={startRenameFile}
@@ -1643,17 +1670,16 @@ show('index.html');
         />
       </section>
 
-      <section class="pane content-pane reveal r2">
+      <section class="center reveal r2">
         <header class="content-bar">
           <div class="nav-buttons">
             <button class="nav-btn" onclick={goBack} disabled={!canBack} title="Back (previous location)" aria-label="Back">←</button>
             <button class="nav-btn" onclick={goForward} disabled={!canForward} title="Forward (next location)" aria-label="Forward">→</button>
           </div>
           {@render breadcrumb()}
-          <div class="bar-actions">
-            {#if openFile?.isDoc}{@render mdHelp()}{@render docWidthToggle()}{/if}
-            {@render viewToggle()}
-          </div>
+          {#if openFile?.isDoc}
+            <div class="bar-actions">{@render mdHelp()}{@render docWidthToggle()}</div>
+          {/if}
         </header>
         <div class="content-body">
           <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
@@ -1690,38 +1716,37 @@ show('index.html');
             <div class="layer canvas-layer">
               <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} typeFqn={typeFqnByName as never} />
             </div>
-          {:else if view === "problems"}
-            <div class="layer">
-              <ProblemsPane diagnostics={problems} onpick={onProblemPick} />
-            </div>
           {/if}
         </div>
       </section>
-    </main>
-  {:else if ready}
-    <div class="stage-empty"></div>
-  {:else}
-    <div class="curtain">
-      <div class="loader"><span class="bar"></span></div>
-      <div class="kicker">compiling the compiler…</div>
-    </div>
-  {/if}
 
-  <footer class="statusbar">
-    <span class="seg accent">pds</span>
-    <span class="seg">wasm{ver ? ` ${ver}` : ""}</span>
-    {#if workspace}
-      <span class="seg file" class:dirty={openFile && dirty.has(keyOf(openFile) ?? "")}>
-        {#if openFile && dirty.has(keyOf(openFile) ?? "")}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
-        {openFile?.fqn ?? openFile?.title ?? "—"}
-      </span>
-      <span class="seg dim">{workspace.files.length} modules</span>
+      {#if structureOpen}
+        <StructurePanel
+          symbols={symbols as never}
+          selectedFqn={selected?.fqn ?? null}
+          onpicknode={(fqn) => selectNode(fqn, { goto: true })}
+          oncollapse={() => (ui.structureOpen = false)}
+        />
+      {/if}
+    {:else if ready}
+      <div class="stage-empty span"></div>
+    {:else}
+      <div class="curtain span">
+        <div class="loader"><span class="bar"></span></div>
+        <div class="kicker">compiling the compiler…</div>
+      </div>
     {/if}
-    <span class="grow"></span>
-    {#if notifications.toast}<span class="seg toast">{notifications.toast}</span>{/if}
-    <span class="seg dim">{view}</span>
-    <span class="seg dim">{selected?.fqn ?? "context"}</span>
-  </footer>
+  </div>
+
+  <StatusBar
+    {ver}
+    hasWorkspace={!!workspace}
+    fileLabel={openFile?.fqn ?? openFile?.title ?? "—"}
+    fileDirty={!!(openFile && dirty.has(keyOf(openFile) ?? ""))}
+    moduleCount={workspace?.files.length ?? 0}
+    toast={notifications.toast}
+    mode={view}
+  />
 </div>
 
 <style>
@@ -1780,18 +1805,27 @@ show('index.html');
     color: #fff;
   }
 
-  .app {
+  /* The island shell: top bar / body / status, with a fixed activity rail and
+     collapsible explorer + structure islands flanking the centre. */
+  .ide {
     display: grid;
-    grid-template-rows: var(--topbar-h) 1fr var(--status-h);
+    grid-template-rows: var(--bar-h) minmax(0, 1fr) var(--status-h);
     height: 100vh;
   }
-  .workspace {
+  .body {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: var(--activity-w) minmax(0, 1fr);
     min-height: 0;
   }
-  .workspace.has-tree {
-    grid-template-columns: 268px minmax(0, 1fr);
+  .body.loaded {
+    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr) 268px;
+  }
+  .body.loaded.no-structure {
+    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr) 0;
+  }
+  /* a curtain / empty stage spans everything right of the activity rail */
+  .span {
+    grid-column: 2 / -1;
   }
   /* the backdrop behind the project panel when no workspace is loaded yet */
   .stage-empty {
@@ -1801,26 +1835,28 @@ show('index.html');
       linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 30px 30px, 30px 30px;
   }
-  .pane { min-width: 0; min-height: 0; }
-  .tree-pane {
+  .explorer {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     border-right: 1px solid var(--line);
     background: color-mix(in srgb, var(--surface) 70%, transparent);
   }
-
-  /* the content pane: a header (breadcrumb + view toggle) over the active view */
-  .content-pane {
+  /* the centre: a slim content-bar over the editor / canvas */
+  .center {
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: var(--bar-h) minmax(0, 1fr);
+    min-width: 0;
     min-height: 0;
     background: color-mix(in srgb, var(--surface) 55%, transparent);
   }
   .content-bar {
     display: flex;
     align-items: center;
-    gap: 0.8rem;
-    padding: 0.45rem 0.7rem;
+    gap: 0.6rem;
+    height: var(--bar-h);
+    padding: 0 0.6rem;
     border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface) 60%, transparent);
   }
   .nav-buttons { flex: none; display: flex; gap: 0.2rem; }
   .nav-btn {
@@ -1985,41 +2021,6 @@ show('index.html');
     white-space: pre-wrap;
     word-break: break-word;
   }
-  .view-toggle {
-    flex: none;
-    display: flex;
-    gap: 0.15rem;
-    padding: 0.18rem;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-  }
-  .view-toggle button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: transparent;
-    border: none;
-    border-radius: calc(var(--radius-sm) - 2px);
-    color: var(--ink-faint);
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    letter-spacing: 0.04em;
-    padding: 0.3rem 0.7rem;
-    cursor: pointer;
-  }
-  .view-toggle button:hover { color: var(--ink); }
-  .view-toggle button.active { background: var(--accent); color: var(--accent-ink); }
-  .view-toggle .count {
-    font-size: 0.62rem;
-    padding: 0 0.3rem;
-    border-radius: 999px;
-    background: var(--surface-3);
-    color: var(--ink-soft);
-  }
-  .view-toggle button.active .count { background: var(--accent-ink); color: var(--accent); }
-  .view-toggle .count.bad { background: var(--err); color: #fff; }
-
   .crumb {
     display: flex;
     align-items: center;
@@ -2187,34 +2188,6 @@ show('index.html');
     border-radius: var(--radius-sm);
     padding: 0.5rem 1.1rem;
     font-weight: 700;
-  }
-
-  .statusbar {
-    display: flex;
-    align-items: center;
-    gap: 0.9rem;
-    padding: 0 1.1rem;
-    border-top: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface) 80%, transparent);
-    backdrop-filter: blur(8px);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--ink-soft);
-  }
-  .statusbar .seg { white-space: nowrap; }
-  .statusbar .seg.accent { color: var(--accent); font-weight: 600; letter-spacing: 0.05em; }
-  .statusbar .seg.dim { color: var(--ink-faint); }
-  .statusbar .seg.toast { color: var(--accent); }
-  .statusbar .grow { flex: 1; }
-
-  /* active-file segment: an unsaved dot when the open file differs from disk */
-  .statusbar .seg.file { display: inline-flex; align-items: center; gap: 0.4rem; }
-  .statusbar .seg.file.dirty { color: var(--warn); }
-  .statusbar .unsaved-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--warn);
   }
 
   /* canvas hover/usages popovers, anchored at the pointer */

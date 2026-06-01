@@ -10,8 +10,9 @@ type Selected = { fqn: string; line: number; col: number; fileFqn: string } | nu
 type PendingGoto = { line: number; col: number; fileFqn: string } | null;
 
 class SelectionStore {
-  // The content pane: source ("code"), diagram ("canvas"), or problems list.
-  view = $state<"code" | "canvas" | "problems">("code");
+  // The centre activity: source editor ("code") or the navigation diagram
+  // ("canvas"). Problems is a top-right popover now, not a pane.
+  view = $state<"code" | "canvas">("code");
   // The C4 depth a sequence diagram is collapsed to.
   seqDepth = $state<Depth>("component");
   // The selected node scope (drives canvas / breadcrumb / nav highlight), or null.

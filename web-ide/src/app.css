@@ -104,7 +104,10 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   --topbar-h: 60px;
-  --status-h: 30px;
+  --status-h: 24px;
+  /* compact ("mira") chrome height for the island bars (top / content / panel heads) */
+  --bar-h: 34px;
+  --activity-w: 44px;
   --radius: 10px;
   --radius-sm: 7px;
 
