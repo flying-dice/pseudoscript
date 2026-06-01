@@ -476,11 +476,12 @@
   function singleLifelineScene(sel: { fqn: string }): PdsScene {
     const node = nodeIndex.get(sel.fqn)?.node;
     return {
+      view: "sequence",
+      entry: sel.fqn,
       participants: [
-        { fqn: sel.fqn, label: node?.name ?? sel.fqn.split("::").at(-1), kind: node?.kind ?? "participant" },
+        { fqn: sel.fqn, label: node?.name ?? sel.fqn.split("::").at(-1), kind: node?.kind ?? "callable" },
       ],
-      messages: [],
-      fragments: [],
+      items: [],
     };
   }
 

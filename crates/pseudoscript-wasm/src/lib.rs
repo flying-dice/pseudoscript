@@ -871,8 +871,8 @@ fn to_json<T: Serialize>(value: &T) -> String {
 mod tests {
     use super::{
         check, check_modules_impl, completion_impl, doc_config, doc_manifest_impl,
-        emit_scene_modules_impl, format_impl, hover_impl, outline, parse, project_view,
-        references_impl, symbol_scene_impl, symbol_svg_impl, to_json,
+        emit_scene_modules_impl, format_impl, hover_impl, layout_scene_impl, outline, parse,
+        project_view, references_impl, symbol_scene_impl, symbol_svg_impl, to_json,
     };
 
     #[test]
@@ -1078,6 +1078,45 @@ mod tests {
         let svg = symbol_svg_impl(&workspace_json(), "sys::Shop").expect("renders");
         assert!(svg.contains("<svg"), "{svg}");
         assert!(svg.contains("Web"), "{svg}");
+    }
+
+    #[test]
+    fn symbol_scene_errors_on_a_non_node_symbol() {
+        // The outline lists `feature` blocks as selectable symbols, but a feature
+        // is not a graph node — projecting one errors rather than panics. The IDE
+        // catches this and falls back to a single-lifeline scene, so the contract
+        // is: a clean `Err`, never a panic. (Regression: selecting a feature.)
+        let input = r#"[
+            {"fqn":"m","source":"//! m\npublic system S;\nfeature F for S {\n  given \"a\"\n  when \"b\"\n  then \"c\"\n}"}
+        ]"#;
+        let err = symbol_scene_impl(input, "m::F").expect_err("a feature is not projectable");
+        assert!(err.contains("m::F"), "{err}");
+    }
+
+    #[test]
+    fn layout_scene_accepts_the_single_lifeline_fallback_shape() {
+        // The exact JSON the IDE builds when a selected symbol has nothing to draw
+        // (`singleLifelineScene`): one lifeline, no items. `layout_scene` must
+        // accept it. (Regression: a fallback scene that omitted the `view` tag /
+        // `entry` / used `messages`+`fragments` failed deserialization with
+        // "missing field `view`".)
+        let fallback = r#"{
+            "view":"sequence",
+            "entry":"m::F",
+            "participants":[{"fqn":"m::F","kind":"callable"}],
+            "items":[]
+        }"#;
+        let out = layout_scene_impl(fallback).expect("fallback scene lays out");
+        assert!(out.contains("m::F"), "{out}");
+    }
+
+    #[test]
+    fn layout_scene_rejects_a_scene_missing_the_view_tag() {
+        // A scene object without the `view` discriminant cannot deserialize into
+        // the tagged `Scene` enum — the failure mode the broken fallback hit.
+        let untagged = r#"{"participants":[{"fqn":"m::F","kind":"callable"}],"items":[]}"#;
+        let err = layout_scene_impl(untagged).expect_err("no `view` tag");
+        assert!(err.contains("view"), "{err}");
     }
 
     #[test]
