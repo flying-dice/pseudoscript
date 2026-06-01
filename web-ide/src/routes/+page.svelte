@@ -4,12 +4,10 @@
   import { base } from "$app/paths";
   import "../app.css";
   import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
-  import type { Module, Occurrence, Scene as PdsScene } from "$lib/pds.js";
-  import { charToByte } from "$lib/offsets.js";
+  import type { Module, Occurrence } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
-  import { collapseSequence } from "$lib/sequence.js";
-  import type { Depth, Info } from "$lib/sequence.js";
+  import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
   import { SAMPLES, sampleSeed } from "$lib/samples.js";
   import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
@@ -23,6 +21,8 @@
   import { keyOf, computeDirty, dirtyPaths as dirtyPathsOf, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
   import * as share from "$lib/core/share.js";
   import * as docs from "$lib/core/docs.js";
+  import * as model from "$lib/core/model.js";
+  import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -298,126 +298,27 @@
       return [];
     }
   });
-  // The C4 nodes each file declares, keyed by file FQN, so the workspace tree can
-  // nest a module's structure beneath it. Derived from the *workspace* outline so
-  // node FQNs use the file's path-derived module name — the same scheme `hover`,
-  // `definition`, and `references` resolve against. (Single-file `outline` keys
-  // nodes by the `//!` header instead, which diverges from the path FQN and made
-  // go-to-definition miss `nodeIndex`.) Each node is grouped to its file by the
-  // longest module FQN that prefixes it.
-  const structureByFile = $derived.by<Record<string, StructureNode[]>>(() => {
-    const by: Record<string, StructureNode[]> = {};
-    if (!ready || !workspace) return by;
-    for (const f of workspace.files) if (f.fqn) by[f.fqn] = [];
-    const moduleFqns = allModules.map((m) => m.fqn).sort((a, b) => b.length - a.length);
-    for (const n of nodes) {
-      const fileFqn = moduleFqns.find((mf) => n.fqn === mf || n.fqn.startsWith(`${mf}::`)) ?? "";
-      (by[fileFqn] ??= []).push(n);
-    }
-    return by;
-  });
-  // FQN → { node, fileFqn } for every declared node, so a canvas drill or a
-  // breadcrumb hop resolves a node to its declaring file (for goto).
-  const nodeIndex = $derived.by(() => {
-    const idx = new Map<string, { node: StructureNode; fileFqn: string }>();
-    for (const [fileFqn, list] of Object.entries(structureByFile)) {
-      for (const n of list) idx.set(n.fqn, { node: n, fileFqn });
-    }
-    return idx;
-  });
-  // Every declared node, tagged with its file — flat, for the nav's symbol tree
-  // to nest by structural `parent` (which crosses files: a container's system
-  // may live in another module).
-  const symbols = $derived.by<Symbol[]>(() =>
-    [...nodeIndex.entries()].map(([fqn, { node, fileFqn }]) => ({ ...node, fqn, fileFqn })),
-  );
-  // Entry-point flows keyed by their owning node FQN: each node's callables, so
-  // the System view's popover can offer "play this flow" links down to a
-  // sequence trace (the only path from the structural graph into a flow).
-  const flowsByNode = $derived.by(() => {
-    const m = new Map<string, { fqn: string; name: string; triggered: boolean }[]>();
-    for (const n of nodes) {
-      if (n.kind !== "callable") continue;
-      const parent = n.fqn.split("::").slice(0, -1).join("::");
-      let bucket = m.get(parent);
-      if (!bucket) m.set(parent, (bucket = []));
-      bucket.push({ fqn: n.fqn, name: n.name, triggered: n.triggered });
-    }
-    return m;
-  });
-  // FQN → { kind, parent } for every declared node, the ancestry the sequence
-  // depth-collapse walks to fold a participant into its nearest allowed C4 level.
-  const nodeInfo = $derived.by<Info>(() => {
-    const m: Info = {};
-    for (const n of nodes) m[n.fqn] = { kind: n.kind, parent: n.parent ?? null };
-    return m;
-  });
-  // Type name → FQN for the `data` declarations, so a type token in a message
-  // signature (e.g. `Session`) resolves to its declaration for hover/usages.
-  const typeFqnByName = $derived.by<Record<string, string>>(() => {
-    const m: Record<string, string> = {};
-    for (const n of nodes) if (n.kind === "data") m[n.name] = n.fqn;
-    return m;
-  });
-
-  // A minimal single-lifeline scene for a selected symbol that has nothing to
-  // project (a leaf node with no structure, or a data type) — so the canvas
-  // reads as "this exists, no interactions yet" rather than a blank note.
-  function singleLifelineScene(sel: { fqn: string }): PdsScene {
-    const node = nodeIndex.get(sel.fqn)?.node;
-    return {
-      view: "sequence",
-      entry: sel.fqn,
-      participants: [
-        { fqn: sel.fqn, label: node?.name ?? sel.fqn.split("::").at(-1), kind: node?.kind ?? "callable" },
-      ],
-      items: [],
-    };
-  }
+  // The whole structural model index — node lookup, per-file grouping, flows,
+  // type map, collapse info — built once from the workspace outline (see
+  // core/model). The view reads its fields via the aliases below; the longest-
+  // prefix file grouping keeps cross-module go-to-definition resolving.
+  const index = $derived(model.buildModelIndex(nodes, allModules.map((m) => m.fqn)));
+  const structureByFile = $derived(index.structureByFile);
+  const nodeIndex = $derived(index.nodeIndex);
+  const symbols = $derived(index.symbols);
+  const flowsByNode = $derived(index.flowsByNode);
+  const nodeInfo = $derived(index.nodeInfo);
+  const typeFqnByName = $derived(index.typeFqnByName);
 
   // The CANVAS diagram: the selected node's fitting view, or the whole-model
   // context overview when nothing is selected. The compiler picks the view; a
   // sequence scene is then collapsed to the chosen depth in the IDE.
-  type Canvas = { scene: PdsScene | null; layout?: PdsScene | null; error: string };
-  const canvas = $derived.by<Canvas>(() => {
-    if (!ready || !workspace) return { scene: null, error: "" };
-    const lifelineFallback = (): Canvas => {
-      const scene = singleLifelineScene(selected!);
-      return { scene, layout: layoutScene(scene), error: "" };
-    };
-    try {
-      const raw = selected
-        ? symbolScene(allModules, selected.fqn)
-        : emitSceneModules(allModules, "context", "");
-      const isSeq = !!raw && Array.isArray(raw.participants);
-      const shown = (isSeq ? collapseSequence(raw as never, seqDepth, nodeInfo) : raw) as PdsScene | null;
-      // Nothing to draw for a selected symbol → fall back to its own lifeline
-      // (an empty whole-model context still shows the placeholder note).
-      const isEmpty = isSeq
-        ? !(shown?.participants as unknown[] | undefined)?.length
-        : !(shown?.nodes as unknown[] | undefined)?.length;
-      if (isEmpty && selected) return lifelineFallback();
-      // A sequence scene is positioned by the layout engine; C4 stays as-is.
-      const layout = isSeq && shown ? layoutScene(shown) : null;
-      return { scene: shown, layout, error: "" };
-    } catch (e) {
-      const detail = String((e as Error)?.message ?? e);
-      // Unprojectable (e.g. a feature, or a data type) — still show the symbol as
-      // a lifeline when one is selected, rather than an error note.
-      if (selected) {
-        reportError("DIAGRAM_PROJECTION_FAILED", `${selected.fqn}: ${detail}`);
-        return lifelineFallback();
-      }
-      reportError("DIAGRAM_RENDER_FAILED", detail);
-      return { scene: null, layout: null, error: detail };
-    }
-  });
-
-  const canvasHint = $derived(
-    selected
-      ? "Nothing to draw for this item."
-      : "No persons or systems declared yet — the context overview draws systems and people.",
+  const canvas = $derived(
+    ready && workspace
+      ? projectCanvas({ selected, seqDepth, modules: allModules, index, wasm: { symbolScene, emitSceneModules, layoutScene }, onError: reportError })
+      : { scene: null, error: "" },
   );
+  const canvasHint = $derived(canvasHintOf(selected));
 
   // Canvas interaction mirrors the code editor: hovering a node shows its
   // information; Cmd/Ctrl-clicking shows its usages. Both are popovers anchored
@@ -425,15 +326,9 @@
   let canvasInfo = $state<CanvasInfo | null>(null); // { kind, name, fqn, x, y }
   let canvasUsages = $state<CanvasUsages | null>(null); // { name, items, x, y }
 
-  // The byte offset of a node's declaration (line/col are 1-based; col is a byte
-  // column, exact for the ASCII model source).
-  function nodeByteOffset(fileFqn: string, line: number, col: number): number {
-    const src = moduleSources[fileFqn] ?? "";
-    const lines = src.split("\n");
-    let charOffset = 0;
-    for (let i = 0; i < line - 1 && i < lines.length; i++) charOffset += lines[i].length + 1;
-    return charToByte(src, charOffset + Math.max(0, col - 1));
-  }
+  // The byte offset of a node's declaration in its module source.
+  const nodeByteOffset = (fileFqn: string, line: number, col: number) =>
+    model.nodeByteOffset(moduleSources[fileFqn] ?? "", line, col);
 
   // Synthesised trigger actors aren't declared nodes; give them a fixed blurb.
   const ACTOR_DOC: Record<string, { kind: string; title: string; body: string }> = {
@@ -442,23 +337,7 @@
     caller: { kind: "person", title: "caller", body: "The caller of this operation." },
   };
 
-  // Resolve a possibly depth-collapsed callee FQN to a real node: a direct hit,
-  // else a callable named `method` somewhere beneath the collapsed owner (so a
-  // call's member still resolves when its target was folded into an ancestor).
-  function resolveNodeFqn(fqn: string): string | null {
-    if (nodeIndex.has(fqn)) return fqn;
-    const sep = fqn.lastIndexOf("::");
-    if (sep < 0) return null;
-    const owner = fqn.slice(0, sep);
-    const method = fqn.slice(sep + 2);
-    for (const n of nodes) {
-      if (n.kind !== "callable" || n.name !== method) continue;
-      for (let cur = n.parent; cur; cur = nodeInfo[cur]?.parent ?? null) {
-        if (cur === owner) return n.fqn;
-      }
-    }
-    return null;
-  }
+  const resolveNodeFqn = (fqn: string) => model.resolveNodeFqn(index, fqn);
 
   // A symbol's { kind, title, body } documentation via the editor hover, or null.
   function docFor(fqn: string): { kind: string; title: string; body: string } | null {
@@ -519,28 +398,15 @@
     openUsage(occ);
   }
 
-  // A node's display title (for the breadcrumb): its kind + simple name, falling
-  // back to the FQN's last segment.
-  function nodeTitle(fqn: string): string {
-    const n = nodes.find((x) => x.fqn === fqn);
-    return n ? `${n.kind} \`${n.name}\`` : `\`${fqn.split("::").at(-1)}\``;
-  }
+  const nodeTitle = (fqn: string) => model.nodeTitle(index, fqn);
+
+  const ownerNodeOf = (fqn: string) => model.ownerNodeOf(index, fqn);
 
   // Select a structure node: open its declaring file and remember it as the
   // current scope. `goto` (a nav click) also shows the code and jumps the editor
-  // to the declaration; a canvas drill leaves the view alone.
-  // The nearest enclosing structural node for a member/field fqn: drop trailing
-  // `::segment`s until one names a node. A field fqn like `M::Conv::id` isn't a
-  // node, so without this go-to-definition on a field would silently do nothing.
-  function ownerNodeOf(fqn: string): string | null {
-    let cur = fqn;
-    while (cur.includes("::")) {
-      cur = cur.slice(0, cur.lastIndexOf("::"));
-      if (nodeIndex.has(cur)) return cur;
-    }
-    return null;
-  }
-
+  // to the declaration; a canvas drill leaves the view alone. A member/field fqn
+  // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
+  // field opens its declaring type instead of no-opping (PDS-GOTO-002).
   function selectNode(fqn: string, { goto = false }: { goto?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
@@ -596,19 +462,8 @@
     else resetScope();
   }
 
-  // The structural ancestor chain for a node (root system → … → the node), by
-  // following `parent` pointers. Drives the breadcrumb.
-  function ancestry(fqn: string): string[] {
-    const chain: string[] = [];
-    const seen = new Set<string>();
-    let cur: string | null = fqn;
-    while (cur && nodeIndex.has(cur) && !seen.has(cur)) {
-      seen.add(cur);
-      chain.unshift(cur);
-      cur = nodeIndex.get(cur)?.node.parent ?? null;
-    }
-    return chain;
-  }
+  // The structural ancestor chain (root system → … → the node) for the breadcrumb.
+  const ancestry = (fqn: string) => model.ancestry(index, fqn);
 
   // The editor's hover popover: reveal the symbol's diagram on the canvas.
   function revealSymbol(fqn: string) {
