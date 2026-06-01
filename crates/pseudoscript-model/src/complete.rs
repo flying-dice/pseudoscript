@@ -113,7 +113,8 @@ fn member_items(
 }
 
 /// The `(module, node-name)` the base token before `tokens[dot]` denotes:
-/// `self`'s enclosing node, or an in-scope node name.
+/// `self`'s enclosing node, a `::`-qualified node in another module
+/// (`identity::sessions.`), or an in-scope node name in this module.
 fn owner_before(
     ws: &Workspace,
     from_fqn: &str,
@@ -125,6 +126,14 @@ fn owner_before(
         TokenKind::KwSelf => {
             let node = enclosing_node(&ws.module(from_fqn)?.ast, base.span.start)?;
             Some((from_fqn.to_owned(), node))
+        }
+        // `a::b::Node.` — the base is qualified, so it names a symbol in the
+        // module its qualifiers spell, not this one. Offered only when public
+        // (or in this module), mirroring `::` path resolution (§8.2).
+        TokenKind::Ident if dot >= 2 && tokens[dot - 2].kind == TokenKind::ColonColon => {
+            let module = module_prefix(tokens, dot - 2);
+            let symbol = ws.module(&module)?.model.symbol(&base.text)?;
+            (module == from_fqn || symbol.is_public).then(|| (module, symbol.name.clone()))
         }
         TokenKind::Ident => {
             let symbol = ws.module(from_fqn)?.model.symbol(&base.text)?;
@@ -246,6 +255,36 @@ mod tests {
             .into_iter()
             .map(|c| c.label)
             .collect()
+    }
+
+    #[test]
+    fn members_after_qualified_node_path() {
+        // `identity::sessions.req` — a `::`-qualified node in another module;
+        // its members must complete (regression: only the bare name was tried
+        // in the current module).
+        let mods = [
+            (
+                "identity",
+                "//! identity\n\npublic system sessions {\n  requireOrganizer(): void;\n}\n",
+            ),
+            (
+                "m",
+                "//! m\n\nsystem S {\n  run() {\n    identity::sessions.req\n  }\n}\n",
+            ),
+        ];
+        let ws = workspace(&mods);
+        let src = mods[1].1;
+        let offset = (src.find("sessions.req").unwrap() + "sessions.req".len()) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(
+            labels.contains(&"requireOrganizer".to_owned()),
+            "{labels:?}"
+        );
+        // not the general keyword set
+        assert!(
+            !labels.contains(&"system".to_owned()),
+            "general scope leaked: {labels:?}"
+        );
     }
 
     #[test]
