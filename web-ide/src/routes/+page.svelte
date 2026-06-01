@@ -25,6 +25,7 @@
   import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
   import { notifications } from "$lib/stores/notifications.svelte.js";
   import { wasm } from "$lib/stores/wasm.svelte.js";
+  import { navigation } from "$lib/stores/navigation.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -84,30 +85,19 @@
   // is mounted and showing the node's file.
   let pendingGoto = $state<{ line: number; col: number; fileFqn: string } | null>(null);
 
-  // Navigation history: every code location jumped to (go-to-definition, a nav
-  // pick, a problem, a find-usages hit), as { fileFqn, line, col, label, fqn? }.
-  // `histIndex` is the current position; back/forward step through it without
-  // recording. New jumps truncate the forward tail (browser-history semantics).
-  let history = $state<Loc[]>([]);
-  let histIndex = $state(-1);
-  const canBack = $derived(nav.canBack({ history, index: histIndex }));
-  const canForward = $derived(nav.canForward({ history, index: histIndex }));
-
-  // Record a visited location (forward-tail truncation, repeat collapse, cap).
-  function recordLocation(loc: Loc) {
-    const next = nav.recordLocation({ history, index: histIndex }, loc);
-    history = next.history;
-    histIndex = next.index;
-  }
+  // Navigation history is owned by the navigation store; the view keeps the impure
+  // application (opening files, jumping the editor). `canBack`/`canForward` and
+  // `recordLocation` are thin aliases so every call site is unchanged.
+  const canBack = $derived(navigation.canBack);
+  const canForward = $derived(navigation.canForward);
+  const recordLocation = (loc: Loc) => navigation.record(loc);
 
   // Before a jump, record where the caret currently is so Back returns to the
   // starting point. Skips when the caret already sits at the history cursor.
   function recordOrigin() {
     const loc = editorApi?.location?.();
     if (!loc || !openFile?.fqn) return;
-    const here = nav.originLoc(openFile.fqn, loc.line, loc.col);
-    if (nav.samePosition(history[histIndex], here)) return;
-    recordLocation(here);
+    navigation.recordIfMoved(nav.originLoc(openFile.fqn, loc.line, loc.col));
   }
 
   // Apply a location without recording it (back/forward, history-list click):
@@ -125,16 +115,12 @@
   }
 
   function goBack() {
-    const step = nav.stepBack({ history, index: histIndex });
-    if (!step) return;
-    histIndex = step.state.index;
-    applyLocation(step.loc);
+    const loc = navigation.back();
+    if (loc) applyLocation(loc);
   }
   function goForward() {
-    const step = nav.stepForward({ history, index: histIndex });
-    if (!step) return;
-    histIndex = step.state.index;
-    applyLocation(step.loc);
+    const loc = navigation.forward();
+    if (loc) applyLocation(loc);
   }
 
   // Open a find-usages occurrence: jump to it and record it in history.
@@ -530,8 +516,7 @@
     selected = null;
     pendingGoto = null;
     view = "code";
-    history = [];
-    histIndex = -1;
+    navigation.reset();
     projectOpen = false;
     docGroups = [];
     docSources = {};
