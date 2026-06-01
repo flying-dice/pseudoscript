@@ -107,9 +107,11 @@
   --status-h: 24px;
   /* compact ("mira") chrome height for the island bars (top / content / panel heads) */
   --bar-h: 34px;
-  --activity-w: 44px;
+  --activity-w: 42px;
   --radius: 10px;
   --radius-sm: 7px;
+  /* the gutter between the Fleet-style islands */
+  --island-gap: 5px;
 
   /* spacing scale (4px base) */
   --space-1: 0.25rem;
@@ -210,6 +212,15 @@
 * { box-sizing: border-box; }
 
 html, body { height: 100%; margin: 0; }
+
+/* Fleet-style island: a rounded, hairline-framed surface that floats on the app
+   backdrop. Shared by the activity rail, explorer, centre, and structure panels;
+   the gaps between them come from the .body grid gutter. */
+.island {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
 
 body {
   color: var(--ink);

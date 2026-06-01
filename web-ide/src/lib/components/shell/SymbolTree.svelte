@@ -3,6 +3,8 @@
 
   import { Box, Component, Container, Database, SquareFunction, User } from "@lucide/svelte";
 
+  import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
+
   // A C4 node kind — one of the six structural levels.
   type NodeKind = "person" | "system" | "container" | "component" | "data" | "callable";
 
@@ -22,9 +24,10 @@
     symbols?: SymbolNode[];
     selectedFqn?: string | null;
     onpicknode?: (fqn: string) => void;
+    onreveal?: (fqn: string) => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, onreveal }: Props = $props();
 
   // One icon per C4 level, so a node's place in the hierarchy reads at a glance.
   const ICONS: Record<NodeKind, ComponentType> = {
@@ -88,16 +91,24 @@
         aria-expanded={open}
         onclick={() => toggle(node.fqn)}
       >▸</button>
-      <button
-        class="node kind-{node.kind}"
-        class:active={node.fqn === selectedFqn}
-        onclick={() => onpicknode?.(node.fqn)}
-        title="{node.kind} · {node.fqn}"
-      >
-        <Icon class="ico" size={14} strokeWidth={1.75} aria-hidden="true" />
-        <span class="label">{node.name}</span>
-        {#if node.triggered}<span class="trig" title="Triggered callable">▸</span>{/if}
-      </button>
+      <ContextMenu.Root>
+        <ContextMenu.Trigger class="node-trigger">
+          <button
+            class="node kind-{node.kind}"
+            class:active={node.fqn === selectedFqn}
+            onclick={() => onpicknode?.(node.fqn)}
+            title="{node.kind} · {node.fqn}"
+          >
+            <Icon class="ico" size={14} strokeWidth={1.75} aria-hidden="true" />
+            <span class="label">{node.name}</span>
+            {#if node.triggered}<span class="trig" title="Triggered callable">▸</span>{/if}
+          </button>
+        </ContextMenu.Trigger>
+        <ContextMenu.Content class="ctx-menu">
+          <ContextMenu.Item onSelect={() => onpicknode?.(node.fqn)}>Go to definition</ContextMenu.Item>
+          {#if onreveal}<ContextMenu.Item onSelect={() => onreveal?.(node.fqn)}>Reveal on canvas</ContextMenu.Item>{/if}
+        </ContextMenu.Content>
+      </ContextMenu.Root>
     </div>
     {#if open && kids.length}
       <ul>
@@ -126,6 +137,11 @@
     align-items: center;
     gap: 0.1rem;
     padding-left: calc(var(--depth) * 0.85rem);
+  }
+  :global(.node-trigger) {
+    flex: 1;
+    min-width: 0;
+    display: flex;
   }
   .twist {
     flex: none;

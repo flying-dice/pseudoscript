@@ -1670,7 +1670,7 @@ show('index.html');
         />
       </section>
 
-      <section class="center reveal r2">
+      <section class="center island reveal r2">
         <header class="content-bar">
           <div class="nav-buttons">
             <button class="nav-btn" onclick={goBack} disabled={!canBack} title="Back (previous location)" aria-label="Back">←</button>
@@ -1725,6 +1725,7 @@ show('index.html');
           symbols={symbols as never}
           selectedFqn={selected?.fqn ?? null}
           onpicknode={(fqn) => selectNode(fqn, { goto: true })}
+          onreveal={revealSymbol}
           oncollapse={() => (ui.structureOpen = false)}
         />
       {/if}
@@ -1815,13 +1816,16 @@ show('index.html');
   .body {
     display: grid;
     grid-template-columns: var(--activity-w) minmax(0, 1fr);
+    gap: var(--island-gap);
+    padding: var(--island-gap);
     min-height: 0;
+    background: var(--bg);
   }
   .body.loaded {
     grid-template-columns: var(--activity-w) 248px minmax(0, 1fr) 268px;
   }
   .body.loaded.no-structure {
-    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr) 0;
+    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr);
   }
   /* a curtain / empty stage spans everything right of the activity rail */
   .span {
@@ -1838,8 +1842,6 @@ show('index.html');
   .explorer {
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
-    border-right: 1px solid var(--line);
     background: color-mix(in srgb, var(--surface) 70%, transparent);
   }
   /* the centre: a slim content-bar over the editor / canvas */

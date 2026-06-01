@@ -52,7 +52,7 @@
   }
 </script>
 
-<header class="topbar island">
+<header class="topbar">
   <div class="left">
     <span class="brand">pds</span>
     <FileMenu {workspaceName} {building} {...menu} />

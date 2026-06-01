@@ -1,6 +1,8 @@
 <script lang="ts">
   import { FileCode, FileText, Pencil, Settings2, Trash2 } from "@lucide/svelte";
 
+  import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
+
   // A workspace file row: its fully-qualified name and base-relative path.
   type TreeFile = {
     fqn: string;
@@ -212,41 +214,54 @@
         >
           {#each fgroup.items as file}
             <li>
-              <div class="file-row">
-                <button
-                  class="file"
-                  class:active={file.path === openPath}
-                  class:has-error={errorPaths.has(file.path)}
-                  class:is-dirty={!errorPaths.has(file.path) && dirtyPaths.has(file.path)}
-                  data-testid="file-{file.fqn}"
-                  draggable={!!onmovefile}
-                  ondragstart={() => (dragFile = file)}
-                  ondragend={() => {
-                    dragFile = null;
-                    dropDir = null;
-                  }}
-                  onclick={() => onopen?.(file)}
-                  aria-current={file.path === openPath ? "true" : undefined}
-                  title={dirtyPaths.has(file.path) ? `${file.path} · unsaved changes` : file.path}
-                >
-                  <FileCode class="file-ico" size={15} strokeWidth={2} aria-hidden="true" />
-                  <span class="fqn">{file.fqn}</span>
-                </button>
-                {#if onrenamefile || ondeletefile}
-                  <span class="row-actions">
-                    {#if onrenamefile}
-                      <button class="act" title="Rename" aria-label="Rename {file.fqn}" onclick={(e) => { e.stopPropagation(); onrenamefile?.(file); }}>
-                        <Pencil size={13} strokeWidth={2} aria-hidden="true" />
-                      </button>
+              <ContextMenu.Root>
+                <ContextMenu.Trigger class="row-trigger">
+                  <div class="file-row">
+                    <button
+                      class="file"
+                      class:active={file.path === openPath}
+                      class:has-error={errorPaths.has(file.path)}
+                      class:is-dirty={!errorPaths.has(file.path) && dirtyPaths.has(file.path)}
+                      data-testid="file-{file.fqn}"
+                      draggable={!!onmovefile}
+                      ondragstart={() => (dragFile = file)}
+                      ondragend={() => {
+                        dragFile = null;
+                        dropDir = null;
+                      }}
+                      onclick={() => onopen?.(file)}
+                      aria-current={file.path === openPath ? "true" : undefined}
+                      title={dirtyPaths.has(file.path) ? `${file.path} · unsaved changes` : file.path}
+                    >
+                      <FileCode class="file-ico" size={15} strokeWidth={2} aria-hidden="true" />
+                      <span class="fqn">{file.fqn}</span>
+                    </button>
+                    {#if onrenamefile || ondeletefile}
+                      <span class="row-actions">
+                        {#if onrenamefile}
+                          <button class="act" title="Rename" aria-label="Rename {file.fqn}" onclick={(e) => { e.stopPropagation(); onrenamefile?.(file); }}>
+                            <Pencil size={13} strokeWidth={2} aria-hidden="true" />
+                          </button>
+                        {/if}
+                        {#if ondeletefile}
+                          <button class="act danger" title="Delete" aria-label="Delete {file.fqn}" onclick={(e) => { e.stopPropagation(); ondeletefile?.(file); }}>
+                            <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
+                          </button>
+                        {/if}
+                      </span>
                     {/if}
-                    {#if ondeletefile}
-                      <button class="act danger" title="Delete" aria-label="Delete {file.fqn}" onclick={(e) => { e.stopPropagation(); ondeletefile?.(file); }}>
-                        <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
-                      </button>
-                    {/if}
-                  </span>
-                {/if}
-              </div>
+                  </div>
+                </ContextMenu.Trigger>
+                <ContextMenu.Content class="ctx-menu">
+                  <ContextMenu.Item onSelect={() => onopen?.(file)}>Open</ContextMenu.Item>
+                  {#if onrenamefile}<ContextMenu.Item onSelect={() => onrenamefile?.(file)}>Rename…</ContextMenu.Item>{/if}
+                  {#if oncreatefile}<ContextMenu.Item onSelect={() => oncreatefile?.()}>New file…</ContextMenu.Item>{/if}
+                  {#if ondeletefile}
+                    <ContextMenu.Separator />
+                    <ContextMenu.Item variant="destructive" onSelect={() => ondeletefile?.(file)}>Delete</ContextMenu.Item>
+                  {/if}
+                </ContextMenu.Content>
+              </ContextMenu.Root>
             </li>
           {/each}
         </ul>
@@ -261,6 +276,9 @@
     overflow: auto;
     display: flex;
     flex-direction: column;
+  }
+  :global(.row-trigger) {
+    display: block;
   }
   .head {
     display: flex;

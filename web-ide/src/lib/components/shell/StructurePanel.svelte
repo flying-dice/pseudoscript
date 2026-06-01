@@ -9,10 +9,11 @@
     symbols?: SymbolNode[];
     selectedFqn?: string | null;
     onpicknode?: (fqn: string) => void;
+    onreveal?: (fqn: string) => void;
     oncollapse?: () => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, oncollapse }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, onreveal, oncollapse }: Props = $props();
 </script>
 
 <aside class="structure island">
@@ -24,7 +25,7 @@
     </button>
   </header>
   <div class="panel-body">
-    <SymbolTree symbols={symbols as never} {selectedFqn} {onpicknode} />
+    <SymbolTree symbols={symbols as never} {selectedFqn} {onpicknode} {onreveal} />
   </div>
 </aside>
 
@@ -34,7 +35,6 @@
     grid-template-rows: var(--bar-h, 34px) 1fr;
     min-height: 0;
     background: color-mix(in srgb, var(--surface) 70%, transparent);
-    border-left: 1px solid var(--line);
   }
   .panel-head {
     display: flex;

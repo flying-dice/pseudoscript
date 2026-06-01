@@ -49,7 +49,6 @@
     align-items: center;
     padding: 0.4rem 0;
     background: color-mix(in srgb, var(--surface) 80%, transparent);
-    border-right: 1px solid var(--line);
   }
   .grp {
     display: flex;
