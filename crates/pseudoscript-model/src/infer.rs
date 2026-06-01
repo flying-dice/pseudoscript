@@ -161,9 +161,151 @@ fn base_owner(ws: &Workspace, from_fqn: &str, base: &ast::Expr) -> Option<(Strin
         }
         ast::ExprKind::Ref(ast::Ref::Path(path)) => {
             let segments: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-            resolve_owner(ws, from_fqn, &segments)
+            resolve_owner(ws, from_fqn, &segments).or_else(|| {
+                // A chain rooted at a local binding: `acc.balance` where `acc`
+                // was bound earlier. Resolve the binding's type, then its owner.
+                if let [name] = segments.as_slice() {
+                    let local = binding_type_at(ws, from_fqn, name)?;
+                    type_owner(ws, from_fqn, &local.ty)
+                } else {
+                    None
+                }
+            })
         }
         ast::ExprKind::Paren(inner) => base_owner(ws, from_fqn, inner),
+        _ => None,
+    }
+}
+
+/// The node/data owner of the receiver whose trailing `.` sits at byte `dot` —
+/// member completion on a chain (`Repo.fetch(id).value.` resolves the type of
+/// `value`, so its members can be offered). Parses `src`, locates the postfix
+/// chain straddling the cursor, and walks the segments left of it. Returns
+/// `None` when the receiver can't be typed (the caller then offers nothing).
+#[must_use]
+pub fn owner_at_dot(
+    ws: &Workspace,
+    from_fqn: &str,
+    src: &str,
+    dot: u32,
+) -> Option<(String, String)> {
+    let module = pseudoscript_syntax::parse(src).ast;
+    module.items.iter().find_map(|item| match item {
+        ast::Item::Decl(decl) => decl_owner_at(ws, from_fqn, decl, dot),
+        ast::Item::Alias(_) | ast::Item::Feature(_) => None,
+    })
+}
+
+fn decl_owner_at(
+    ws: &Workspace,
+    from_fqn: &str,
+    decl: &ast::Decl,
+    dot: u32,
+) -> Option<(String, String)> {
+    let (ast::DeclKind::Person(node)
+    | ast::DeclKind::System(node)
+    | ast::DeclKind::Container(node)
+    | ast::DeclKind::Component(node)) = &decl.kind
+    else {
+        return None;
+    };
+    node.body.iter().flatten().find_map(|member| match member {
+        ast::BodyMember::Callable(callable) => callable
+            .body
+            .as_ref()
+            .and_then(|block| block_owner_at(ws, from_fqn, block, dot)),
+        ast::BodyMember::Decl(inner) => decl_owner_at(ws, from_fqn, inner, dot),
+    })
+}
+
+fn block_owner_at(
+    ws: &Workspace,
+    from_fqn: &str,
+    block: &ast::Block,
+    dot: u32,
+) -> Option<(String, String)> {
+    block.stmts.iter().find_map(|stmt| match &stmt.kind {
+        ast::StmtKind::Assign { value, .. } => expr_owner_at(ws, from_fqn, value, dot),
+        ast::StmtKind::Return(Some(e)) | ast::StmtKind::Expr(e) => {
+            expr_owner_at(ws, from_fqn, e, dot)
+        }
+        ast::StmtKind::Return(None) => None,
+        ast::StmtKind::If {
+            cond,
+            then_block,
+            else_block,
+        } => expr_owner_at(ws, from_fqn, cond, dot)
+            .or_else(|| block_owner_at(ws, from_fqn, then_block, dot))
+            .or_else(|| {
+                else_block
+                    .as_ref()
+                    .and_then(|b| block_owner_at(ws, from_fqn, b, dot))
+            }),
+        ast::StmtKind::For { iter, body, .. } => expr_owner_at(ws, from_fqn, iter, dot)
+            .or_else(|| block_owner_at(ws, from_fqn, body, dot)),
+        ast::StmtKind::While { cond, body } => expr_owner_at(ws, from_fqn, cond, dot)
+            .or_else(|| block_owner_at(ws, from_fqn, body, dot)),
+    })
+}
+
+fn expr_owner_at(
+    ws: &Workspace,
+    from_fqn: &str,
+    expr: &ast::Expr,
+    dot: u32,
+) -> Option<(String, String)> {
+    match &expr.kind {
+        ast::ExprKind::Postfix { base, segments } => {
+            // The cursor may sit inside the base or a call argument's own chain —
+            // descend there first; those are more specific than this chain.
+            if let Some(owner) = expr_owner_at(ws, from_fqn, base, dot) {
+                return Some(owner);
+            }
+            for seg in segments {
+                for arg in seg.call_args.iter().flatten() {
+                    if let Some(owner) = expr_owner_at(ws, from_fqn, arg, dot) {
+                        return Some(owner);
+                    }
+                }
+            }
+            // The receiver is the base plus the segments whose name begins left
+            // of the cursor; the trailing `.` sits past it, before the next name.
+            let k = segments
+                .iter()
+                .take_while(|s| s.name.span.start < dot)
+                .count();
+            let recv_end = if k == 0 {
+                base.span.end
+            } else {
+                segments[k - 1].span.end
+            };
+            let next_start = segments.get(k).map(|s| s.name.span.start);
+            if recv_end <= dot && next_start.is_none_or(|ns| dot < ns) && dot <= expr.span.end {
+                let mut owner = base_owner(ws, from_fqn, base)?;
+                for seg in &segments[..k] {
+                    let ty = ws
+                        .module(&owner.0)?
+                        .model
+                        .members(&owner.1)
+                        .iter()
+                        .find(|m| m.name == seg.name.name)?
+                        .ty
+                        .clone();
+                    owner = type_owner(ws, from_fqn, &ty)?;
+                }
+                return Some(owner);
+            }
+            None
+        }
+        ast::ExprKind::Paren(inner) | ast::ExprKind::Unary { expr: inner, .. } => {
+            expr_owner_at(ws, from_fqn, inner, dot)
+        }
+        ast::ExprKind::Marker {
+            payload: Some(p), ..
+        } => expr_owner_at(ws, from_fqn, p, dot),
+        ast::ExprKind::From { sources, .. } => sources
+            .iter()
+            .find_map(|s| expr_owner_at(ws, from_fqn, s, dot)),
         _ => None,
     }
 }
@@ -212,6 +354,16 @@ mod tests {
         let workspace = ws(&[("syntax", SYNTAX)]);
         let local = binding_type_at(&workspace, "syntax", "tokens").expect("tokens");
         assert_eq!(local.ty, "Token[]");
+    }
+
+    #[test]
+    fn owner_at_dot_types_a_binding_receiver() {
+        // `tokens` is bound to `Token[]`; the `.` in `tokens.kind` resolves to
+        // the `Token` owner so its members can be completed.
+        let workspace = ws(&[("syntax", SYNTAX)]);
+        let dot = (SYNTAX.find("tokens.kind").unwrap() + "tokens".len()) as u32;
+        let owner = owner_at_dot(&workspace, "syntax", SYNTAX, dot).expect("typed receiver");
+        assert_eq!(owner, ("syntax".to_owned(), "Token".to_owned()));
     }
 
     #[test]

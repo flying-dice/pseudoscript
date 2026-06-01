@@ -61,14 +61,33 @@ pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec
     let trigger = governing_trigger(&tokens, offset);
 
     match trigger.map(|i| (i, tokens[i].kind)) {
-        Some((i, TokenKind::Dot)) => member_items(ws, from_fqn, &tokens, i),
+        Some((i, TokenKind::Dot)) => member_items(ws, from_fqn, src, &tokens, i),
         Some((i, TokenKind::ColonColon)) => path_items(ws, from_fqn, &tokens, i),
         Some((_, TokenKind::HashLBracket)) => macro_items(),
         // A built-in macro's argument is a type path (`#[onevent(Event)]`).
         Some((i, TokenKind::LParen)) if is_macro_arg(&tokens, i) => type_items(ws),
         Some((_, TokenKind::Colon | TokenKind::LAngle)) => type_items(ws),
+        // A `for` parent (or feature target) names a node, possibly cross-module.
+        Some((_, TokenKind::KwFor)) => node_items(ws, from_fqn),
         _ => general_items(ws, from_fqn),
     }
+}
+
+/// Visible node declarations (system / container / component / person) plus the
+/// other modules — for a `for` parent or feature target.
+fn node_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
+    let nodes = ws
+        .symbols()
+        .filter(|s| {
+            !matches!(s.kind, SymbolKind::Data) && (module_of(&s.fqn) == from_fqn || s.is_public)
+        })
+        .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
+    let modules = ws
+        .modules()
+        .iter()
+        .filter(|m| m.fqn != from_fqn)
+        .map(|m| item(&m.fqn, CompletionKind::Module, "module"));
+    nodes.chain(modules).collect()
 }
 
 /// Whether `tokens[lparen]` opens a built-in macro's argument list (`#[name(`).
@@ -99,10 +118,16 @@ fn governing_trigger(tokens: &[Token], offset: u32) -> Option<usize> {
 fn member_items(
     ws: &Workspace,
     from_fqn: &str,
+    src: &str,
     tokens: &[Token],
     dot: usize,
 ) -> Vec<CompletionItem> {
-    let Some((owner_module, owner_name)) = owner_before(ws, from_fqn, tokens, dot) else {
+    // The token-based path covers `self.`, `Module::Node.`, and a bare binding.
+    // A multi-step chain (`Repo.fetch(id).value.`) has no single base token, so
+    // fall back to typing the receiver expression at the cursor via the AST.
+    let owner = owner_before(ws, from_fqn, tokens, dot)
+        .or_else(|| crate::infer::owner_at_dot(ws, from_fqn, src, tokens[dot].span.start));
+    let Some((owner_module, owner_name)) = owner else {
         return Vec::new();
     };
     let Some(entry) = ws.module(&owner_module) else {
