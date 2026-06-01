@@ -18,15 +18,15 @@ test("the launcher starts a new project from a template", async ({ page }) => {
 test("the empty template bootstraps a one-module project on disk", async ({ page }) => {
   await createProject(page, "empty");
   const content = page.getByTestId("editor").locator(".cm-content");
-  // the one-file starter
-  await expect(content).toContainText("Platform");
+  // the one-file starter — a valid PseudoScript model
+  await expect(content).toContainText("public container Api");
   await expect(page.getByTestId("file-main")).toBeVisible();
 });
 
 test("a file edited outside the IDE is reloaded", async ({ page }) => {
   await createProject(page, "empty");
   const content = page.getByTestId("editor").locator(".cm-content");
-  await expect(content).toContainText("Platform");
+  await expect(content).toContainText("public container Api");
 
   // Edit main.pds on disk, outside the editor — through the very folder the IDE
   // scaffolded into (the stubbed OPFS pick).
@@ -41,5 +41,5 @@ test("a file edited outside the IDE is reloaded", async ({ page }) => {
   // Regaining focus pulls in external changes immediately.
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(content).toContainText("ReloadedFromDisk");
-  await expect(content).not.toContainText("Platform");
+  await expect(content).not.toContainText("public container Api");
 });
