@@ -3,7 +3,7 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
+  import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renderDocSite, symbolScene } from "$lib/pds.js";
   import type { Module, Occurrence } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
@@ -23,6 +23,8 @@
   import * as docs from "$lib/core/docs.js";
   import * as model from "$lib/core/model.js";
   import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
+  import { notifications } from "$lib/stores/notifications.svelte.js";
+  import { wasm } from "$lib/stores/wasm.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -52,17 +54,17 @@
     Dialog,
     ConfirmDialog,
     NoteKind,
-    Note,
     PendingWrite,
   } from "$lib/core/types.js";
 
   // The in-memory mount payload `mountWorkspace` consumes (sample / decoded).
   type MountInput = { workspace: PageWorkspace; landing?: string | null };
 
-  let ready = $state(false);
-  let wasmError = $state<string | null>(null);
-  let ver = $state("");
-  let toast = $state<string | null>(null);
+  // WASM readiness / version / init error — owned by the wasm store; the page
+  // reads them through these derived aliases (keeping every call site unchanged).
+  const ready = $derived(wasm.ready);
+  const wasmError = $derived(wasm.error);
+  const ver = $derived(wasm.version);
   let editorApi = $state<EditorApi | null>(null);
 
   // The selected item's view: its source ("code"), its interactive diagram
@@ -484,17 +486,10 @@
   });
 
   async function boot() {
-    wasmError = null;
     theme.init(); // sync runtime theme state with the inline-head choice; watch OS
-    try {
-      await initWasm();
-    } catch (e) {
-      wasmError = String((e as Error)?.message ?? e);
-      return;
-    }
-    ver = version();
+    if (!(await wasm.init())) return;
     refreshRecents();
-    ready = true;
+    wasm.ready = true;
     // Disk-only: without the File System Access API there's nowhere to read or
     // write a project, so the render shows an unsupported notice and the launcher
     // never opens.
@@ -915,12 +910,7 @@
   // The pending debounced write, captured so a file switch (or Cmd/Ctrl-S) can
   // flush it instead of dropping it — the old silent-data-loss path.
   let pendingWrite: PendingWrite | null = null; // { handle, text, key }
-  let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  function flash(message: string) {
-    toast = message;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toast = null), 2400);
-  }
+  const flash = (message: string) => notifications.flash(message);
 
   // Briefly show a "saved" cue after a successful write, then settle to idle.
   function markSaved() {
@@ -1002,17 +992,9 @@
     persisted = { ...persisted, [key]: disk };
   }
 
-  // Toast notifications (kind: success | error | info), shown stacked top-right.
-  let notes = $state<Note[]>([]);
-  let noteSeq = 0;
-  function notify(kind: NoteKind, title: string, body = "") {
-    const id = (noteSeq += 1);
-    notes = [...notes, { id, kind, title, body }];
-    setTimeout(() => dismissNote(id), kind === "error" ? 9000 : 6000);
-  }
-  function dismissNote(id: string | number) {
-    notes = notes.filter((n) => n.id !== id);
-  }
+  // Toast notifications — owned by the notifications store; thin view wrappers.
+  const notify = (kind: NoteKind, title: string, body = "") => notifications.notify(kind, title, body);
+  const dismissNote = (id: string | number) => notifications.dismiss(id);
 
   // Debounce a disk write for the active file. The pending write is captured so a
   // file switch or Cmd/Ctrl-S can flush it (rather than the old clearTimeout that
@@ -1512,7 +1494,7 @@ show('index.html');
   </div>
 {/if}
 
-<Notifications {notes} ondismiss={dismissNote} />
+<Notifications notes={notifications.notes} ondismiss={dismissNote} />
 
 {#if ready && projectOpen}
   <ProjectPanel
@@ -1782,7 +1764,7 @@ show('index.html');
       <span class="seg dim">{workspace.files.length} modules</span>
     {/if}
     <span class="grow"></span>
-    {#if toast}<span class="seg toast">{toast}</span>{/if}
+    {#if notifications.toast}<span class="seg toast">{notifications.toast}</span>{/if}
     <span class="seg dim">{view}</span>
     <span class="seg dim">{selected?.fqn ?? "context"}</span>
   </footer>
