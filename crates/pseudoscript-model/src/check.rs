@@ -479,6 +479,10 @@ impl Checker<'_> {
         // arity.
         self.check_call_arity(body, owner, &vars);
 
+        // §6: a `.method(args)` call names a callable of its receiver's type.
+        let recv_types = build_receiver_types(callable, body);
+        self.check_call_members(body, &recv_types);
+
         // §7 (ADR-023): an `if`/`while` condition is boolean.
         self.check_conditions(body, &vars);
 
@@ -620,6 +624,73 @@ impl Checker<'_> {
                     .filter(|s| s.kind != SymbolKind::Data)
                     .map(|_| leaf)
             }
+            _ => None,
+        }
+    }
+
+    /// §6: every `.name(args)` call in a body whose receiver's type is statically
+    /// known names a callable of that type.
+    fn check_call_members(&mut self, block: &Block, recv_types: &FxHashMap<String, Ty>) {
+        for_each_expr(block, &mut |expr| self.check_call_member_at(expr, recv_types));
+    }
+
+    /// Checks the call segments of one postfix chain. Walks from a typed root —
+    /// the node a bare path names, or the record a parameter/binding is typed as
+    /// — resolving each field segment to continue. A call segment MUST name a
+    /// callable of the running receiver; a record (fields only) rejects every
+    /// call. Walking stops at a call result, a non-record field, or an unknown
+    /// receiver — those are not inferred (ADR-022). `self.` calls and `::` paths
+    /// are owned by `check_self_call_at` / cross-module resolution.
+    fn check_call_member_at(&mut self, expr: &Expr, recv_types: &FxHashMap<String, Ty>) {
+        let ExprKind::Postfix { base, segments } = &expr.kind else {
+            return;
+        };
+        // Each chain is processed once, from its `Ref` root; a sub-chain (base is
+        // itself a `Postfix`) is visited separately by `for_each_expr`.
+        let Some(mut recv) = self.chain_root_owner(base, recv_types) else {
+            return;
+        };
+        for seg in segments {
+            let member = self.model.members(&recv).iter().find(|m| m.name == seg.name.name);
+            if seg.call_args.is_some() {
+                if !member.is_some_and(|m| m.kind == MemberKind::Callable) {
+                    let cands: Vec<&str> = self
+                        .model
+                        .members(&recv)
+                        .iter()
+                        .filter(|m| m.kind == MemberKind::Callable)
+                        .map(|m| m.name.as_str())
+                        .collect();
+                    let hint = suggest(&seg.name.name, &cands);
+                    self.error(seg.span, format!("no method `{}` on `{recv}`{hint}", seg.name.name));
+                }
+                return; // a call result's type is not inferred (ADR-022)
+            }
+            // A field read: continue only while the field's type names a same-module record.
+            match member.and_then(|m| param_shape(&m.ty)) {
+                Some((leaf, false)) if self.is_record(leaf) => recv = leaf.to_owned(),
+                _ => return,
+            }
+        }
+    }
+
+    /// The receiver type a postfix chain starts from: the node a bare path names
+    /// (a `data` type is a value form, resolved via its binding instead), or the
+    /// same-module record a parameter/binding is typed as. `self`-rooted chains
+    /// and `::` paths return `None` — not checked here.
+    fn chain_root_owner(&self, base: &Expr, recv_types: &FxHashMap<String, Ty>) -> Option<String> {
+        let ExprKind::Ref(Ref::Path(path)) = &base.kind else {
+            return None;
+        };
+        if !path.is_simple() {
+            return None;
+        }
+        let name = &path.segments[0].name;
+        if self.model.symbol(name).is_some_and(|s| s.kind != SymbolKind::Data) {
+            return Some(name.clone());
+        }
+        match recv_types.get(name) {
+            Some(Ty::Named { name: ty, array: false }) if self.is_record(ty) => Some(ty.clone()),
             _ => None,
         }
     }
@@ -1019,6 +1090,27 @@ fn build_vars(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
         .collect();
     collect_binding_types(body, &mut vars);
     vars
+}
+
+/// Each parameter and annotated binding mapped to its *declared* type — the
+/// receiver type a later `.method()` chain resolves against. Unlike [`build_vars`],
+/// a call-initialised binding keeps its annotation rather than `Unknown`: calls
+/// are not inferred (ADR-022), but the declared type names the receiver whose
+/// members must exist (§6). Used only by the call-member check.
+fn build_receiver_types(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
+    let mut types: FxHashMap<String, Ty> = callable
+        .params
+        .iter()
+        .map(|p| (p.name.name.clone(), ty_from_ast(&p.ty)))
+        .collect();
+    for_each_stmt(body, &mut |stmt| {
+        if let StmtKind::Assign { name, ty, .. } = &stmt.kind
+            && !type_leaf(ty).is_empty()
+        {
+            types.insert(name.name.clone(), ty_from_ast(ty));
+        }
+    });
+    types
 }
 
 fn collect_binding_types(block: &Block, vars: &mut FxHashMap<String, Ty>) {
