@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { base } from "$app/paths";
   import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
   import type { ThemePref } from "$lib/theme.svelte.js";
 
@@ -109,6 +110,17 @@
     {building ? "Building…" : "Build docs"}
   </button>
 
+  <a
+    class="ghost icon-only skill"
+    href="{base}/pseudocode-skill.zip"
+    download="pseudocode-skill.zip"
+    title="Download the PseudoScript authoring skill (.zip)"
+    aria-label="Download the authoring skill"
+    data-testid="download-skill"
+  >
+    <span class="ico" aria-hidden="true">📥</span>
+  </a>
+
   <button
     class="ghost icon-only theme"
     onclick={cycleTheme}
@@ -216,6 +228,7 @@
   .ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
   .ghost:hover:not(:disabled) .chev { color: var(--ink-soft); }
   .ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+  a.ghost { text-decoration: none; }
   .icon-only { padding: 0.42rem 0.6rem; }
   .icon-only .ico { font-size: 0.95rem; }
 

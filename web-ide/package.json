@@ -9,6 +9,7 @@
     "postbuild": "printf '_worker.js\\n_routes.json\\n' > .svelte-kit/cloudflare/.assetsignore",
     "preview": "vite preview",
     "build:wasm": "wasm-pack build ../crates/pseudoscript-wasm --release --target web --out-dir ../../web-ide/src/lib/pds-wasm && rm -f src/lib/pds-wasm/.gitignore src/lib/pds-wasm/package.json src/lib/pds-wasm/README.md",
+    "bundle:skill": "bun scripts/bundle-skill.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

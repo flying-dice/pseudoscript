@@ -89,3 +89,10 @@ test("folding ranges come from the compiler (blocks fold)", async ({ page }) => 
   );
   expect(docVisible).toBe(true);
 });
+
+test("the toolbar downloads the authoring skill folder as a zip", async ({ page }) => {
+  const link = page.getByTestId("download-skill");
+  await expect(link).toBeVisible();
+  const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+  expect(download.suggestedFilename()).toBe("pseudocode-skill.zip");
+});
