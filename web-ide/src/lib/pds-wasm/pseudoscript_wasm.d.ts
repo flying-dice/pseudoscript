@@ -22,6 +22,22 @@ export function check(source: string): string;
 export function check_modules(modules_json: string): string;
 
 /**
+ * Context-aware completion candidates at `offset` (a byte offset) in module
+ * `module_fqn`. Returns a JSON array `[{label, kind, detail}]`, where `kind` is
+ * a lowercase tag (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/
+ * `reference`) the editor maps to an icon. The set is scoped to the trigger
+ * before the caret (`.`/`::`/`#[`/type-position/general); the client filters it
+ * against the prefix being typed. `modules_json` is the `[{fqn, source}]`
+ * workspace shape. This is the same engine the LSP serves, so the web IDE and
+ * native editors complete identically.
+ *
+ * # Errors
+ *
+ * Returns an error when `modules_json` is not valid JSON of the expected shape.
+ */
+export function completion(modules_json: string, module_fqn: string, offset: number): string;
+
+/**
  * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` to
  * the FQN of its declaration, for go-to-definition. Returns the FQN as a JSON
  * string, or `null` when the cursor rests on no resolvable symbol. Unlike
@@ -230,6 +246,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly check: (a: number, b: number) => [number, number];
     readonly check_modules: (a: number, b: number) => [number, number, number, number];
+    readonly completion: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly definition: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly doc_manifest: (a: number, b: number) => [number, number, number, number];
     readonly doc_ssr_bundle: () => [number, number];

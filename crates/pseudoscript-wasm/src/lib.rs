@@ -40,7 +40,7 @@ use pseudoscript_emit::{
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
     Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
-    graph as build_graph, resolve::resolve_at,
+    completion as model_completion, graph as build_graph, resolve::resolve_at,
 };
 use pseudoscript_syntax::{
     Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
@@ -231,6 +231,23 @@ pub fn definition(modules_json: &str, module_fqn: &str, offset: u32) -> Result<S
 #[wasm_bindgen]
 pub fn references(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
     references_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
+}
+
+/// Context-aware completion candidates at `offset` (a byte offset) in module
+/// `module_fqn`. Returns a JSON array `[{label, kind, detail}]`, where `kind` is
+/// a lowercase tag (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/
+/// `reference`) the editor maps to an icon. The set is scoped to the trigger
+/// before the caret (`.`/`::`/`#[`/type-position/general); the client filters it
+/// against the prefix being typed. `modules_json` is the `[{fqn, source}]`
+/// workspace shape. This is the same engine the LSP serves, so the web IDE and
+/// native editors complete identically.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn completion(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
+    completion_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
 }
 
 /// Projects the fitting diagram for the symbol `fqn` over the whole workspace
@@ -570,6 +587,22 @@ fn references_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<
     }))
 }
 
+fn completion_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
+    let modules = modules_from_json(modules_json)?;
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    Ok(to_json(&model_completion(
+        &workspace, module_fqn, src, offset,
+    )))
+}
+
 fn symbol_scene_impl(modules_json: &str, fqn: &str) -> Result<String, String> {
     let graph = build_graph(&modules_from_json(modules_json)?);
     let scene = project_symbol(&graph, fqn).map_err(|e| e.to_string())?;
@@ -836,9 +869,9 @@ fn to_json<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        check, check_modules_impl, doc_config, doc_manifest_impl, emit_scene_modules_impl,
-        format_impl, hover_impl, outline, parse, project_view, references_impl, symbol_scene_impl,
-        symbol_svg_impl, to_json,
+        check, check_modules_impl, completion_impl, doc_config, doc_manifest_impl,
+        emit_scene_modules_impl, format_impl, hover_impl, outline, parse, project_view,
+        references_impl, symbol_scene_impl, symbol_svg_impl, to_json,
     };
 
     #[test]
@@ -999,6 +1032,22 @@ mod tests {
     fn hover_on_blank_space_is_null() {
         let json = hover_impl(&workspace_json(), "ctx", 0).expect("hovers");
         assert_eq!(json, "null");
+    }
+
+    #[test]
+    fn completion_after_module_path_is_scoped() {
+        // Caret right after `sys::` (before `Web`) — offers only module sys's
+        // public symbols, tagged, with no general-scope keyword leak.
+        let offset = (CTX_SRC.find("sys::").expect("sys:: present") + "sys::".len()) as u32;
+        let json = completion_impl(&workspace_json(), "ctx", offset).expect("completes");
+        assert!(json.contains(r#""label":"Web""#), "{json}");
+        assert!(json.contains(r#""label":"Shop""#), "{json}");
+        assert!(json.contains(r#""kind":"module""#), "{json}");
+        // general scope must not leak into a `::` context
+        assert!(
+            !json.contains(r#""label":"person""#),
+            "general scope leaked: {json}"
+        );
     }
 
     #[test]

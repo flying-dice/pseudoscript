@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const check: (a: number, b: number) => [number, number];
 export const check_modules: (a: number, b: number) => [number, number, number, number];
+export const completion: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const definition: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const doc_manifest: (a: number, b: number) => [number, number, number, number];
 export const doc_ssr_bundle: () => [number, number];

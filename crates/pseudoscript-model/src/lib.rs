@@ -30,10 +30,12 @@
 //! ```
 
 mod check;
+pub mod complete;
 mod graph;
 mod model;
 pub mod resolve;
 
+pub use complete::{CompletionItem, CompletionKind, completion};
 pub use graph::{
     Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
     Visibility,

@@ -15,6 +15,7 @@ import init, {
   hover as wasmHover,
   definition as wasmDefinition,
   references as wasmReferences,
+  completion as wasmCompletion,
   doc_ssr_bundle as wasmDocSsrBundle,
   doc_manifest as wasmDocManifest,
   outline as wasmOutline,
@@ -126,6 +127,18 @@ export function definition(modules, moduleFqn, offset) {
  */
 export function references(modules, moduleFqn, offset) {
   return JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset));
+}
+
+/**
+ * Context-aware completion candidates at a byte `offset` in module `moduleFqn`.
+ * Returns `[{ label, kind, detail }]`, where `kind` is a lowercase tag
+ * (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/`reference`). The
+ * set is scoped to the trigger before the caret (`.`/`::`/`#[`/type-position/
+ * general); the editor filters it against the prefix being typed. This is the
+ * same engine the LSP serves. `modules` is `[{ fqn, source }]`.
+ */
+export function completion(modules, moduleFqn, offset) {
+  return JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset));
 }
 
 /**

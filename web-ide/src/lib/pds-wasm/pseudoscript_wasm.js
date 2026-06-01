@@ -57,6 +57,47 @@ export function check_modules(modules_json) {
 }
 
 /**
+ * Context-aware completion candidates at `offset` (a byte offset) in module
+ * `module_fqn`. Returns a JSON array `[{label, kind, detail}]`, where `kind` is
+ * a lowercase tag (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/
+ * `reference`) the editor maps to an icon. The set is scoped to the trigger
+ * before the caret (`.`/`::`/`#[`/type-position/general); the client filters it
+ * against the prefix being typed. `modules_json` is the `[{fqn, source}]`
+ * workspace shape. This is the same engine the LSP serves, so the web IDE and
+ * native editors complete identically.
+ *
+ * # Errors
+ *
+ * Returns an error when `modules_json` is not valid JSON of the expected shape.
+ * @param {string} modules_json
+ * @param {string} module_fqn
+ * @param {number} offset
+ * @returns {string}
+ */
+export function completion(modules_json, module_fqn, offset) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(modules_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(module_fqn, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.completion(ptr0, len0, ptr1, len1, offset);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` to
  * the FQN of its declaration, for go-to-definition. Returns the FQN as a JSON
  * string, or `null` when the cursor rests on no resolvable symbol. Unlike

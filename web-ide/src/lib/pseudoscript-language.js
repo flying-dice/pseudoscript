@@ -98,50 +98,52 @@ export function pseudoscript() {
   return new LanguageSupport(streamLang, [syntaxHighlighting(highlightStyle)]);
 }
 
-// The completion type CodeMirror tags each option with (drives its icon).
+// Maps the LSP engine's neutral completion kind to the CodeMirror option type
+// that drives each candidate's icon.
 const KIND_TYPE = {
-  person: "variable",
-  system: "class",
-  container: "class",
-  component: "class",
-  data: "type",
-  callable: "function",
+  method: "method",
+  field: "property",
+  keyword: "keyword",
+  macro: "function",
+  type: "type",
+  class: "class",
+  module: "namespace",
+  reference: "variable",
 };
 
-// Every reserved word, offered as a keyword completion.
-const KEYWORD_OPTIONS = [...KEYWORDS, ...STEP_KEYWORDS, ...PRIMITIVES, ...ATOMS].map((label) => ({
-  label,
-  type: "keyword",
-}));
-
 /**
- * Autocomplete from the language's keywords plus the workspace's declared
- * symbols. `getSymbols()` returns `[{ name, fqn, kind }]` (the live outline), so
- * both a node's simple name and its full `::` path complete. Matches a word that
- * may include `::`, so `orders::OrderService` completes mid-path.
+ * Autocomplete sourced from the shared LSP completion engine (the same one the
+ * native language server serves), so the web IDE narrows by context — members
+ * after `.`, a module's symbols after `::`, macros after `#[`, types in type
+ * position — instead of always offering every keyword and symbol.
+ *
+ * `getCompletions(context)` returns `[{ label, kind, detail }]` for the caret;
+ * the labels are bare segment names, so completion replaces only the identifier
+ * segment under the caret (after the last `.`/`::`), and CodeMirror filters the
+ * returned set against the typed prefix.
  */
-export function pseudoscriptCompletion(getSymbols) {
+export function pseudoscriptCompletion(getCompletions) {
   return autocompletion({
     activateOnTyping: true,
     icons: true,
     override: [
       (context) => {
-        const word = context.matchBefore(/[A-Za-z_][\w:]*/);
-        if (!word || (word.from === word.to && !context.explicit)) return null;
+        // Auto-open only once a prefix is typed; an explicit invoke (Ctrl-Space)
+        // still completes at the bare caret. Only the trailing identifier
+        // segment is replaced — the `.`/`::` before it is context the engine
+        // already accounted for.
+        const word = context.matchBefore(/[A-Za-z_]\w*/);
+        if (!word && !context.explicit) return null;
+        const from = word ? word.from : context.pos;
         const seen = new Set();
         const options = [];
-        const add = (label, type, detail) => {
-          if (seen.has(label)) return;
-          seen.add(label);
-          options.push(detail ? { label, type, detail } : { label, type });
-        };
-        for (const o of KEYWORD_OPTIONS) add(o.label, o.type);
-        for (const s of getSymbols?.() ?? []) {
-          const type = KIND_TYPE[s.kind] ?? "variable";
-          add(s.name, type, s.kind);
-          add(s.fqn, type, s.kind);
+        for (const c of getCompletions?.(context) ?? []) {
+          if (seen.has(c.label)) continue;
+          seen.add(c.label);
+          options.push({ label: c.label, type: KIND_TYPE[c.kind] ?? "variable", detail: c.detail });
         }
-        return { from: word.from, options, validFor: /^[\w:]*$/ };
+        if (options.length === 0) return null;
+        return { from, options, validFor: /^\w*$/ };
       },
     ],
   });

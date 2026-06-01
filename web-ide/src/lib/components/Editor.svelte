@@ -19,7 +19,7 @@
   import { pseudoscript, pseudoscriptCompletion, pseudoscriptLinter } from "$lib/pseudoscript-language.js";
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
-  import { definition as symbolDefinition, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
+  import { completion as symbolCompletion, definition as symbolDefinition, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
   import { blockRanges } from "$lib/blocks.js";
 
@@ -542,6 +542,24 @@
     keymap.of(Object.entries(shortcutRun).map(([id, run]) => ({ key: keybindings.keyFor(id), run })));
   const keysCompartment = new Compartment();
 
+  // Completion candidates from the shared LSP engine (via wasm), scoped to the
+  // trigger before the caret. The active module uses the live document text so a
+  // just-typed `.`/`::` is reflected; other modules come from `ctx.modules`.
+  // Returns `[{ label, kind, detail }]`; an empty list on any wasm error so a
+  // transient parse failure never breaks typing.
+  function completionsAt(cmContext) {
+    const src = cmContext.state.doc.toString();
+    const offset = charToByte(src, cmContext.pos);
+    const modules = ctx.modules.map((m) =>
+      m.fqn === ctx.moduleFqn ? { ...m, source: src } : m,
+    );
+    try {
+      return symbolCompletion(modules, ctx.moduleFqn, offset);
+    } catch {
+      return [];
+    }
+  }
+
   // The language bundle, swapped per file type: PseudoScript (default), Markdown
   // live-preview (an authored doc), or nothing (plain text). Keeps Markdown free
   // of PseudoScript highlighting/lint while rendering it in place.
@@ -551,7 +569,7 @@
     if (plain) return [];
     return [
       pseudoscript(),
-      pseudoscriptCompletion(() => ctx.symbols),
+      pseudoscriptCompletion(completionsAt),
       pdsFoldService,
       lintGutter(),
       pseudoscriptLinter(),
