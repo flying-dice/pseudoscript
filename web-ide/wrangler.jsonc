@@ -1,0 +1,17 @@
+{
+  // SvelteKit Web IDE → Cloudflare Workers (static assets + adapter worker).
+  // Output produced by `npm run build` (@sveltejs/adapter-cloudflare).
+  // Account is supplied via the CLOUDFLARE_ACCOUNT_ID env var (local + CI).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pdscript-ide",
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "compatibility_date": "2025-05-05",
+  "compatibility_flags": ["nodejs_als"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "routes": [
+    { "pattern": "ide.pdscript.dev", "custom_domain": true }
+  ]
+}
