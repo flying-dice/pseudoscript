@@ -29,8 +29,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # After a release PR merges, tag the commit and create the GitHub Release.
-  # The build job is gated on this having actually released something.
+  # After a release PR merges, tag the commit (`v<version>`) and create the
+  # GitHub Release for the `pseudoscript` CLI crate (see release-plz.toml).
   release:
     name: Release
     runs-on: ubuntu-latest
@@ -49,81 +49,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build native binaries for the freshly-released commit. Runner arch is
-  # load-bearing: macos-13 is the last Intel image, macos-latest is Apple
-  # Silicon. Do not "modernize" macos-13 to macos-latest.
-  build:
-    name: Build ${{ matrix.target }}
+  # Build the cross-platform binaries + checksums and attach them, with the
+  # install scripts, to the freshly published release — in this same run, so it
+  # does not depend on a release-event trigger (which GITHUB_TOKEN suppresses).
+  # The single-crate release config means releases[0] is the `v<version>` tag.
+  assets:
+    name: Release assets
     needs: release
     if: needs.release.outputs.releases_created == 'true'
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            archive: tar.gz
-          - target: x86_64-apple-darwin
-            runner: macos-13       # Intel
-            archive: tar.gz
-          - target: aarch64-apple-darwin
-            runner: macos-latest   # Apple Silicon
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            archive: zip
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: Build
-        run: cargo build --release --locked -p pseudoscript --target ${{ matrix.target }}
-      - name: Package (unix)
-        if: matrix.archive == 'tar.gz'
-        run: |
-          mkdir -p dist
-          tar -czf "dist/pds-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" pds
-      - name: Package (windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path "target/${{ matrix.target }}/release/pds.exe" -DestinationPath "dist/pds-${{ matrix.target }}.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pds-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-
-  # Checksum the binaries and attach them, SHA256SUMS, and the install scripts
-  # to the release release-plz created.
-  assets:
-    name: Upload assets
-    needs: [release, build]
-    if: needs.release.outputs.releases_created == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum pds-* > SHA256SUMS
-          cat SHA256SUMS
-      - name: Upload to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
-        run: |
-          gh release upload "$TAG" \
-            dist/pds-*.tar.gz dist/pds-*.zip dist/SHA256SUMS \
-            scripts/install.sh scripts/install.ps1 \
-            --clobber
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-assets.yml
+    with:
+      tag: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+    secrets: inherit

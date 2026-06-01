@@ -1,7 +1,19 @@
 # release-plz drives versioning, changelog, and GitHub releases from
 # conventional commits. This ships a binary (`pds`), not a crates.io library,
-# so publishing is off; tagging and GitHub releases stay on (the defaults).
+# so publishing is off; tagging and GitHub releases stay on for the CLI only.
 [workspace]
 publish = false
-# `pds upgrade <version>` and scripts/install.* expect `v<version>` tags.
+# The library crates are internal (never published, never installed on their
+# own). Only the binary crate gets a git tag + GitHub release, so there is one
+# canonical `v<version>` release that `pds upgrade` and scripts/install.* resolve
+# via /releases/latest. Without this, release-plz tags each crate separately
+# (e.g. `pseudoscript-layout-v0.1.0`) and "latest" can land on an asset-less one.
+git_tag_enable = false
+git_release_enable = false
+
+# The binary crate (`pseudoscript` → `pds`): the only tagged/released package.
+[[package]]
+name = "pseudoscript"
+git_tag_enable = true
 git_tag_name = "v{{ version }}"
+git_release_enable = true

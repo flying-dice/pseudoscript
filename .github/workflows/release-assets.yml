@@ -1,0 +1,118 @@
+name: release-assets
+
+# Builds the cross-platform `pds` binaries and attaches them — plus SHA256SUMS
+# and the install scripts — to a GitHub Release, then marks it the latest.
+#
+# Called from release.yml in the same run right after release-plz publishes the
+# release (a separate `on: release: published` trigger would NOT fire, because
+# release-plz creates the release with GITHUB_TOKEN and GitHub suppresses
+# downstream workflow runs for token-raised events). Also exposed via
+# workflow_dispatch to rebuild/attach assets to any existing tag by hand.
+#
+# The install scripts (scripts/install.sh, scripts/install.ps1) resolve the
+# latest release's tag and download `pds-<target>.{tar.gz,zip}` + SHA256SUMS
+# from it, so attaching these assets and marking the release `--latest` is what
+# makes `curl … | bash` / `irm … | iex` work.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build + attach assets to (e.g. v0.1.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build + attach assets to (e.g. v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  # Build native binaries for the released commit. Runner arch is load-bearing:
+  # macos-13 is the last Intel image, macos-latest is Apple Silicon. Do not
+  # "modernize" macos-13 to macos-latest.
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13       # Intel
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest   # Apple Silicon
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p pseudoscript --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/pds-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" pds
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/pds.exe" -DestinationPath "dist/pds-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pds-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Checksum the binaries and attach them, SHA256SUMS, and the install scripts
+  # to the release, then mark it the latest release so the install scripts and
+  # /releases/latest/download/* URLs resolve to it.
+  publish:
+    name: Upload assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum pds-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload to release and mark latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload "$TAG" \
+            dist/pds-*.tar.gz dist/pds-*.zip dist/SHA256SUMS \
+            scripts/install.sh scripts/install.ps1 \
+            --clobber
+          gh release edit "$TAG" --latest
