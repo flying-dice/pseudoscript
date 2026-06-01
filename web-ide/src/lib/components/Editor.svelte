@@ -367,21 +367,20 @@
 
   // ── Folding ────────────────────────────────────────────────────────────────
   // Blocks fold by default; the navigated-to block (and its ancestors) stays
-  // open. Fold extents come from the compiler's AST-accurate fold ranges (the
-  // same the LSP serves), memoised per document. The byte spans map to
-  // `{ open, close }` editor offsets: `open` at the construct start, `close` at
-  // its closing brace (kept visible).
+  // open. Fold extents come from the compiler's AST-accurate fold ranges, served
+  // as standard LSP `FoldingRange`s (0-based line numbers), memoised per
+  // document. Each maps to `{ open, close }` editor offsets: `open` on the header
+  // line, `close` at the start of the closing line (so the `}` stays visible).
   const rangeCache = new WeakMap();
   function rangesOf(doc) {
     let r = rangeCache.get(doc);
     if (!r) {
-      const src = doc.toString();
-      r = foldRanges(src)
+      r = foldRanges(doc.toString())
+        .filter((range) => range.endLine > range.startLine && range.endLine < doc.lines)
         .map((range) => ({
-          open: byteToChar(src, range.start),
-          close: byteToChar(src, range.end - 1),
-        }))
-        .filter((range) => range.close > range.open);
+          open: doc.line(range.startLine + 1).from,
+          close: doc.line(range.endLine + 1).from,
+        }));
       rangeCache.set(doc, r);
     }
     return r;
@@ -476,9 +475,14 @@
     });
   }
 
-  // The compiler-driven hover: symbol info plus its fitting diagram, with
-  // actions to dock the diagram in the side panel or open it full-screen. The
-  // IDE never decides which diagram a symbol gets — `symbolHover` (WASM) does.
+  // The compiler-driven hover, served as a standard LSP `Hover` (Markdown, no
+  // diagram). The actions re-resolve the symbol at the cursor via the LSP
+  // `definition` so navigation and the diagram canvas still work.
+  function hoverText(contents) {
+    if (typeof contents === "string") return contents;
+    if (Array.isArray(contents)) return contents.map(hoverText).join("\n\n");
+    return contents?.value ?? "";
+  }
   function symbolTooltip(view, pos) {
     const src = view.state.doc.toString();
     const offset = charToByte(src, pos);
@@ -488,7 +492,11 @@
     } catch {
       return null;
     }
-    if (!result) return null;
+    const value = result ? hoverText(result.contents) : "";
+    if (!value) return null;
+    const [head, ...rest] = value.split("\n\n");
+    const titleText = head.replace(/^\*\*/, "").replace(/\*\*$/, "");
+    const bodyText = rest.join("\n\n");
 
     return {
       pos,
@@ -499,16 +507,23 @@
 
         const title = document.createElement("div");
         title.className = "ph-title";
-        appendTitle(title, result.info.title);
+        appendTitle(title, titleText);
         dom.append(title);
 
-        if (result.info.body) {
+        if (bodyText) {
           const body = document.createElement("div");
           body.className = "ph-body";
-          body.textContent = result.info.body;
+          body.textContent = bodyText;
           dom.append(body);
         }
 
+        const fqnAt = () => {
+          try {
+            return symbolDefinition(ctx.modules, ctx.moduleFqn, offset);
+          } catch {
+            return null;
+          }
+        };
         const actions = document.createElement("div");
         actions.className = "ph-actions";
         const button = (label, fn) => {
@@ -517,13 +532,19 @@
           b.textContent = label;
           b.addEventListener("mousedown", (e) => {
             e.preventDefault();
-            fn?.(result.info);
+            fn();
           });
           actions.append(b);
         };
-        button("Go to definition", () => ctx.ongotodefinition?.(result.info.fqn));
+        button("Go to definition", () => {
+          const fqn = fqnAt();
+          if (fqn) ctx.ongotodefinition?.(fqn);
+        });
         button("Find usages", () => findUsages(view, pos));
-        button("Canvas", ctx.onopensymbol);
+        button("Canvas", () => {
+          const fqn = fqnAt();
+          if (fqn) ctx.onopensymbol?.(fqn);
+        });
         dom.append(actions);
 
         return { dom };

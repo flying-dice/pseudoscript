@@ -13,6 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-model = { path = "../pseudoscript-model" }
+pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core" }
 pseudoscript-format = { path = "../pseudoscript-format" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
@@ -20,6 +21,7 @@ serde_json = "1"
 walkdir = "2"
 
 [dev-dependencies]
+pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core" }
 cucumber = "0.21"
 futures = "0.3"
 

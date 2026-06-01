@@ -100,11 +100,10 @@ export function emitSvg(source, view, target = "") {
 }
 
 /**
- * Resolve the symbol under a byte `offset` in module `moduleFqn`, returning
- * `{ info: { fqn, title, body }, svg }` (the symbol's info and its fitting
- * diagram as SVG), or `null` when the cursor rests on no symbol. The compiler
- * chooses the diagram — a sequence trace for a callable, a structural view for
- * a node. `modules` is `[{ fqn, source }]`.
+ * Resolve the symbol under a byte `offset` in module `moduleFqn` as a standard
+ * LSP `Hover` (`{ contents: { kind, value }, range }`, Markdown), or `null` when
+ * the cursor rests on no symbol. Served exactly as the stdio LSP serves it — no
+ * diagram. `modules` is `[{ fqn, source }]`.
  */
 export function hover(modules, moduleFqn, offset) {
   return JSON.parse(wasmHover(JSON.stringify(modules), moduleFqn, offset));
@@ -132,31 +131,32 @@ export function references(modules, moduleFqn, offset) {
 }
 
 /**
- * Context-aware completion candidates at a byte `offset` in module `moduleFqn`.
- * Returns `[{ label, kind, detail }]`, where `kind` is a lowercase tag
- * (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/`reference`). The
- * set is scoped to the trigger before the caret (`.`/`::`/`#[`/type-position/
- * general); the editor filters it against the prefix being typed. This is the
- * same engine the LSP serves. `modules` is `[{ fqn, source }]`.
+ * Context-aware completion at a byte `offset` in module `moduleFqn`, as standard
+ * LSP `CompletionItem`s (`[{ label, kind, detail }]`, where `kind` is the
+ * integer `CompletionItemKind`). Scoped to the trigger before the caret
+ * (`.`/`::`/`#[`/type-position/general); the editor filters against the typed
+ * prefix. Served exactly as the stdio LSP serves it. `modules` is
+ * `[{ fqn, source }]`.
  */
 export function completion(modules, moduleFqn, offset) {
   return JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset));
 }
 
 /**
- * AST-aware semantic tokens for `source`: `[{ start, end, kind, declaration }]`
- * in absolute UTF-8 byte offsets, sorted and non-overlapping. `kind` is a
- * camelCase role tag the editor maps to a highlight colour. The same colouring
- * the LSP serves — no hand-written tokenizer.
+ * AST-aware semantic tokens for `source` as a standard LSP `SemanticTokens`
+ * (`{ data: [Δline, Δstart, len, type, mods], … }`, delta-encoded over UTF-16
+ * positions). `type` indexes the legend in `pseudoscript-lsp-core::semantic`.
+ * The same colouring the stdio LSP serves — no hand-written tokenizer.
  */
 export function semanticTokens(source) {
   return JSON.parse(wasmSemanticTokens(source));
 }
 
 /**
- * Foldable regions of `source`: `[{ start, end }]` in absolute UTF-8 byte
- * offsets — every multi-line declaration and statement block, from the same
- * AST-accurate fold logic the LSP uses.
+ * Foldable regions of `source` as standard LSP `FoldingRange`s
+ * (`[{ startLine, endLine, kind }]`, 0-based lines) — every multi-line
+ * declaration and statement block, from the same AST-accurate fold logic the
+ * LSP serves.
  */
 export function foldRanges(source) {
   return JSON.parse(wasmFoldingRanges(source));

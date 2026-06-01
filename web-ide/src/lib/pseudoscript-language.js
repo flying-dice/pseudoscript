@@ -10,7 +10,6 @@ import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 
 import { check, semanticTokens } from "./pds.js";
-import { byteToChar } from "./offsets.js";
 
 // A structure-only language: it carries the `//` comment config (so Mod-/ works)
 // but does no colouring — the semantic-token decorator below owns highlighting,
@@ -52,22 +51,43 @@ const SEM_DECO = Object.fromEntries(
   ]),
 );
 
-/** Builds the decoration set for `view` from the compiler's semantic tokens. */
+// The token-type legend, in the index order the LSP semantic-tokens response
+// uses (must match pseudoscript-lsp-core::semantic::token_types). The response's
+// `token_type` field indexes this.
+const SEM_LEGEND = [
+  "namespace", "type", "class", "parameter", "variable", "property",
+  "enumMember", "method", "keyword", "comment", "string", "number", "decorator",
+];
+
+/**
+ * Decorates `view` from the compiler's LSP semantic-tokens response. The result
+ * is the standard delta encoding (`{ data: [Δline, Δstart, len, type, mods] }`)
+ * over UTF-16 positions — the same units CodeMirror uses, so no byte conversion.
+ */
 function semanticDecorations(view) {
-  const src = view.state.doc.toString();
-  let tokens;
+  const doc = view.state.doc;
+  let result;
   try {
-    tokens = semanticTokens(src);
+    result = semanticTokens(doc.toString());
   } catch {
     return Decoration.none; // transient parse failure — leave text uncoloured
   }
+  const data = result.data ?? [];
   const builder = new RangeSetBuilder();
-  for (const tok of tokens) {
-    const deco = SEM_DECO[tok.kind];
-    if (!deco) continue;
-    const from = byteToChar(src, tok.start);
-    const to = byteToChar(src, tok.end);
-    if (to > from) builder.add(from, to, deco);
+  let line = 0;
+  let char = 0;
+  for (let i = 0; i + 4 < data.length; i += 5) {
+    const [dLine, dStart, len, typeIdx] = data.slice(i, i + 5);
+    if (dLine === 0) char += dStart;
+    else {
+      line += dLine;
+      char = dStart;
+    }
+    const deco = SEM_DECO[SEM_LEGEND[typeIdx]];
+    if (!deco || len === 0 || line >= doc.lines) continue;
+    const from = doc.line(line + 1).from + char;
+    const to = from + len;
+    if (to > from && to <= doc.length) builder.add(from, to, deco);
   }
   return builder.finish();
 }
@@ -113,17 +133,17 @@ export function pseudoscript() {
   return new LanguageSupport(streamLang, [semanticHighlighter, semanticTheme]);
 }
 
-// Maps the LSP engine's neutral completion kind to the CodeMirror option type
-// that drives each candidate's icon.
+// Maps the LSP `CompletionItemKind` (an integer enum) to the CodeMirror option
+// type that drives each candidate's icon.
 const KIND_TYPE = {
-  method: "method",
-  field: "property",
-  keyword: "keyword",
-  macro: "function",
-  type: "type",
-  class: "class",
-  module: "namespace",
-  reference: "variable",
+  2: "method", // Method
+  3: "function", // Function (built-in macro)
+  5: "property", // Field
+  7: "class", // Class (data)
+  9: "namespace", // Module (node)
+  14: "keyword", // Keyword
+  18: "variable", // Reference (alias)
+  22: "type", // Struct (primitive / type)
 };
 
 /**

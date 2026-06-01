@@ -38,13 +38,11 @@ A `PreToolUse` hook in `.claude/settings.json` **denies any `git commit`** until
 
 A Cargo workspace (`resolver = "3"`, edition 2024) with one member, `crates/pseudoscript`, whose binary is named `pds`. Standard commands: `cargo build`, `cargo test`, `cargo run -p pseudoscript`, `cargo test <name>` for a single test. The implementation is not started; when writing Rust, the `idiomatic-rust` skill is required.
 
-## Completion has two independent engines — do not conflate them
+## One LSP API, two transports — do not fork it
 
-Autocomplete is served by two separate, unsynchronised implementations. A fix to one does **not** reach the other:
+Language intelligence has a single source of truth: **`crates/pseudoscript-lsp-core`** — transport-neutral `text + position -> lsp_types value` handlers (completion, hover, definition, references, semantic tokens, folding, symbols, diagnostics, formatting). It depends on `pseudoscript-model` + the standalone `lsp-types` (pinned to tower-lsp 0.20's `=0.94.1`, WASM-safe), **not** `tower-lsp`. Two thin edges share it:
 
-- **Native LSP** — `crates/pseudoscript-lsp/src/complete.rs` (context-aware: `.`/`::`/`:`/`<`/`#[`), consumed at `server.rs` `completion()`. This is what real editors (e.g. `pseudoscript-jetbrains`) get over LSP.
-- **Web IDE** — `web-ide/src/lib/pseudoscript-language.js` `pseudoscriptCompletion()`, a CodeMirror provider. It is **context-free**: always offers all keywords + all workspace symbols (name and fqn), relying solely on CodeMirror's prefix filter. No `.`/`::`/type-position narrowing.
+- **`crates/pseudoscript-lsp`** — the stdio server (`server.rs` + `workspace.rs`): tower-lsp transport over `lsp-core`. What native editors (e.g. `pseudoscript-jetbrains`) get.
+- **`crates/pseudoscript-wasm`** — the browser bridge: each language export calls the same `lsp-core` handler and serialises its `lsp_types` result to JSON, so the WASM API is byte-for-byte the LSP API. The web IDE (`web-ide/src/lib/pds.js` + `pseudoscript-language.js`) is an LSP client — it decodes delta-encoded semantic tokens, integer `CompletionItemKind`, line-based `FoldingRange`, Markdown `Hover`. `definition`/`references` stay WASM-ergonomic (fqn-based, with previews) because LSP `Location` is URL-centric and the browser has no file URLs; they still route through `model::resolve`, so no logic forks. Diagram/doc exports (`emit_scene`, `symbol_scene`, …) are WASM-only — no LSP equivalent.
 
-The wasm bundle (`crates/pseudoscript-wasm`, prebuilt into `web-ide/src/lib/pds-wasm/`) exports `hover`/`definition`/`references` but **no `completion`** — so the web IDE never calls Rust for completion, and rebuilding wasm changes nothing about IDE autocomplete. Rebuild only when a *wasm-exported* surface changes: `wasm-pack build` via `web-ide` `npm run build:wasm`, then commit the regenerated `pds-wasm/` artifacts.
-
-When asked to fix "autocomplete", first establish which surface: web IDE → edit the JS provider; LSP editor → edit `complete.rs`. The long-term fix is to give `complete.rs` a wasm `completion` export and have the IDE call it, collapsing the two into one.
+To change a language feature, edit it once in `lsp-core` (or its `model` primitive). After a *wasm-exported* surface changes, rebuild: `npm run build:wasm` in `web-ide`, then commit the regenerated `pds-wasm/` artifacts. Highlight **colours** and pure editor UX stay client-side.

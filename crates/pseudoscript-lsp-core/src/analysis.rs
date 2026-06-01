@@ -1,16 +1,16 @@
 //! Pure language logic, free of any server or I/O.
 //!
 //! Each function maps source text (and, for cursor features, an LSP position)
-//! to an LSP value. The [`crate::server`] layer only owns the document store and
+//! to an LSP value. The the server layer only owns the document store and
 //! the protocol plumbing; everything testable lives here.
 
-use pseudoscript_format::format;
-use pseudoscript_model::{Workspace, check};
-use pseudoscript_syntax::{LineIndex, Span, TokenKind, tokenize};
-use tower_lsp::lsp_types::{
+use lsp_types::{
     Diagnostic, DiagnosticSeverity, Hover, HoverContents, InlayHint, InlayHintKind, InlayHintLabel,
     MarkupContent, MarkupKind, Position, TextEdit,
 };
+use pseudoscript_format::format;
+use pseudoscript_model::{Workspace, check};
+use pseudoscript_syntax::{LineIndex, Span, TokenKind, tokenize};
 
 use crate::convert::{full_range, offset_to_position, position_to_offset, span_to_range};
 use crate::resolve::resolve_at;
@@ -28,7 +28,7 @@ pub fn renameable(
     from_fqn: &str,
     src: &str,
     position: Position,
-) -> Option<tower_lsp::lsp_types::Range> {
+) -> Option<lsp_types::Range> {
     let offset = position_to_offset(src, position);
     let hit = resolve_at(ws, from_fqn, src, offset)?;
     let index = LineIndex::new(src);
@@ -107,7 +107,7 @@ pub fn inlay_hints(ws: &Workspace, from_fqn: &str, src: &str) -> Vec<InlayHint> 
 }
 
 /// A Markdown hover with a range.
-fn markup_hover(value: String, range: tower_lsp::lsp_types::Range) -> Hover {
+fn markup_hover(value: String, range: lsp_types::Range) -> Hover {
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -154,10 +154,7 @@ pub fn lsp_diagnostics(src: &str, diags: &[pseudoscript_syntax::Diagnostic]) -> 
         .map(|d| Diagnostic {
             range: span_to_range(src, &index, d.span),
             severity: Some(severity(d.severity)),
-            code: d
-                .code
-                .clone()
-                .map(tower_lsp::lsp_types::NumberOrString::String),
+            code: d.code.clone().map(lsp_types::NumberOrString::String),
             source: Some("pseudoscript".to_owned()),
             message: d.message.clone(),
             ..Diagnostic::default()

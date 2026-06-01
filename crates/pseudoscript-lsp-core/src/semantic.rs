@@ -4,11 +4,11 @@
 //! advertises the legend and delta-encodes the engine's byte-offset tokens into
 //! the `lsp_types` wire format (single-line, non-overlapping, delta-encoded).
 
-use pseudoscript_model::{SemKind, semantic_tokens as model_semantic_tokens};
-use pseudoscript_syntax::LineIndex;
-use tower_lsp::lsp_types::{
+use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
 };
+use pseudoscript_model::{SemKind, semantic_tokens as model_semantic_tokens};
+use pseudoscript_syntax::LineIndex;
 
 use crate::convert::offset_to_position;
 

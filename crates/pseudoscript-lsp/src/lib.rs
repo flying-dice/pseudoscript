@@ -9,22 +9,14 @@
 //!
 //! # Surfaces
 //!
-//! - [`analysis`] — pure `text -> LSP value` functions (diagnostics, formatting
-//!   edit, hover, definition). These carry the behaviour and are unit/BDD
-//!   tested without spawning a server.
+//! - [`pseudoscript_lsp_core`] — the transport-neutral `text -> LSP value`
+//!   handlers (diagnostics, hover, completion, semantic tokens, …), shared with
+//!   the WASM bridge. This crate only adds the stdio transport.
 //! - [`Backend`] — the [`tower_lsp::LanguageServer`] implementation and document
 //!   store.
 //! - [`run_stdio`] — build the server over stdin/stdout and serve until exit.
 
-pub mod analysis;
-mod complete;
-mod convert;
-mod infer;
-mod refs;
-use pseudoscript_model::resolve;
-mod semantic;
 mod server;
-mod symbols;
 mod workspace;
 
 pub use server::Backend;

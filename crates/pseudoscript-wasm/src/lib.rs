@@ -23,10 +23,15 @@
 //! Each `#[wasm_bindgen]` function is a thin wrapper over a `*_impl` that
 //! returns `Result<_, String>`; the wrapper maps the error to a `JsError`. The
 //! `*_impl`s carry the logic and are unit-tested on the host (a `JsError`
-//! cannot be constructed off-wasm). Diagnostics are the foundation an
-//! LSP-over-wasm server is built on; hover/completion/definition slot in here
-//! and reuse [`pseudoscript_model`] without the native `tower-lsp`/`tokio`
-//! transport.
+//! cannot be constructed off-wasm).
+//!
+//! The language-intelligence functions — [`hover`], [`completion`],
+//! [`semantic_tokens`], [`folding_ranges`] — are an **LSP-over-wasm** bridge:
+//! they call [`pseudoscript_lsp_core`] (the same handlers the stdio server uses)
+//! and serialise its `lsp_types` results to JSON, so the WASM API is byte-for-
+//! byte the LSP API minus the `tower-lsp`/`tokio` transport. The diagram and doc
+//! exports ([`emit_scene`], [`symbol_scene`], …) have no LSP equivalent and are
+//! WASM-only.
 
 use std::collections::HashMap;
 
@@ -40,9 +45,11 @@ use pseudoscript_emit::{
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
     Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
-    completion as model_completion, folding_ranges as model_folding_ranges, graph as build_graph,
-    resolve::resolve_at, semantic_tokens as model_semantic_tokens,
+    graph as build_graph, resolve::resolve_at,
 };
+// The shared LSP API: completion, hover, semantic tokens, and folding are served
+// here exactly as the stdio server serves them — same `lsp_types` results.
+use pseudoscript_lsp_core::{analysis, complete, convert, semantic, symbols};
 use pseudoscript_syntax::{
     Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
 };
@@ -137,27 +144,26 @@ pub fn emit_svg(source: &str, view: &str, target: &str) -> Result<String, JsErro
         .map_err(|e| JsError::new(&e))
 }
 
-/// AST-aware semantic tokens for `source`, as a JSON array of
-/// `{ start, end, kind, declaration }` in absolute byte offsets, sorted and
-/// non-overlapping. `kind` is a camelCase tag (`namespace`/`type`/`class`/
-/// `parameter`/`variable`/`property`/`enumMember`/`method`/`keyword`/`comment`/
-/// `string`/`number`/`decorator`); `declaration` marks a definition site. An
-/// editor decorates these ranges — the same colouring the LSP serves, replacing
-/// any hand-written tokenizer.
+/// AST-aware semantic tokens for `source`, as the JSON of an LSP
+/// `SemanticTokens` (the delta-encoded `data` array over UTF-16 positions; the
+/// `token_type` field indexes the [`pseudoscript_lsp_core::semantic`] legend).
+/// Identical to the stdio server's `textDocument/semanticTokens/full` response —
+/// the editor decodes and decorates it, replacing any hand-written tokenizer.
 #[wasm_bindgen]
 #[must_use]
 pub fn semantic_tokens(source: &str) -> String {
-    to_json(&model_semantic_tokens(source))
+    to_json(&semantic::semantic_tokens(source))
 }
 
-/// Foldable regions of `source` as a JSON array of `{ start, end }` in absolute
-/// byte offsets — every multi-line declaration and statement block. The editor
-/// folds these ranges instead of brace-matching in JS, sharing the LSP's
-/// AST-accurate fold logic.
+/// Foldable regions of `source` as the JSON of an LSP `FoldingRange` array
+/// (`{ startLine, endLine, kind }`, 0-based lines) — every multi-line
+/// declaration and statement block. Identical to the stdio server's
+/// `textDocument/foldingRange` response; the editor folds these instead of
+/// brace-matching in JS.
 #[wasm_bindgen]
 #[must_use]
 pub fn folding_ranges(source: &str) -> String {
-    to_json(&model_folding_ranges(source))
+    to_json(&symbols::folding_ranges(source))
 }
 
 /// Lists the nodes declared in `source` as a JSON array of
@@ -210,15 +216,13 @@ pub fn emit_scene_modules(modules_json: &str, view: &str, target: &str) -> Resul
     emit_scene_modules_impl(modules_json, view, target).map_err(|e| JsError::new(&e))
 }
 
-/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
-/// and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
-/// the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
-/// diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
-/// trace for a callable, a structural view for a node. `modules_json` is the
+/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn` and
+/// returns it as an LSP `Hover` (`{ contents: { kind, value }, range }`,
+/// Markdown), or `null` when the cursor rests on no resolvable symbol. Served by
+/// the shared [`pseudoscript_lsp_core::analysis::hover`] — identical to the
+/// stdio server's `textDocument/hover`, no diagram. The interactive diagram is a
+/// separate concern: [`symbol_scene`] / [`symbol_svg`]. `modules_json` is the
 /// `[{fqn, source}]` workspace shape.
-///
-/// The host (an editor hover) shows the info and diagram together; it never
-/// decides which diagram a symbol gets — the compiler does.
 ///
 /// # Errors
 ///
@@ -257,14 +261,13 @@ pub fn references(modules_json: &str, module_fqn: &str, offset: u32) -> Result<S
     references_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
 }
 
-/// Context-aware completion candidates at `offset` (a byte offset) in module
-/// `module_fqn`. Returns a JSON array `[{label, kind, detail}]`, where `kind` is
-/// a lowercase tag (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/
-/// `reference`) the editor maps to an icon. The set is scoped to the trigger
-/// before the caret (`.`/`::`/`#[`/type-position/general); the client filters it
-/// against the prefix being typed. `modules_json` is the `[{fqn, source}]`
-/// workspace shape. This is the same engine the LSP serves, so the web IDE and
-/// native editors complete identically.
+/// Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
+/// as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
+/// `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
+/// caret (`.`/`::`/`#[`/type-position/general); the client filters against the
+/// typed prefix. Served by the shared [`pseudoscript_lsp_core::complete`] —
+/// identical to the stdio server's `textDocument/completion`. `modules_json` is
+/// the `[{fqn, source}]` workspace shape.
 ///
 /// # Errors
 ///
@@ -502,22 +505,11 @@ fn hover_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<Strin
             .iter()
             .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
     );
-    let Some(hit) = resolve_at(&workspace, module_fqn, src, offset) else {
-        return Ok("null".to_owned()); // cursor on no resolvable symbol
-    };
-    // A symbol may have no diagram (a `data` shape, an unresolved owner); the
-    // hover still shows its info, with an empty `svg`.
-    let svg = project_symbol(&Graph::build(&workspace), &hit.target_fqn)
-        .map(|scene| render_svg(&scene))
-        .unwrap_or_default();
-    Ok(to_json(&HoverResult {
-        info: SymbolInfo {
-            fqn: hit.target_fqn,
-            title: hit.title,
-            body: hit.body,
-        },
-        svg,
-    }))
+    let index = LineIndex::new(src);
+    let position = convert::offset_to_position(src, &index, offset);
+    Ok(to_json(&analysis::hover(
+        &workspace, module_fqn, src, position,
+    )))
 }
 
 fn definition_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
@@ -622,8 +614,10 @@ fn completion_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<
             .iter()
             .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
     );
-    Ok(to_json(&model_completion(
-        &workspace, module_fqn, src, offset,
+    let index = LineIndex::new(src);
+    let position = convert::offset_to_position(src, &index, offset);
+    Ok(to_json(&complete::completion(
+        &workspace, module_fqn, src, position,
     )))
 }
 
@@ -774,23 +768,6 @@ struct SiteFileOut {
 struct ModuleResult {
     fqn: String,
     diagnostics: Vec<WasmDiagnostic>,
-}
-
-/// The symbol a [`hover`] resolves to, with its diagram. `info` describes the
-/// symbol (its graph `fqn`, a Markdown title, an optional doc/signature body);
-/// `svg` is its fitting diagram rendered to a self-contained string.
-#[derive(Serialize)]
-struct HoverResult {
-    info: SymbolInfo,
-    svg: String,
-}
-
-/// A resolved symbol's identity and description, for an editor hover.
-#[derive(Serialize)]
-struct SymbolInfo {
-    fqn: String,
-    title: String,
-    body: Option<String>,
 }
 
 /// One declared node, for the [`outline`] target picker. `kind` serialises
@@ -1032,23 +1009,24 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_a_node_reference_returns_info_and_a_diagram() {
-        // Cursor on `Web` in `sys::Web.View()` — resolves to the container.
+    fn hover_on_a_node_reference_returns_lsp_hover() {
+        // Cursor on `Web` in `sys::Web.View()` — resolves to the container. The
+        // result is an `lsp_types::Hover` (markup), no diagram SVG.
         let offset = (CTX_SRC.find("Web").expect("Web present") + 1) as u32;
         let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
-        assert!(json.contains(r#""fqn":"sys::Web""#), "{json}");
         assert!(json.contains("container `sys::Web`"), "{json}");
-        // A container resolves to its (structural) component view as an SVG.
-        assert!(json.contains("<svg"), "{json}");
+        assert!(json.contains(r#""contents""#), "{json}");
+        assert!(
+            !json.contains("<svg"),
+            "hover must not carry a diagram: {json}"
+        );
     }
 
     #[test]
-    fn hover_on_a_member_call_traces_a_sequence() {
-        // Cursor on `View` in `sys::Web.View()` — resolves to the callable; a
-        // bodied callable's fitting diagram is a sequence trace.
+    fn hover_on_a_member_call_describes_the_callable() {
+        // Cursor on `View` in `sys::Web.View()` — resolves to the callable.
         let offset = (CTX_SRC.find("View").expect("View present") + 1) as u32;
         let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
-        assert!(json.contains(r#""fqn":"sys::Web::View""#), "{json}");
         assert!(json.contains("callable `Web.View`"), "{json}");
     }
 
@@ -1061,12 +1039,13 @@ mod tests {
     #[test]
     fn completion_after_module_path_is_scoped() {
         // Caret right after `sys::` (before `Web`) — offers only module sys's
-        // public symbols, tagged, with no general-scope keyword leak.
+        // public symbols (lsp_types::CompletionItem), no general keyword leak.
         let offset = (CTX_SRC.find("sys::").expect("sys:: present") + "sys::".len()) as u32;
         let json = completion_impl(&workspace_json(), "ctx", offset).expect("completes");
         assert!(json.contains(r#""label":"Web""#), "{json}");
         assert!(json.contains(r#""label":"Shop""#), "{json}");
-        assert!(json.contains(r#""kind":"module""#), "{json}");
+        // MODULE kind (9) in the LSP CompletionItemKind enum
+        assert!(json.contains(r#""kind":9"#), "{json}");
         // general scope must not leak into a `::` context
         assert!(
             !json.contains(r#""label":"person""#),

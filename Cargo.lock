@@ -1407,12 +1407,23 @@ dependencies = [
  "cucumber",
  "futures",
  "pseudoscript-format",
+ "pseudoscript-lsp-core",
  "pseudoscript-model",
  "pseudoscript-syntax",
  "serde_json",
  "tokio",
  "tower-lsp",
  "walkdir",
+]
+
+[[package]]
+name = "pseudoscript-lsp-core"
+version = "0.1.0"
+dependencies = [
+ "lsp-types",
+ "pseudoscript-format",
+ "pseudoscript-model",
+ "pseudoscript-syntax",
 ]
 
 [[package]]
@@ -1445,6 +1456,7 @@ dependencies = [
  "pseudoscript-doc",
  "pseudoscript-emit",
  "pseudoscript-format",
+ "pseudoscript-lsp-core",
  "pseudoscript-model",
  "pseudoscript-syntax",
  "serde",

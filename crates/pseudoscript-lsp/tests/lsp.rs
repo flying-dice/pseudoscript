@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use cucumber::{World, given, then, when};
-use pseudoscript_lsp::analysis;
+use pseudoscript_lsp_core::analysis;
 use pseudoscript_model::Workspace;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, TextEdit};
 

@@ -4,8 +4,8 @@
 //! only maps a `Position` to a byte offset and the engine's neutral
 //! [`CompletionKind`] to `lsp_types::CompletionItemKind`.
 
+use lsp_types::{CompletionItem, CompletionItemKind, Position};
 use pseudoscript_model::{CompletionKind, Workspace, completion as model_completion};
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::convert::position_to_offset;
 

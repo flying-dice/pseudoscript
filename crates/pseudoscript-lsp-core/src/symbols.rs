@@ -3,11 +3,11 @@
 //! `document_symbols` and `folding_ranges` are pure over one module's source;
 //! `workspace_symbols` searches the resolved [`Workspace`] index by name.
 
-use pseudoscript_model::{SymbolKind as ModelKind, Workspace, ast};
-use pseudoscript_syntax::{LineIndex, Span, parse};
-use tower_lsp::lsp_types::{
+use lsp_types::{
     DocumentSymbol, FoldingRange, FoldingRangeKind, Location, SymbolInformation, SymbolKind, Url,
 };
+use pseudoscript_model::{SymbolKind as ModelKind, Workspace, ast};
+use pseudoscript_syntax::{LineIndex, Span, parse};
 
 use crate::convert::span_to_range;
 
@@ -217,7 +217,7 @@ pub fn workspace_symbols(
 fn symbol_information(
     symbol: &pseudoscript_model::Symbol,
     uri: Url,
-    range: tower_lsp::lsp_types::Range,
+    range: lsp_types::Range,
 ) -> SymbolInformation {
     SymbolInformation {
         name: symbol.name.clone(),

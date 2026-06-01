@@ -5,8 +5,8 @@
 //! line/byte-column pair. LSP positions, by contrast, are 0-based line and
 //! 0-based UTF-16 code-unit character. This module bridges the two.
 
+use lsp_types::{Position, Range};
 use pseudoscript_syntax::{LineIndex, Span};
-use tower_lsp::lsp_types::{Position, Range};
 
 /// Converts a byte `offset` into the source to a 0-based LSP [`Position`].
 ///
