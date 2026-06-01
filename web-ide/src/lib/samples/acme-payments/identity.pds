@@ -1,0 +1,105 @@
+//! identity — merchant accounts and the API-key model every request authenticates
+//! against. Keys come in three tiers — a *publishable* key
+//! (client-side, tokenisation only), a *secret* key (full server-side access), and
+//! a *restricted* key (server-side, scoped to named permissions) — and each key is
+//! fixed to one mode, *live* or *test*, whose objects never cross over. The scope
+//! check ("may this key do this?") is the authorisation decision, disclosed here
+//! rather than left to the channel.
+
+/// A merchant account.
+public data Merchant { id: shared::MerchantId, name: string, mode: Mode }
+
+/// Live keys move real money; test keys exercise the same code paths against the
+/// network's sandbox. A key's mode is fixed; objects in one mode are never
+/// visible to the other.
+public data Mode =
+  | Live
+  | Test
+
+/// A secret API key — full, unrestricted server-side access.
+public data SecretKey { value: string }
+
+/// A publishable API key — client-side, tokenisation only.
+public data PublishableKey { value: string }
+
+/// A restricted API key — server-side, limited to the permissions it was granted
+/// (the recommended tier for new integrations and for staff tooling).
+public data RestrictedKey { value: string, scope: Scope }
+
+/// A named permission a restricted key may carry.
+public data Scope =
+  | Charges
+  | Refunds
+  | Reviews
+  | ReadOnly
+
+/// Why a key was refused.
+public data ApiKeyError =
+  | InvalidKey
+  | InsufficientScope
+
+/// `identity` — merchant accounts and API keys.
+public container Identity for context::AcmePay;
+
+/// Resolves and scope-checks API keys.
+public component Keys for Identity {
+  /// Resolve a secret key to its merchant, or `Err(InvalidKey)`.
+  public authenticateSecret(key: SecretKey): Result<Merchant, ApiKeyError> {
+    merchant = Identity::KeyStore.resolveSecret(key)
+    if (merchant.isNone) {
+      return Err(InvalidKey)
+    }
+    return Ok(merchant.value)
+  }
+
+  /// Resolve a publishable key to its merchant. A publishable key is valid only
+  /// for tokenisation; every other action MUST authenticate a secret or
+  /// restricted key.
+  public authenticatePublishable(key: PublishableKey): Result<Merchant, ApiKeyError> {
+    merchant = Identity::KeyStore.resolvePublishable(key)
+    if (merchant.isNone) {
+      return Err(InvalidKey)
+    }
+    return Ok(merchant.value)
+  }
+
+  /// Resolve a restricted key to its merchant and require it to carry `need`.
+  /// `Err(InsufficientScope)` if the key is valid but lacks the permission — the
+  /// disclosed authorisation gate for scoped staff and service keys.
+  public authenticateRestricted(key: RestrictedKey, need: Scope): Result<Merchant, ApiKeyError> {
+    merchant = Identity::KeyStore.resolveRestricted(key)
+    if (merchant.isNone) {
+      return Err(InvalidKey)
+    }
+    granted = self.permits(key, need)
+    if (granted.isErr) {
+      return Err(InsufficientScope)
+    }
+    return Ok(merchant.value)
+  }
+
+  /// `Err(InsufficientScope)` unless `key` carries the `need` permission.
+  permits(key: RestrictedKey, need: Scope): Result<void, ApiKeyError>;
+}
+
+/// Durable key→merchant records.
+component KeyStore for Identity {
+  resolveSecret(key: SecretKey): Option<Merchant>;
+  resolvePublishable(key: PublishableKey): Option<Merchant>;
+  resolveRestricted(key: RestrictedKey): Option<Merchant>;
+}
+
+/// A publishable key cannot move money.
+feature PublishableKeyIsTokenisationOnly for Keys {
+  given "a publishable key"
+  when  "it is presented to a payment-creating endpoint"
+  then  "the request is refused"
+  and   "only the tokenisation endpoint accepts it"
+}
+
+/// A restricted key without the right scope is refused.
+feature RestrictedKeyHonoursScope for Keys {
+  given "a restricted key that lacks the refunds permission"
+  when  "it is used to issue a refund"
+  then  "the request is refused as insufficient scope"
+}

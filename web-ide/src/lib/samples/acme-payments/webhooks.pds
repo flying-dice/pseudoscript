@@ -1,0 +1,151 @@
+//! webhooks — outbound event delivery to merchants. The platform's domain events
+//! are signed and POSTed to each merchant's registered endpoint. Delivery is the
+//! mirror image of an inbound webhook: at-least-once, de-duplicated on the event
+//! id, signed so the merchant can verify origin, and retried with backoff until it
+//! succeeds or is exhausted. The retry sweep lives in `batch`; the decision of
+//! what is deliverable, and when to give up, is disclosed here.
+
+/// A signed event queued for delivery to a merchant.
+public data WebhookEvent { id: string, merchant: shared::MerchantId, kind: string, payload: string }
+
+/// Where a delivery is in its retry lifecycle.
+public data DeliveryStatus =
+  | Pending
+  | Delivered
+  | Retrying
+  | Exhausted
+
+/// A delivery attempt record for one event to one merchant.
+public data Delivery {
+  event: string,
+  merchant: shared::MerchantId,
+  payload: string,
+  attempts: number,
+  status: DeliveryStatus
+}
+
+/// Why a delivery-store predicate did not hold.
+public data DeliveryError =
+  | NotDuplicate
+
+/// `webhooks` — outbound event delivery.
+public container Webhooks for context::AcmePay;
+
+/// Subscribes to domain events, signs them, and delivers them to merchant
+/// endpoints with at-least-once retry semantics.
+public component Dispatcher for Webhooks {
+  /// Deliver `payment_intent.succeeded`.
+  #[onevent(intents::PaymentSucceeded)]
+  public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
+    self.dispatch(self.encodeSucceeded(event))
+  }
+
+  /// Deliver `payment_intent.payment_failed`.
+  #[onevent(intents::PaymentFailed)]
+  public onPaymentFailed(event: intents::PaymentFailed): void {
+    self.dispatch(self.encodeFailed(event))
+  }
+
+  /// Deliver `charge.refunded`.
+  #[onevent(refunds::RefundSucceeded)]
+  public onRefunded(event: refunds::RefundSucceeded): void {
+    self.dispatch(self.encodeRefunded(event))
+  }
+
+  /// Deliver `charge.dispute.created`.
+  #[onevent(disputes::DisputeOpened)]
+  public onDisputeOpened(event: disputes::DisputeOpened): void {
+    self.dispatch(self.encodeDisputeOpened(event))
+  }
+
+  /// Deliver `payout.paid`.
+  #[onevent(payouts::PayoutPaid)]
+  public onPayoutPaid(event: payouts::PayoutPaid): void {
+    self.dispatch(self.encodePayoutPaid(event))
+  }
+
+  /// Deliver `payout.failed`.
+  #[onevent(payouts::PayoutFailed)]
+  public onPayoutFailed(event: payouts::PayoutFailed): void {
+    self.dispatch(self.encodePayoutFailed(event))
+  }
+
+  /// Retry deliveries whose backoff has elapsed (driven by the scheduled sweep).
+  public redeliver(): void {
+    due = Webhooks::DeliveryStore.due()
+    for (delivery in due) {
+      self.attempt(delivery.event)
+    }
+  }
+
+  /// Record an event for delivery (idempotent on the event id) and attempt it
+  /// once. A re-raised event already recorded is ignored.
+  dispatch(webhook: WebhookEvent): void {
+    seen = Webhooks::DeliveryStore.seen(webhook.id)
+    if (seen.isErr) {
+      Webhooks::DeliveryStore.record(webhook)
+      self.attempt(webhook.id)
+    }
+  }
+
+  /// Attempt one delivery: sign the payload and POST it. A non-2xx or unreachable
+  /// endpoint schedules a retry (or exhausts it after the cap); a success marks it
+  /// delivered. A delivery already terminal is skipped.
+  attempt(event: string): void {
+    deliverable = Webhooks::DeliveryStore.deliverable(event)
+    if (deliverable.isSome) {
+      endpoint = self.endpointFor(deliverable.value.merchant)
+      signed = self.sign(deliverable.value)
+      sent = context::MerchantEndpoint.deliver(endpoint, deliverable.value.payload, signed)
+      if (sent.isErr) {
+        Webhooks::DeliveryStore.save(self.onFailure(deliverable.value))
+      } else {
+        Webhooks::DeliveryStore.save(self.markDelivered(deliverable.value))
+      }
+    }
+  }
+
+  /// The merchant's registered webhook URL.
+  endpointFor(merchant: shared::MerchantId): string;
+  /// Compute the signature a merchant verifies the payload against.
+  sign(delivery: Delivery): string;
+  /// Advance a failed delivery: increment attempts and set `Retrying` with a
+  /// fresh backoff, or `Exhausted` once the attempt cap is reached.
+  onFailure(delivery: Delivery): Delivery;
+  /// A copy of `delivery` marked `Delivered`.
+  markDelivered(delivery: Delivery): Delivery;
+  /// Encode each domain event into a signed-ready webhook payload.
+  encodeSucceeded(event: intents::PaymentSucceeded): WebhookEvent;
+  encodeFailed(event: intents::PaymentFailed): WebhookEvent;
+  encodeRefunded(event: refunds::RefundSucceeded): WebhookEvent;
+  encodeDisputeOpened(event: disputes::DisputeOpened): WebhookEvent;
+  encodePayoutPaid(event: payouts::PayoutPaid): WebhookEvent;
+  encodePayoutFailed(event: payouts::PayoutFailed): WebhookEvent;
+}
+
+/// Durable delivery records and the retry queue.
+component DeliveryStore for Webhooks {
+  /// `Ok` if this event id was already recorded for delivery (a duplicate).
+  seen(event: string): Result<void, DeliveryError>;
+  record(webhook: WebhookEvent): void;
+  save(delivery: Delivery): void;
+  /// The delivery for an event if it is still deliverable (not terminal).
+  deliverable(event: string): Option<Delivery>;
+  /// Retrying deliveries whose backoff has elapsed.
+  due(): Delivery[];
+}
+
+/// A failing endpoint is retried, not dropped.
+feature FailedDeliveryRetries for Dispatcher {
+  given "a merchant endpoint that returns an error"
+  when  "an event is delivered to it"
+  then  "the delivery is scheduled for retry with backoff"
+  and   "it is retried until it succeeds or the attempt cap is reached"
+}
+
+/// A re-raised event is delivered at most once per attempt window.
+feature DeliveryIsDeduplicated for Dispatcher {
+  given "a domain event whose id was already recorded for delivery"
+  when  "the event is raised again"
+  then  "no second delivery record is created"
+}

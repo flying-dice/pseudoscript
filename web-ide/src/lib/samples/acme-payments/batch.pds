@@ -1,0 +1,86 @@
+//! batch — scheduled, unattended operations that keep the money machinery
+//! converged: recovering payment sagas stranded by a crash or a network timeout,
+//! scheduling payouts for merchants with a balance, settling in-flight payouts,
+//! re-delivering failed webhooks, and forfeiting disputes a merchant never
+//! answered.
+//!
+//! Failure isolation: the unit of work is one entity (one intent, one merchant,
+//! one payout, one dispute). Each job enumerates entities and processes each
+//! independently and idempotently, so one stuck item never blocks the rest, and a
+//! re-run after a partial failure is safe.
+
+/// `batch` — scheduled operations.
+public container Batch for context::AcmePay;
+
+/// Forward-recovers payment intents stranded mid-saga (a crash or an
+/// indeterminate authorisation), driving each to a terminal state idempotently so
+/// no cardholder is charged-without-success and no intent is failed while its
+/// charge might be real.
+public component SagaSweeper for Batch {
+  /// Every two minutes, resume intents stuck in `Processing` past their threshold.
+  #[schedule = "*/2 * * * *"]
+  public sweep(): void {
+    stuck = intents::PaymentIntents.stuck()
+    for (intent in stuck) {
+      intents::PaymentIntents.resume(intent.id)
+    }
+  }
+}
+
+/// Pays out merchants whose available balance is due, drawing each balance with
+/// one atomic ledger withdrawal.
+public component PayoutScheduler for Batch {
+  /// Every day, schedule a payout for each merchant with a payable balance.
+  #[schedule = "0 0 * * *"]
+  public run(): void {
+    merchants = payouts::PayoutService.payableMerchants()
+    for (merchant in merchants) {
+      payouts::PayoutService.schedule(merchant)
+    }
+  }
+}
+
+/// Settles in-flight payouts against the banking partner, so a settled transfer
+/// is marked paid and a returned one restores the merchant's funds.
+public component PayoutReconciler for Batch {
+  /// Every fifteen minutes, reconcile in-flight payouts against the partner.
+  #[schedule = "*/15 * * * *"]
+  public reconcile(): void {
+    pending = payouts::PayoutService.inFlightPayouts()
+    for (payout in pending) {
+      payouts::PayoutService.reconcile(payout)
+    }
+  }
+}
+
+/// Re-delivers webhooks whose endpoint failed, until they succeed or are
+/// exhausted.
+public component WebhookRedeliverer for Batch {
+  /// Every minute, retry deliveries whose backoff has elapsed.
+  #[schedule = "* * * * *"]
+  public redeliver(): void {
+    webhooks::Dispatcher.redeliver()
+  }
+}
+
+/// Runs the ledger's double-entry clearing check, surfacing any account that
+/// fails to net to zero as a discrepancy to investigate.
+public component LedgerClearing for Batch {
+  /// Every hour, verify the balance log is internally consistent.
+  #[schedule = "0 * * * *"]
+  public clear(): void {
+    ledger::Clearing.clear()
+  }
+}
+
+/// Forfeits disputes a merchant left unanswered past the response deadline.
+public component DisputeSweeper for Batch {
+  /// Every hour, forfeit disputes past their response deadline.
+  #[schedule = "0 * * * *"]
+  public sweep(): void {
+    overdue = disputes::DisputeService.unanswered()
+    for (dispute in overdue) {
+      disputes::DisputeService.forfeit(dispute.id)
+    }
+  }
+}

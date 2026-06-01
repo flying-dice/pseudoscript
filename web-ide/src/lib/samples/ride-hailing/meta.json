@@ -1,7 +1,0 @@
-{
-  "name": "ACME Rides",
-  "category": "Application",
-  "order": 2,
-  "landing": "docs/overview.md",
-  "description": "On-demand ride-hailing: geo-dispatch matching, locked surge pricing, an event-sourced trip lifecycle with a CQRS history read model, and a driver-payout saga delivered through a transactional outbox."
-}

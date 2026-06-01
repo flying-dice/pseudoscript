@@ -1,0 +1,191 @@
+//! context — the people who use the platform, ACME Pay itself, and the third
+//! parties it integrates with (C4 system context).
+//!
+//! Actors carry the behaviour that crosses into ACME Pay, so every actor→system
+//! edge is real. Each container lives in its own module and parents here to
+//! `context::AcmePay`.
+
+/// The end buyer paying a merchant. Card data is entered directly into ACME Pay
+/// (tokenisation) and a 3-D Secure challenge is completed directly with the
+/// issuer — the merchant's server never touches the PAN.
+public person Cardholder {
+  /// Tokenise a card into a reusable payment method (publishable-key path).
+  #[manual]
+  public enterCard(key: identity::PublishableKey, card: vault::CardEntry): void {
+    gateway::TokenApi.tokenize(key, card)
+  }
+
+  /// Complete a 3-D Secure challenge so a pending authorisation can proceed.
+  #[manual]
+  public authenticate(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): void {
+    gateway::IntentApi.confirmAction(intent, outcome)
+  }
+}
+
+/// A merchant integrator: creates and confirms payments server-side with a
+/// secret key, captures and refunds them, and reads their balance.
+public person Merchant {
+  /// Create a PaymentIntent for an amount to collect, under an idempotency key.
+  #[manual]
+  public createPayment(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: intents::CreateIntent): void {
+    gateway::IntentApi.create(key, idem, req)
+  }
+
+  /// Confirm a PaymentIntent, attaching a payment method and charging it.
+  #[manual]
+  public confirmPayment(key: identity::SecretKey, req: intents::ConfirmIntent): void {
+    gateway::IntentApi.confirm(key, req)
+  }
+
+  /// Capture a previously authorised PaymentIntent (manual-capture flow).
+  #[manual]
+  public capturePayment(key: identity::SecretKey, intent: shared::PaymentIntentId): void {
+    gateway::IntentApi.capture(key, intent)
+  }
+
+  /// Refund a captured payment, in full or part, under an idempotency key.
+  #[manual]
+  public refundPayment(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: refunds::RefundRequest): void {
+    gateway::RefundApi.create(key, idem, req)
+  }
+
+  /// Submit evidence contesting a chargeback.
+  #[manual]
+  public contestDispute(key: identity::SecretKey, req: disputes::EvidenceSubmission): void {
+    gateway::DisputeApi.submitEvidence(key, req)
+  }
+}
+
+/// A risk analyst: reviews payments the fraud engine flagged. Uses a restricted
+/// key scoped to reviews.
+public person RiskAnalyst {
+  /// Approve (clear) or reject (refund) a flagged payment.
+  #[manual]
+  public review(key: identity::RestrictedKey, decision: backoffice::ReviewDecision): void {
+    backoffice::Console.resolveReview(key, decision)
+  }
+}
+
+/// A support agent: resolves merchant and cardholder issues, including refunds.
+/// Uses a restricted key scoped to refunds.
+public person SupportAgent {
+  /// Refund a captured payment on a customer's behalf.
+  #[manual]
+  public refund(key: identity::RestrictedKey, req: refunds::RefundRequest): void {
+    backoffice::Console.refund(key, req)
+  }
+}
+
+/// ACME Pay — the card-payments platform.
+/// #headline
+public system AcmePay;
+
+/// The card network / acquiring rail: authorises (holds), captures (settles),
+/// voids, and refunds card payments against the issuing bank, drives 3-D Secure
+/// challenges, and pushes settlements and chargebacks back over webhooks. ACME
+/// Pay never sees card numbers — only network tokens and references. Every call
+/// is idempotent on a supplied key.
+/// #critical
+public system CardNetwork {
+  /// Authorise (hold) an amount. The outcome is either an authorised hold or a
+  /// 3-D Secure challenge the cardholder must complete first.
+  public authorize(amount: shared::Money, instrument: NetworkInstrument, key: charges::IdempotencyKey): Result<AuthOutcome, NetworkError>;
+  /// Complete a 3-D Secure challenge, promoting a pending authorisation to a
+  /// usable hold.
+  public completeAction(auth: NetworkAuthRef, outcome: NetworkChallengeResult, key: charges::IdempotencyKey): Result<NetworkAuth, NetworkError>;
+  /// Capture (settle) a previously authorised hold.
+  public capture(auth: NetworkAuthRef, amount: shared::Money, key: charges::IdempotencyKey): Result<NetworkCapture, NetworkError>;
+  /// Refund a captured payment, in full or part.
+  public refund(capture: NetworkCaptureRef, amount: shared::Money, key: charges::IdempotencyKey): Result<NetworkRefund, NetworkError>;
+  /// Void an authorised hold that will not be captured, releasing the funds.
+  public cancel(auth: NetworkAuthRef, key: charges::IdempotencyKey): void;
+  /// Submit evidence contesting a chargeback to the issuer via the acquirer.
+  public submitEvidence(dispute: DisputeRef, evidence: string): Result<void, NetworkError>;
+}
+
+/// The network's handle for an open dispute (chargeback).
+public data DisputeRef { value: string }
+
+/// The network's handle for an authorised hold.
+public data NetworkAuthRef { value: string }
+
+/// The network's handle for a settled capture.
+public data NetworkCaptureRef { value: string }
+
+/// A tokenised card the network can charge (never a PAN).
+public data NetworkInstrument { token: string }
+
+/// A 3-D Secure challenge the cardholder must complete with their issuer.
+public data NetworkChallenge { redirect: string }
+
+/// The cardholder's completed challenge, as proof to the network.
+public data NetworkChallengeResult { value: string }
+
+/// The result of an authorise attempt.
+public data AuthOutcome =
+  | Authorized { ref: NetworkAuthRef }
+  | ActionRequired { ref: NetworkAuthRef, challenge: NetworkChallenge }
+
+/// A successful (challenge-cleared) authorisation.
+public data NetworkAuth { ref: NetworkAuthRef }
+
+/// A successful capture.
+public data NetworkCapture { ref: NetworkCaptureRef }
+
+/// A successful refund.
+public data NetworkRefund { ref: string }
+
+/// Why the network refused or could not service a request.
+public data NetworkError =
+  | Declined { reason: string }
+  | RateLimited
+  | Unreachable
+
+/// The merchant's banking partner: moves settled funds out to a merchant's bank
+/// account and reports payout settlement asynchronously.
+/// #critical
+public system BankingPartner {
+  /// Initiate a payout to a merchant's bank account.
+  public initiate(amount: shared::Money, destination: BankAccountRef, key: payouts::PayoutKey): Result<BankTransfer, BankError>;
+  /// Ask the partner whether a payout has settled.
+  public status(transfer: BankTransferRef): Option<BankTransferState>;
+}
+
+/// A merchant's bank account handle (never raw account numbers).
+public data BankAccountRef { value: string }
+
+/// The partner's handle for an in-flight transfer.
+public data BankTransferRef { value: string }
+
+/// An accepted transfer.
+public data BankTransfer { ref: BankTransferRef }
+
+/// Where a transfer is in the partner's pipeline.
+public data BankTransferState =
+  | Settled
+  | InFlight
+  | Returned { reason: string }
+
+/// Why the partner refused a payout.
+public data BankError =
+  | TransferRejected { reason: string }
+  | TransferUnreachable
+
+/// A merchant's registered webhook receiver. ACME Pay POSTs signed event
+/// payloads to it and treats any non-2xx as a delivery failure to retry.
+public system MerchantEndpoint {
+  /// Deliver a signed event payload; a non-2xx response is a delivery failure.
+  public deliver(url: string, payload: string, signature: string): Result<void, DeliveryError>;
+}
+
+/// Why a webhook delivery did not succeed.
+public data DeliveryError =
+  | EndpointRejected { status: number }
+  | EndpointUnreachable
+
+/// External provider for transactional email (dispute and payout alerts to
+/// merchants).
+public system EmailProvider {
+  /// Send an email message.
+  public email(to: string, subject: string, body: string): void;
+}

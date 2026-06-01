@@ -1,0 +1,172 @@
+//! ledger — the system of record for money movement: an *immutable, append-only*
+//! log of double-entry balance transactions. Entries
+//! are never updated or deleted; the merchant's balance is *derived* by folding
+//! the log, never stored as a mutable counter. Each entry carries an `availableOn`
+//! time, so funds sit in *pending* until they settle and then count as *available*
+//! purely as a function of time — no separate settlement event mutates them. A
+//! periodic *clearing* check asserts the double-entry invariant (every credit nets
+//! against a debit) and surfaces any discrepancy. This is the only thing payouts
+//! may draw against.
+
+/// What a balance transaction represents. Credits raise the balance; debits and
+/// payouts lower it. Reversals undo a prior debit (a won dispute, a failed payout).
+public data EntryType =
+  | ChargeCredit
+  | RefundDebit
+  | DisputeDebit
+  | DisputeReversal
+  | PayoutDebit
+  | PayoutReversal
+
+/// One immutable double-entry posting against a merchant's balance. `amount` is
+/// the net effect (credit positive, debit negative); `source` is the id of the
+/// object that caused it (charge, refund, dispute, payout), which makes appends
+/// idempotent. `availableOn` is when a pending credit becomes available.
+public data BalanceTransaction {
+  id: shared::BalanceTxnId,
+  merchant: shared::MerchantId,
+  type: EntryType,
+  amount: shared::Money,
+  source: string,
+  availableOn: datetime
+}
+
+/// A merchant's balance, derived from the log: `available` is the sum of entries
+/// whose `availableOn` has passed, `pending` the rest.
+public data Balance { merchant: shared::MerchantId, available: shared::Money, pending: shared::Money }
+
+/// Why a balance operation was refused.
+public data LedgerError =
+  | InsufficientFunds
+  | Unbalanced { account: string }
+
+/// `ledger` — the immutable balance log and its derivations.
+/// #headline
+public container Ledger for context::AcmePay;
+
+/// Appends balance transactions in response to money-movement events and derives
+/// the balance from the log. Every append is idempotent on the entry's
+/// `(type, source)`, so an at-least-once event delivered twice posts once.
+/// #headline
+public component Balance for Ledger {
+  /// A captured payment credits the merchant's pending balance, net of the
+  /// platform fee, available after the settlement window (`availableOn`). The
+  /// credit sits in pending until then and becomes available by the passage of
+  /// time alone.
+  #[onevent(intents::PaymentSucceeded)]
+  public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
+    entry = self.creditFor(event)
+    Ledger::EntryLog.appendOnce(entry)
+  }
+
+  /// A successful refund debits available, immediately.
+  #[onevent(refunds::RefundSucceeded)]
+  public onRefund(event: refunds::RefundSucceeded): void {
+    entry = self.refundDebit(event)
+    Ledger::EntryLog.appendOnce(entry)
+  }
+
+  /// An opened dispute debits the disputed amount and the dispute fee from
+  /// available, held until the dispute resolves.
+  #[onevent(disputes::DisputeOpened)]
+  public onDisputeOpened(event: disputes::DisputeOpened): void {
+    entry = self.disputeDebit(event)
+    Ledger::EntryLog.appendOnce(entry)
+  }
+
+  /// A won dispute reverses the hold, returning the disputed amount to available.
+  #[onevent(disputes::DisputeWon)]
+  public onDisputeWon(event: disputes::DisputeWon): void {
+    entry = self.disputeReversal(event)
+    Ledger::EntryLog.appendOnce(entry)
+  }
+
+  /// The merchant's balance, derived by folding the log: available is the sum of
+  /// settled entries (`availableOn` in the past), pending the rest.
+  public balance(merchant: shared::MerchantId): Balance {
+    return Ledger::EntryLog.derive(merchant)
+  }
+
+  /// Draw available funds for a payout by appending a `PayoutDebit`. The append is
+  /// conditional on available covering the amount — one atomic check-and-append —
+  /// so two concurrent payouts cannot both draw the same funds, and the balance
+  /// can never go negative from a payout.
+  public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<BalanceTransaction, LedgerError> {
+    debit = self.payoutDebit(merchant, payout, amount)
+    return Ledger::EntryLog.appendIfAvailable(merchant, debit, amount)
+  }
+
+  /// Return drawn funds to available when a payout fails to leave the bank, by
+  /// appending a `PayoutReversal` (idempotent on the payout).
+  public restore(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): void {
+    Ledger::EntryLog.appendOnce(self.payoutReversal(merchant, payout, amount))
+  }
+
+  /// Build a pending `ChargeCredit` from a payment-succeeded event: net of fee,
+  /// keyed on the charge, available after the settlement window.
+  creditFor(event: intents::PaymentSucceeded): BalanceTransaction;
+  /// Build a `RefundDebit` from a refund event (available immediately).
+  refundDebit(event: refunds::RefundSucceeded): BalanceTransaction;
+  /// Build a `DisputeDebit` (disputed amount + dispute fee) from a dispute event.
+  disputeDebit(event: disputes::DisputeOpened): BalanceTransaction;
+  /// Build a `DisputeReversal` returning the disputed amount on a won dispute.
+  disputeReversal(event: disputes::DisputeWon): BalanceTransaction;
+  /// Build a `PayoutDebit` for a payout draw.
+  payoutDebit(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): BalanceTransaction;
+  /// Build a `PayoutReversal` returning a failed payout's funds.
+  payoutReversal(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): BalanceTransaction;
+}
+
+/// Verifies the double-entry invariant across the log. Run periodically by the
+/// scheduled clearing job.
+public component Clearing for Ledger {
+  /// Assert that the log balances — every credit nets against a debit, payout, or
+  /// reversal, so internal accounts return to zero at steady state. A nonzero
+  /// account surfaces a missing or incorrect entry (`Unbalanced`) for
+  /// investigation, rather than being silently absorbed.
+  public clear(): Result<void, LedgerError> {
+    return Ledger::EntryLog.verifyBalanced()
+  }
+}
+
+/// The immutable, append-only balance-transaction log. Appends are idempotent on
+/// the entry's `(type, source)`; the balance and the clearing invariant are
+/// derived by folding the log, never stored.
+component EntryLog for Ledger {
+  /// Append an entry unless one with the same `(type, source)` already exists
+  /// (idempotent re-delivery).
+  appendOnce(entry: BalanceTransaction): void;
+  /// Append a debit only if available covers `amount` (atomic check-and-append);
+  /// `Err(InsufficientFunds)` otherwise.
+  appendIfAvailable(merchant: shared::MerchantId, debit: BalanceTransaction, amount: shared::Money): Result<BalanceTransaction, LedgerError>;
+  /// Derive a merchant's available/pending balance by folding the log against the
+  /// current time.
+  derive(merchant: shared::MerchantId): Balance;
+  /// Fold every account to confirm it nets to zero; `Err(Unbalanced)` on a
+  /// discrepancy.
+  verifyBalanced(): Result<void, LedgerError>;
+}
+
+/// A duplicated payment-succeeded event posts to the balance only once.
+feature CreditIsIdempotent for Balance {
+  given "a payment-succeeded event already appended to the log"
+  when  "the event is delivered again"
+  then  "no second entry is appended"
+  and   "the derived balance is unchanged"
+}
+
+/// Captured funds are pending until the settlement window passes.
+feature FundsArePendingUntilSettled for Balance {
+  given "a payment captured today with a two-day settlement window"
+  when  "the balance is derived before the window elapses"
+  then  "the funds count as pending, not available"
+  and   "they become available once the window passes, with no further event"
+}
+
+/// A payout can never draw more than the available balance.
+feature PayoutCannotOverdraw for Balance {
+  given "a payout draw larger than the available balance"
+  when  "the withdrawal is attempted"
+  then  "it is refused as insufficient funds"
+  and   "no debit is appended"
+}

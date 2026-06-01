@@ -1,0 +1,30 @@
+//! notifications — merchant alerts on the moments that need a human: a payment
+//! disputed (respond before the deadline), a payout failed (funds came back), a
+//! payout paid (money landed).
+
+/// `notifications` — transactional email to merchants.
+public container Notifications for context::AcmePay;
+
+/// Sends merchant alerts through the external email provider.
+public component Notifier for Notifications {
+  /// Alert a merchant that a payment was disputed and needs a response.
+  #[onevent(disputes::DisputeOpened)]
+  public onDisputeOpened(event: disputes::DisputeOpened): void {
+    context::EmailProvider.email(self.recipient(event.merchant), "Action needed: a payment was disputed", "A cardholder disputed a payment. Submit evidence before the deadline.")
+  }
+
+  /// Alert a merchant that a payout failed and the funds were returned.
+  #[onevent(payouts::PayoutFailed)]
+  public onPayoutFailed(event: payouts::PayoutFailed): void {
+    context::EmailProvider.email(self.recipient(event.merchant), "Your payout failed", "We couldn't pay out to your bank; the funds are back in your balance.")
+  }
+
+  /// Confirm to a merchant that a payout reached their bank.
+  #[onevent(payouts::PayoutPaid)]
+  public onPayoutPaid(event: payouts::PayoutPaid): void {
+    context::EmailProvider.email(self.recipient(event.merchant), "Your payout is on the way", "A payout to your bank account has been sent.")
+  }
+
+  /// The email address for a merchant.
+  recipient(merchant: shared::MerchantId): string;
+}

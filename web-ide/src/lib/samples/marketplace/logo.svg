@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="ACME Market logo">
-  <rect width="64" height="64" rx="14" fill="#9333ea"/>
-  <path d="M16 24l2-6h28l2 6z" fill="#fff"/>
-  <path d="M16 24c0 3 2.5 5 5.5 5s5.5-2 5.5-5m0 0c0 3 2.5 5 5.5 5s5.5-2 5.5-5m0 0c0 3 2.5 5 5.5 5s5.5-2 5.5-5" fill="none" stroke="#9333ea" stroke-width="2"/>
-  <rect x="20" y="29" width="24" height="18" rx="2" fill="#fff"/>
-  <rect x="28" y="36" width="8" height="11" fill="#9333ea"/>
-</svg>

@@ -1,0 +1,80 @@
+//! risk — the fraud-scoring gate every confirmation passes. Scoring weighs signals
+//! into one of three outcomes; the *decision* that follows is a business rule,
+//! disclosed here. Only *block* stops money: a blocked payment never reaches the
+//! network. *Review* does not halt the payment —
+//! it lets it proceed and flags it for a human to inspect (and refund) afterwards,
+//! so the review queue holds already-captured payments, not pending ones. The
+//! signal weighting itself is a black box.
+
+/// The signals a screening decision is made from.
+public data RiskInput {
+  merchant: shared::MerchantId,
+  intent: shared::PaymentIntentId,
+  amount: shared::Money,
+  method: shared::PaymentMethodId
+}
+
+/// What screening decided.
+public data RiskOutcome =
+  | Allow
+  | Review
+  | Block { reason: string }
+
+/// Why a confirmation was refused on risk grounds.
+public data RiskError =
+  | Blocked { reason: string }
+
+/// `risk` — fraud scoring and the manual-review queue.
+public container Risk for context::AcmePay;
+
+/// Scores a confirmation and turns the score into an allow/review/block outcome.
+public component Engine for Risk {
+  /// Screen a confirmation. The score-to-outcome thresholds are the disclosed
+  /// rule; the weighting of signals into a score is the black box behind it.
+  public screen(input: RiskInput): RiskOutcome {
+    return Risk::Scorer.classify(input)
+  }
+
+  /// `Ok` only if the outcome blocks the payment outright.
+  public isBlocked(outcome: RiskOutcome): Result<void, RiskError>;
+  /// `Ok` only if the outcome holds the payment for manual review.
+  public isReview(outcome: RiskOutcome): Result<void, RiskError>;
+}
+
+/// Holds captured payments that screening flagged, until an analyst rules on them.
+public component ReviewQueue for Risk {
+  /// Flag a (proceeding) payment for human review.
+  public flag(intent: shared::PaymentIntentId, reason: string): void {
+    Risk::ReviewStore.add(intent, reason)
+  }
+
+  /// Remove a payment from the queue once it has been ruled on.
+  public clear(intent: shared::PaymentIntentId): void {
+    Risk::ReviewStore.remove(intent)
+  }
+
+  /// Payments awaiting an analyst's decision.
+  public pending(): shared::PaymentIntentId[] {
+    return Risk::ReviewStore.pending()
+  }
+}
+
+/// Weights signals into a score and classifies it (the proprietary model).
+component Scorer for Risk {
+  classify(input: RiskInput): RiskOutcome;
+}
+
+/// Durable review-queue records.
+component ReviewStore for Risk {
+  add(intent: shared::PaymentIntentId, reason: string): void;
+  remove(intent: shared::PaymentIntentId): void;
+  pending(): shared::PaymentIntentId[];
+}
+
+/// A payment the engine blocks never reaches the network.
+feature BlockStopsBeforeMoneyMoves for Engine {
+  given "a confirmation the fraud engine scores as block"
+  when  "the payment is confirmed"
+  then  "it is rejected on risk grounds"
+  but   "the card network is never called"
+}
