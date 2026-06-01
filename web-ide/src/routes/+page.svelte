@@ -26,6 +26,8 @@
   import { notifications } from "$lib/stores/notifications.svelte.js";
   import { wasm } from "$lib/stores/wasm.svelte.js";
   import { navigation } from "$lib/stores/navigation.svelte.js";
+  import { wsStore } from "$lib/stores/workspace.svelte.js";
+  import { selection } from "$lib/stores/selection.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -71,19 +73,12 @@
   // The selected item's view: its source ("code"), its interactive diagram
   // ("canvas"), or the workspace problem list ("problems"). The nav stays put;
   // only this content pane swaps.
-  let view = $state<"code" | "canvas" | "problems">("code");
-
-  // The C4 depth a sequence diagram is collapsed to (persons & systems /
-  // + containers / + components). Components = full detail (no collapse).
-  let seqDepth = $state<Depth>("component");
-
-  // The structure node selected in the nav / drilled into on the canvas, as
-  // { fqn, line, col, fileFqn }, or null for the whole-model scope. Drives the
-  // canvas diagram, the breadcrumb, and which nav row is highlighted.
-  let selected = $state<{ fqn: string; line: number; col: number; fileFqn: string } | null>(null);
-  // A queued editor jump (set when a node is picked); applied once the code view
-  // is mounted and showing the node's file.
-  let pendingGoto = $state<{ line: number; col: number; fileFqn: string } | null>(null);
+  // Selection / view state is owned by the selection store; the view reads it
+  // through these derived aliases and writes back via `selection.X = …`.
+  const view = $derived(selection.view);
+  const seqDepth = $derived(selection.seqDepth);
+  const selected = $derived(selection.selected);
+  const pendingGoto = $derived(selection.pendingGoto);
 
   // Navigation history is owned by the navigation store; the view keeps the impure
   // application (opening files, jumping the editor). `canBack`/`canForward` and
@@ -107,11 +102,11 @@
     if (!file) return;
     if (openFile?.fqn !== file.fqn) {
       flushSave();
-      openFile = file;
+      wsStore.openFile = file;
     }
-    if (loc.fqn) selected = { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
-    view = "code";
-    pendingGoto = { line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
+    if (loc.fqn) selection.selected = { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
+    selection.view = "code";
+    selection.pendingGoto = { line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
   }
 
   function goBack() {
@@ -130,24 +125,18 @@
     recordLocation({ fileFqn: occ.fqn, line: occ.line, col: occ.col, label: occ.text || `${occ.fqn}:${occ.line}` });
   }
 
-  // Workspace state. Defaults to the bundled sample (in-memory, handles null);
+  // Workspace state is owned by the workspace store (wsStore). The view reads it
+  // through these derived aliases (every read site unchanged) and writes back via
+  // `wsStore.X = …`. Defaults to the bundled sample (in-memory, handles null);
   // "Open folder" swaps in a real on-disk workspace whose files persist on edit.
-  let workspace = $state<PageWorkspace | null>(null);
-  let openFile = $state<OpenFile | null>(null);
-  let moduleSources = $state<Record<string, string>>({});
-  // Authored docs (`[[doc.sidebar]]`): the sidebar groups (`{ title, items:
-  // [{ title, path, handle }] }`), each page's live Markdown by path, and the
-  // `{ name, theme }` parsed from `[doc]` for the site build. Loaded on open.
-  let docGroups = $state<LiveDocGroup[]>([]);
-  let docSources = $state<Record<string, string>>({});
-  let docMeta = $state<{ name?: string; theme?: string }>({});
-
-  // The raw `pds.toml` text, editable as a first-class file. Keyed in the dirty
-  // baseline by the manifest path. Re-resolved (doc nav / name / theme) on save.
-  let manifestSource = $state("");
-  // The last manifest parse error, shown inline above the editor when the open
-  // file is the manifest (the IDE keeps the last good doc nav meanwhile).
-  let manifestError = $state<string | null>(null);
+  const workspace = $derived(wsStore.workspace);
+  const openFile = $derived(wsStore.openFile);
+  const moduleSources = $derived(wsStore.moduleSources);
+  const docGroups = $derived(wsStore.docGroups);
+  const docSources = $derived(wsStore.docSources);
+  const docMeta = $derived(wsStore.docMeta);
+  const manifestSource = $derived(wsStore.manifestSource);
+  const manifestError = $derived(wsStore.manifestError);
   // Whether the live manifest declares a `[dependencies]` table — drives the
   // read-only "resolved by pds install" note.
   const manifestHasDeps = $derived(docs.manifestHasDeps(manifestSource));
@@ -423,14 +412,14 @@
     if (goto && view !== "canvas") recordOrigin();
     if (openFile?.fqn !== fileFqn) {
       flushSave();
-      openFile = file;
+      wsStore.openFile = file;
     }
-    selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
+    selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
     // isn't showing; on the canvas the new scope is the navigation, so stay put.
     if (goto && view !== "canvas") {
-      view = "code";
-      pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
+      selection.view = "code";
+      selection.pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
       recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
     }
   }
@@ -439,7 +428,7 @@
   // canvas); synthetic initiators (client, scheduler, …) aren't declared nodes.
   const pickNode = (fqn: string) => selectNode(fqn);
   // Reset the canvas scope to the whole-model context.
-  const resetScope = () => (selected = null);
+  const resetScope = () => (selection.selected = null);
   // Close the expanded boundary: pop up to the structural parent (the `for`
   // owner — system → container → component), or the whole-model context at the
   // top level. FQNs are flat within a module, so this follows `parent`, not `::`.
@@ -457,7 +446,7 @@
   function revealSymbol(fqn: string) {
     if (!nodeIndex.has(fqn)) return;
     selectNode(fqn);
-    view = "canvas";
+    selection.view = "canvas";
   }
 
   // Apply a queued editor jump once the code view is mounted on the right file.
@@ -466,7 +455,7 @@
   $effect(() => {
     if (view === "code" && editorApi && pendingGoto && openFile?.fqn === pendingGoto.fileFqn) {
       const target = pendingGoto;
-      pendingGoto = null;
+      selection.pendingGoto = null;
       tick().then(() => editorApi?.goto(target.line, target.col));
     }
   });
@@ -508,27 +497,27 @@
   // Swap in a freshly-loaded workspace, resetting navigation to `landing`.
   async function mountWorkspace(ws: PageWorkspace, landing?: string | null) {
     flushSave();
-    workspace = ws;
+    wsStore.workspace = ws;
     // An explicit landing FQN (meta.json) resolves to its module immediately;
     // otherwise tentatively open the first module and revisit once docs load.
     const explicit = landing ? ws.files.find((f) => f.fqn === landing) : null;
-    openFile = explicit ?? ws.files[0] ?? null;
-    selected = null;
-    pendingGoto = null;
-    view = "code";
+    wsStore.openFile = explicit ?? ws.files[0] ?? null;
+    selection.selected = null;
+    selection.pendingGoto = null;
+    selection.view = "code";
     navigation.reset();
     projectOpen = false;
-    docGroups = [];
-    docSources = {};
-    docMeta = {};
+    wsStore.docGroups = [];
+    wsStore.docSources = {};
+    wsStore.docMeta = {};
     // Reset the dirty/save state for the new workspace; module baselines are
     // seeded by the opener (folder/recent) before mount, doc baselines on load.
     saveState = "idle";
     clearTimeout(saveStateTimer);
     // Seed the editable manifest buffer; folder manifests also get an on-disk
     // baseline so the manifest row only shows dirty after a real edit.
-    manifestSource = ws.manifestToml ?? "";
-    manifestError = null;
+    wsStore.manifestSource = ws.manifestToml ?? "";
+    wsStore.manifestError = null;
     if (ws.root && ws.manifest) seedBaseline([{ key: ws.manifest.path, text: ws.manifestToml ?? "" }]);
 
     // Docs load async; await them so the initial open can prefer the docs
@@ -569,9 +558,9 @@
     if (seq !== docLoadSeq) return null;
     const sources: Record<string, string> = {};
     for (const g of groups) for (const it of g.items) sources[it.path] = it.content;
-    docSources = sources;
-    docMeta = { name: manifest.name, theme: manifest.theme };
-    docGroups = groups.map((g) => ({
+    wsStore.docSources = sources;
+    wsStore.docMeta = { name: manifest.name, theme: manifest.theme };
+    wsStore.docGroups = groups.map((g) => ({
       title: g.title,
       items: g.items.map(({ title, path, handle }) => ({ title, path, handle: handle ?? null })),
     }));
@@ -624,9 +613,9 @@
       sources[fqn] = text;
       if (workspace?.root) base[fqn] = text; // folder-backed → on-disk baseline (clean)
     }
-    moduleSources = sources;
+    wsStore.moduleSources = sources;
     persisted = base;
-    workspace = { ...workspace!, files };
+    wsStore.workspace = { ...workspace!, files };
   }
 
   // Persist a programmatic `[[doc.sidebar]]` manifest change (T10): update the
@@ -634,8 +623,8 @@
   // when folder-backed, re-seed its baseline, and re-resolve doc nav.
   async function persistManifest(toml: string) {
     const handle = workspace?.manifest?.handle;
-    workspace = { ...workspace!, manifestToml: toml };
-    manifestSource = toml;
+    wsStore.workspace = { ...workspace!, manifestToml: toml };
+    wsStore.manifestSource = toml;
     if (handle && workspace.manifest) {
       await writeFile(handle, toml);
       seedBaseline([{ key: workspace.manifest.path, text: toml }]);
@@ -751,9 +740,9 @@
 
     // Live: add to docGroups + docSources so the sidebar/preview update now.
     const item: LiveDocItem = { title, path, handle };
-    docSources = { ...docSources, [path]: body };
+    wsStore.docSources = { ...docSources, [path]: body };
     if (ws.root && handle) seedBaseline([{ key: path, text: body }]);
-    docGroups = docGroups.length
+    wsStore.docGroups = docGroups.length
       ? docGroups.map((g, i) => (i === 0 ? { ...g, items: [...g.items, item] } : g))
       : [{ title: "Docs", items: [item] }];
 
@@ -824,7 +813,7 @@
     const updated: OpenFile = { path: newPath, fqn: newFqn, handle };
     const files = ws.files.map((f) => (f === file ? updated : f)).sort((a, b) => (a.fqn ?? "").localeCompare(b.fqn ?? ""));
     applyFileSet(files, { rename: { from: oldFqn, to: newFqn } });
-    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === oldFqn) openFile = updated;
+    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === oldFqn) wsStore.openFile = updated;
     const importers = danglingImporters(newFqn, oldFqn);
     if (importers.length) notify("info", `Renamed to ${newFqn}`, `${importers.length} module(s) still import the old name.`);
     else notify("success", `Renamed to ${newFqn}`);
@@ -858,7 +847,7 @@
     applyFileSet(files, { drop: [file.fqn] });
     if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === file.fqn) {
       if (files[0]) selectFile(files[0]);
-      else openFile = null;
+      else wsStore.openFile = null;
     }
     notify("success", `Deleted ${file.fqn}`);
   }
@@ -968,10 +957,10 @@
   // Apply one externally-changed file: update its live buffer (which flows to the
   // editor and re-derives the model) and advance its baseline so it reads clean.
   function applyExternalReload(key: string, disk: string, kind: "module" | "doc" | "manifest") {
-    if (kind === "module") moduleSources = { ...moduleSources, [key]: disk };
-    else if (kind === "doc") docSources = { ...docSources, [key]: disk };
+    if (kind === "module") wsStore.moduleSources = { ...moduleSources, [key]: disk };
+    else if (kind === "doc") wsStore.docSources = { ...docSources, [key]: disk };
     else {
-      manifestSource = disk;
+      wsStore.manifestSource = disk;
       resolveManifest(disk);
     }
     persisted = { ...persisted, [key]: disk };
@@ -1024,15 +1013,15 @@
   function onEditorChange(value: string) {
     if (!openFile) return;
     if (openFile.isManifest) {
-      manifestSource = value;
+      wsStore.manifestSource = value;
       // A folder manifest re-resolves on save (debounced write); a session-only
       // sample has no save, so re-resolve live instead.
       if (openFile.handle) validateManifest(value);
       else resolveManifest(value);
     } else if (openFile.isDoc) {
-      docSources = { ...docSources, [openFile.path ?? ""]: value };
+      wsStore.docSources = { ...docSources, [openFile.path ?? ""]: value };
     } else {
-      moduleSources = { ...moduleSources, [openFile.fqn ?? ""]: value };
+      wsStore.moduleSources = { ...moduleSources, [openFile.fqn ?? ""]: value };
     }
     scheduleSave(openFile.handle, keyOf(openFile), value);
   }
@@ -1041,9 +1030,9 @@
   function validateManifest(toml: string) {
     try {
       docManifest(toml);
-      manifestError = null;
+      wsStore.manifestError = null;
     } catch (e) {
-      manifestError = String((e as Error)?.message ?? e);
+      wsStore.manifestError = String((e as Error)?.message ?? e);
     }
   }
 
@@ -1053,9 +1042,9 @@
   function resolveManifest(toml: string) {
     try {
       docManifest(toml); // throws on malformed TOML
-      manifestError = null;
+      wsStore.manifestError = null;
     } catch (e) {
-      manifestError = String((e as Error)?.message ?? e);
+      wsStore.manifestError = String((e as Error)?.message ?? e);
       return; // keep the last good doc nav
     }
     if (workspace) loadWorkspaceDocs({ ...workspace, manifestToml: toml });
@@ -1066,23 +1055,23 @@
   function openManifest() {
     if (!workspace?.manifest) return;
     flushSave();
-    openFile = {
+    wsStore.openFile = {
       isManifest: true,
       path: workspace.manifest.path,
       title: "pds.toml",
       handle: workspace.manifest.handle ?? null,
     };
-    selected = null;
-    view = "code";
+    selection.selected = null;
+    selection.view = "code";
   }
 
   // Opening a file from the nav clears any node scope; it shows the source,
   // unless the canvas is up — then it stays on the canvas (whole-model context).
   function selectFile(file: OpenFile) {
     flushSave();
-    openFile = file;
-    selected = null;
-    if (view !== "canvas") view = "code";
+    wsStore.openFile = file;
+    selection.selected = null;
+    if (view !== "canvas") selection.view = "code";
   }
 
   // Open an authored doc page (`[[doc.sidebar]]`) as raw Markdown in the editor.
@@ -1090,13 +1079,13 @@
   // route to `docSources` (and save to the page's handle on a real folder).
   function openDoc(item: LiveDocItem) {
     flushSave();
-    openFile = { isDoc: true, path: item.path, title: item.title, handle: item.handle ?? null };
-    selected = null;
-    view = "code";
+    wsStore.openFile = { isDoc: true, path: item.path, title: item.title, handle: item.handle ?? null };
+    selection.selected = null;
+    selection.view = "code";
   }
 
   async function onProblemPick(d: Problem) {
-    view = "code";
+    selection.view = "code";
     if (d.file && workspace && d.file !== openFile?.fqn) {
       const f = workspace.files.find((x) => x.fqn === d.file);
       if (f) selectFile(f);
@@ -1113,7 +1102,7 @@
   async function adoptWorkspace(ws: PageWorkspace, landing?: string | null) {
     const sources: Record<string, string> = {};
     for (const file of ws.files) if (file.handle) sources[file.fqn ?? ""] = await readFile(file.handle);
-    moduleSources = sources;
+    wsStore.moduleSources = sources;
     persisted = { ...sources };
     await mountWorkspace(ws, landing ?? ws.files[0]?.fqn);
     if (ws.root) {
@@ -1310,7 +1299,7 @@ show('index.html');
   // Mount a decoded workspace (from a share link or imported file) in-memory,
   // session-only until "Save to folder" — exactly the sample-load path.
   function mountDecoded({ workspace: ws, landing }: MountInput) {
-    moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
+    wsStore.moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
     persisted = {}; // imported/shared: no on-disk baseline, session-only
     mountWorkspace(ws, landing);
   }
@@ -1609,9 +1598,9 @@ show('index.html');
 <!-- The CODE | CANVAS view toggle, with a Problems tab carrying the error count. -->
 {#snippet viewToggle()}
   <div class="view-toggle" role="tablist" aria-label="View">
-    <button role="tab" aria-selected={view === "code"} class:active={view === "code"} onclick={() => (view = "code")}>Code</button>
-    <button role="tab" aria-selected={view === "canvas"} class:active={view === "canvas"} onclick={() => (view = "canvas")}>Canvas</button>
-    <button role="tab" aria-selected={view === "problems"} class:active={view === "problems"} class:has-errors={errorCount > 0} onclick={() => (view = "problems")}>
+    <button role="tab" aria-selected={view === "code"} class:active={view === "code"} onclick={() => (selection.view = "code")}>Code</button>
+    <button role="tab" aria-selected={view === "canvas"} class:active={view === "canvas"} onclick={() => (selection.view = "canvas")}>Canvas</button>
+    <button role="tab" aria-selected={view === "problems"} class:active={view === "problems"} class:has-errors={errorCount > 0} onclick={() => (selection.view = "problems")}>
       Problems{#if problems.length}<span class="count" class:bad={errorCount > 0}>{problems.length}</span>{/if}
     </button>
   </div>
@@ -1719,7 +1708,7 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} typeFqn={typeFqnByName as never} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} typeFqn={typeFqnByName as never} />
             </div>
           {:else if view === "problems"}
             <div class="layer">
