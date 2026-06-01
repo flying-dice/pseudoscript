@@ -55,4 +55,22 @@ test("folding ranges come from the compiler (blocks fold)", async ({ page }) => 
   // The IDE folds blocks by default using the compiler's AST fold ranges; a
   // folded region renders CodeMirror's placeholder.
   await expect(page.locator(".cm-foldPlaceholder").first()).toBeVisible();
+
+  // A fold must not swallow the lines between declarations: every fold starts
+  // at its declaration header, so no rendered line jams two closing braces or
+  // leaks a sibling's content (the regression when folds began at doc comments).
+  const jammed = await page.evaluate(() =>
+    [...document.querySelectorAll(".cm-content .cm-line")]
+      .map((l) => l.innerText)
+      .filter((t) => /…\}…\}/.test(t)).length,
+  );
+  expect(jammed).toBe(0);
+
+  // The doc comment above a record stays visible; the record body folds to `{…}`.
+  const docVisible = await page.evaluate(() =>
+    [...document.querySelectorAll(".cm-content .cm-line")].some((l) =>
+      l.innerText.startsWith("///"),
+    ),
+  );
+  expect(docVisible).toBe(true);
 });

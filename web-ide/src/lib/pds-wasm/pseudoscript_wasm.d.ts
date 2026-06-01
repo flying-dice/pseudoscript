@@ -22,14 +22,13 @@ export function check(source: string): string;
 export function check_modules(modules_json: string): string;
 
 /**
- * Context-aware completion candidates at `offset` (a byte offset) in module
- * `module_fqn`. Returns a JSON array `[{label, kind, detail}]`, where `kind` is
- * a lowercase tag (`method`/`field`/`keyword`/`macro`/`type`/`class`/`module`/
- * `reference`) the editor maps to an icon. The set is scoped to the trigger
- * before the caret (`.`/`::`/`#[`/type-position/general); the client filters it
- * against the prefix being typed. `modules_json` is the `[{fqn, source}]`
- * workspace shape. This is the same engine the LSP serves, so the web IDE and
- * native editors complete identically.
+ * Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
+ * as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
+ * `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
+ * caret (`.`/`::`/`#[`/type-position/general); the client filters against the
+ * typed prefix. Served by the shared [`pseudoscript_lsp_core::complete`] —
+ * identical to the stdio server's `textDocument/completion`. `modules_json` is
+ * the `[{fqn, source}]` workspace shape.
  *
  * # Errors
  *
@@ -108,10 +107,11 @@ export function emit_scene_modules(modules_json: string, view: string, target: s
 export function emit_svg(source: string, view: string, target: string): string;
 
 /**
- * Foldable regions of `source` as a JSON array of `{ start, end }` in absolute
- * byte offsets — every multi-line declaration and statement block. The editor
- * folds these ranges instead of brace-matching in JS, sharing the LSP's
- * AST-accurate fold logic.
+ * Foldable regions of `source` as the JSON of an LSP `FoldingRange` array
+ * (`{ startLine, endLine, kind }`, 0-based lines) — every multi-line
+ * declaration and statement block. Identical to the stdio server's
+ * `textDocument/foldingRange` response; the editor folds these instead of
+ * brace-matching in JS.
  */
 export function folding_ranges(source: string): string;
 
@@ -126,15 +126,13 @@ export function folding_ranges(source: string): string;
 export function format(source: string): string;
 
 /**
- * Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
- * and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
- * the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
- * diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
- * trace for a callable, a structural view for a node. `modules_json` is the
+ * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` and
+ * returns it as an LSP `Hover` (`{ contents: { kind, value }, range }`,
+ * Markdown), or `null` when the cursor rests on no resolvable symbol. Served by
+ * the shared [`pseudoscript_lsp_core::analysis::hover`] — identical to the
+ * stdio server's `textDocument/hover`, no diagram. The interactive diagram is a
+ * separate concern: [`symbol_scene`] / [`symbol_svg`]. `modules_json` is the
  * `[{fqn, source}]` workspace shape.
- *
- * The host (an editor hover) shows the info and diagram together; it never
- * decides which diagram a symbol gets — the compiler does.
  *
  * # Errors
  *
@@ -212,13 +210,11 @@ export function references(modules_json: string, module_fqn: string, offset: num
 export function render_doc_site(modules_json: string, config_json: string, render: Function): string;
 
 /**
- * AST-aware semantic tokens for `source`, as a JSON array of
- * `{ start, end, kind, declaration }` in absolute byte offsets, sorted and
- * non-overlapping. `kind` is a camelCase tag (`namespace`/`type`/`class`/
- * `parameter`/`variable`/`property`/`enumMember`/`method`/`keyword`/`comment`/
- * `string`/`number`/`decorator`); `declaration` marks a definition site. An
- * editor decorates these ranges — the same colouring the LSP serves, replacing
- * any hand-written tokenizer.
+ * AST-aware semantic tokens for `source`, as the JSON of an LSP
+ * `SemanticTokens` (the delta-encoded `data` array over UTF-16 positions; the
+ * `token_type` field indexes the [`pseudoscript_lsp_core::semantic`] legend).
+ * Identical to the stdio server's `textDocument/semanticTokens/full` response —
+ * the editor decodes and decorates it, replacing any hand-written tokenizer.
  */
 export function semantic_tokens(source: string): string;
 
