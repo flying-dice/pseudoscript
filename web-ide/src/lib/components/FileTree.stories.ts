@@ -1,24 +1,35 @@
+import type { Meta, StoryObj } from "@storybook/svelte";
 import FileTree from "./FileTree.svelte";
+
+// A workspace file: its fully-qualified name and base-relative path.
+export interface FileEntry {
+  fqn: string;
+  path: string;
+}
 
 // The workspace file tree — the primary navigation surface. Rows are addressed
 // in tests by `data-testid="file-<fqn>"`.
-export default {
+const meta: Meta<typeof FileTree> = {
   title: "IDE/FileTree",
   component: FileTree,
   tags: ["autodocs"],
 };
 
-const files = [
+export default meta;
+
+type Story = StoryObj<typeof FileTree>;
+
+const files: FileEntry[] = [
   { fqn: "orders", path: "orders.pds" },
   { fqn: "shared", path: "shared.pds" },
   { fqn: "gateway", path: "gateway.pds" },
 ];
 
-export const TwoModules = {
+export const TwoModules: Story = {
   args: { workspaceName: "ACME Tickets", files, openPath: "orders.pds" },
 };
 
-export const WithUnsavedAndError = {
+export const WithUnsavedAndError: Story = {
   args: {
     workspaceName: "ACME Tickets",
     files,
@@ -28,6 +39,6 @@ export const WithUnsavedAndError = {
   },
 };
 
-export const Empty = {
+export const Empty: Story = {
   args: { workspaceName: "Empty", files: [] },
 };

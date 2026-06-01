@@ -1,24 +1,27 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import { Apple, MonitorDown, Copy, Check } from '@lucide/svelte';
 
+  type Os = 'unix' | 'windows';
+
   // One-liners pull the install script straight from the latest release's
   // assets; the script then resolves the matching `pds-<target>` archive.
-  const CMDS = {
+  const CMDS: Record<Os, string> = {
     unix: 'curl -fsSL https://github.com/flying-dice/pseudoscript/releases/latest/download/install.sh | bash',
     windows: 'irm https://github.com/flying-dice/pseudoscript/releases/latest/download/install.ps1 | iex',
   };
 
-  let os = $state('unix'); // 'unix' = macOS/Linux, 'windows'
+  let os = $state<Os>('unix'); // 'unix' = macOS/Linux, 'windows'
   let copied = $state(false);
 
   onMount(() => {
     // Default the toggle to the visitor's platform.
-    const p = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    const p = (nav.userAgentData?.platform || nav.platform || '').toLowerCase();
     if (p.includes('win')) os = 'windows';
   });
 
-  async function copy() {
+  async function copy(): Promise<void> {
     try {
       await navigator.clipboard.writeText(CMDS[os]);
       copied = true;

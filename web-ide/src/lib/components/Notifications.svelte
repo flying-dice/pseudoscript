@@ -1,10 +1,24 @@
-<script>
+<script lang="ts">
   // Stacked toast notifications, keyed by id. The page pushes `{id, kind,
   // title, body}` entries (kind: success | error | info) and auto-dismisses
   // them; each is also closable.
-  let { notes = [], ondismiss } = $props();
+  type NoteKind = "success" | "error" | "info";
 
-  const ICON = { success: "✓", error: "!", info: "i" };
+  type Note = {
+    id: string | number;
+    kind: NoteKind;
+    title: string;
+    body?: string;
+  };
+
+  type Props = {
+    notes?: Note[];
+    ondismiss?: (id: Note["id"]) => void;
+  };
+
+  let { notes = [], ondismiss }: Props = $props();
+
+  const ICON: Record<NoteKind, string> = { success: "✓", error: "!", info: "i" };
 </script>
 
 <div class="notes" role="region" aria-label="Notifications" aria-live="polite">

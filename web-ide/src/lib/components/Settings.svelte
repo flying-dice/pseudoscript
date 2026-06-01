@@ -1,22 +1,32 @@
-<script>
+<script lang="ts">
+  import type { Command } from "$lib/keybindings.svelte.js";
   import { COMMANDS, PROFILES, chordFromEvent, formatChord, keybindings } from "$lib/keybindings.svelte.js";
 
-  let { onclose } = $props();
+  type Props = {
+    onclose: () => void;
+  };
+
+  let { onclose }: Props = $props();
+
+  // A command row enriched with its effective chord and customised flag.
+  type Row = Command & { chord: string; custom: boolean };
+  // A display group: a named bucket of command rows.
+  type Group = { name: string; items: Row[] };
 
   // The command id currently capturing a chord, or null. While set, a global
   // capture-phase listener swallows every keydown and rebinds on the first
   // non-modifier key (Escape cancels).
-  let recording = $state(null);
+  let recording = $state<string | null>(null);
   // A transient inline message under the row being recorded (e.g. a conflict).
-  let notice = $state(null);
+  let notice = $state<string | null>(null);
 
   // Rows grouped for display, recomputed when a binding changes (version).
-  const groups = $derived.by(() => {
+  const groups: Group[] = $derived.by(() => {
     keybindings.version; // track rebinds so chips refresh
-    const by = new Map();
+    const by = new Map<string, Row[]>();
     for (const c of COMMANDS) {
       if (!by.has(c.group)) by.set(c.group, []);
-      by.get(c.group).push({
+      by.get(c.group)!.push({
         ...c,
         chord: keybindings.keyFor(c.id),
         custom: keybindings.isCustom(c.id),
@@ -25,18 +35,18 @@
     return [...by.entries()].map(([name, items]) => ({ name, items }));
   });
 
-  function startRecording(id) {
+  function startRecording(id: string): void {
     recording = id;
     notice = null;
   }
-  function stopRecording() {
+  function stopRecording(): void {
     recording = null;
     notice = null;
   }
 
   // Capture a chord for the recording command. Runs in the capture phase so the
   // app's own shortcuts (and the browser's) never fire while recording.
-  function onKeydown(e) {
+  function onKeydown(e: KeyboardEvent): void {
     if (!recording) return;
     e.preventDefault();
     e.stopPropagation();

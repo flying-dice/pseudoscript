@@ -1,5 +1,19 @@
-<script>
-  let { diagnostics = [], onpick } = $props();
+<script lang="ts">
+  type Problem = {
+    severity: string;
+    message: string;
+    start_line: number;
+    start_col: number;
+    file?: string;
+    code?: string;
+  };
+
+  type Props = {
+    diagnostics?: Problem[];
+    onpick?: (diagnostic: Problem) => void;
+  };
+
+  let { diagnostics = [], onpick }: Props = $props();
 </script>
 
 <div class="problems">

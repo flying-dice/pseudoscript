@@ -15,7 +15,10 @@ import { GFM } from "@lezer/markdown";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import { StateField } from "@codemirror/state";
+import type { EditorState, Extension, Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType } from "@codemirror/view";
+import type { DecorationSet, ViewUpdate } from "@codemirror/view";
+import type { SyntaxNodeRef } from "@lezer/common";
 
 // A hidden syntax marker (`#`, `**`, brackets, …): replaced by nothing.
 const hide = Decoration.replace({});
@@ -46,13 +49,13 @@ const codeHighlightStyle = HighlightStyle.define([
 // prose font, so a wrapped item hangs precisely under its text. Measured with a
 // canvas rather than approximated in `ch` (the proportional font's marker is
 // narrower than a `0`, which overshot). Cached per font+prefix.
-let measureCtx = null;
-const widthCache = new Map();
-function prefixWidthPx(font, prefix) {
+let measureCtx: CanvasRenderingContext2D | null = null;
+const widthCache = new Map<string, number>();
+function prefixWidthPx(font: string, prefix: string): number {
   const key = `${font}|${prefix}`;
   let w = widthCache.get(key);
   if (w === undefined) {
-    if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+    if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d")!;
     measureCtx.font = font;
     w = measureCtx.measureText(prefix).width;
     widthCache.set(key, w);
@@ -61,7 +64,7 @@ function prefixWidthPx(font, prefix) {
 }
 
 // Inline spans styled in place; their markers are hidden separately.
-const INLINE = {
+const INLINE: Record<string, Decoration | undefined> = {
   StrongEmphasis: Decoration.mark({ class: "cm-md-strong" }),
   Emphasis: Decoration.mark({ class: "cm-md-em" }),
   Strikethrough: Decoration.mark({ class: "cm-md-strike" }),
@@ -74,28 +77,28 @@ const INLINE_MARKS = new Set(["EmphasisMark", "StrikethroughMark", "CodeMark", "
 
 // A rendered horizontal rule, shown in place of `---`/`***` when off the line.
 class RuleWidget extends WidgetType {
-  toDOM() {
+  toDOM(): HTMLElement {
     const hr = document.createElement("hr");
     hr.className = "cm-md-hr";
     return hr;
   }
-  ignoreEvent() {
+  ignoreEvent(): boolean {
     return false;
   }
 }
 
 // A bullet glyph rendered in place of a `-`/`*`/`+` list marker.
 class BulletWidget extends WidgetType {
-  eq() {
+  eq(): boolean {
     return true;
   }
-  toDOM() {
+  toDOM(): HTMLElement {
     const dot = document.createElement("span");
     dot.className = "cm-md-bullet";
     dot.textContent = "•";
     return dot;
   }
-  ignoreEvent() {
+  ignoreEvent(): boolean {
     return false;
   }
 }
@@ -103,27 +106,30 @@ class BulletWidget extends WidgetType {
 // A checkbox rendered in place of a `- [ ]` / `- [x]` task prefix. Toggling it
 // rewrites the marker in the document.
 class TaskWidget extends WidgetType {
-  constructor(checked, from, to) {
+  readonly checked: boolean;
+  readonly from: number;
+  readonly to: number;
+  constructor(checked: boolean, from: number, to: number) {
     super();
     this.checked = checked;
     this.from = from;
     this.to = to;
   }
-  eq(o) {
+  eq(o: TaskWidget): boolean {
     return o.checked === this.checked && o.from === this.from && o.to === this.to;
   }
-  toDOM(view) {
+  toDOM(view: EditorView): HTMLElement {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.className = "cm-md-task";
     box.checked = this.checked;
-    box.addEventListener("mousedown", (e) => e.preventDefault());
+    box.addEventListener("mousedown", (e: MouseEvent) => e.preventDefault());
     box.addEventListener("change", () => {
       view.dispatch({ changes: { from: this.from, to: this.to, insert: this.checked ? "[ ]" : "[x]" } });
     });
     return box;
   }
-  ignoreEvent() {
+  ignoreEvent(): boolean {
     return true;
   }
 }
@@ -132,15 +138,17 @@ class TaskWidget extends WidgetType {
 // when the cursor is outside the table. Clicking it (off a link) drops the
 // cursor in to edit the source.
 class TableWidget extends WidgetType {
-  constructor(text, from) {
+  readonly text: string;
+  readonly from: number;
+  constructor(text: string, from: number) {
     super();
     this.text = text;
     this.from = from;
   }
-  eq(o) {
+  eq(o: TableWidget): boolean {
     return o.text === this.text && o.from === this.from;
   }
-  toDOM(view) {
+  toDOM(view: EditorView): HTMLElement {
     const rows = this.text.split("\n").filter((l) => l.trim().length);
     const aligns = parseAligns(rows[1] || "");
     const table = document.createElement("table");
@@ -154,47 +162,52 @@ class TableWidget extends WidgetType {
     for (let r = 2; r < rows.length; r += 1) body.appendChild(buildRow(rows[r], "td", aligns));
     table.appendChild(body);
 
-    table.addEventListener("mousedown", (e) => {
-      if (e.target.closest("a")) return; // let links open
+    table.addEventListener("mousedown", (e: MouseEvent) => {
+      const target = e.target;
+      if (target instanceof Element && target.closest("a")) return; // let links open
       e.preventDefault();
       view.dispatch({ selection: { anchor: this.from }, scrollIntoView: true });
       view.focus();
     });
     return table;
   }
-  ignoreEvent() {
+  ignoreEvent(): boolean {
     return false;
   }
 }
 
-/** Splits a table row on unescaped `|`, unescaping `\|` in each cell. */
-function splitPipes(s) {
+// Per-column text alignment parsed from a table's delimiter row.
+type ColAlign = "left" | "right" | "center" | null;
+
+// Splits a table row on unescaped `|`, unescaping `\|` in each cell.
+function splitPipes(s: string): string[] {
   return s.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, "|"));
 }
 
-/** A table line's cells: trimmed, with the outer pipes dropped. */
-function cellsOf(line) {
+// A table line's cells: trimmed, with the outer pipes dropped.
+function cellsOf(line: string): string[] {
   let s = line.trim();
   if (s.startsWith("|")) s = s.slice(1);
   if (s.endsWith("|")) s = s.slice(0, -1);
   return splitPipes(s).map((c) => c.trim());
 }
 
-/** Per-column alignment from a `|:--|:-:|--:|` delimiter row. */
-function parseAligns(delim) {
-  return cellsOf(delim).map((c) => {
+// Per-column alignment from a `|:--|:-:|--:|` delimiter row.
+function parseAligns(delim: string): ColAlign[] {
+  return cellsOf(delim).map((c): ColAlign => {
     const l = c.startsWith(":");
     const r = c.endsWith(":");
     return l && r ? "center" : r ? "right" : l ? "left" : null;
   });
 }
 
-/** Builds a `<tr>` of `<th>`/`<td>` cells with inline Markdown rendered. */
-function buildRow(line, tag, aligns) {
+// Builds a `<tr>` of `<th>`/`<td>` cells with inline Markdown rendered.
+function buildRow(line: string, tag: "th" | "td", aligns: ColAlign[]): HTMLTableRowElement {
   const tr = document.createElement("tr");
   cellsOf(line).forEach((text, i) => {
     const cell = document.createElement(tag);
-    if (aligns[i]) cell.style.textAlign = aligns[i];
+    const align = aligns[i];
+    if (align) cell.style.textAlign = align;
     renderInline(text, cell);
     tr.appendChild(cell);
   });
@@ -206,7 +219,7 @@ function buildRow(line, tag, aligns) {
 // strikethrough and links — enough for table cells; nesting is not expanded.
 const INLINE_RE =
   /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(~~[^~]+~~)|(\*[^*]+\*)|(_[^_]+_)|(\[[^\]]+\]\([^)]+\))/;
-function renderInline(text, el) {
+function renderInline(text: string, el: HTMLElement): void {
   let rest = text;
   while (rest) {
     const m = INLINE_RE.exec(rest);
@@ -216,7 +229,7 @@ function renderInline(text, el) {
     }
     if (m.index > 0) el.appendChild(document.createTextNode(rest.slice(0, m.index)));
     const tok = m[0];
-    let node;
+    let node: HTMLElement;
     if (tok.startsWith("`")) {
       node = document.createElement("code");
       node.className = "cm-md-code";
@@ -231,14 +244,15 @@ function renderInline(text, el) {
       node.textContent = tok.slice(2, -2);
     } else if (tok.startsWith("[")) {
       const lm = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(tok);
-      node = document.createElement("a");
-      node.className = "cm-md-link";
-      node.textContent = lm[1];
-      if (/^(https?:|mailto:|\/|#)/i.test(lm[2])) {
-        node.href = lm[2];
-        node.target = "_blank";
-        node.rel = "noreferrer";
+      const a = document.createElement("a");
+      a.className = "cm-md-link";
+      a.textContent = lm ? lm[1] : tok;
+      if (lm && /^(https?:|mailto:|\/|#)/i.test(lm[2])) {
+        a.href = lm[2];
+        a.target = "_blank";
+        a.rel = "noreferrer";
       }
+      node = a;
     } else {
       node = document.createElement("em");
       node.className = "cm-md-em";
@@ -257,33 +271,35 @@ const CALLOUT_LABEL = {
   important: "Important",
   warning: "Warning",
   caution: "Caution",
-};
+} as const;
+type CalloutKind = keyof typeof CALLOUT_LABEL;
 const CALLOUT_RE = /^\s*>\s?\[!(\w+)\]/i;
 
-/** The callout kind a blockquote's first line declares, or `null`. */
-function calloutKind(lineText) {
+// The callout kind a blockquote's first line declares, or `null`.
+function calloutKind(lineText: string): CalloutKind | null {
   const m = CALLOUT_RE.exec(lineText);
   const kind = m && m[1].toLowerCase();
-  return kind && Object.hasOwn(CALLOUT_LABEL, kind) ? kind : null;
+  return kind && Object.hasOwn(CALLOUT_LABEL, kind) ? (kind as CalloutKind) : null;
 }
 
 // The rendered callout title (the coloured "Note"/"Warning"/… label) shown in
 // place of the `[!KIND]` marker when the cursor is off its line.
 class CalloutTitleWidget extends WidgetType {
-  constructor(kind) {
+  readonly kind: CalloutKind;
+  constructor(kind: CalloutKind) {
     super();
     this.kind = kind;
   }
-  eq(o) {
+  eq(o: CalloutTitleWidget): boolean {
     return o.kind === this.kind;
   }
-  toDOM() {
+  toDOM(): HTMLElement {
     const span = document.createElement("span");
     span.className = "cm-md-callout-title";
     span.textContent = CALLOUT_LABEL[this.kind];
     return span;
   }
-  ignoreEvent() {
+  ignoreEvent(): boolean {
     return false;
   }
 }
@@ -291,17 +307,18 @@ class CalloutTitleWidget extends WidgetType {
 // Builds the decoration set for the visible ranges. The document is unchanged;
 // only its rendering is decorated. A marker reveals when a selection range
 // touches its "reveal range" (the heading line, the inline span, the rule line).
-function decorate(view) {
-  const decos = [];
+function decorate(view: EditorView): DecorationSet {
+  const decos: Range<Decoration>[] = [];
   const { state } = view;
   const sel = state.selection;
-  const touches = (from, to) => sel.ranges.some((r) => r.from <= to && r.to >= from);
+  const touches = (from: number, to: number): boolean =>
+    sel.ranges.some((r) => r.from <= to && r.to >= from);
 
   for (const visible of view.visibleRanges) {
     syntaxTree(state).iterate({
       from: visible.from,
       to: visible.to,
-      enter: (node) => {
+      enter: (node: SyntaxNodeRef): boolean | void => {
         const name = node.name;
 
         // ---- block headings: style the whole line, hide the leading `#`s ----
@@ -323,8 +340,9 @@ function decorate(view) {
         }
 
         // ---- inline spans: style in place ----
-        if (INLINE[name]) {
-          if (node.from < node.to) decos.push(INLINE[name].range(node.from, node.to));
+        const inlineMark = INLINE[name];
+        if (inlineMark) {
+          if (node.from < node.to) decos.push(inlineMark.range(node.from, node.to));
           return;
         }
 
@@ -463,10 +481,11 @@ function decorate(view) {
 
 const livePreviewPlugin = ViewPlugin.fromClass(
   class {
-    constructor(view) {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
       this.decorations = decorate(view);
     }
-    update(u) {
+    update(u: ViewUpdate): void {
       if (u.docChanged || u.viewportChanged || u.selectionSet) {
         this.decorations = decorate(u.view);
       }
@@ -478,12 +497,13 @@ const livePreviewPlugin = ViewPlugin.fromClass(
 // Block-level decorations (the rendered tables) must come from a state field,
 // not a plugin. Walks the whole document — fine for doc-sized files. A table
 // shows its pipe source while the cursor is inside it, the <table> otherwise.
-function buildTables(state) {
-  const decos = [];
+function buildTables(state: EditorState): DecorationSet {
+  const decos: Range<Decoration>[] = [];
   const sel = state.selection;
-  const touches = (from, to) => sel.ranges.some((r) => r.from <= to && r.to >= from);
+  const touches = (from: number, to: number): boolean =>
+    sel.ranges.some((r) => r.from <= to && r.to >= from);
   syntaxTree(state).iterate({
-    enter: (node) => {
+    enter: (node: SyntaxNodeRef): boolean | void => {
       if (node.name !== "Table") return;
       if (touches(node.from, node.to)) return false; // editing: show source
       const first = state.doc.lineAt(node.from);
@@ -592,11 +612,15 @@ const livePreviewTheme = EditorView.baseTheme({
   },
 });
 
+// Options for the Markdown live-preview bundle. Reserved for future tuning;
+// no fields are read yet.
+export interface MarkdownLivePreviewOptions {}
+
 /**
  * The Markdown live-preview bundle: GFM-aware parsing, the in-place render
  * decorations, and their theme. Drop into a CodeMirror editor's extensions.
  */
-export function markdownLivePreview(opts = {}) {
+export function markdownLivePreview(opts: MarkdownLivePreviewOptions = {}): Extension[] {
   return [
     // `codeLanguages` nests real language parsers into fenced blocks; `languages`
     // lazy-loads each on first use, so the initial bundle stays small.

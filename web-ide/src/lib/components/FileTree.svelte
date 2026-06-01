@@ -1,8 +1,85 @@
-<script>
+<script lang="ts">
+  import type { Component as ComponentType } from "svelte";
+
   import { Box, Component, Container, Database, FileCode, FileText, Pencil, Settings2, SquareFunction, Trash2, User } from "@lucide/svelte";
 
+  // A workspace file row: its fully-qualified name and base-relative path.
+  type TreeFile = {
+    fqn: string;
+    path: string;
+  };
+
+  // An authored doc page within a sidebar group. Extra fields (e.g. `handle`)
+  // ride along untyped and are passed back verbatim through `ondocopen`.
+  type DocItem = {
+    title: string;
+    path: string;
+    [key: string]: unknown;
+  };
+
+  // A sidebar group from `[[doc.sidebar]]`.
+  type DocGroup = {
+    title: string;
+    items: DocItem[];
+  };
+
+  // A C4 node kind — one of the six structural levels.
+  type NodeKind = "person" | "system" | "container" | "component" | "data" | "callable";
+
+  // A declared node, nested by structural `parent` into the symbol tree.
+  type SymbolNode = {
+    fqn: string;
+    name: string;
+    kind: NodeKind;
+    parent?: string | null;
+    triggered?: boolean;
+    [key: string]: unknown;
+  };
+
+  // The move payload handed to `onmovefile`.
+  type MovePayload = {
+    file: TreeFile;
+    destDir: string;
+  };
+
+  type Props = {
+    workspaceName?: string;
+    files?: TreeFile[];
+    openPath?: string | null;
+    onopen?: (file: TreeFile) => void;
+    onpicknode?: (fqn: string) => void;
+    errorPaths?: Set<string>;
+    // Paths whose live buffer differs from disk — render an unsaved dot (an error
+    // marker takes visual precedence over the dirty one).
+    dirtyPaths?: Set<string>;
+    // Authored doc groups from `[[doc.sidebar]]` (`{ title, items: [{ title,
+    // path }] }`), listed above Files. Clicking a page opens its raw Markdown.
+    docGroups?: DocGroup[];
+    ondocopen?: (item: DocItem) => void;
+    // Every declared node, nested by structural `parent` into the whole-model
+    // symbol tree — separate from the file list, since a node's parent may live
+    // in another module.
+    symbols?: SymbolNode[];
+    // The FQN of the currently selected node, highlighted in the tree.
+    selectedFqn?: string | null;
+    // The workspace manifest path (`pds.toml`), or null when there's none. A
+    // dedicated row opens it as editable raw TOML.
+    manifestPath?: string | null;
+    onmanifestopen?: () => void;
+    // The base-relative prefix that holds modules (the manifest dir), used to
+    // turn a file `path` into its base-relative directory for move targets.
+    base?: string;
+    // Create / FS-management actions (T9/T10/T11). Each is optional; the matching
+    // affordance only renders when its callback is supplied.
+    oncreatefile?: () => void;
+    oncreatedoc?: () => void;
+    onrenamefile?: (file: TreeFile) => void;
+    onmovefile?: (payload: MovePayload) => void;
+    ondeletefile?: (file: TreeFile) => void;
+  };
+
   // One icon per C4 level, so a node's place in the hierarchy reads at a glance.
-  const ICONS = {
+  const ICONS: Record<NodeKind, ComponentType> = {
     person: User,
     system: Box,
     container: Container,
@@ -17,38 +94,24 @@
     openPath = null,
     onopen,
     onpicknode,
-    errorPaths = new Set(),
-    // Paths whose live buffer differs from disk — render an unsaved dot (an error
-    // marker takes visual precedence over the dirty one).
-    dirtyPaths = new Set(),
-    // Authored doc groups from `[[doc.sidebar]]` (`{ title, items: [{ title,
-    // path }] }`), listed above Files. Clicking a page opens its raw Markdown.
+    errorPaths = new Set<string>(),
+    dirtyPaths = new Set<string>(),
     docGroups = [],
     ondocopen,
-    // Every declared node as { fqn, name, kind, triggered, parent, fileFqn },
-    // nested by structural `parent` into the whole-model symbol tree — separate
-    // from the file list, since a node's parent may live in another module.
     symbols = [],
-    // The FQN of the currently selected node, highlighted in the tree.
     selectedFqn = null,
-    // The workspace manifest path (`pds.toml`), or null when there's none. A
-    // dedicated row opens it as editable raw TOML.
     manifestPath = null,
     onmanifestopen,
-    // The base-relative prefix that holds modules (the manifest dir), used to
-    // turn a file `path` into its base-relative directory for move targets.
     base = "",
-    // Create / FS-management actions (T9/T10/T11). Each is optional; the matching
-    // affordance only renders when its callback is supplied.
     oncreatefile,
     oncreatedoc,
     onrenamefile,
     onmovefile, // ({ file, destDir })
     ondeletefile,
-  } = $props();
+  }: Props = $props();
 
   // A file's directory, base-relative ("" = workspace root).
-  function dirOf(file) {
+  function dirOf(file: TreeFile): string {
     const rel = base && file.path.startsWith(`${base}/`) ? file.path.slice(base.length + 1) : file.path;
     const i = rel.lastIndexOf("/");
     return i === -1 ? "" : rel.slice(0, i);
@@ -57,29 +120,29 @@
   // Group files by base-relative directory so move has real drop targets — root
   // files first, then each subdirectory in path order.
   const fileGroups = $derived.by(() => {
-    const byDir = new Map();
+    const byDir = new Map<string, TreeFile[]>();
     for (const f of files) {
       const d = dirOf(f);
       if (!byDir.has(d)) byDir.set(d, []);
-      byDir.get(d).push(f);
+      byDir.get(d)!.push(f);
     }
     const dirs = [...byDir.keys()].sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
-    return dirs.map((dir) => ({ dir, items: byDir.get(dir) }));
+    return dirs.map((dir) => ({ dir, items: byDir.get(dir)! }));
   });
 
   // Drag-and-drop move state: the dragged file and the hovered drop dir.
-  let dragFile = $state(null);
-  let dropDir = $state(null);
+  let dragFile = $state<TreeFile | null>(null);
+  let dropDir = $state<string | null>(null);
 
-  function onDrop(destDir) {
+  function onDrop(destDir: string): void {
     if (dragFile && dirOf(dragFile) !== destDir) onmovefile?.({ file: dragFile, destDir });
     dragFile = null;
     dropDir = null;
   }
 
   // Collapsed symbol subtrees, by node FQN. Default expanded.
-  let collapsed = $state(new Set());
-  function toggle(fqn) {
+  let collapsed = $state(new Set<string>());
+  function toggle(fqn: string): void {
     const next = new Set(collapsed);
     next.has(fqn) ? next.delete(fqn) : next.add(fqn);
     collapsed = next;
@@ -88,19 +151,19 @@
   // Nest the flat node list by structural `parent` (a node whose parent isn't in
   // the set — a top-level person/system/data — is a root).
   const tree = $derived.by(() => {
-    const byFqn = new Map(symbols.map((n) => [n.fqn, n]));
-    const children = new Map();
-    const roots = [];
+    const byFqn = new Map<string, SymbolNode>(symbols.map((n) => [n.fqn, n]));
+    const children = new Map<string, SymbolNode[]>();
+    const roots: SymbolNode[] = [];
     for (const n of symbols) {
       if (n.parent && byFqn.has(n.parent)) {
         if (!children.has(n.parent)) children.set(n.parent, []);
-        children.get(n.parent).push(n);
+        children.get(n.parent)!.push(n);
       } else {
         roots.push(n);
       }
     }
-    const order = { person: 0, system: 1, container: 2, component: 3, data: 4, callable: 5 };
-    const sort = (list) =>
+    const order: Record<NodeKind, number> = { person: 0, system: 1, container: 2, component: 3, data: 4, callable: 5 };
+    const sort = (list: SymbolNode[]): SymbolNode[] =>
       [...list].sort((a, b) => (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name));
     for (const [, list] of children) sort(list);
     return { roots: sort(roots), children };
@@ -267,7 +330,7 @@
   </section>
 </nav>
 
-{#snippet row(node, depth, children)}
+{#snippet row(node: SymbolNode, depth: number, children: Map<string, SymbolNode[]>)}
   {@const kids = children.get(node.fqn) ?? []}
   {@const Icon = ICONS[node.kind] ?? Box}
   {@const open = !collapsed.has(node.fqn)}

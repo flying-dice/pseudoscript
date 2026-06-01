@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   // Interactive C4 graph: structure at a glance. Node geometry comes from dagre
   // auto-layout; Svelte Flow provides pan / zoom / minimap / fit-to-view. Nodes
   // are immutable — not draggable or connectable — so the diagram stays a true
@@ -6,12 +6,58 @@
   // `of` node as an enclosing box rather than a peer card. Clicking a node opens
   // an info popover; drilling in is an explicit button there, not the click.
   import { Background, Controls, MarkerType, MiniMap, SvelteFlow } from "@xyflow/svelte";
+  import type { Edge, Node } from "@xyflow/svelte";
   import Dagre from "@dagrejs/dagre";
+  import type { Graph } from "@dagrejs/dagre";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
   import { theme } from "$lib/theme.svelte.js";
 
-  let { scene, onpick, onup, flows = null, oninfo = null, oninfoend = null, onusages = null } = $props();
+  // A node in the projected scene (one C4 element).
+  type SceneNode = {
+    fqn: string;
+    label: string;
+    kind: string;
+    summary?: string;
+    boundary?: string | null;
+  };
+  // A relationship between two scene nodes.
+  type SceneEdge = {
+    from: string;
+    to: string;
+    label?: string;
+    kind: string;
+  };
+  // The structural scene this component projects: nodes, their relationships,
+  // and (for a boundary view) the `of` element drawn as the enclosing box.
+  type Scene = {
+    nodes: SceneNode[];
+    edges: SceneEdge[];
+    of?: string | null;
+  };
+  // The `data` payload carried by every Svelte Flow node (card or boundary).
+  type NodeData = {
+    label: string;
+    kind: string;
+    summary: string;
+    fqn: string;
+    boundary?: boolean;
+    onclose?: () => void;
+  };
+  // An entry-point flow offered in a node's popover.
+  type Flow = { fqn: string; name: string; triggered?: boolean };
+
+  type Props = {
+    scene: Scene;
+    onpick?: ((fqn: string) => void) | null;
+    onup?: (() => void) | null;
+    flows?: Map<string, Flow[]> | null;
+    oninfo?: ((fqn: string, event: PointerEvent) => void) | null;
+    oninfoend?: (() => void) | null;
+    onusages?: ((fqn: string, event: PointerEvent) => void) | null;
+  };
+
+  let { scene, onpick, onup, flows = null, oninfo = null, oninfoend = null, onusages = null }: Props = $props();
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
@@ -26,20 +72,20 @@
 
   // Which deeper view a node drills into, by kind. Persons / components have no
   // structural view below them, so they get no drill button (info only).
-  const DRILL = { system: "Open container diagram", container: "Open component diagram" };
+  const DRILL: Record<string, string> = { system: "Open container diagram", container: "Open component diagram" };
 
-  function dagreGraph() {
+  function dagreGraph(): Graph {
     const g = new Dagre.graphlib.Graph();
     g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 90, marginx: 28, marginy: 28 });
     g.setDefaultEdgeLabel(() => ({}));
     return g;
   }
 
-  function card(n, parentId) {
+  function card(n: SceneNode, parentId?: string) {
     return {
       id: n.fqn,
       type: "card",
-      data: { label: n.label, kind: n.kind, summary: n.summary ?? "", fqn: n.fqn },
+      data: { label: n.label, kind: n.kind, summary: n.summary ?? "", fqn: n.fqn } as NodeData,
       class: `c4-node ${n.kind}`,
       width: NODE_W,
       height: NODE_H,
@@ -52,7 +98,7 @@
   // A boundary view: lay the `of` children inside a box, the external actors
   // around it. Two dagre passes — one inside the box, one placing the box and
   // its outside actors — keep the box from overlapping anything.
-  function grouped(s, boundaryFqn) {
+  function grouped(s: Scene, boundaryFqn: string): Node[] {
     const anchor = s.nodes.find((n) => n.fqn === boundaryFqn);
     const inside = s.nodes.filter((n) => n.boundary === boundaryFqn);
     const outside = s.nodes.filter((n) => n.fqn !== boundaryFqn && n.boundary !== boundaryFqn);
@@ -80,7 +126,7 @@
     const outer = dagreGraph();
     outer.setNode(boundaryFqn, { width: boxW, height: boxH });
     for (const n of outside) outer.setNode(n.fqn, { width: NODE_W, height: NODE_H });
-    const lift = (fqn) => (insideSet.has(fqn) ? boundaryFqn : fqn);
+    const lift = (fqn: string): string => (insideSet.has(fqn) ? boundaryFqn : fqn);
     for (const e of s.edges) {
       const from = lift(e.from), to = lift(e.to);
       if (from !== to && outer.hasNode(from) && outer.hasNode(to)) outer.setEdge(from, to);
@@ -96,7 +142,7 @@
       id: boundaryFqn,
       type: "boundary",
       position: boxOrigin,
-      data: { label: anchor?.label ?? boundaryFqn, kind: anchor?.kind ?? "system", summary: anchor?.summary ?? "", fqn: boundaryFqn, boundary: true, onclose: onup },
+      data: { label: anchor?.label ?? boundaryFqn, kind: anchor?.kind ?? "system", summary: anchor?.summary ?? "", fqn: boundaryFqn, boundary: true, onclose: onup ?? undefined } as NodeData,
       class: `c4-boundary ${anchor?.kind ?? "system"}`,
       width: boxW,
       height: boxH,
@@ -115,11 +161,11 @@
       const p = outer.node(n.fqn);
       return { ...card(n), position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 } };
     });
-    return [boundaryNode, ...childNodes, ...outsideNodes];
+    return [boundaryNode, ...childNodes, ...outsideNodes] as Node[];
   }
 
   // A flat view (context, or a boundary with no children): every node a peer card.
-  function flat(s) {
+  function flat(s: Scene): Node[] {
     const g = dagreGraph();
     for (const n of s.nodes) g.setNode(n.fqn, { width: NODE_W, height: NODE_H });
     for (const e of s.edges) g.setEdge(e.from, e.to);
@@ -127,10 +173,10 @@
     return s.nodes.map((n) => {
       const p = g.node(n.fqn);
       return { ...card(n), position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 } };
-    });
+    }) as Node[];
   }
 
-  function layout(s) {
+  function layout(s: Scene): { nodes: Node[]; edges: Edge[] } {
     const boundaryFqn = s.of ?? null;
     const hasChildren = boundaryFqn && s.nodes.some((n) => n.boundary === boundaryFqn);
     const nodes = hasChildren ? grouped(s, boundaryFqn) : flat(s);
@@ -149,31 +195,32 @@
         height: 14,
         color: e.kind === "trigger" ? "var(--k-callable)" : "var(--line-strong)",
       },
-    }));
+    })) as Edge[];
     return { nodes, edges };
   }
 
   const initial = layout(scene);
-  let nodes = $state(initial.nodes);
-  let edges = $state(initial.edges);
+  let nodes = $state<Node[]>(initial.nodes);
+  let edges = $state<Edge[]>(initial.edges);
 
   // Clicking a node opens its info popover; drilling in (a deeper structural
   // view, or a behavioural flow) is an explicit action there.
-  let picked = $state(null);
-  const pickedFlows = $derived(picked && flows ? (flows.get(picked.fqn) ?? []) : []);
-  function onnodeclick({ node }) {
-    picked = node.data;
+  let picked = $state<NodeData | null>(null);
+  const pickedFlows = $derived<Flow[]>(picked && flows ? (flows.get(picked.fqn) ?? []) : []);
+  function onnodeclick({ node }: { node: Node }): void {
+    picked = node.data as NodeData;
   }
   // Hover a node → the shared info card, the same affordance as the sequence
   // canvas and the code hover. The card is the passive popover in +page; the
   // richer click popover (flows / drill-in) stays on click.
-  function onnodepointerenter({ event, node }) {
-    if (node?.data?.fqn) oninfo?.(node.data.fqn, event);
+  function onnodepointerenter({ event, node }: { event: PointerEvent; node: Node }): void {
+    const data = node?.data as NodeData | undefined;
+    if (data?.fqn) oninfo?.(data.fqn, event);
   }
-  function onnodepointerleave() {
+  function onnodepointerleave(): void {
     oninfoend?.();
   }
-  function open(fqn) {
+  function open(fqn: string): void {
     onpick?.(fqn);
     picked = null;
   }
@@ -219,7 +266,7 @@
       {/if}
       <div class="actions">
         {#if DRILL[picked.kind]}
-          <button class="drill" onclick={() => open(picked.fqn)}>{DRILL[picked.kind]} →</button>
+          <button class="drill" onclick={() => open(picked!.fqn)}>{DRILL[picked.kind]} →</button>
         {/if}
         <button class="dismiss" onclick={() => (picked = null)}>Close</button>
       </div>

@@ -1,9 +1,16 @@
-<script>
+<script lang="ts">
   // A UML combined fragment (alt / loop): a bordered box with a notched operator
   // tab, its guard, and a dashed divider per section split (each carrying the
   // following section's guard). The box fills the node; divider y's are relative
   // to it. Transparent fill and no pointer events, so the arrows read through.
-  let { data } = $props();
+  type Divider = { guard: string; y: number };
+  type FragmentData = { kind: string; label: string; dividers: Divider[] };
+
+  type Props = {
+    data: FragmentData;
+  };
+
+  let { data }: Props = $props();
 </script>
 
 <div class="seq-frag" title="{data.kind} [{data.label}]">

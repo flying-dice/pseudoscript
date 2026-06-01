@@ -10,32 +10,85 @@
 // only when the user picks it (the examples block / project menu), through
 // `loadSample(id)`.
 
-const pdsSources = import.meta.glob("./samples/*/*.pds", {
+import type { EnvelopeFile } from "./codec";
+
+/** The `meta.json` shape that sits beside each sample's `.pds` files. */
+interface SampleMeta {
+  name?: string;
+  description?: string;
+  category?: string;
+  landing?: string | null;
+  order?: number;
+}
+
+/** A source module within a sample, with the in-memory FS handle the IDE fills
+ *  in once the sample is mounted (null on disk-less, session-only edits). */
+export interface SampleFile extends EnvelopeFile {
+  handle: FileSystemFileHandle | null;
+}
+
+/** A sample under construction, accumulated as the globs are walked. */
+interface SampleDraft {
+  id: string;
+  meta: SampleMeta;
+  files: SampleFile[];
+  manifestToml: string | null;
+  docs: Record<string, string>;
+}
+
+/** A catalogue entry: metadata for the examples block plus the sample's files. */
+export interface Sample {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  landing: string | null;
+  order: number;
+  moduleCount: number;
+  files: SampleFile[];
+  manifestToml: string | null;
+  docs: Record<string, string>;
+}
+
+/** The in-memory workspace `{ workspace, landing }` `loadSample` hands the IDE. */
+export interface LoadedSample {
+  workspace: {
+    name: string;
+    root: FileSystemDirectoryHandle | null;
+    sampleId: string;
+    files: SampleFile[];
+    manifestToml: string | null;
+    docs: Record<string, string>;
+  };
+  landing: string | null;
+}
+
+const pdsSources = import.meta.glob<string>("./samples/*/*.pds", {
   query: "?raw",
   import: "default",
   eager: true,
 });
-const metaSources = import.meta.glob("./samples/*/meta.json", {
+const metaSources = import.meta.glob<SampleMeta>("./samples/*/meta.json", {
   import: "default",
   eager: true,
 });
-const tomlSources = import.meta.glob("./samples/*/pds.toml", {
+const tomlSources = import.meta.glob<string>("./samples/*/pds.toml", {
   query: "?raw",
   import: "default",
   eager: true,
 });
-const docSources = import.meta.glob("./samples/*/**/*.md", {
+const docSources = import.meta.glob<string>("./samples/*/**/*.md", {
   query: "?raw",
   import: "default",
   eager: true,
 });
 
 // "./samples/acme-tickets/context.pds" -> "acme-tickets"
-const idOf = (path) => path.split("/")[2];
+const idOf = (path: string): string => path.split("/")[2];
 // "./samples/outbox/docs/the-pattern.md" -> "docs/the-pattern.md"
-const relOf = (path) => path.split("/").slice(3).join("/");
+const relOf = (path: string): string => path.split("/").slice(3).join("/");
 
-const byId = new Map();
+const byId = new Map<string, SampleDraft>();
 for (const [path, meta] of Object.entries(metaSources)) {
   byId.set(idOf(path), { id: idOf(path), meta, files: [], manifestToml: null, docs: {} });
 }
@@ -55,7 +108,7 @@ for (const [path, source] of Object.entries(docSources)) {
 }
 
 /** The sample catalogue: metadata for the examples block, sorted for display. */
-export const SAMPLES = [...byId.values()]
+export const SAMPLES: Sample[] = [...byId.values()]
   .map(({ id, meta, files, manifestToml, docs }) => ({
     id,
     name: meta.name ?? id,
@@ -75,7 +128,7 @@ export const SAMPLES = [...byId.values()]
  * session-only), shaped exactly like an opened folder, plus the module to open
  * first. Returns null for an unknown id.
  */
-export function loadSample(id) {
+export function loadSample(id: string): LoadedSample | null {
   const sample = SAMPLES.find((s) => s.id === id);
   if (!sample) return null;
   return {

@@ -7,13 +7,19 @@ const STEP = new Set(['given', 'when', 'then', 'and', 'but']);
 const ATOMS = new Set(['Result', 'Option', 'Ok', 'Err', 'Some', 'None', 'true', 'false']);
 const PRIMS = new Set(['number', 'string', 'bool']);
 
-export function pdsTokenize(line) {
-  const out = [];
+/** A syntax-coloured span: `c` is the CSS class name, `s` is the source text. */
+export interface PdsToken {
+  c: string;
+  s: string;
+}
+
+export function pdsTokenize(line: string): PdsToken[] {
+  const out: PdsToken[] = [];
   let i = 0;
-  const push = (c, s) => out.push({ c, s });
+  const push = (c: string, s: string): number => out.push({ c, s });
   while (i < line.length) {
     const rest = line.slice(i);
-    let m;
+    let m: RegExpMatchArray | null;
     if ((m = rest.match(/^\s+/))) { push('ws', m[0]); i += m[0].length; continue; }
     if (rest.startsWith('//!') || rest.startsWith('///')) { push('doc', rest); break; }
     if (rest.startsWith('//')) { push('cmt', rest); break; }
@@ -25,7 +31,7 @@ export function pdsTokenize(line) {
       const w = m[0];
       const prev = line[i - 1];
       const immediate = line[i + w.length];
-      let cls;
+      let cls: string;
       if (prev === '.') cls = 'mem';
       else if (KEYWORDS.has(w)) cls = 'kw';
       else if (STEP.has(w)) cls = 'step';
@@ -44,9 +50,9 @@ export function pdsTokenize(line) {
 // Build syntax-highlighted HTML for a whole multi-line source string.
 // Each line is a display:block .ln containing a trailing "\n" so empty
 // lines keep their height (matches the IDE editor). Lines join with "".
-export function pdsHighlight(src) {
-  return src.split('\n').map(function (ln) {
-    const inner = pdsTokenize(ln).map(function (tk) {
+export function pdsHighlight(src: string): string {
+  return src.split('\n').map(function (ln: string): string {
+    const inner = pdsTokenize(ln).map(function (tk: PdsToken): string {
       const esc = tk.s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       return tk.c === 'ws' ? esc : '<span class="' + tk.c + '">' + esc + '</span>';
     }).join('');

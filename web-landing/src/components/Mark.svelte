@@ -1,6 +1,11 @@
-<script>
+<script lang="ts">
   // The PseudoScript logo mark: nested squares with an accent core.
-  let { className = 'mark', strokeWidth = 1.4 } = $props();
+  type Props = {
+    className?: string;
+    strokeWidth?: number;
+  };
+
+  let { className = 'mark', strokeWidth = 1.4 }: Props = $props();
 </script>
 
 <svg class={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">

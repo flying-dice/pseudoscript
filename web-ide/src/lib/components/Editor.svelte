@@ -1,8 +1,9 @@
-<script>
+<script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { acceptCompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { copyLineDown, defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
   import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
+  import type { Extension, StateEffectType, Text, TransactionSpec } from "@codemirror/state";
   import { codeFolding, foldEffect, foldGutter, foldKeymap, foldService, unfoldEffect } from "@codemirror/language";
   import { lintGutter } from "@codemirror/lint";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
@@ -16,11 +17,59 @@
     lineNumbers,
     ViewPlugin,
   } from "@codemirror/view";
+  import type { Command, DecorationSet, Tooltip } from "@codemirror/view";
   import { pseudoscript, pseudoscriptCompletion, pseudoscriptLinter } from "$lib/pseudoscript-language.js";
+  import type { CompletionFetcher } from "$lib/pseudoscript-language.js";
   import { markdownLivePreview } from "$lib/markdown-live.js";
+  import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
   import { completion as symbolCompletion, definition as symbolDefinition, foldRanges, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
+  import type { CompletionContext } from "@codemirror/autocomplete";
+  import type { Module, Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
+
+  /** A workspace symbol entry the host hands in; carried unmodified on `ctx`. */
+  type SymbolEntry = Record<string, unknown>;
+
+  /** The cursor location the host records / `goto` accepts: 1-based line / byte-column. */
+  type Location = { line: number; col: number };
+
+  /** The imperative API handed back to the host via {@link Props.onready}. */
+  type EditorApi = {
+    goto: (line: number, col: number) => void;
+    location: () => Location | null;
+    openSettings: () => void;
+  };
+
+  type Props = {
+    value?: string;
+    onchange?: (value: string) => void;
+    onready?: (api: EditorApi) => void;
+    modules?: Module[];
+    moduleFqn?: string;
+    symbols?: SymbolEntry[];
+    onopensymbol?: (fqn: string) => void;
+    ongotodefinition?: (fqn: string) => void;
+    onnavigate?: (occ: Occurrence) => void;
+    onformat?: () => void;
+    onsave?: () => void;
+    onopensettings?: () => void;
+    /**
+     * Plain-text mode: drop the PseudoScript language, completion, and linter so
+     * a non-`.pds` file opens without false squiggles.
+     */
+    plain?: boolean;
+    /**
+     * Markdown mode: render the document live (Obsidian-style) instead of the
+     * PseudoScript language. Implies plain (no PseudoScript features).
+     */
+    markdown?: boolean;
+    /**
+     * Markdown preview options: `{ resolveAsset(rel)->Promise<Blob|null>,
+     * resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
+     */
+    previewOpts?: MarkdownLivePreviewOptions;
+  };
 
   let {
     value = "",
@@ -35,28 +84,50 @@
     onformat,
     onsave,
     onopensettings,
-    // Plain-text mode: drop the PseudoScript language, completion, and linter so
-    // a non-`.pds` file opens without false squiggles.
     plain = false,
-    // Markdown mode: render the document live (Obsidian-style) instead of the
-    // PseudoScript language. Implies plain (no PseudoScript features).
     markdown = false,
-    // Markdown preview options: `{ resolveAsset(rel)->Promise<Blob|null>,
-    // resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
     previewOpts = {},
-  } = $props();
+  }: Props = $props();
 
-  let host;
-  let editor;
+  let host: HTMLDivElement | undefined;
+  let editor: EditorView | undefined;
   let applyingExternal = false;
+
+  /**
+   * A find-usages occurrence carrying the match-highlight offsets the dropdown
+   * slices on (`match_start`/`match_end` index into `text`).
+   */
+  type MenuOccurrence = Occurrence & { match_start: number; match_end: number };
+
+  /** The find-usages dropdown, anchored under the symbol, or null when closed. */
+  type UsagesMenu = {
+    name: string;
+    total: number;
+    items: MenuOccurrence[];
+    top: number;
+    left: number;
+  };
 
   // The find-usages dropdown, anchored under the symbol: { name, items, top,
   // left } in viewport coords, or null when closed.
-  let usagesMenu = $state(null);
+  let usagesMenu = $state<UsagesMenu | null>(null);
+
+  /** The live state mirror read by the once-built hover/click extensions. */
+  type EditorCtx = {
+    modules: Module[];
+    moduleFqn: string;
+    symbols: SymbolEntry[];
+    onopensymbol?: (fqn: string) => void;
+    ongotodefinition?: (fqn: string) => void;
+    onnavigate?: (occ: Occurrence) => void;
+  };
+
+  /** A byte-char range `[from, to)` within the document. */
+  type WordRange = { from: number; to: number };
 
   // The hover extension is built once but must read live state; this object is
   // kept current by the effect below and closed over by the tooltip source.
-  const ctx = { modules, moduleFqn, symbols, onopensymbol, ongotodefinition, onnavigate };
+  const ctx: EditorCtx = { modules, moduleFqn, symbols, onopensymbol, ongotodefinition, onnavigate };
   $effect(() => {
     ctx.modules = modules;
     ctx.moduleFqn = moduleFqn;
@@ -69,10 +140,10 @@
   // Go to the definition of the symbol at byte position `pos`: resolve it via
   // the compiler, then hand the FQN to the host (which opens the declaring file
   // and jumps). Returns whether a symbol was resolved — for the keymap/click.
-  function gotoDefinition(view, pos) {
+  function gotoDefinition(view: EditorView, pos: number | null): boolean {
     if (pos == null) return false;
     const src = view.state.doc.toString();
-    let fqn;
+    let fqn: string | null;
     try {
       fqn = symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(src, pos));
     } catch {
@@ -85,7 +156,7 @@
 
   // Find usages of the symbol at `pos`, opening the dropdown anchored under it.
   // Returns whether a symbol was resolved — for the keymap.
-  function findUsages(view, pos) {
+  function findUsages(view: EditorView, pos: number | null): boolean {
     if (pos == null) return false;
     const refs = resolveReferences(view, pos);
     if (!refs) return false;
@@ -94,7 +165,7 @@
   }
 
   // Resolve the symbol at `pos` to its workspace references (or null).
-  function resolveReferences(view, pos) {
+  function resolveReferences(view: EditorView, pos: number | null): References | null {
     if (pos == null) return null;
     const src = view.state.doc.toString();
     try {
@@ -105,7 +176,7 @@
   }
 
   // The char position of a 1-based line / byte-column in `state`.
-  function posOf(state, line, col) {
+  function posOf(state: EditorState, line: number, col: number): number {
     const ln = Math.max(1, Math.min(line, state.doc.lines));
     const lineObj = state.doc.line(ln);
     const charCol = byteToChar(lineObj.text, Math.max(0, col - 1));
@@ -113,19 +184,19 @@
   }
 
   // Open the usages dropdown anchored to the line under `anchorPos`.
-  function openUsagesMenu(view, anchorPos, refs) {
+  function openUsagesMenu(view: EditorView, anchorPos: number, refs: References): void {
     const c = view.coordsAtPos(anchorPos);
     if (!c) return;
     usagesMenu = {
-      name: refs.fqn.split("::").at(-1),
+      name: refs.fqn.split("::").at(-1) ?? refs.fqn,
       total: refs.occurrences.length,
-      items: refs.occurrences,
+      items: refs.occurrences as MenuOccurrence[],
       top: Math.round(c.bottom + 4),
       left: Math.round(c.left),
     };
   }
-  const closeUsagesMenu = () => (usagesMenu = null);
-  function pickUsage(occ) {
+  const closeUsagesMenu = (): null => (usagesMenu = null);
+  function pickUsage(occ: Occurrence): void {
     usagesMenu = null;
     ctx.onnavigate?.(occ);
   }
@@ -134,7 +205,7 @@
   // under the declaration); on any other occurrence, go to that declaration
   // (IntelliJ-style). One refs resolve serves both — it carries the
   // declaration's position and the target FQN.
-  function cmdClick(view, pos) {
+  function cmdClick(view: EditorView, pos: number): boolean {
     const refs = resolveReferences(view, pos);
     if (!refs) return false;
     const decl = refs.occurrences.find(
@@ -153,9 +224,9 @@
   // While the go-to-definition modifier is held, underline the symbol under the
   // pointer (and show a pointer cursor) when it resolves to a definition — the
   // mousedown handler does the actual jump.
-  const setGotoLink = StateEffect.define();
+  const setGotoLink: StateEffectType<WordRange | null> = StateEffect.define<WordRange | null>();
   const gotoLinkMark = Decoration.mark({ class: "cm-goto-link" });
-  const gotoLinkField = StateField.define({
+  const gotoLinkField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
     update(deco, tr) {
       deco = deco.map(tr.changes);
@@ -170,10 +241,10 @@
   });
 
   // The identifier (including a `::` path) spanning byte-char position `pos`.
-  function wordRangeAt(state, pos) {
+  function wordRangeAt(state: EditorState, pos: number): WordRange | null {
     const line = state.doc.lineAt(pos);
     const re = /[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*/g;
-    for (let m; (m = re.exec(line.text)); ) {
+    for (let m: RegExpExecArray | null; (m = re.exec(line.text)); ) {
       const from = line.from + m.index;
       const to = from + m[0].length;
       if (pos >= from && pos <= to) return { from, to };
@@ -182,7 +253,7 @@
   }
 
   // Whether the symbol starting at `from` resolves to a definition.
-  function resolvesToDefinition(state, from) {
+  function resolvesToDefinition(state: EditorState, from: number): boolean {
     try {
       return !!symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(state.doc.toString(), from));
     } catch {
@@ -192,7 +263,15 @@
 
   const gotoLinkPlugin = ViewPlugin.fromClass(
     class {
-      constructor(view) {
+      view: EditorView;
+      xy: { x: number; y: number } | null;
+      shown: WordRange | null;
+      checked: (WordRange & { ok: boolean }) | null;
+      onMove: (e: MouseEvent) => void;
+      onKey: (e: KeyboardEvent) => void;
+      onKeyUp: (e: KeyboardEvent) => void;
+      onLeave: () => void;
+      constructor(view: EditorView) {
         this.view = view;
         this.xy = null; // last pointer position
         this.shown = null; // currently underlined range
@@ -214,7 +293,7 @@
         window.addEventListener("keyup", this.onKeyUp);
         window.addEventListener("blur", this.onLeave);
       }
-      refresh(active) {
+      refresh(active: boolean): void {
         if (!active || !this.xy) return this.clear();
         const pos = this.view.posAtCoords(this.xy);
         if (pos == null) return this.clear();
@@ -226,19 +305,19 @@
         if (this.checked.ok) this.show(r);
         else this.clear();
       }
-      show(r) {
+      show(r: WordRange): void {
         if (this.shown && this.shown.from === r.from && this.shown.to === r.to) return;
         this.shown = r;
         this.view.dispatch({ effects: setGotoLink.of(r) });
       }
-      clear() {
+      clear(): void {
         this.checked = null;
         if (this.shown) {
           this.shown = null;
           this.view.dispatch({ effects: setGotoLink.of(null) });
         }
       }
-      destroy() {
+      destroy(): void {
         this.view.dom.removeEventListener("mousemove", this.onMove);
         this.view.dom.removeEventListener("mouseleave", this.onLeave);
         window.removeEventListener("keydown", this.onKey);
@@ -372,8 +451,10 @@
   // document. Each maps to `{ open, close }` editor offsets: `open` on the header
   // line, `close` at the closing brace itself — past the closing line's
   // indentation, so a nested `}` folds flush against the `…` (no trailing space).
-  const rangeCache = new WeakMap();
-  function rangesOf(doc) {
+  /** A foldable block, as `{ open, close }` editor offsets. */
+  type FoldBlock = { open: number; close: number };
+  const rangeCache = new WeakMap<Text, FoldBlock[]>();
+  function rangesOf(doc: Text): FoldBlock[] {
     let r = rangeCache.get(doc);
     if (!r) {
       r = foldRanges(doc.toString())
@@ -392,15 +473,15 @@
   }
   // The fold span for a `{ … }` pair: from the end of the opening line to the
   // closing brace, so the header line stays visible with a `…` placeholder.
-  function foldSpan(doc, range) {
+  function foldSpan(doc: Text, range: FoldBlock): { from: number; to: number } | null {
     const from = doc.lineAt(range.open).to;
     return from < range.close ? { from, to: range.close } : null;
   }
   // Fold every block except those whose header line through `}` contains `pos`
   // (the target and its ancestors). `pos` null collapses everything.
-  function applyFold(view, pos) {
+  function applyFold(view: EditorView, pos: number | null): void {
     const doc = view.state.doc;
-    const effects = [];
+    const effects: StateEffect<{ from: number; to: number }>[] = [];
     for (const r of rangesOf(doc)) {
       const span = foldSpan(doc, r);
       if (!span) continue;
@@ -410,7 +491,7 @@
     if (effects.length) view.dispatch({ effects });
   }
   // The CodeMirror fold service: a block opening on a line is foldable there.
-  const pdsFoldService = foldService.of((state, lineStart, lineEnd) => {
+  const pdsFoldService = foldService.of((state: EditorState, lineStart: number, lineEnd: number) => {
     for (const r of rangesOf(state.doc)) {
       if (r.open >= lineStart && r.open <= lineEnd) return foldSpan(state.doc, r);
     }
@@ -420,8 +501,9 @@
   // ── Navigation flash ─────────────────────────────────────────────────────────
   // A brief fading highlight over the lines a jump lands on (the whole block, or
   // the declaration line when it has no body). Cleared after the fade.
-  const setFlash = StateEffect.define();
-  const flashField = StateField.define({
+  const setFlash: StateEffectType<{ from: number; to: number } | null> =
+    StateEffect.define<{ from: number; to: number } | null>();
+  const flashField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
     update(deco, tr) {
       deco = deco.map(tr.changes);
@@ -442,10 +524,10 @@
   // A line decoration on every line of the block; `cm-nav-flash` paints a
   // full-width fading wash.
   const flashLine = Decoration.line({ class: "cm-nav-flash" });
-  let flashTimer;
+  let flashTimer: ReturnType<typeof setTimeout>;
   // The line span to flash for a jump to `pos`: the enclosing block whose header
   // is on `pos`'s line, else just that line.
-  function flashSpan(doc, pos) {
+  function flashSpan(doc: Text, pos: number): { from: number; to: number } {
     const line = doc.lineAt(pos);
     const block = rangesOf(doc).find((r) => doc.lineAt(r.open).number === line.number);
     return { from: line.from, to: block ? block.close : line.to };
@@ -453,7 +535,7 @@
 
   /** Move the cursor to a 1-based line / byte-column and focus the editor,
       collapsing other blocks, flashing the target, and centring it in view. */
-  function goto(line, col) {
+  function goto(line: number, col: number): void {
     if (!editor) return;
     const ln = Math.max(1, Math.min(line, editor.state.doc.lines));
     const lineObj = editor.state.doc.line(ln);
@@ -472,8 +554,8 @@
   // Renders a title like ``container `sys::Web` `` with the backtick run as a
   // code span; everything goes through textContent, so model-authored names
   // cannot inject markup.
-  function appendTitle(into, title) {
-    title.split("`").forEach((part, i) => {
+  function appendTitle(into: HTMLElement, title: string): void {
+    title.split("`").forEach((part: string, i: number) => {
       const el = document.createElement(i % 2 ? "code" : "span");
       el.textContent = part;
       into.append(el);
@@ -483,15 +565,15 @@
   // The compiler-driven hover, served as a standard LSP `Hover` (Markdown, no
   // diagram). The actions re-resolve the symbol at the cursor via the LSP
   // `definition` so navigation and the diagram canvas still work.
-  function hoverText(contents) {
+  function hoverText(contents: unknown): string {
     if (typeof contents === "string") return contents;
     if (Array.isArray(contents)) return contents.map(hoverText).join("\n\n");
-    return contents?.value ?? "";
+    return (contents as { value?: string } | null)?.value ?? "";
   }
-  function symbolTooltip(view, pos) {
+  function symbolTooltip(view: EditorView, pos: number): Tooltip | null {
     const src = view.state.doc.toString();
     const offset = charToByte(src, pos);
-    let result;
+    let result: ReturnType<typeof symbolHover>;
     try {
       result = symbolHover(ctx.modules, ctx.moduleFqn, offset);
     } catch {
@@ -522,7 +604,7 @@
           dom.append(body);
         }
 
-        const fqnAt = () => {
+        const fqnAt = (): string | null => {
           try {
             return symbolDefinition(ctx.modules, ctx.moduleFqn, offset);
           } catch {
@@ -531,11 +613,11 @@
         };
         const actions = document.createElement("div");
         actions.className = "ph-actions";
-        const button = (label, fn) => {
+        const button = (label: string, fn: () => void): void => {
           const b = document.createElement("button");
           b.type = "button";
           b.textContent = label;
-          b.addEventListener("mousedown", (e) => {
+          b.addEventListener("mousedown", (e: MouseEvent) => {
             e.preventDefault();
             fn();
           });
@@ -563,7 +645,7 @@
   // compartment so a rebind reconfigures the keymap without rebuilding the view.
   // Ordering: `acceptCompletion` returns false when no popup is open, falling
   // through to indentWithTab (added after this keymap) so Tab still indents.
-  const shortcutRun = {
+  const shortcutRun: Record<string, Command> = {
     triggerAutocomplete: startCompletion,
     acceptCompletion,
     toggleComment,
@@ -575,7 +657,7 @@
     findUsages: (v) => findUsages(v, v.state.selection.main.head),
     openSettings: () => (onopensettings?.(), true),
   };
-  const shortcutKeymap = () =>
+  const shortcutKeymap = (): Extension =>
     keymap.of(Object.entries(shortcutRun).map(([id, run]) => ({ key: keybindings.keyFor(id), run })));
   const keysCompartment = new Compartment();
   // Holds the undo history so a file switch can reset it (otherwise Ctrl+Z would
@@ -587,10 +669,10 @@
   // just-typed `.`/`::` is reflected; other modules come from `ctx.modules`.
   // Returns `[{ label, kind, detail }]`; an empty list on any wasm error so a
   // transient parse failure never breaks typing.
-  function completionsAt(cmContext) {
+  const completionsAt: CompletionFetcher = (cmContext: CompletionContext) => {
     const src = cmContext.state.doc.toString();
     const offset = charToByte(src, cmContext.pos);
-    const modules = ctx.modules.map((m) =>
+    const modules: Module[] = ctx.modules.map((m) =>
       m.fqn === ctx.moduleFqn ? { ...m, source: src } : m,
     );
     try {
@@ -598,13 +680,13 @@
     } catch {
       return [];
     }
-  }
+  };
 
   // The language bundle, swapped per file type: PseudoScript (default), Markdown
   // live-preview (an authored doc), or nothing (plain text). Keeps Markdown free
   // of PseudoScript highlighting/lint while rendering it in place.
   const langCompartment = new Compartment();
-  const languageBundle = () => {
+  const languageBundle = (): Extension => {
     if (markdown) return markdownLivePreview(previewOpts);
     if (plain) return [];
     return [
@@ -634,7 +716,7 @@
 
   onMount(() => {
     editor = new EditorView({
-      parent: host,
+      parent: host!,
       state: EditorState.create({
         doc: value,
         extensions: [
@@ -692,7 +774,7 @@
     // it requests the same shell-owned modal the keyboard command does.
     // `location()` reports the caret as a 1-based line / byte-column (the same
     // shape `goto` accepts), so the shell can record where a jump started.
-    const location = () => {
+    const location = (): Location | null => {
       if (!editor) return null;
       const head = editor.state.selection.main.head;
       const lineObj = editor.state.doc.lineAt(head);
@@ -706,7 +788,7 @@
   // Move a node to <body> so its `position: fixed` is viewport-relative — a
   // transformed/contained ancestor would otherwise offset it (CodeMirror's own
   // tooltips portal for the same reason).
-  function portal(node) {
+  function portal(node: HTMLElement): { destroy: () => void } {
     document.body.appendChild(node);
     return { destroy: () => node.remove() };
   }
@@ -715,7 +797,7 @@
   // onchange. A *file switch* (moduleFqn changed) also resets the undo history,
   // so Ctrl+Z can't undo back across the boundary into the previous file; a
   // same-file replace (Format) stays undoable.
-  let loadedFqn = moduleFqn;
+  let loadedFqn: string = moduleFqn;
   $effect(() => {
     const next = value;
     const fqn = moduleFqn;
@@ -723,7 +805,7 @@
     const switched = fqn !== loadedFqn;
     if (next === editor.state.doc.toString() && !switched) return;
     applyingExternal = true;
-    const spec = { changes: { from: 0, to: editor.state.doc.length, insert: next } };
+    const spec: TransactionSpec = { changes: { from: 0, to: editor.state.doc.length, insert: next } };
     if (switched) {
       // Clear history (fresh `history()`); the load itself isn't an undo step.
       spec.effects = historyCompartment.reconfigure(history());

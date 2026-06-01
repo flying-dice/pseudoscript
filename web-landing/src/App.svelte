@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import { initLanding } from './lib/landing-anim.js';
   import Topbar from './components/Topbar.svelte';

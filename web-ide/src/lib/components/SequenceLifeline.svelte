@@ -1,9 +1,45 @@
-<script>
+<script lang="ts">
   // A sequence participant, drawn from the engine's placed coordinates: the
   // kind-coloured C4 head card, the dashed lifeline, and the execution-activation
   // bar spanning its involvement. The node fills the canvas, so every coordinate
   // here is absolute (no geometry is computed in the component).
-  let { data } = $props();
+
+  // A hover/usages callback fired with a symbol id and the originating event.
+  type SymbolHandler = (id: string, event: MouseEvent) => void;
+  // A placed participant lifeline from the layout engine (PlacedParticipant).
+  type Placed = {
+    id: string;
+    label: string;
+    kind: string;
+    card: { x: number; y: number; w: number; h: number };
+    lifeline_x: number;
+    top: number;
+    bottom: number;
+  };
+  // A placed activation bar from the layout engine (Activation).
+  type Activation = {
+    participant: string;
+    x: number;
+    top: number;
+    bottom: number;
+    owner: boolean;
+  };
+  // The synthesised initiator head: a trigger kind + its title.
+  type Initiator = { kind: string; title: string };
+
+  type LifelineData = {
+    placed: Placed;
+    act?: Activation | null;
+    oninfo?: SymbolHandler | null;
+    oninfoend?: (() => void) | null;
+    onusages?: SymbolHandler | null;
+  };
+
+  type Props = {
+    data: LifelineData;
+  };
+
+  let { data }: Props = $props();
 
   const p = data.placed;
   const act = data.act;
@@ -13,7 +49,7 @@
   // (#[schedule]), or a generic `caller` (a direct/untriggered call). The
   // projector tags these as `person` for layout, but they aren't people — show
   // the trigger kind as the eyebrow and a neutral card, not a person card.
-  function initiatorHead(id) {
+  function initiatorHead(id: string | null | undefined): Initiator | null {
     if (!id) return null;
     if (id.startsWith("event:")) return { kind: "onevent", title: id.slice(6) };
     if (id === "client") return { kind: "http", title: "client" };
@@ -32,7 +68,7 @@
   // usages. Every lifeline participates — declared nodes resolve to their doc and
   // usages; synthesised trigger actors (client/scheduler/event) get a blurb.
   const interactive = !!p.id;
-  const onclick = (e) => {
+  const onclick = (e: MouseEvent) => {
     if (interactive && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       data.onusages?.(p.id, e);

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { ArrowRight } from '@lucide/svelte';
   import Mark from './Mark.svelte';
 </script>

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import Mark from './Mark.svelte';
 </script>
 

@@ -6,9 +6,24 @@
 
 const STORAGE_KEY = "pds.keybindings";
 
+// A single customisable command in the catalogue.
+export interface Command {
+  id: string;
+  label: string;
+  key: string;
+  group: string;
+}
+
+// A preset keymap: a baseline scheme mapping command ids to chords.
+export interface Profile {
+  id: string;
+  label: string;
+  bindings: Record<string, string>;
+}
+
 // One entry per customisable command. `key` is the default chord; `group`
 // buckets the rows in the settings UI. Array order is the display order.
-export const COMMANDS = [
+export const COMMANDS: Command[] = [
   { id: "triggerAutocomplete", label: "Trigger autocomplete", key: "Ctrl-Space", group: "Editing" },
   { id: "acceptCompletion", label: "Accept completion", key: "Tab", group: "Editing" },
   { id: "toggleComment", label: "Toggle line comment", key: "Mod-/", group: "Editing" },
@@ -21,13 +36,13 @@ export const COMMANDS = [
   { id: "openSettings", label: "Keyboard shortcuts…", key: "Mod-,", group: "General" },
 ];
 
-const DEFAULTS = Object.fromEntries(COMMANDS.map((c) => [c.id, c.key]));
+const DEFAULTS: Record<string, string> = Object.fromEntries(COMMANDS.map((c) => [c.id, c.key]));
 const PROFILE_KEY = "pds.keymap-profile";
 
 // Preset keymaps mirroring the major IDEs, mapping our command set onto each
 // IDE's conventions. A profile sets the baseline scheme; per-command overrides
 // (recorded in Settings) layer on top and win. `default` uses DEFAULTS.
-export const PROFILES = [
+export const PROFILES: Profile[] = [
   { id: "default", label: "PseudoScript", bindings: {} },
   {
     id: "vscode",
@@ -65,21 +80,24 @@ export const PROFILES = [
 
 // Load overrides, keeping only known ids with non-empty string chords (so a
 // stale or hand-edited entry can't poison the keymap).
-function load() {
+function load(): Record<string, string> {
   try {
-    const obj = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    const clean = {};
-    for (const c of COMMANDS) if (typeof obj[c.id] === "string" && obj[c.id]) clean[c.id] = obj[c.id];
+    const obj: Record<string, unknown> = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+    const clean: Record<string, string> = {};
+    for (const c of COMMANDS) {
+      const v = obj[c.id];
+      if (typeof v === "string" && v) clean[c.id] = v;
+    }
     return clean;
   } catch {
     return {};
   }
 }
 
-function loadProfile() {
+function loadProfile(): string {
   try {
     const id = localStorage.getItem(PROFILE_KEY);
-    return PROFILES.some((p) => p.id === id) ? id : "default";
+    return id !== null && PROFILES.some((p) => p.id === id) ? id : "default";
   } catch {
     return "default";
   }
@@ -88,20 +106,20 @@ function loadProfile() {
 // Reactive state and a change counter the editor watches. Overrides hold only
 // genuine customisations (resetting an id deletes its entry); `profile` is the
 // active preset's id.
-const overrides = $state(load());
-let profile = $state(loadProfile());
-let version = $state(0);
+const overrides: Record<string, string> = $state(load());
+let profile: string = $state(loadProfile());
+let version: number = $state(0);
 
 // The active profile's bindings (empty for `default`).
-function profileBindings() {
+function profileBindings(): Record<string, string> {
   return PROFILES.find((p) => p.id === profile)?.bindings ?? {};
 }
 // The baseline chord for a command under the active profile (before overrides).
-function base(id) {
+function base(id: string): string {
   return profileBindings()[id] ?? DEFAULTS[id];
 }
 
-function persist() {
+function persist(): void {
   try {
     if (Object.keys(overrides).length) localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
     else localStorage.removeItem(STORAGE_KEY);
@@ -123,31 +141,31 @@ export const keybindings = {
   },
   // Effective chord for a command id: a personal override wins over the active
   // profile's binding, which wins over the built-in default.
-  keyFor(id) {
+  keyFor(id: string): string {
     return overrides[id] ?? base(id);
   },
   // The profile baseline a reset returns to (no personal override).
-  defaultFor(id) {
+  defaultFor(id: string): string {
     return base(id);
   },
-  isCustom(id) {
+  isCustom(id: string): boolean {
     return id in overrides;
   },
   // The command id currently bound to `chord`, ignoring `exceptId` — for
   // conflict detection in the settings UI.
-  conflict(chord, exceptId) {
+  conflict(chord: string, exceptId: string): string | null {
     for (const c of COMMANDS) {
       if (c.id !== exceptId && (overrides[c.id] ?? base(c.id)) === chord) return c.id;
     }
     return null;
   },
-  setKey(id, chord) {
+  setKey(id: string, chord: string): void {
     if (!chord || chord === base(id)) delete overrides[id];
     else overrides[id] = chord;
     version += 1;
     persist();
   },
-  reset(id) {
+  reset(id: string): void {
     delete overrides[id];
     version += 1;
     persist();
@@ -155,14 +173,14 @@ export const keybindings = {
   // Switch the baseline preset. Personal overrides are kept and stay layered on
   // top (use resetAll for a pure profile). Overrides that happen to match the
   // new profile's binding are pruned so they don't show as customised.
-  setProfile(id) {
+  setProfile(id: string): void {
     if (!PROFILES.some((p) => p.id === id)) return;
     profile = id;
     for (const k of Object.keys(overrides)) if (overrides[k] === base(k)) delete overrides[k];
     version += 1;
     persist();
   },
-  resetAll() {
+  resetAll(): void {
     for (const k of Object.keys(overrides)) delete overrides[k];
     version += 1;
     persist();
@@ -171,14 +189,14 @@ export const keybindings = {
 
 // Build a CodeMirror key string from a keydown event. Returns null for a lone
 // modifier press, so the recorder waits for the real key.
-export function chordFromEvent(e) {
+export function chordFromEvent(e: KeyboardEvent): string | null {
   if (e.key === "Control" || e.key === "Alt" || e.key === "Shift" || e.key === "Meta") return null;
-  const parts = [];
+  const parts: string[] = [];
   if (e.ctrlKey) parts.push("Ctrl");
   if (e.altKey) parts.push("Alt");
   if (e.metaKey) parts.push("Cmd");
   if (e.shiftKey) parts.push("Shift");
-  let key;
+  let key: string;
   if (e.key === " ") key = "Space";
   else if (e.key.length === 1) key = e.key.toLowerCase();
   else key = e.key; // named keys already match CodeMirror: F12, Tab, Enter, ArrowUp…
@@ -186,7 +204,7 @@ export function chordFromEvent(e) {
   return parts.join("-");
 }
 
-const SYMBOLS = {
+const SYMBOLS: Record<string, string> = {
   Mod: "⌘",
   Cmd: "⌘",
   Meta: "⌘",
@@ -205,13 +223,13 @@ const SYMBOLS = {
 // Pretty-print a chord for display: "Mod-Alt-l" → "⌘ ⌥ L". Multi-stroke
 // sequences (space-separated, e.g. "Mod-k Mod-s") render each stroke joined by a
 // thin gap: "⌘ K  ⌘ S".
-export function formatChord(chord) {
+export function formatChord(chord: string): string {
   return chord
     .split(" ")
-    .map((stroke) =>
+    .map((stroke: string) =>
       stroke
         .split("-")
-        .map((p) => SYMBOLS[p] ?? (p.length === 1 ? p.toUpperCase() : p))
+        .map((p: string) => SYMBOLS[p] ?? (p.length === 1 ? p.toUpperCase() : p))
         .join(" "),
     )
     .join("  ");

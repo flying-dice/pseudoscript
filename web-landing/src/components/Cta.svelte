@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { Monitor, Terminal, Blocks, ArrowRight } from '@lucide/svelte';
   import InstallCommand from './InstallCommand.svelte';
 </script>

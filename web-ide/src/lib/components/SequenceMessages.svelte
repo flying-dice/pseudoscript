@@ -1,14 +1,54 @@
-<script>
+<script lang="ts">
   // The message layer: one overlay drawing every message at the engine's placed
   // coordinates. Calls are solid + numbered; returns are dashed and coloured by
   // their Ok/Err marker with the payload as `<type>`; self-messages loop on their
   // lifeline. No geometry is computed here — only the absolute coords are drawn.
-  let { data } = $props();
 
-  const labelW = (s) => (s ? s.length * 7.8 + 14 : 0);
+  // A hover/usages callback fired with a symbol fqn and the originating event.
+  // The fqn is widened to allow nullable parts (the `{#if part.fqn}` guard in the
+  // markup gates non-null calls; Svelte can't narrow through the tspan closures).
+  type SymbolHandler = (fqn: string | null, event: MouseEvent) => void;
+
+  // A positioned message from the `pseudoscript-layout` crate: the pre-layout
+  // call/return shape plus the absolute coordinates the engine placed it at.
+  type Message = {
+    kind: string;
+    from: string;
+    to: string;
+    label?: string;
+    detail?: string;
+    from_x: number;
+    to_x: number;
+    y: number;
+    dir: number;
+    step: number;
+  };
+
+  // The Svelte Flow node `data` for the message overlay (see FlowTimeline build()).
+  type Data = {
+    messages: Message[];
+    width: number;
+    height: number;
+    lifelineX: Record<string, number>;
+    oninfo?: SymbolHandler | null;
+    oninfoend?: (() => void) | null;
+    onusages?: SymbolHandler | null;
+    typeFqn?: Record<string, string> | null;
+  };
+
+  // A return's resolved colour + glyph.
+  type Return = { color: string; text: string };
+  // One run of a split signature: its text and the declared-type fqn (or null).
+  type TypePart = { text: string; fqn: string | null };
+
+  type Props = { data: Data };
+
+  let { data }: Props = $props();
+
+  const labelW = (s: string | undefined): number => (s ? s.length * 7.8 + 14 : 0);
 
   // A return's colour + glyph, by marker.
-  function ret(marker) {
+  function ret(marker: string | undefined): Return {
     if (marker === "Ok" || marker === "Some") return { color: "var(--seq-ok)", text: `↩ ${marker}` };
     if (marker === "Err" || marker === "None") return { color: "var(--seq-err)", text: `↩ ${marker}` };
     return { color: "var(--ink-faint)", text: marker ? `↩ ${marker}` : "↩ return" };
@@ -16,20 +56,21 @@
 
   // A marked return shows its payload as a generic argument (`Ok<Order>`); a bare
   // value return shows the whole type as a spaced suffix.
-  const retType = (m) => (m.detail ? (m.label ? `<${m.detail}>` : ` ${m.detail}`) : "");
+  const retType = (m: Message): string => (m.detail ? (m.label ? `<${m.detail}>` : ` ${m.detail}`) : "");
   // The badge sits just left of the source lifeline (centre − activation − gap).
-  const badgeX = (m) => (data.lifelineX[m.from] ?? m.from_x) - 17;
+  const badgeX = (m: Message): number => (data.lifelineX[m.from] ?? m.from_x) - 17;
 
   // A call/self message targets a member callable: hover shows its info,
   // Cmd/Ctrl-click its usages (matching the lifeline and editor behaviour).
-  const callee = (m) => (m.kind === "self" ? `${m.from}::${m.label}` : `${m.to}::${m.label}`);
-  const onLabelClick = (m, e) => {
+  const callee = (m: Message): string => (m.kind === "self" ? `${m.from}::${m.label}` : `${m.to}::${m.label}`);
+  const onLabelClick = (m: Message, e: MouseEvent): void => {
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       data.onusages?.(callee(m), e);
     }
   };
-  const onTypeClick = (fqn, e) => {
+  const onTypeClick = (fqn: string | null, e: MouseEvent): void => {
+    if (!fqn) return;
     if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       data.onusages?.(fqn, e);
@@ -39,7 +80,7 @@
   // Split a signature/return-type string into identifier and separator runs,
   // tagging each identifier that names a declared `data` type with its FQN so it
   // becomes hoverable. Built-ins (Result, string, …) carry no fqn.
-  const typeParts = (detail) =>
+  const typeParts = (detail: string | undefined): TypePart[] =>
     (detail ?? "")
       .split(/([A-Za-z_][A-Za-z0-9_]*)/)
       .map((text, i) => ({ text, fqn: i % 2 === 1 ? (data.typeFqn?.[text] ?? null) : null }))

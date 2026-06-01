@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { FileCode, User, Box, Container, Database, Cpu, AlignLeft, ScanLine, Zap } from '@lucide/svelte';
 </script>
 

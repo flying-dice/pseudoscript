@@ -1,20 +1,22 @@
-<script>
+<script lang="ts">
   import { Settings2, X } from '@lucide/svelte';
+
+  type Accent = readonly [string, string];
 
   // Theme · accent · motion — mirrors the design's React tweaks island, but
   // self-contained. Applies values to the document root; the page reacts via
   // CSS tokens / the body.no-motion class.
-  const ACCENTS = [
+  const ACCENTS: readonly Accent[] = [
     ['#ff5a36', '#ff7d5e'],
     ['#6e8bff', '#8aa2ff'],
     ['#2dd4bf', '#5fe6d4'],
     ['#e0a93f', '#ecc06a'],
   ];
 
-  let open = $state(false);
-  let theme = $state('Dark');
-  let accent = $state(ACCENTS[0]);
-  let motion = $state(true);
+  let open = $state<boolean>(false);
+  let theme = $state<string>('Dark');
+  let accent = $state<Accent>(ACCENTS[0]);
+  let motion = $state<boolean>(true);
 
   $effect(() => {
     document.documentElement.setAttribute('data-theme', theme === 'Light' ? 'light' : 'dark');

@@ -1,13 +1,33 @@
-<script>
+<script lang="ts">
   import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
+  import type { ThemePref } from "$lib/theme.svelte.js";
+
+  // The active write lifecycle for the workspace save indicator.
+  type SaveState = "idle" | "saving" | "saved" | "error";
+
+  type Props = {
+    errorCount?: number;
+    workspaceName?: string | null;
+    building?: boolean;
+    // Save state for the workspace indicator: number of files differing from
+    // disk, whether the workspace can persist (a real folder vs a sample), and
+    // the active write lifecycle (idle | saving | saved | error).
+    dirtyCount?: number;
+    canPersist?: boolean;
+    saveState?: SaveState;
+    onformat?: () => void;
+    onproject?: () => void;
+    onbuilddocs?: () => void;
+    onshare?: () => void;
+    onexport?: () => void;
+    onimport?: () => void;
+    onopensettings?: () => void;
+  };
 
   let {
     errorCount = 0,
     workspaceName = null,
     building = false,
-    // Save state for the workspace indicator: number of files differing from
-    // disk, whether the workspace can persist (a real folder vs a sample), and
-    // the active write lifecycle (idle | saving | saved | error).
     dirtyCount = 0,
     canPersist = false,
     saveState = "idle",
@@ -18,15 +38,15 @@
     onexport,
     onimport,
     onopensettings,
-  } = $props();
+  }: Props = $props();
 
   // The share/transport overflow menu (Share link · Export · Import).
   let shareOpen = $state(false);
 
   // Theme: cycle system → light → dark. The glyph shows the current preference.
-  const THEME_ICON = { system: "◐", light: "☀", dark: "☾" };
-  const THEME_LABEL = { system: "System", light: "Light", dark: "Dark" };
-  function cycleTheme() {
+  const THEME_ICON: Record<ThemePref, string> = { system: "◐", light: "☀", dark: "☾" };
+  const THEME_LABEL: Record<ThemePref, string> = { system: "System", light: "Light", dark: "Dark" };
+  function cycleTheme(): void {
     const i = THEME_OPTIONS.indexOf(theme.pref);
     theme.set(THEME_OPTIONS[(i + 1) % THEME_OPTIONS.length]);
   }

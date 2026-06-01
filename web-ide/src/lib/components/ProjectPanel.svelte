@@ -1,7 +1,23 @@
-<script>
+<script lang="ts">
   // The project launcher: opens on start and from the toolbar. Recent projects
   // (samples + re-openable folders) on the left, the examples catalogue on the
   // right, "open a folder" below. Drafting-terminal styling to match the IDE.
+  import type { Sample } from "$lib/samples";
+  import type { Recent } from "$lib/recents";
+
+  type Props = {
+    examples?: Sample[];
+    recents?: Recent[];
+    canOpenFolder?: boolean;
+    dismissible?: boolean;
+    onpicksample?: (id: string) => void;
+    onpickrecent?: (recent: Recent) => void;
+    onopenfolder?: () => void;
+    onimport?: () => void;
+    onforget?: (recent: Recent) => void;
+    onclose?: () => void;
+  };
+
   let {
     examples = [],
     recents = [],
@@ -13,9 +29,9 @@
     onimport,
     onforget,
     onclose,
-  } = $props();
+  }: Props = $props();
 
-  function ago(ts) {
+  function ago(ts: number): string {
     const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
     if (s < 60) return "just now";
     const m = Math.round(s / 60);
@@ -33,16 +49,16 @@
   // list reads like a handbook table of contents (Application, Edge, Resilience,
   // Messaging, …).
   const grouped = $derived.by(() => {
-    const order = [];
-    const by = new Map();
+    const order: string[] = [];
+    const by = new Map<string, Sample[]>();
     for (const ex of examples) {
       if (!by.has(ex.category)) {
         by.set(ex.category, []);
         order.push(ex.category);
       }
-      by.get(ex.category).push(ex);
+      by.get(ex.category)!.push(ex);
     }
-    return order.map((cat) => ({ cat, items: by.get(cat) }));
+    return order.map((cat) => ({ cat, items: by.get(cat)! }));
   });
 </script>
 

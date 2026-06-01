@@ -4,13 +4,55 @@
 // only for editor structure (comment-toggle). Completion and linting delegate
 // to the wasm compiler too.
 import { autocompletion } from "@codemirror/autocomplete";
+import type {
+  Completion,
+  CompletionContext,
+  CompletionResult,
+} from "@codemirror/autocomplete";
 import { LanguageSupport, StreamLanguage } from "@codemirror/language";
+import type { StringStream } from "@codemirror/language";
 import { linter } from "@codemirror/lint";
+import type { Diagnostic as LintDiagnostic } from "@codemirror/lint";
 import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
+import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
 
 import { check, semanticTokens } from "./pds.js";
+import type { CompletionItem } from "./pds.js";
 import { byteToChar } from "./offsets.js";
+
+// The compiler diagnostic fields this linter reads. `check`'s wasm payload
+// carries raw UTF-8 byte offsets (`start`/`end`) alongside the line/column form;
+// the linter maps those byte offsets to CodeMirror's code-unit positions.
+interface CompilerDiagnostic {
+  severity: string;
+  message: string;
+  start: number;
+  end: number;
+}
+
+// A semantic-token role: the key set of the LSP token-type legend.
+type SemKind =
+  | "namespace"
+  | "type"
+  | "class"
+  | "parameter"
+  | "variable"
+  | "property"
+  | "enumMember"
+  | "method"
+  | "keyword"
+  | "comment"
+  | "string"
+  | "number"
+  | "decorator";
+
+// The shape the editor expects of the caller's completion source: it maps a
+// CodeMirror completion context to the LSP completion items for the caret.
+export type CompletionFetcher = (
+  context: CompletionContext,
+) => CompletionItem[] | null | undefined;
 
 // A structure-only language: it carries the `//` comment config (so Mod-/ works)
 // but does no colouring — the semantic-token decorator below owns highlighting,
@@ -19,7 +61,7 @@ import { byteToChar } from "./offsets.js";
 const streamLang = StreamLanguage.define({
   name: "pseudoscript",
   languageData: { commentTokens: { line: "//" } },
-  token(stream) {
+  token(stream: StringStream): string | null {
     stream.next();
     return null;
   },
@@ -27,7 +69,7 @@ const streamLang = StreamLanguage.define({
 
 // Each semantic-token role → a stable CSS class (used by the theme and by tests
 // via `data` attributes on the marks). Names mirror the LSP token types.
-const SEM_CLASS = {
+const SEM_CLASS: Record<SemKind, string> = {
   namespace: "pst-namespace",
   type: "pst-type",
   class: "pst-class",
@@ -45,9 +87,9 @@ const SEM_CLASS = {
 
 // One reusable mark decoration per role. A `data-sem` attribute carries the role
 // for robust, non-brittle test selection.
-const SEM_DECO = Object.fromEntries(
-  Object.entries(SEM_CLASS).map(([kind, cls]) => [
-    kind,
+const SEM_DECO: Partial<Record<SemKind, Decoration>> = Object.fromEntries(
+  Object.entries(SEM_CLASS).map(([kind, cls]): [SemKind, Decoration] => [
+    kind as SemKind,
     Decoration.mark({ class: cls, attributes: { "data-sem": kind } }),
   ]),
 );
@@ -55,26 +97,23 @@ const SEM_DECO = Object.fromEntries(
 // The token-type legend, in the index order the LSP semantic-tokens response
 // uses (must match pseudoscript-lsp-core::semantic::token_types). The response's
 // `token_type` field indexes this.
-const SEM_LEGEND = [
+const SEM_LEGEND: SemKind[] = [
   "namespace", "type", "class", "parameter", "variable", "property",
   "enumMember", "method", "keyword", "comment", "string", "number", "decorator",
 ];
 
-/**
- * Decorates `view` from the compiler's LSP semantic-tokens response. The result
- * is the standard delta encoding (`{ data: [Δline, Δstart, len, type, mods] }`)
- * over UTF-16 positions — the same units CodeMirror uses, so no byte conversion.
- */
-function semanticDecorations(view) {
+// Decorates `view` from the compiler's LSP semantic-tokens response. The result
+// is the standard delta encoding (`{ data: [Δline, Δstart, len, type, mods] }`)
+// over UTF-16 positions — the same units CodeMirror uses, so no byte conversion.
+function semanticDecorations(view: EditorView): DecorationSet {
   const doc = view.state.doc;
-  let result;
+  let data: number[];
   try {
-    result = semanticTokens(doc.toString());
+    data = semanticTokens(doc.toString()).data ?? [];
   } catch {
     return Decoration.none; // transient parse failure — leave text uncoloured
   }
-  const data = result.data ?? [];
-  const builder = new RangeSetBuilder();
+  const builder = new RangeSetBuilder<Decoration>();
   let line = 0;
   let char = 0;
   for (let i = 0; i + 4 < data.length; i += 5) {
@@ -98,10 +137,11 @@ function semanticDecorations(view) {
 // non-overlapping, so the RangeSetBuilder consumes them directly.
 const semanticHighlighter = ViewPlugin.fromClass(
   class {
-    constructor(view) {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
       this.decorations = semanticDecorations(view);
     }
-    update(update) {
+    update(update: ViewUpdate): void {
       if (update.docChanged) this.decorations = semanticDecorations(update.view);
     }
   },
@@ -131,13 +171,13 @@ const semanticTheme = EditorView.theme({
 });
 
 /** The PseudoScript language with AST-aware (LSP-sourced) highlighting. */
-export function pseudoscript() {
+export function pseudoscript(): LanguageSupport {
   return new LanguageSupport(streamLang, [semanticHighlighter, semanticTheme]);
 }
 
 // Maps the LSP `CompletionItemKind` (an integer enum) to the CodeMirror option
 // type that drives each candidate's icon.
-const KIND_TYPE = {
+const KIND_TYPE: Record<number, string> = {
   2: "method", // Method
   3: "function", // Function (built-in macro)
   5: "property", // Field
@@ -148,23 +188,23 @@ const KIND_TYPE = {
   22: "type", // Struct (primitive / type)
 };
 
-/**
- * Autocomplete sourced from the shared LSP completion engine (the same one the
- * native language server serves), so the web IDE narrows by context — members
- * after `.`, a module's symbols after `::`, macros after `#[`, types in type
- * position — instead of always offering every keyword and symbol.
- *
- * `getCompletions(context)` returns `[{ label, kind, detail }]` for the caret;
- * the labels are bare segment names, so completion replaces only the identifier
- * segment under the caret (after the last `.`/`::`), and CodeMirror filters the
- * returned set against the typed prefix.
- */
-export function pseudoscriptCompletion(getCompletions) {
+// Autocomplete sourced from the shared LSP completion engine (the same one the
+// native language server serves), so the web IDE narrows by context — members
+// after `.`, a module's symbols after `::`, macros after `#[`, types in type
+// position — instead of always offering every keyword and symbol.
+//
+// `getCompletions(context)` returns `[{ label, kind, detail }]` for the caret;
+// the labels are bare segment names, so completion replaces only the identifier
+// segment under the caret (after the last `.`/`::`), and CodeMirror filters the
+// returned set against the typed prefix.
+export function pseudoscriptCompletion(
+  getCompletions: CompletionFetcher,
+): Extension {
   return autocompletion({
     activateOnTyping: true,
     icons: true,
     override: [
-      (context) => {
+      (context: CompletionContext): CompletionResult | null => {
         // Auto-open only once a prefix is typed; an explicit invoke (Ctrl-Space)
         // still completes at the bare caret. Only the trailing identifier
         // segment is replaced — the `.`/`::` before it is context the engine
@@ -172,9 +212,9 @@ export function pseudoscriptCompletion(getCompletions) {
         const word = context.matchBefore(/[A-Za-z_]\w*/);
         if (!word && !context.explicit) return null;
         const from = word ? word.from : context.pos;
-        const seen = new Set();
-        const options = [];
-        for (const c of getCompletions?.(context) ?? []) {
+        const seen = new Set<string>();
+        const options: Completion[] = [];
+        for (const c of getCompletions(context) ?? []) {
           if (seen.has(c.label)) continue;
           seen.add(c.label);
           options.push({ label: c.label, type: KIND_TYPE[c.kind] ?? "variable", detail: c.detail });
@@ -187,21 +227,22 @@ export function pseudoscriptCompletion(getCompletions) {
 }
 
 /** A linter that surfaces the wasm compiler's diagnostics inline. */
-export function pseudoscriptLinter() {
-  return linter((view) => {
+export function pseudoscriptLinter(): Extension {
+  return linter((view: EditorView): LintDiagnostic[] => {
     const source = view.state.doc.toString();
-    let diagnostics;
+    let diagnostics: CompilerDiagnostic[];
     try {
-      diagnostics = check(source);
+      diagnostics = check(source) as unknown as CompilerDiagnostic[];
     } catch {
       return [];
     }
     const length = view.state.doc.length;
-    return diagnostics.map((d) => {
+    return diagnostics.map((d): LintDiagnostic => {
       // Compiler spans are UTF-8 byte offsets; map to code-unit offsets.
       const from = Math.min(byteToChar(source, d.start), length);
       const to = Math.min(Math.max(byteToChar(source, d.end), from), length);
-      const severity = d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info";
+      const severity: LintDiagnostic["severity"] =
+        d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info";
       return { from, to, severity, message: d.message };
     });
   });

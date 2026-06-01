@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { Container, Database, Blocks } from '@lucide/svelte';
 </script>
 

@@ -1,3 +1,5 @@
+<script lang="ts"></script>
+
 <section id="workflow" data-screen-label="Workflow">
   <div class="wrap">
     <div class="eyebrow-row reveal" style="margin-bottom:2.5rem"><span class="lbl accent">How it works</span><span class="kicker-rule" style="flex:1"></span></div>

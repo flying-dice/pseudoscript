@@ -9,11 +9,54 @@
 //     docs: [{ path, content }] }
 // which is exactly what `mountWorkspace` consumes after `loadSample`.
 
+/** A single source module within a workspace envelope. */
+export interface EnvelopeFile {
+  path: string;
+  fqn: string;
+  source: string;
+}
+
+/** A single doc page within a workspace envelope. */
+export interface EnvelopeDoc {
+  path: string;
+  content: string;
+}
+
+/** The versioned, serialisable envelope written to the hash/`.pdsx` file. */
+export interface Envelope {
+  magic: string;
+  v: number;
+  name: string;
+  manifestToml: string | null;
+  files: EnvelopeFile[];
+  docs: EnvelopeDoc[];
+}
+
+/** The live workspace snapshot the IDE feeds into the codec. */
+export interface WorkspaceState {
+  name?: string | null;
+  manifestToml?: string | null;
+  files?: EnvelopeFile[] | null;
+  docs?: EnvelopeDoc[] | null;
+}
+
+/** The in-memory workspace shape (`{ workspace, landing }`) `mountWorkspace`
+ *  consumes — identical to what `loadSample` returns. */
+export interface MountableWorkspace {
+  workspace: {
+    name: string;
+    files: EnvelopeFile[];
+    manifestToml: string | null;
+    docs: Record<string, string>;
+  };
+  landing: string | null;
+}
+
 const ENVELOPE_VERSION = 1;
 const MAGIC = "pdsx"; // leading tag so a wrong file fails fast with a clear error
 
 /** Build the versioned envelope from the IDE's live workspace state. */
-export function buildEnvelope({ name, manifestToml, files, docs }) {
+export function buildEnvelope({ name, manifestToml, files, docs }: WorkspaceState): Envelope {
   return {
     magic: MAGIC,
     v: ENVELOPE_VERSION,
@@ -26,8 +69,8 @@ export function buildEnvelope({ name, manifestToml, files, docs }) {
 
 /** Restore the in-memory workspace shape (`{ workspace, landing }`) from an
  *  envelope — the same shape `loadSample` returns, so mounting is identical. */
-export function envelopeToWorkspace(env) {
-  const docs = {};
+export function envelopeToWorkspace(env: Envelope): MountableWorkspace {
+  const docs: Record<string, string> = {};
   for (const d of env.docs ?? []) docs[d.path] = d.content;
   return {
     workspace: {
@@ -44,29 +87,29 @@ export function envelopeToWorkspace(env) {
 
 // ---- gzip via CompressionStream -------------------------------------------
 
-async function gzip(bytes) {
+async function gzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
   const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function gunzip(bytes) {
+async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 /** Encode a workspace state object to gzipped envelope bytes. */
-export async function encodeWorkspace(state) {
+export async function encodeWorkspace(state: WorkspaceState): Promise<Uint8Array> {
   const json = JSON.stringify(buildEnvelope(state));
   return gzip(new TextEncoder().encode(json));
 }
 
 /** Decode gzipped envelope bytes back to `{ workspace, landing }`. Throws on a
  *  corrupt stream or a wrong/unsupported envelope. */
-export async function decodeWorkspace(bytes) {
-  let env;
+export async function decodeWorkspace(bytes: Uint8Array<ArrayBuffer>): Promise<MountableWorkspace> {
+  let env: Envelope;
   try {
     const json = new TextDecoder().decode(await gunzip(bytes));
-    env = JSON.parse(json);
+    env = JSON.parse(json) as Envelope;
   } catch {
     throw new Error("Not a valid PseudoScript workspace (corrupt or wrong format).");
   }
@@ -78,7 +121,7 @@ export async function decodeWorkspace(bytes) {
 // ---- base64url (for the URL hash, T6) -------------------------------------
 
 /** Bytes → URL-safe base64 (no padding), chunked to avoid call-stack limits. */
-export function bytesToBase64Url(bytes) {
+export function bytesToBase64Url(bytes: Uint8Array): string {
   let bin = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -88,7 +131,7 @@ export function bytesToBase64Url(bytes) {
 }
 
 /** URL-safe base64 → bytes. */
-export function base64UrlToBytes(text) {
+export function base64UrlToBytes(text: string): Uint8Array {
   const b64 = text.replace(/-/g, "+").replace(/_/g, "/");
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);

@@ -1,8 +1,20 @@
-<script>
+<script lang="ts">
   // A small modal text prompt shared by the FileTree create/rename flows. The
   // parent passes a `title`, an input `label`/`placeholder`, an initial `value`,
   // and a `validate(value)` returning an error string (or null when valid). On
   // confirm it calls `onconfirm(trimmedValue)`; Escape or the backdrop cancels.
+  type Props = {
+    title?: string;
+    label?: string;
+    placeholder?: string;
+    value?: string;
+    confirmLabel?: string;
+    hint?: string;
+    validate?: (value: string) => string | null;
+    onconfirm?: (value: string) => void;
+    oncancel?: () => void;
+  };
+
   let {
     title = "",
     label = "Name",
@@ -13,11 +25,11 @@
     validate = () => null,
     onconfirm,
     oncancel,
-  } = $props();
+  }: Props = $props();
 
-  let draft = $state(value);
-  let touched = $state(false);
-  let inputEl = $state(null);
+  let draft = $state<string>(value);
+  let touched = $state<boolean>(false);
+  let inputEl = $state<HTMLInputElement | null>(null);
 
   const error = $derived(touched ? validate(draft.trim()) : null);
   const canSubmit = $derived(draft.trim().length > 0 && !validate(draft.trim()));
@@ -28,7 +40,7 @@
     onconfirm?.(draft.trim());
   }
 
-  function onKey(e) {
+  function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
       oncancel?.();

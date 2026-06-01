@@ -13,26 +13,56 @@
    ========================================================================== */
 import { pdsTokenize, pdsHighlight } from './pds-syntax.js';
 
+/* a single tokenised span emitted by the .pds tokenizer */
+interface Token {
+  c: string;
+  s: string;
+}
+
+/* one-shot scroll trigger: fires fn once when el crosses ratio of the viewport */
+interface OneShot {
+  el: Element;
+  ratio: number;
+  fired: boolean;
+  fn: () => void;
+}
+
+/* always-run watcher, invoked every scroll check with the viewport height */
+type Watcher = (vh: number) => void;
+
+/* zero-arg trigger keyed by hero line index */
+type LineTrigger = () => void;
+
+/* a sequence-diagram lane (vertical actor lifeline) */
+interface SeqLane {
+  x: number;
+  label: string;
+  kind: 'person' | 'component' | 'container';
+}
+
+/* a sequence-diagram message: [from lane, to lane, y, label, kind] */
+type SeqMessage = [number, number, number, string, 'call' | 'ret'];
+
 const H = pdsHighlight;
 const T = pdsTokenize;
 
-export function initLanding() {
+export function initLanding(): () => void {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     || document.body.classList.contains('no-motion');
 
-  function $all(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
-  function gutter(el, n) {
+  function $all(s: string, r?: ParentNode | null): Element[] { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+  function gutter(el: Element | null, n: number): void {
     if (!el) return;
     let s = '';
     for (let i = 1; i <= n; i++) s += '<div>' + i + '</div>';
     el.innerHTML = s;
   }
-  function top(el) { return el.getBoundingClientRect().top; }
+  function top(el: Element): number { return el.getBoundingClientRect().top; }
 
   /* registry of one-shot scroll triggers + always-run watchers */
-  const oneShots = [];   // { el, ratio, fired, fn }
-  const watchers = [];   // function()  (run every check)
-  function onScroll() {
+  const oneShots: OneShot[] = [];   // { el, ratio, fired, fn }
+  const watchers: Watcher[] = [];   // function()  (run every check)
+  function onScroll(): void {
     const vh = window.innerHeight || document.documentElement.clientHeight;
     for (let i = 0; i < oneShots.length; i++) {
       const t = oneShots[i];
@@ -106,7 +136,7 @@ export function initLanding() {
   ].join('\n');
 
   /* ---- static highlighted panels ----------------------------------------- */
-  function paintStatic(codeId, gutId, src) {
+  function paintStatic(codeId: string, gutId: string, src: string): void {
     const code = document.getElementById(codeId);
     if (!code) return;
     code.innerHTML = H(src);
@@ -116,7 +146,7 @@ export function initLanding() {
   paintStatic('ide-code', 'ide-gutter', IDE_SRC);
 
   /* ---- manifest (pds.toml) ----------------------------------------------- */
-  (function manifest() {
+  (function manifest(): void {
     const el = document.getElementById('manifest');
     if (!el) return;
     const rows = [
@@ -135,7 +165,7 @@ export function initLanding() {
   })();
 
   /* ---- hero typing + diagram assembly ------------------------------------ */
-  (function hero() {
+  (function hero(): void {
     const code = document.getElementById('hero-code');
     const gut = document.getElementById('hero-gutter');
     const status = document.getElementById('hero-status');
@@ -147,11 +177,11 @@ export function initLanding() {
     const nodes = $all('.c4-node', stage);
     const edges = $all('.edge', document.getElementById('hero-edges'));
 
-    function setStatus(state, text) { status.className = 'status ' + state; if (stext) stext.textContent = text; }
-    function showNode(i) { if (nodes[i]) nodes[i].classList.add('in'); }
-    function drawEdge(i) { const e = edges[i]; if (!e) return; e.style.transition = 'stroke-dashoffset .7s ease'; e.style.strokeDashoffset = '0'; }
+    function setStatus(state: string, text: string): void { if (status) status.className = 'status ' + state; if (stext) stext.textContent = text; }
+    function showNode(i: number): void { if (nodes[i]) nodes[i].classList.add('in'); }
+    function drawEdge(i: number): void { const e = edges[i] as SVGElement | undefined; if (!e) return; e.style.transition = 'stroke-dashoffset .7s ease'; e.style.strokeDashoffset = '0'; }
 
-    const triggers = {
+    const triggers: Record<number, LineTrigger> = {
       3: function () { showNode(0); },
       10: function () { showNode(1); },
       12: function () { showNode(2); drawEdge(0); drawEdge(1); },
@@ -160,25 +190,25 @@ export function initLanding() {
     };
     const lines = HERO_SRC.split('\n');
 
-    function renderInstant() {
-      code.innerHTML = H(HERO_SRC);
+    function renderInstant(): void {
+      code!.innerHTML = H(HERO_SRC);
       gutter(gut, lines.length);
-      Object.keys(triggers).forEach(function (k) { triggers[k](); });
+      Object.keys(triggers).forEach(function (k) { triggers[Number(k)](); });
       setStatus('ok', 'well-formed');
     }
     if (reduce) { renderInstant(); return; }
 
     let li = 0, html = '';
-    function typeLine() {
-      if (li >= lines.length) { code.innerHTML = html; setStatus('ok', 'well-formed'); return; }
-      const toks = T(lines[li]);
+    function typeLine(): void {
+      if (li >= lines.length) { code!.innerHTML = html; setStatus('ok', 'well-formed'); return; }
+      const toks: Token[] = T(lines[li]);
       let ti = 0, lineHtml = '';
-      function step() {
+      function step(): void {
         if (ti < toks.length) {
           const tk = toks[ti++];
           const esc = tk.s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
           lineHtml += tk.c === 'ws' ? esc : '<span class="' + tk.c + '">' + esc + '</span>';
-          code.innerHTML = html + '<span class="ln">' + lineHtml + '<span class="cursor"></span>\n</span>';
+          code!.innerHTML = html + '<span class="ln">' + lineHtml + '<span class="cursor"></span>\n</span>';
           setTimeout(step, 14 + Math.random() * 22);
         } else {
           html += '<span class="ln">' + lineHtml + '\n</span>';
@@ -188,7 +218,7 @@ export function initLanding() {
           setTimeout(typeLine, lines[li - 1] === '' ? 40 : 90);
         }
       }
-      if (toks.length === 0) { code.innerHTML = html + '<span class="ln"><span class="cursor"></span>\n</span>'; setTimeout(step, 60); }
+      if (toks.length === 0) { code!.innerHTML = html + '<span class="ln"><span class="cursor"></span>\n</span>'; setTimeout(step, 60); }
       else { step(); }
     }
     oneShots.push({ el: term, ratio: 0.85, fired: false, fn: function () {
@@ -198,13 +228,13 @@ export function initLanding() {
   })();
 
   /* ---- refine: diagnostics resolving ------------------------------------- */
-  (function refine() {
+  (function refine(): void {
     const box = document.getElementById('refine-visual');
     if (!box) return;
     const items = $all('#problems li');
     const count = document.getElementById('prob-count');
     const well = document.getElementById('well-formed');
-    function resolveSeq() {
+    function resolveSeq(): void {
       if (reduce) {
         items.forEach(function (li) { li.classList.add('resolved'); });
         if (count) count.textContent = '0 problems';
@@ -224,19 +254,19 @@ export function initLanding() {
   })();
 
   /* ---- generate: sequence diagram ---------------------------------------- */
-  (function sequence() {
+  (function sequence(): void {
     const svg = document.getElementById('seq-svg');
     if (!svg) return;
     const NS = 'http://www.w3.org/2000/svg';
-    const col = { person: 'var(--k-person)', component: 'var(--k-component)', container: 'var(--k-container)' };
-    const lanes = [
+    const col: Record<SeqLane['kind'], string> = { person: 'var(--k-person)', component: 'var(--k-component)', container: 'var(--k-container)' };
+    const lanes: SeqLane[] = [
       { x: 55, label: 'Attendee', kind: 'person' },
       { x: 185, label: 'Checkout', kind: 'component' },
       { x: 305, label: 'inventory', kind: 'container' },
       { x: 420, label: 'payments', kind: 'container' }
     ];
-    function mk(tag, attrs) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
-    function text(x, y, str, cls) { const t = mk('text', { x: x, y: y, 'text-anchor': 'middle', class: cls }); t.textContent = str; return t; }
+    function mk(tag: string, attrs: Record<string, string | number>): SVGElement { const e = document.createElementNS(NS, tag) as SVGElement; for (const k in attrs) e.setAttribute(k, String(attrs[k])); return e; }
+    function text(x: number, y: number, str: string, cls: string): SVGElement { const t = mk('text', { x: x, y: y, 'text-anchor': 'middle', class: cls }); t.textContent = str; return t; }
 
     const style = mk('style', {});
     style.textContent =
@@ -263,8 +293,8 @@ export function initLanding() {
       g.appendChild(mk('line', { x1: l.x, y1: topY + 10, x2: l.x, y2: botY, stroke: 'var(--line)', 'stroke-dasharray': '3 4' }));
       svg.appendChild(g);
     });
-    function lx(i) { return lanes[i].x; }
-    const msgs = [
+    function lx(i: number): number { return lanes[i].x; }
+    const msgs: SeqMessage[] = [
       [0, 1, 64, 'checkout(req)', 'call'],
       [1, 2, 96, 'allocate(n)', 'call'],
       [2, 1, 124, 'Ok(Hold)', 'ret'],
@@ -273,7 +303,7 @@ export function initLanding() {
       [1, 2, 216, 'commit(hold)', 'call'],
       [1, 0, 252, 'Confirmation', 'ret']
     ];
-    const groups = [];
+    const groups: SVGElement[] = [];
     msgs.forEach(function (m) {
       const x1 = lx(m[0]), x2 = lx(m[1]), y = m[2], ret = m[4] === 'ret';
       const g = mk('g', { class: 'seq-msg' });
@@ -284,7 +314,7 @@ export function initLanding() {
       svg.appendChild(g);
       groups.push(g);
     });
-    function play() {
+    function play(): void {
       if (reduce) { groups.forEach(function (g) { g.classList.add('in'); }); return; }
       groups.forEach(function (g, i) { setTimeout(function () { g.classList.add('in'); }, 250 + i * 320); });
     }
@@ -292,17 +322,17 @@ export function initLanding() {
   })();
 
   /* ---- convergence core pulse -------------------------------------------- */
-  (function core() {
+  (function core(): void {
     const c = document.getElementById('core-mark');
     if (!c || reduce) return;
-    watchers.push(function (vh) {
+    watchers.push(function (vh: number) {
       const r = c.getBoundingClientRect();
       c.classList.toggle('live', r.top < vh * 0.8 && r.bottom > vh * 0.2);
     });
   })();
 
   /* ---- scroll reveals ----------------------------------------------------- */
-  (function reveals() {
+  (function reveals(): void {
     const els = $all('.reveal');
     if (reduce) { els.forEach(function (el) { el.classList.add('in'); }); return; }
     els.forEach(function (el) {
@@ -312,7 +342,7 @@ export function initLanding() {
 
   /* ---- drive triggers ----------------------------------------------------- */
   let ticking = false;
-  function requestCheck() {
+  function requestCheck(): void {
     if (ticking) return; ticking = true;
     window.requestAnimationFrame(function () { ticking = false; onScroll(); });
   }
@@ -329,11 +359,12 @@ export function initLanding() {
   // so above-the-fold content can never be stuck blank on first paint.
   const t3 = setTimeout(function () {
     $all('.reveal.in').forEach(function (el) {
-      if (getComputedStyle(el).opacity === '0') { el.style.transition = 'none'; el.style.opacity = '1'; el.style.transform = 'none'; }
+      const he = el as HTMLElement;
+      if (getComputedStyle(he).opacity === '0') { he.style.transition = 'none'; he.style.opacity = '1'; he.style.transform = 'none'; }
     });
   }, 600);
 
-  return function teardown() {
+  return function teardown(): void {
     window.removeEventListener('scroll', requestCheck);
     window.removeEventListener('resize', requestCheck);
     window.removeEventListener('load', onScroll);

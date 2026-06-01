@@ -6,6 +6,69 @@
 // filename is the final segment (`banking/core.pds` → `banking::core`). Files
 // are read and written through their handles, so edits persist to disk.
 
+import type { ManifestSection } from "./pds.js";
+
+// `showDirectoryPicker` is shipped by Chromium browsers but absent from the base
+// DOM lib; declare just what we use.
+interface DirectoryPickerOptions {
+  mode?: "read" | "readwrite";
+}
+
+declare global {
+  interface Window {
+    showDirectoryPicker(options?: DirectoryPickerOptions): Promise<FileSystemDirectoryHandle>;
+  }
+}
+
+/** A `.pds` module discovered in a workspace. */
+export interface WorkspaceFile {
+  path: string;
+  fqn: string;
+  handle: FileSystemFileHandle;
+}
+
+/** The workspace `pds.toml`: its handle (for in-IDE edits) and base-relative path. */
+export interface WorkspaceManifest {
+  handle: FileSystemFileHandle;
+  path: string;
+}
+
+/** A loaded workspace: its modules plus the raw `[doc]` manifest and handles. */
+export interface Workspace {
+  name: string;
+  root: FileSystemDirectoryHandle;
+  base: string;
+  manifestToml: string | null;
+  manifest: WorkspaceManifest | null;
+  files: WorkspaceFile[];
+}
+
+/** One doc page loaded by {@link readDocPages}: a manifest item plus its content. */
+export interface DocItem {
+  title: string;
+  path: string;
+  content: string;
+  handle: FileSystemFileHandle;
+}
+
+/** One sidebar group of loaded doc pages. */
+export interface DocGroup {
+  title: string;
+  items: DocItem[];
+}
+
+/** A file opened at a path: its current text and the handle behind it. */
+interface OpenedFile {
+  content: string;
+  handle: FileSystemFileHandle;
+}
+
+/** One generated site file written by {@link writeSite}. */
+export interface SiteFile {
+  path: string;
+  contents: string;
+}
+
 /** Whether the host browser exposes the File System Access API. */
 export const fsSupported =
   typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
@@ -14,16 +77,15 @@ const SKIP_DIRS = new Set(["node_modules", "target", ".git", ".svelte-kit"]);
 
 /**
  * Prompts for a folder and loads it as a workspace.
- * @returns {Promise<{name: string, root: FileSystemDirectoryHandle, files: WorkspaceFile[]}>}
  */
-export async function openWorkspace() {
+export async function openWorkspace(): Promise<Workspace> {
   const root = await window.showDirectoryPicker({ mode: "readwrite" });
   return readWorkspace(root);
 }
 
 /** A safe directory name: trims, lowercases spaces to hyphens, strips anything
  *  outside `[a-z0-9._-]`, and collapses repeats. Empty input yields "". */
-export function sanitizeProjectName(name) {
+export function sanitizeProjectName(name: string | null | undefined): string {
   return (name ?? "")
     .trim()
     .toLowerCase()
@@ -37,12 +99,12 @@ export function sanitizeProjectName(name) {
 export const DEFAULT_PROJECT_NAME = "my-architecture";
 
 /** The starter `pds.toml` for a new project (named for the workspace). */
-function starterManifest(name) {
+function starterManifest(name: string): string {
   return `[package]\nname = "${name}"\n\n[doc]\nname = "${name}"\ntheme = "dark"\n`;
 }
 
 /** The starter `main.pds`: a minimal valid model that compiles clean and draws. */
-function starterModule(name) {
+function starterModule(name: string): string {
   const title = name.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return `# The ${title} system — your architecture starts here.
 system Platform {
@@ -62,9 +124,8 @@ system Platform {
  * subdirectory under it, writes a starter `pds.toml` + `main.pds`, and returns
  * the same shape as `readWorkspace` so `mountWorkspace` just works. The name is
  * sanitized (falling back to the default if it sanitizes to empty).
- * @returns {Promise<{name, root, base, manifestToml, files}>}
  */
-export async function createWorkspace(name) {
+export async function createWorkspace(name: string): Promise<Workspace> {
   const safe = sanitizeProjectName(name) || DEFAULT_PROJECT_NAME;
   const parent = await window.showDirectoryPicker({ mode: "readwrite" });
   const root = await parent.getDirectoryHandle(safe, { create: true });
@@ -76,8 +137,8 @@ export async function createWorkspace(name) {
   const moduleHandle = await root.getFileHandle("main.pds", { create: true });
   await writeFile(moduleHandle, starterModule(safe));
 
-  const files = [{ path: "main.pds", handle: moduleHandle, fqn: "main" }];
-  const manifest = { handle: manifestHandle, path: "pds.toml" };
+  const files: WorkspaceFile[] = [{ path: "main.pds", handle: moduleHandle, fqn: "main" }];
+  const manifest: WorkspaceManifest = { handle: manifestHandle, path: "pds.toml" };
   return { name: safe, root, base: "", manifestToml, manifest, files };
 }
 
@@ -85,12 +146,11 @@ export async function createWorkspace(name) {
  * Loads a workspace from an already-resolved directory handle (e.g. a recent
  * project's stored handle, after permission is re-granted) — the picker-free
  * half of `openWorkspace`.
- * @returns {Promise<{name: string, root: FileSystemDirectoryHandle, files: WorkspaceFile[]}>}
  */
-export async function readWorkspace(root) {
-  const found = [];
-  let manifestPrefix = null; // directory prefix of the shallowest pds.toml
-  let manifestHandle = null;
+export async function readWorkspace(root: FileSystemDirectoryHandle): Promise<Workspace> {
+  const found: Array<{ path: string; handle: FileSystemFileHandle }> = [];
+  let manifestPrefix: string | null = null; // directory prefix of the shallowest pds.toml
+  let manifestHandle: FileSystemFileHandle | null = null;
   await walk(root, "", found, (prefix, handle) => {
     if (manifestPrefix === null || depth(prefix) < depth(manifestPrefix)) {
       manifestPrefix = prefix;
@@ -101,14 +161,16 @@ export async function readWorkspace(root) {
   const base = manifestPrefix ?? ""; // workspace root prefix ("" = picked dir)
   const files = found
     .filter((f) => f.path.endsWith(".pds") && underBase(f.path, base))
-    .map((f) => ({ path: f.path, handle: f.handle, fqn: fqnOf(f.path, base) }))
+    .map((f): WorkspaceFile => ({ path: f.path, handle: f.handle, fqn: fqnOf(f.path, base) }))
     .sort((a, b) => a.fqn.localeCompare(b.fqn));
 
   // The raw `[doc]` manifest, so the doc build can read `[[doc.sidebar]]` pages.
   // The handle is retained so `pds.toml` can be opened and edited in the IDE.
-  const manifestToml = manifestHandle ? await readFile(manifestHandle) : null;
-  const manifestPath = manifestHandle ? (base ? `${base}/pds.toml` : "pds.toml") : null;
-  const manifest = manifestHandle ? { handle: manifestHandle, path: manifestPath } : null;
+  const handle: FileSystemFileHandle | null = manifestHandle;
+  const manifestToml = handle ? await readFile(handle) : null;
+  const manifestPath = handle ? (base ? `${base}/pds.toml` : "pds.toml") : null;
+  const manifest: WorkspaceManifest | null =
+    handle && manifestPath ? { handle, path: manifestPath } : null;
 
   return { name: root.name, root, base, manifestToml, manifest, files };
 }
@@ -121,10 +183,14 @@ export async function readWorkspace(root) {
  * cannot be read is dropped (the site links only pages that exist), matching the
  * CLI's warn-and-skip.
  */
-export async function readDocPages(root, base, sidebar) {
-  const groups = [];
+export async function readDocPages(
+  root: FileSystemDirectoryHandle,
+  base: string,
+  sidebar: ManifestSection[] | null | undefined,
+): Promise<DocGroup[]> {
+  const groups: DocGroup[] = [];
   for (const group of sidebar ?? []) {
-    const items = [];
+    const items: DocItem[] = [];
     for (const item of group.items ?? []) {
       const found = await openFileAt(root, base ? `${base}/${item.path}` : item.path);
       // Carry the handle so edits in the IDE editor persist to disk, like a `.pds`.
@@ -141,13 +207,18 @@ export async function readDocPages(root, base, sidebar) {
  * the relative reference. Returns null when unresolvable (missing file, or no
  * root — a sample). Used by the Markdown live preview to render relative images.
  */
-export async function resolveDocAsset(root, docPath, relPath) {
+export async function resolveDocAsset(
+  root: FileSystemDirectoryHandle | null | undefined,
+  docPath: string,
+  relPath: string,
+): Promise<File | null> {
   if (!root || REMOTE_ASSET.test(relPath)) return null;
   const dir = docPath.includes("/") ? docPath.slice(0, docPath.lastIndexOf("/")) : "";
   const joined = normalizeRelPath(dir, relPath);
   if (joined == null) return null;
   const parts = joined.split("/").filter(Boolean);
   const name = parts.pop();
+  if (name === undefined) return null;
   try {
     let cur = root;
     for (const part of parts) cur = await cur.getDirectoryHandle(part);
@@ -162,7 +233,7 @@ const REMOTE_ASSET = /^(https?:|data:|mailto:)/i;
 
 /** Join a base dir and a relative path, resolving `.`/`..`. Returns null if it
  *  escapes above the workspace root. */
-function normalizeRelPath(dir, rel) {
+function normalizeRelPath(dir: string, rel: string): string | null {
   const stack = dir ? dir.split("/").filter(Boolean) : [];
   for (const seg of rel.split("/")) {
     if (seg === "" || seg === ".") continue;
@@ -177,9 +248,13 @@ function normalizeRelPath(dir, rel) {
 }
 
 /** Opens `path` under `root`, returning `{ content, handle }`, or `null`. */
-async function openFileAt(root, path) {
+async function openFileAt(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<OpenedFile | null> {
   const parts = path.split("/");
   const name = parts.pop();
+  if (name === undefined) return null;
   try {
     let dir = root;
     for (const part of parts) dir = await dir.getDirectoryHandle(part);
@@ -191,13 +266,13 @@ async function openFileAt(root, path) {
 }
 
 /** Reads a file handle's current text. */
-export async function readFile(handle) {
+export async function readFile(handle: FileSystemFileHandle): Promise<string> {
   const file = await handle.getFile();
   return file.text();
 }
 
 /** Overwrites a file handle with `text`. */
-export async function writeFile(handle, text) {
+export async function writeFile(handle: FileSystemFileHandle, text: string): Promise<void> {
   const writable = await handle.createWritable();
   await writable.write(text);
   await writable.close();
@@ -208,7 +283,11 @@ export async function writeFile(handle, text) {
  * workspace `root`, creating intermediate directories — the CLI's `pds doc`
  * output location. `files` is `[{ path, contents }]`. Returns the output dir.
  */
-export async function writeSite(root, files, dir = "target/doc") {
+export async function writeSite(
+  root: FileSystemDirectoryHandle,
+  files: SiteFile[],
+  dir = "target/doc",
+): Promise<string> {
   for (const file of files) {
     const handle = await fileHandleAt(root, `${dir}/${file.path}`);
     await writeFile(handle, file.contents);
@@ -217,9 +296,13 @@ export async function writeSite(root, files, dir = "target/doc") {
 }
 
 /** Resolves a writable file handle at `path` under `root`, creating dirs. */
-export async function fileHandleAt(root, path) {
+export async function fileHandleAt(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<FileSystemFileHandle> {
   const parts = path.split("/");
   const name = parts.pop();
+  if (name === undefined) throw new Error(`empty path: ${path}`);
   let dir = root;
   for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
   return dir.getFileHandle(name, { create: true });
@@ -230,9 +313,14 @@ export async function fileHandleAt(root, path) {
  * `{ dir, name }` where `name` is the leaf segment. With `create`, intermediate
  * directories are created; otherwise they must already exist.
  */
-export async function parentDirFor(root, path, { create = false } = {}) {
+export async function parentDirFor(
+  root: FileSystemDirectoryHandle,
+  path: string,
+  { create = false }: { create?: boolean } = {},
+): Promise<{ dir: FileSystemDirectoryHandle; name: string }> {
   const parts = path.split("/").filter(Boolean);
   const name = parts.pop();
+  if (name === undefined) throw new Error(`empty path: ${path}`);
   let dir = root;
   for (const part of parts) dir = await dir.getDirectoryHandle(part, { create });
   return { dir, name };
@@ -244,7 +332,11 @@ export async function parentDirFor(root, path, { create = false } = {}) {
  * disk primitive. Throws on a failed write so the caller can roll back any
  * in-memory change.
  */
-export async function createFile(root, path, contents = "") {
+export async function createFile(
+  root: FileSystemDirectoryHandle,
+  path: string,
+  contents = "",
+): Promise<FileSystemFileHandle> {
   const handle = await fileHandleAt(root, path);
   await writeFile(handle, contents);
   return handle;
@@ -257,7 +349,12 @@ export async function createFile(root, path, contents = "") {
  * the half-created destination and rethrows, so neither disk nor the caller's
  * memory is left half-applied. Returns the new file handle.
  */
-export async function movePath(root, oldPath, newPath, contents = null) {
+export async function movePath(
+  root: FileSystemDirectoryHandle,
+  oldPath: string,
+  newPath: string,
+  contents: string | null = null,
+): Promise<FileSystemFileHandle> {
   const text = contents ?? (await readFile(await openHandleAt(root, oldPath)));
   const newHandle = await fileHandleAt(root, newPath);
   try {
@@ -277,24 +374,28 @@ export async function movePath(root, oldPath, newPath, contents = null) {
 }
 
 /** Deletes the file at `path` under `root`. */
-export async function deletePath(root, path) {
+export async function deletePath(root: FileSystemDirectoryHandle, path: string): Promise<void> {
   const { dir, name } = await parentDirFor(root, path);
   await dir.removeEntry(name);
 }
 
 /** Resolves an existing file handle at `path` under `root` (no create). */
-async function openHandleAt(root, path) {
+async function openHandleAt(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<FileSystemFileHandle> {
   const { dir, name } = await parentDirFor(root, path);
   return dir.getFileHandle(name);
 }
 
-/**
- * @typedef {{ path: string, fqn: string, handle: FileSystemFileHandle }} WorkspaceFile
- */
-
 // ---- internals -------------------------------------------------------------
 
-async function walk(dir, prefix, found, onManifest) {
+async function walk(
+  dir: FileSystemDirectoryHandle,
+  prefix: string,
+  found: Array<{ path: string; handle: FileSystemFileHandle }>,
+  onManifest: (prefix: string, handle: FileSystemFileHandle) => void,
+): Promise<void> {
   for await (const [name, handle] of dir.entries()) {
     const path = prefix ? `${prefix}/${name}` : name;
     if (handle.kind === "directory") {
@@ -307,16 +408,16 @@ async function walk(dir, prefix, found, onManifest) {
   }
 }
 
-function depth(prefix) {
+function depth(prefix: string): number {
   return prefix === "" ? 0 : prefix.split("/").length;
 }
 
-function underBase(path, base) {
+function underBase(path: string, base: string): boolean {
   return base === "" || path.startsWith(`${base}/`);
 }
 
 /** Path → module FQN, relative to the manifest `base` directory. */
-export function fqnOf(path, base) {
+export function fqnOf(path: string, base: string): string {
   const rel = base === "" ? path : path.slice(base.length + 1);
   return rel.replace(/\.pds$/, "").split("/").join("::");
 }
@@ -329,7 +430,10 @@ export function fqnOf(path, base) {
  * regenerated groups are appended. Only the sidebar section is rebuilt — the one
  * part these flows mutate — not a general TOML round-trip.
  */
-export function serializeManifest(originalToml, manifest) {
+export function serializeManifest(
+  originalToml: string | null | undefined,
+  manifest: { sidebar?: ManifestSection[] | null },
+): string {
   const text = originalToml ?? "";
   const idx = text.search(/^\[\[doc\.sidebar\]\]/m);
   const head = (idx === -1 ? text : text.slice(0, idx)).replace(/\s*$/, "\n");
@@ -345,6 +449,6 @@ export function serializeManifest(originalToml, manifest) {
 }
 
 /** A double-quoted TOML basic string (escapes `\` and `"`). */
-function tomlStr(s) {
+function tomlStr(s: string | null | undefined): string {
   return `"${String(s ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
