@@ -29,6 +29,8 @@
   import { selection } from "$lib/stores/selection.svelte.js";
   import { saveStore } from "$lib/stores/save.svelte.js";
   import { diagnostics } from "$lib/stores/diagnostics.svelte.js";
+  import { ui } from "$lib/stores/ui.svelte.js";
+  import { shareStore } from "$lib/stores/share.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -192,27 +194,13 @@
   // Dirty keys mapped to their tree paths, for the FileTree row dot.
   const dirtyPaths = $derived(workspace ? dirtyPathsOf(dirty, workspace.files) : new Set<string>());
 
-  // The Markdown reading width (narrow | wide | full), persisted across sessions.
-  let docWidth = $state(loadDocWidth());
-  function loadDocWidth(): string {
-    try {
-      return localStorage.getItem("pds-doc-width") || "narrow";
-    } catch {
-      return "narrow";
-    }
-  }
-  function setDocWidth(w: string) {
-    docWidth = w;
-    try {
-      localStorage.setItem("pds-doc-width", w);
-    } catch {
-      /* storage unavailable — session-only */
-    }
-  }
+  // The Markdown reading width — owned (and persisted) by the ui store.
+  const docWidth = $derived(ui.docWidth);
+  const setDocWidth = (w: string) => ui.setDocWidth(w);
 
   // The Markdown syntax cheat-sheet shown from the doc toolbar's "?" button —
   // every flavour the live preview and `pds doc` render.
-  let mdHelpOpen = $state(false);
+  const mdHelpOpen = $derived(ui.mdHelpOpen);
   const MD_SYNTAX = [
     { name: "Heading", syntax: "# H1  ·  ## H2  …  ###### H6" },
     { name: "Bold", syntax: "**bold**" },
@@ -232,15 +220,15 @@
 
   // The project panel (recent projects + examples + open folder): opens on start
   // and from the toolbar's project button. Never autoloads an architecture.
-  let projectOpen = $state(false);
+  const projectOpen = $derived(ui.projectOpen);
   // Whether the keyboard-shortcuts settings modal is open (toolbar gear or the
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
-  let settingsOpen = $state(false);
-  let recents = $state<Recent[]>([]);
+  const settingsOpen = $derived(ui.settingsOpen);
+  const recents = $derived(ui.recents);
   // Only persisted projects (folders) are recents; in-memory samples re-open
   // from the catalogue, so they're never recorded — and legacy sample entries
   // are filtered out of the list.
-  const refreshRecents = () => (recents = getRecents().filter((r) => r.kind !== "sample"));
+  const refreshRecents = () => (ui.recents = getRecents().filter((r) => r.kind !== "sample"));
 
   const source = $derived(
     openFile?.isManifest
@@ -292,8 +280,8 @@
   // Canvas interaction mirrors the code editor: hovering a node shows its
   // information; Cmd/Ctrl-clicking shows its usages. Both are popovers anchored
   // at the pointer.
-  let canvasInfo = $state<CanvasInfo | null>(null); // { kind, name, fqn, x, y }
-  let canvasUsages = $state<CanvasUsages | null>(null); // { name, items, x, y }
+  const canvasInfo = $derived(ui.canvasInfo); // { kind, name, fqn, x, y }
+  const canvasUsages = $derived(ui.canvasUsages); // { name, items, x, y }
 
   // The byte offset of a node's declaration in its module source.
   const nodeByteOffset = (fileFqn: string, line: number, col: number) =>
@@ -324,19 +312,19 @@
   function showCanvasInfo(fqn: string, e: MouseEvent) {
     const at = { fqn, x: e.clientX, y: e.clientY };
     if (ACTOR_DOC[fqn]) {
-      canvasInfo = { ...ACTOR_DOC[fqn], ...at };
+      ui.canvasInfo = { ...ACTOR_DOC[fqn], ...at };
       return;
     }
     // An `event:<fqn>` actor documents the event node it names.
     const real = fqn.startsWith("event:") ? fqn.slice(6) : resolveNodeFqn(fqn);
     const doc = real ? docFor(real) : null;
-    canvasInfo = doc
+    ui.canvasInfo = doc
       ? { ...doc, fqn: real ?? undefined, x: e.clientX, y: e.clientY }
       : fqn.startsWith("event:")
         ? { kind: "system", title: fqn.slice(6), body: "Triggered by this event.", ...at }
         : null;
   }
-  const hideCanvasInfo = () => (canvasInfo = null);
+  const hideCanvasInfo = () => (ui.canvasInfo = null);
 
   function showCanvasUsages(fqn: string, e: MouseEvent) {
     if (ACTOR_DOC[fqn]) {
@@ -349,7 +337,7 @@
       notify("info", "No usages", "Not a resolvable symbol.");
       return;
     }
-    canvasInfo = null;
+    ui.canvasInfo = null;
     let refs = null;
     try {
       refs = references(allModules, hit.fileFqn, nodeByteOffset(hit.fileFqn, hit.node.line, hit.node.col));
@@ -360,10 +348,10 @@
       notify("info", "No usages", `\`${hit.node.name}\` is not referenced.`);
       return;
     }
-    canvasUsages = { name: refs.fqn.split("::").at(-1) ?? "", items: refs.occurrences, x: e.clientX, y: e.clientY };
+    ui.canvasUsages = { name: refs.fqn.split("::").at(-1) ?? "", items: refs.occurrences, x: e.clientX, y: e.clientY };
   }
   function pickCanvasUsage(occ: Occurrence) {
-    canvasUsages = null;
+    ui.canvasUsages = null;
     openUsage(occ);
   }
 
@@ -464,7 +452,7 @@
     // A `#w=` share link restores its workspace and skips the project panel;
     // otherwise open the panel on start (never autoload a model).
     const restored = await restoreFromHash();
-    projectOpen = !restored;
+    ui.projectOpen = !restored;
   }
   onMount(boot);
 
@@ -498,7 +486,7 @@
     selection.pendingGoto = null;
     selection.view = "code";
     navigation.reset();
-    projectOpen = false;
+    ui.projectOpen = false;
     wsStore.docGroups = [];
     wsStore.docSources = {};
     wsStore.docMeta = {};
@@ -625,8 +613,8 @@
 
   // One dialog drives every FileTree name prompt. `dialog` holds its config or
   // is null when closed; `confirmDialog` is the destructive-action confirm.
-  let dialog = $state<Dialog | null>(null);
-  let confirmDialog = $state<ConfirmDialog | null>(null);
+  const dialog = $derived(ui.dialog);
+  const confirmDialog = $derived(ui.confirmDialog);
 
   // A minimal valid `.pds` module: a system shell with one container and one
   // behaviour, mirroring the new-workspace starter so it resolves clean.
@@ -640,7 +628,7 @@
 
   function startNewFile() {
     if (!workspace) return;
-    dialog = {
+    ui.dialog = {
       title: "New .pds file",
       label: "Module path",
       placeholder: "banking/core",
@@ -682,7 +670,7 @@
 
   function startNewDoc() {
     if (!workspace) return;
-    dialog = {
+    ui.dialog = {
       title: "New doc page",
       label: "Page title",
       placeholder: "Release Notes",
@@ -754,7 +742,7 @@
   function startRenameFile(file: OpenFile) {
     if (!workspace || !file.path) return;
     const rel = workspace.base ? file.path.slice(workspace.base.length + 1) : file.path;
-    dialog = {
+    ui.dialog = {
       title: "Rename module",
       label: "Module path",
       placeholder: "banking/core",
@@ -816,7 +804,7 @@
 
   function requestDeleteFile(file: OpenFile) {
     if (!workspace) return;
-    confirmDialog = {
+    ui.confirmDialog = {
       title: "Delete module",
       message: `Delete ${file.fqn}? This removes the file from disk and the model. Importers will dangle.`,
       confirmLabel: "Delete",
@@ -1165,8 +1153,8 @@
     }
   }
 
-  let building = $state(false);
-  let buildNotice = $state(false); // the blocking example-vs-folder modal
+  const building = $derived(ui.building);
+  const buildNotice = $derived(ui.buildNotice); // the blocking example-vs-folder modal
 
   // Build the static documentation site (the browser equivalent of `pds doc`).
   // An opened folder builds straight to disk; the bundled example first opens a
@@ -1176,18 +1164,18 @@
     if (workspace.root) {
       runBuild();
     } else {
-      buildNotice = true;
+      ui.buildNotice = true;
     }
   }
 
   // Confirmed from the modal: build the example as a read-only preview.
   function confirmPreviewBuild() {
-    buildNotice = false;
+    ui.buildNotice = false;
     runBuild();
   }
   // From the modal: open a real folder to build to disk instead.
   function openFolderFromNotice() {
-    buildNotice = false;
+    ui.buildNotice = false;
     openFolder();
   }
 
@@ -1207,7 +1195,7 @@
   async function runBuild() {
     const ws = workspace;
     if (!ws) return;
-    building = true;
+    ui.building = true;
     try {
       const config = buildDocConfig();
       const files = renderDocSite(allModules, config);
@@ -1225,7 +1213,7 @@
     } catch (e) {
       notify("error", "Documentation build failed", String((e as Error)?.message ?? e));
     } finally {
-      building = false;
+      ui.building = false;
     }
   }
 
@@ -1296,13 +1284,13 @@ show('index.html');
     mountWorkspace(ws, landing);
   }
 
-  let busyShare = $state(false);
+  const busyShare = $derived(shareStore.busy);
 
   // Share: encode the live workspace, base64url it into the URL hash, and copy
   // the link. Over the size guard, fall back to a file export instead.
   async function onshare() {
     if (!workspace || busyShare) return;
-    busyShare = true;
+    shareStore.busy = true;
     try {
       const bytes = await encodeWorkspace(snapshotWorkspace());
       if (bytes.length > MAX_HASH_BYTES) {
@@ -1324,7 +1312,7 @@ show('index.html');
     } catch (e) {
       notify("error", "Could not create share link", String((e as Error)?.message ?? e));
     } finally {
-      busyShare = false;
+      shareStore.busy = false;
     }
   }
 
@@ -1389,10 +1377,10 @@ show('index.html');
 <svelte:window
   onkeydown={(e) => {
     if (e.key === "Escape") {
-      if (buildNotice) buildNotice = false;
-      if (projectOpen && workspace) projectOpen = false;
-      canvasInfo = null;
-      canvasUsages = null;
+      if (buildNotice) ui.buildNotice = false;
+      if (projectOpen && workspace) ui.projectOpen = false;
+      ui.canvasInfo = null;
+      ui.canvasUsages = null;
     }
     // Cmd/Ctrl-S saves the active file even when the editor isn't focused (e.g.
     // on the canvas or problems view). The editor's own keymap handles the
@@ -1424,10 +1412,10 @@ show('index.html');
     validate={dialog.validate}
     onconfirm={(v: string) => {
       const run = dialog?.run;
-      dialog = null;
+      ui.dialog = null;
       run?.(v);
     }}
-    oncancel={() => (dialog = null)}
+    oncancel={() => (ui.dialog = null)}
   />
 {/if}
 
@@ -1436,20 +1424,20 @@ show('index.html');
     class="confirm-backdrop"
     role="presentation"
     onclick={(e) => {
-      if (e.target === e.currentTarget) confirmDialog = null;
+      if (e.target === e.currentTarget) ui.confirmDialog = null;
     }}
   >
     <div class="confirm" role="alertdialog" aria-modal="true" aria-label={confirmDialog.title}>
       <h2>{confirmDialog.title}</h2>
       <p>{confirmDialog.message}</p>
       <div class="confirm-actions">
-        <button class="ghost" type="button" onclick={() => (confirmDialog = null)}>Cancel</button>
+        <button class="ghost" type="button" onclick={() => (ui.confirmDialog = null)}>Cancel</button>
         <button
           class="danger"
           type="button"
           onclick={() => {
             const run = confirmDialog?.run;
-            confirmDialog = null;
+            ui.confirmDialog = null;
             run?.();
           }}
         >
@@ -1471,12 +1459,12 @@ show('index.html');
     onopenfolder={openFolder}
     onnewproject={newProject}
     onforget={forgetRecent}
-    onclose={() => (projectOpen = false)}
+    onclose={() => (ui.projectOpen = false)}
   />
 {/if}
 
 {#if settingsOpen}
-  <Settings onclose={() => (settingsOpen = false)} />
+  <Settings onclose={() => (ui.settingsOpen = false)} />
 {/if}
 
 <!-- Canvas hover info: kind eyebrow, name, FQN, anchored at the pointer. -->
@@ -1491,7 +1479,7 @@ show('index.html');
 
 <!-- Canvas usages: a click-away list of references; picking one jumps to it. -->
 {#if canvasUsages}
-  <button type="button" class="canvas-backdrop" aria-label="Dismiss usages" onclick={() => (canvasUsages = null)}></button>
+  <button type="button" class="canvas-backdrop" aria-label="Dismiss usages" onclick={() => (ui.canvasUsages = null)}></button>
   <div class="canvas-pop usages" style="left:{canvasUsages.x + 14}px; top:{canvasUsages.y + 14}px">
     <div class="usages-head">{canvasUsages.items.length} usage{canvasUsages.items.length === 1 ? "" : "s"} of <code>{canvasUsages.name}</code></div>
     {#each canvasUsages.items as occ (occ.fqn + occ.line + occ.col)}
@@ -1507,7 +1495,7 @@ show('index.html');
   <!-- Backdrop-click is a mouse convenience; Escape and the Cancel button give
        full keyboard access, so the static-element interaction lint is waived. -->
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) buildNotice = false; }}>
+  <div class="scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) ui.buildNotice = false; }}>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="build-notice-title">
       <h2 id="build-notice-title">Build the example as a preview?</h2>
       <p>
@@ -1519,7 +1507,7 @@ show('index.html');
         with the diagrams hydrated — open a folder as your workspace first.
       </p>
       <div class="modal-actions">
-        <button class="ghost" onclick={() => (buildNotice = false)}>Cancel</button>
+        <button class="ghost" onclick={() => (ui.buildNotice = false)}>Cancel</button>
         {#if fsSupported}
           <button class="ghost" onclick={openFolderFromNotice}>Open a folder…</button>
         {/if}
@@ -1559,10 +1547,10 @@ show('index.html');
       title="Markdown syntax"
       aria-label="Markdown syntax"
       aria-expanded={mdHelpOpen}
-      onclick={() => (mdHelpOpen = !mdHelpOpen)}
+      onclick={() => (ui.mdHelpOpen = !mdHelpOpen)}
     >?</button>
     {#if mdHelpOpen}
-      <button class="md-help-scrim" aria-label="Close" onclick={() => (mdHelpOpen = false)}></button>
+      <button class="md-help-scrim" aria-label="Close" onclick={() => (ui.mdHelpOpen = false)}></button>
       <div class="md-help-pop" role="dialog" aria-label="Markdown syntax">
         <div class="md-help-head">Markdown syntax</div>
         <ul>
@@ -1606,12 +1594,12 @@ show('index.html');
     {dirtyCount}
     {saveState}
     {onformat}
-    onproject={() => (projectOpen = true)}
+    onproject={() => (ui.projectOpen = true)}
     {onbuilddocs}
     {onshare}
     {onexport}
     {onimport}
-    onopensettings={() => (settingsOpen = true)}
+    onopensettings={() => (ui.settingsOpen = true)}
   />
 
   {#if wasmError}
@@ -1695,7 +1683,7 @@ show('index.html');
               onnavigate={openUsage}
               {onformat}
               onsave={saveActiveFile}
-              onopensettings={() => (settingsOpen = true)}
+              onopensettings={() => (ui.settingsOpen = true)}
             />
           </div>
           {#if view === "canvas"}
