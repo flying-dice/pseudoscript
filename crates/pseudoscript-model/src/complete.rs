@@ -8,7 +8,8 @@
 //! - after `#[` → the built-in macros;
 //! - after `:` or `<` (type position) → primitive types, `Result`, and every
 //!   declared type;
-//! - otherwise → keywords, this module's symbols, and its aliases.
+//! - otherwise → keywords, this module's symbols and aliases, and the other
+//!   workspace modules (to start a cross-module reference).
 //!
 //! The caller filters the returned set against the prefix being typed, so the
 //! full candidate list is offered. Positions are byte offsets, so the engine is
@@ -200,13 +201,20 @@ fn type_items(ws: &Workspace) -> Vec<CompletionItem> {
     primitives.chain(declared).collect()
 }
 
-/// Keywords plus this module's own symbols and aliases.
+/// Keywords, this module's own symbols and aliases, and the other modules in the
+/// workspace (so a cross-module reference can be started — pick the module, then
+/// `::` drills into its public symbols).
 fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
     let keywords = TokenKind::KEYWORDS
         .iter()
         .map(|k| item(k, CompletionKind::Keyword, "keyword"));
+    let modules = ws
+        .modules()
+        .iter()
+        .filter(|m| m.fqn != from_fqn)
+        .map(|m| item(&m.fqn, CompletionKind::Module, "module"));
     let Some(entry) = ws.module(from_fqn) else {
-        return keywords.collect();
+        return keywords.chain(modules).collect();
     };
     let symbols = entry
         .model
@@ -216,7 +224,11 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
         .model
         .aliases()
         .map(|(name, a)| item(name, CompletionKind::Reference, &a.target));
-    keywords.chain(symbols).chain(aliases).collect()
+    keywords
+        .chain(symbols)
+        .chain(aliases)
+        .chain(modules)
+        .collect()
 }
 
 /// The completion kind for a declared symbol.
@@ -330,6 +342,26 @@ mod tests {
         let labels = labels_at(&ws, "b", src, offset);
         assert!(labels.contains(&"Svc".to_owned()), "{labels:?}");
         assert!(!labels.contains(&"Hidden".to_owned()), "{labels:?}");
+    }
+
+    #[test]
+    fn general_offers_other_modules() {
+        // At the root / a reference position, the other workspace modules are
+        // suggested (so a cross-module reference can be started), alongside
+        // keywords — but not this module itself.
+        let mods = [
+            ("context", "//! context\n\npublic system AcmeTickets;\n"),
+            ("m", "//! m\n\n"),
+        ];
+        let ws = workspace(&mods);
+        let src = mods[1].1;
+        let labels = labels_at(&ws, "m", src, src.len() as u32);
+        assert!(labels.contains(&"context".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"system".to_owned()), "{labels:?}");
+        assert!(
+            !labels.contains(&"m".to_owned()),
+            "own module excluded: {labels:?}"
+        );
     }
 
     #[test]
