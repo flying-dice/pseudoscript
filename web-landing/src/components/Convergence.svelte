@@ -5,15 +5,15 @@
 <section id="converge" data-screen-label="Convergence">
   <div class="wrap">
     <div class="converge-head">
-      <div class="eyebrow-row reveal" style="justify-content:center"><span class="lbl accent">One toolchain</span></div>
-      <h2 class="statement reveal d1">Four disciplines, <span class="hot">one artefact.</span></h2>
-      <p class="lede reveal d2">Spec-driven development, vibe programming, refinement, and design were separate steps. PseudoScript collapses them into a single source you write — and everything downstream regenerates.</p>
+      <div class="eyebrow-row reveal" style="justify-content:center"><span class="lbl accent">Pseudo programming</span></div>
+      <h2 class="statement reveal d1">Four disciplines, <span class="hot">one practice.</span></h2>
+      <p class="lede reveal d2">Spec-driven development, agentic coding, refinement, and design were separate steps. PseudoScript collapses them into a single source you write — and everything downstream regenerates.</p>
     </div>
 
     <div class="flow">
       <div class="flow-col">
         <div class="disc k-spec reveal"><div class="num">01 · INPUT</div><h3>Spec-driven development</h3><p>The model is the source. You declare structure — system, container, component, person — and the Analyzer holds you to it.</p></div>
-        <div class="disc k-vibe reveal d1"><div class="num">02 · INPUT</div><h3>Vibe programming</h3><p>Describe intent in high-level pseudocode. No boilerplate, no ceremony — just what the system is and does.</p></div>
+        <div class="disc k-vibe reveal d1"><div class="num">02 · INPUT</div><h3>Agentic coding</h3><p>Describe intent in high-level pseudocode. No boilerplate, no ceremony — just what the system is and does.</p></div>
       </div>
 
       <div class="flow-core">

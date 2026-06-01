@@ -164,7 +164,7 @@ section { position: relative; padding: clamp(4rem, 9vw, 8rem) 0; }
 .c4-node.data { --k: var(--k-data); } .c4-node.callable { --k: var(--k-callable); }
 
 /* =============================================================================
-   CONVERGENCE — four disciplines into one artefact
+   CONVERGENCE — four disciplines into one practice
    ========================================================================== */
 .converge-head { text-align: center; max-width: 56ch; margin: 0 auto 3.5rem; }
 .converge-head .statement { max-width: 18ch; margin-left: auto; margin-right: auto; }
