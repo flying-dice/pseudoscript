@@ -37,3 +37,14 @@ A `PreToolUse` hook in `.claude/settings.json` **denies any `git commit`** until
 ## Rust crate
 
 A Cargo workspace (`resolver = "3"`, edition 2024) with one member, `crates/pseudoscript`, whose binary is named `pds`. Standard commands: `cargo build`, `cargo test`, `cargo run -p pseudoscript`, `cargo test <name>` for a single test. The implementation is not started; when writing Rust, the `idiomatic-rust` skill is required.
+
+## Completion has two independent engines — do not conflate them
+
+Autocomplete is served by two separate, unsynchronised implementations. A fix to one does **not** reach the other:
+
+- **Native LSP** — `crates/pseudoscript-lsp/src/complete.rs` (context-aware: `.`/`::`/`:`/`<`/`#[`), consumed at `server.rs` `completion()`. This is what real editors (e.g. `pseudoscript-jetbrains`) get over LSP.
+- **Web IDE** — `web-ide/src/lib/pseudoscript-language.js` `pseudoscriptCompletion()`, a CodeMirror provider. It is **context-free**: always offers all keywords + all workspace symbols (name and fqn), relying solely on CodeMirror's prefix filter. No `.`/`::`/type-position narrowing.
+
+The wasm bundle (`crates/pseudoscript-wasm`, prebuilt into `web-ide/src/lib/pds-wasm/`) exports `hover`/`definition`/`references` but **no `completion`** — so the web IDE never calls Rust for completion, and rebuilding wasm changes nothing about IDE autocomplete. Rebuild only when a *wasm-exported* surface changes: `wasm-pack build` via `web-ide` `npm run build:wasm`, then commit the regenerated `pds-wasm/` artifacts.
+
+When asked to fix "autocomplete", first establish which surface: web IDE → edit the JS provider; LSP editor → edit `complete.rs`. The long-term fix is to give `complete.rs` a wasm `completion` export and have the IDE call it, collapsing the two into one.
