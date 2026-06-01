@@ -307,6 +307,29 @@ export function emit_svg(source, view, target) {
 }
 
 /**
+ * Foldable regions of `source` as a JSON array of `{ start, end }` in absolute
+ * byte offsets — every multi-line declaration and statement block. The editor
+ * folds these ranges instead of brace-matching in JS, sharing the LSP's
+ * AST-accurate fold logic.
+ * @param {string} source
+ * @returns {string}
+ */
+export function folding_ranges(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.folding_ranges(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Formats `source` into its canonical form.
  *
  * # Errors
@@ -567,6 +590,32 @@ export function render_doc_site(modules_json, config_json, render) {
         return getStringFromWasm0(ptr3, len3);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * AST-aware semantic tokens for `source`, as a JSON array of
+ * `{ start, end, kind, declaration }` in absolute byte offsets, sorted and
+ * non-overlapping. `kind` is a camelCase tag (`namespace`/`type`/`class`/
+ * `parameter`/`variable`/`property`/`enumMember`/`method`/`keyword`/`comment`/
+ * `string`/`number`/`decorator`); `declaration` marks a definition site. An
+ * editor decorates these ranges — the same colouring the LSP serves, replacing
+ * any hand-written tokenizer.
+ * @param {string} source
+ * @returns {string}
+ */
+export function semantic_tokens(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.semantic_tokens(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

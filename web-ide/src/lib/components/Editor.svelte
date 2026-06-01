@@ -19,9 +19,8 @@
   import { pseudoscript, pseudoscriptCompletion, pseudoscriptLinter } from "$lib/pseudoscript-language.js";
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
-  import { completion as symbolCompletion, definition as symbolDefinition, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
+  import { completion as symbolCompletion, definition as symbolDefinition, foldRanges, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
-  import { blockRanges } from "$lib/blocks.js";
 
   let {
     value = "",
@@ -368,11 +367,23 @@
 
   // ── Folding ────────────────────────────────────────────────────────────────
   // Blocks fold by default; the navigated-to block (and its ancestors) stays
-  // open. Fold extents come from `blockRanges`, memoised per document.
+  // open. Fold extents come from the compiler's AST-accurate fold ranges (the
+  // same the LSP serves), memoised per document. The byte spans map to
+  // `{ open, close }` editor offsets: `open` at the construct start, `close` at
+  // its closing brace (kept visible).
   const rangeCache = new WeakMap();
   function rangesOf(doc) {
     let r = rangeCache.get(doc);
-    if (!r) rangeCache.set(doc, (r = blockRanges(doc.toString())));
+    if (!r) {
+      const src = doc.toString();
+      r = foldRanges(src)
+        .map((range) => ({
+          open: byteToChar(src, range.start),
+          close: byteToChar(src, range.end - 1),
+        }))
+        .filter((range) => range.close > range.open);
+      rangeCache.set(doc, r);
+    }
     return r;
   }
   // The fold span for a `{ … }` pair: from the end of the opening line to the
@@ -682,6 +693,7 @@
 <div
   class="editor"
   bind:this={host}
+  data-testid="editor"
   role="group"
   aria-label="PseudoScript source editor"
 ></div>

@@ -16,6 +16,8 @@ import init, {
   definition as wasmDefinition,
   references as wasmReferences,
   completion as wasmCompletion,
+  semantic_tokens as wasmSemanticTokens,
+  folding_ranges as wasmFoldingRanges,
   doc_ssr_bundle as wasmDocSsrBundle,
   doc_manifest as wasmDocManifest,
   outline as wasmOutline,
@@ -139,6 +141,25 @@ export function references(modules, moduleFqn, offset) {
  */
 export function completion(modules, moduleFqn, offset) {
   return JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset));
+}
+
+/**
+ * AST-aware semantic tokens for `source`: `[{ start, end, kind, declaration }]`
+ * in absolute UTF-8 byte offsets, sorted and non-overlapping. `kind` is a
+ * camelCase role tag the editor maps to a highlight colour. The same colouring
+ * the LSP serves — no hand-written tokenizer.
+ */
+export function semanticTokens(source) {
+  return JSON.parse(wasmSemanticTokens(source));
+}
+
+/**
+ * Foldable regions of `source`: `[{ start, end }]` in absolute UTF-8 byte
+ * offsets — every multi-line declaration and statement block, from the same
+ * AST-accurate fold logic the LSP uses.
+ */
+export function foldRanges(source) {
+  return JSON.parse(wasmFoldingRanges(source));
 }
 
 /**

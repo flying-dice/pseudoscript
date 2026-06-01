@@ -5,3 +5,8 @@ node_modules/
 .DS_Store
 # The vendored wasm package (src/lib/pds-wasm/) is committed on purpose so the
 # Cloudflare build needs no Rust toolchain — do NOT ignore it.
+/storybook-static/
+/test-results/
+/playwright-report/
+/blob-report/
+/.playwright/

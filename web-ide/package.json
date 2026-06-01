@@ -8,14 +8,27 @@
     "build": "vite build",
     "postbuild": "printf '_worker.js\\n_routes.json\\n' > .svelte-kit/cloudflare/.assetsignore",
     "preview": "vite preview",
-    "build:wasm": "wasm-pack build ../crates/pseudoscript-wasm --release --target web --out-dir ../../web-ide/src/lib/pds-wasm && rm -f src/lib/pds-wasm/.gitignore src/lib/pds-wasm/package.json src/lib/pds-wasm/README.md"
+    "build:wasm": "wasm-pack build ../crates/pseudoscript-wasm --release --target web --out-dir ../../web-ide/src/lib/pds-wasm && rm -f src/lib/pds-wasm/.gitignore src/lib/pds-wasm/package.json src/lib/pds-wasm/README.md",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@storybook/sveltekit": "^10.4.1",
     "@sveltejs/adapter-cloudflare": "^7.2.8",
     "@sveltejs/kit": "^2.61.1",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/svelte": "^5.3.1",
+    "@testing-library/user-event": "^14.6.1",
+    "jsdom": "^29.1.1",
+    "storybook": "^10.4.1",
     "svelte": "^5.56.0",
-    "vite": "^8"
+    "vite": "^8",
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.2",

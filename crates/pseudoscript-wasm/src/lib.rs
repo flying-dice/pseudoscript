@@ -40,7 +40,8 @@ use pseudoscript_emit::{
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
     Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
-    completion as model_completion, graph as build_graph, resolve::resolve_at,
+    completion as model_completion, folding_ranges as model_folding_ranges, graph as build_graph,
+    resolve::resolve_at, semantic_tokens as model_semantic_tokens,
 };
 use pseudoscript_syntax::{
     Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
@@ -134,6 +135,29 @@ pub fn emit_svg(source: &str, view: &str, target: &str) -> Result<String, JsErro
     project_view(source, view, target)
         .map(|scene| render_svg(&scene))
         .map_err(|e| JsError::new(&e))
+}
+
+/// AST-aware semantic tokens for `source`, as a JSON array of
+/// `{ start, end, kind, declaration }` in absolute byte offsets, sorted and
+/// non-overlapping. `kind` is a camelCase tag (`namespace`/`type`/`class`/
+/// `parameter`/`variable`/`property`/`enumMember`/`method`/`keyword`/`comment`/
+/// `string`/`number`/`decorator`); `declaration` marks a definition site. An
+/// editor decorates these ranges — the same colouring the LSP serves, replacing
+/// any hand-written tokenizer.
+#[wasm_bindgen]
+#[must_use]
+pub fn semantic_tokens(source: &str) -> String {
+    to_json(&model_semantic_tokens(source))
+}
+
+/// Foldable regions of `source` as a JSON array of `{ start, end }` in absolute
+/// byte offsets — every multi-line declaration and statement block. The editor
+/// folds these ranges instead of brace-matching in JS, sharing the LSP's
+/// AST-accurate fold logic.
+#[wasm_bindgen]
+#[must_use]
+pub fn folding_ranges(source: &str) -> String {
+    to_json(&model_folding_ranges(source))
 }
 
 /// Lists the nodes declared in `source` as a JSON array of

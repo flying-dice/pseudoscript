@@ -108,6 +108,14 @@ export function emit_scene_modules(modules_json: string, view: string, target: s
 export function emit_svg(source: string, view: string, target: string): string;
 
 /**
+ * Foldable regions of `source` as a JSON array of `{ start, end }` in absolute
+ * byte offsets — every multi-line declaration and statement block. The editor
+ * folds these ranges instead of brace-matching in JS, sharing the LSP's
+ * AST-accurate fold logic.
+ */
+export function folding_ranges(source: string): string;
+
+/**
  * Formats `source` into its canonical form.
  *
  * # Errors
@@ -204,6 +212,17 @@ export function references(modules_json: string, module_fqn: string, offset: num
 export function render_doc_site(modules_json: string, config_json: string, render: Function): string;
 
 /**
+ * AST-aware semantic tokens for `source`, as a JSON array of
+ * `{ start, end, kind, declaration }` in absolute byte offsets, sorted and
+ * non-overlapping. `kind` is a camelCase tag (`namespace`/`type`/`class`/
+ * `parameter`/`variable`/`property`/`enumMember`/`method`/`keyword`/`comment`/
+ * `string`/`number`/`decorator`); `declaration` marks a definition site. An
+ * editor decorates these ranges — the same colouring the LSP serves, replacing
+ * any hand-written tokenizer.
+ */
+export function semantic_tokens(source: string): string;
+
+/**
  * Routes Rust panics to the browser console with a readable stack. Runs once
  * on module instantiation (wasm only).
  */
@@ -253,6 +272,7 @@ export interface InitOutput {
     readonly emit_scene: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly emit_scene_modules: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly emit_svg: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly folding_ranges: (a: number, b: number) => [number, number];
     readonly format: (a: number, b: number) => [number, number, number, number];
     readonly hover: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly layout_scene: (a: number, b: number) => [number, number, number, number];
@@ -261,6 +281,7 @@ export interface InitOutput {
     readonly parse: (a: number, b: number) => [number, number];
     readonly references: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly render_doc_site: (a: number, b: number, c: number, d: number, e: any) => [number, number, number, number];
+    readonly semantic_tokens: (a: number, b: number) => [number, number];
     readonly symbol_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly symbol_svg: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly version: () => [number, number];

@@ -112,7 +112,7 @@
           <ul class="cards">
             {#each group.items as ex (ex.id)}
               <li>
-                <button class="card" onclick={() => onpicksample?.(ex.id)}>
+                <button class="card" data-testid="sample-{ex.id}" onclick={() => onpicksample?.(ex.id)}>
                   <span class="ct tl"></span><span class="ct br"></span>
                   <span class="card-top">
                     <span class="card-name">{ex.name}</span>

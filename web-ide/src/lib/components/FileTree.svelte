@@ -219,6 +219,7 @@
                   class:active={file.path === openPath}
                   class:has-error={errorPaths.has(file.path)}
                   class:is-dirty={!errorPaths.has(file.path) && dirtyPaths.has(file.path)}
+                  data-testid="file-{file.fqn}"
                   draggable={!!onmovefile}
                   ondragstart={() => (dragFile = file)}
                   ondragend={() => {

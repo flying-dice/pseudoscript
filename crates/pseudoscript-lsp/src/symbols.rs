@@ -158,80 +158,21 @@ fn symbol(
 }
 
 /// The foldable regions of `src`: every multi-line declaration and statement
-/// block.
+/// block. Spans come from the shared engine; this only maps them to line-based
+/// `FoldingRange`s and drops single-line spans.
 #[must_use]
 pub fn folding_ranges(src: &str) -> Vec<FoldingRange> {
-    let module = parse(src).ast;
     let index = LineIndex::new(src);
-    let mut spans = Vec::new();
-    for item in &module.items {
-        if let ast::Item::Decl(decl) = item {
-            collect_decl_spans(decl, &mut spans);
-        }
-    }
-    spans
+    pseudoscript_model::folding_ranges(src)
         .into_iter()
-        .filter_map(|span| fold(span, &index))
+        .filter_map(|range| fold(range, &index))
         .collect()
 }
 
-/// Collects the foldable span of a *disclosed* declaration (one with a `{ }`
-/// body) and any blocks nested in it. A black-box `;` declaration has nothing
-/// to fold.
-fn collect_decl_spans(decl: &ast::Decl, out: &mut Vec<Span>) {
-    match &decl.kind {
-        ast::DeclKind::Person(node)
-        | ast::DeclKind::System(node)
-        | ast::DeclKind::Container(node)
-        | ast::DeclKind::Component(node) => {
-            let Some(body) = &node.body else { return };
-            out.push(decl.span);
-            for member in body {
-                match member {
-                    ast::BodyMember::Decl(inner) => collect_decl_spans(inner, out),
-                    ast::BodyMember::Callable(callable) => {
-                        if let Some(block) = &callable.body {
-                            collect_block_spans(block, out);
-                        }
-                    }
-                }
-            }
-        }
-        ast::DeclKind::Data(data) => {
-            if !matches!(data.body, ast::DataBody::BlackBox) {
-                out.push(decl.span);
-            }
-        }
-    }
-}
-
-/// Collects a block's span and the spans of any nested control-flow blocks.
-fn collect_block_spans(block: &ast::Block, out: &mut Vec<Span>) {
-    out.push(block.span);
-    for stmt in &block.stmts {
-        match &stmt.kind {
-            ast::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_block_spans(then_block, out);
-                if let Some(block) = else_block {
-                    collect_block_spans(block, out);
-                }
-            }
-            ast::StmtKind::For { body, .. } | ast::StmtKind::While { body, .. } => {
-                collect_block_spans(body, out);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A folding range for `span`, or `None` when it does not cross a line.
-fn fold(span: Span, index: &LineIndex) -> Option<FoldingRange> {
-    let (start_line, _) = index.line_col(span.start);
-    let (end_line, _) = index.line_col(span.end);
+/// A folding range for a byte span, or `None` when it does not cross a line.
+fn fold(range: pseudoscript_model::FoldRange, index: &LineIndex) -> Option<FoldingRange> {
+    let (start_line, _) = index.line_col(range.start);
+    let (end_line, _) = index.line_col(range.end);
     (end_line > start_line).then_some(FoldingRange {
         start_line: start_line - 1,
         start_character: None,
