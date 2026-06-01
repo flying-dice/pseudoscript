@@ -1,7 +1,7 @@
 /* =============================================================================
    PseudoScript — Landing page styles. Built on colors_and_type.css tokens.
    "Drafting Terminal": ink canvas, vermilion horizon, hairline frames,
-   drafting corner ticks, uppercase mono micro-labels, one hot accent.
+   uppercase mono micro-labels, one hot accent.
    ========================================================================== */
 
 * { box-sizing: border-box; }
@@ -74,14 +74,6 @@ section { position: relative; padding: clamp(4rem, 9vw, 8rem) 0; }
 .statement .hot { color: var(--accent); }
 .lede { margin: 1.3rem 0 0; max-width: 46ch; color: var(--ink-soft); font-size: var(--text-md); line-height: 1.6; }
 .lede.wide { max-width: 60ch; }
-
-/* drafting corner ticks for any framed box */
-.ticked { position: relative; }
-.ticked > .tick { position: absolute; width: 13px; height: 13px; border: 1.5px solid var(--accent); opacity: .7; pointer-events: none; z-index: 3; }
-.tick.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
-.tick.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
-.tick.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
-.tick.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
 
 /* =============================================================================
    HERO

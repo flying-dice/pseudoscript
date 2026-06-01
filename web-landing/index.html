@@ -1,10 +1,21 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PseudoScript — Architecture as code, for the agentic era</title>
   <link rel="icon" href="/pds-logo.svg">
+  <script>
+    // Resolve theme before first paint (no FOUC). Explicit choice wins; else follow the OS.
+    try {
+      var t = localStorage.getItem('pds-theme');
+      if (t !== 'dark' && t !== 'light')
+        t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  </script>
 </head>
 <body>
   <div id="app"></div>

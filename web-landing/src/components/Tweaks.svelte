@@ -1,37 +1,53 @@
 <script lang="ts">
   import { Settings2, X } from '@lucide/svelte';
 
-  type Accent = readonly [string, string];
+  // Theme + motion. Theme follows the OS (prefers-color-scheme) live until the
+  // user makes an explicit choice, which persists and wins thereafter. Initial
+  // `data-theme` is resolved FOUC-free by the inline head script in index.html;
+  // this panel reads it rather than forcing a default.
+  type Theme = 'Dark' | 'Light';
+  const STORE_KEY = 'pds-theme';
 
-  // Theme · accent · motion — mirrors the design's React tweaks island, but
-  // self-contained. Applies values to the document root; the page reacts via
-  // CSS tokens / the body.no-motion class.
-  const ACCENTS: readonly Accent[] = [
-    ['#ff5a36', '#ff7d5e'],
-    ['#6e8bff', '#8aa2ff'],
-    ['#2dd4bf', '#5fe6d4'],
-    ['#e0a93f', '#ecc06a'],
-  ];
+  function stored(): Theme | null {
+    try {
+      const v = localStorage.getItem(STORE_KEY);
+      return v === 'dark' ? 'Dark' : v === 'light' ? 'Light' : null;
+    } catch {
+      return null;
+    }
+  }
 
   let open = $state<boolean>(false);
-  let theme = $state<string>('Dark');
-  let accent = $state<Accent>(ACCENTS[0]);
-  let motion = $state<boolean>(true);
+  let theme = $state<Theme>(
+    document.documentElement.getAttribute('data-theme') === 'light' ? 'Light' : 'Dark',
+  );
+  // Once chosen explicitly, stop following the OS.
+  let overridden = $state<boolean>(stored() !== null);
+  let motion = $state<boolean>(!window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
-  $effect(() => {
-    document.documentElement.setAttribute('data-theme', theme === 'Light' ? 'light' : 'dark');
-  });
+  function applyTheme(next: Theme) {
+    document.documentElement.setAttribute('data-theme', next === 'Light' ? 'light' : 'dark');
+    theme = next;
+  }
 
-  $effect(() => {
-    const root = document.documentElement.style;
-    if (accent && accent[0] && accent[0].toLowerCase() !== '#ff5a36') {
-      root.setProperty('--accent', accent[0]);
-      root.setProperty('--accent-hi', accent[1] || accent[0]);
-    } else {
-      // default vermilion — let the theme token decide (keeps light-mode accent)
-      root.removeProperty('--accent');
-      root.removeProperty('--accent-hi');
+  function choose(next: Theme) {
+    try {
+      localStorage.setItem(STORE_KEY, next === 'Light' ? 'light' : 'dark');
+    } catch {
+      // private mode — choice holds for the session, just not across reloads
     }
+    overridden = true;
+    applyTheme(next);
+  }
+
+  // Follow prefers-color-scheme while unoverridden; when `overridden` flips true
+  // the effect re-runs and its cleanup detaches the listener.
+  $effect(() => {
+    if (overridden) return;
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = (e: MediaQueryListEvent) => applyTheme(e.matches ? 'Light' : 'Dark');
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
   });
 
   $effect(() => {
@@ -41,8 +57,7 @@
 
 <div class="tweaks" class:open>
   {#if open}
-    <div class="panel ticked">
-      <span class="tick tl"></span><span class="tick br"></span>
+    <div class="panel">
       <div class="ph">
         <span class="pl">Tweaks</span>
         <span class="sp"></span>
@@ -51,21 +66,8 @@
 
       <div class="sec">Theme</div>
       <div class="seg-row">
-        {#each ['Dark', 'Light'] as opt}
-          <button class="seg" class:on={theme === opt} onclick={() => (theme = opt)}>{opt}</button>
-        {/each}
-      </div>
-
-      <div class="sec">Accent</div>
-      <div class="swatches">
-        {#each ACCENTS as a}
-          <button
-            class="sw"
-            class:on={accent[0] === a[0]}
-            style="--sw:{a[0]}"
-            onclick={() => (accent = a)}
-            aria-label={`Accent ${a[0]}`}
-          ></button>
+        {#each ['Dark', 'Light'] as opt (opt)}
+          <button class="seg grow" class:on={theme === opt} onclick={() => choose(opt as Theme)}>{opt}</button>
         {/each}
       </div>
 
@@ -77,7 +79,7 @@
     </div>
   {/if}
 
-  <button class="fab" onclick={() => (open = !open)} aria-label="Tweaks">
+  <button class="fab" onclick={() => (open = !open)} aria-label="Tweaks" aria-expanded={open}>
     <Settings2 size={18} strokeWidth={1.75} />
   </button>
 </div>
@@ -94,9 +96,16 @@
     gap: .7rem;
     font-family: var(--font-sans);
   }
+  /* keep clear of iOS home-indicator / Android nav bar */
+  @supports (padding: max(0px)) {
+    .tweaks {
+      right: max(1.1rem, env(safe-area-inset-right));
+      bottom: max(1.1rem, env(safe-area-inset-bottom));
+    }
+  }
   .fab {
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
     border-radius: 50%;
@@ -110,7 +119,7 @@
   .fab:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 
   .panel {
-    width: 220px;
+    width: min(220px, calc(100vw - 2.2rem));
     padding: .9rem 1rem 1rem;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
@@ -130,8 +139,8 @@
   .ph .x {
     display: grid;
     place-items: center;
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
     border: none;
     background: transparent;
     color: var(--ink-faint);
@@ -154,7 +163,8 @@
   .seg-row { display: flex; gap: .4rem; }
   .seg {
     flex: none;
-    padding: .35rem .7rem;
+    padding: .45rem .7rem;
+    min-height: 38px;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
     background: var(--surface-2);
@@ -171,18 +181,4 @@
     border-color: var(--accent);
     background: var(--accent-soft);
   }
-
-  .swatches { display: flex; gap: .5rem; }
-  .sw {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 2px solid var(--line-strong);
-    background: var(--sw);
-    cursor: pointer;
-    padding: 0;
-    transition: transform .14s, border-color .14s;
-  }
-  .sw:hover { transform: scale(1.08); }
-  .sw.on { border-color: var(--ink); transform: scale(1.08); }
 </style>

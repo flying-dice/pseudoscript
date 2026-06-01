@@ -32,8 +32,7 @@
   }
 </script>
 
-<div class="install ticked reveal">
-  <span class="tick tl"></span><span class="tick br"></span>
+<div class="install reveal">
 
   <div class="install-head">
     <span class="lbl accent">Install the CLI</span>

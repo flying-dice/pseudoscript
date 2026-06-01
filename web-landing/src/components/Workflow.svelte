@@ -12,8 +12,7 @@
           <h2 class="statement">You write structure, <span class="dim">not implementation.</span></h2>
           <p class="lede">A few lines of PseudoScript declare a bounded context and its guarantees. The intent is the code; the mechanism is named, then you stop.</p>
         </div>
-        <div class="step-visual ticked">
-          <span class="tick tl"></span><span class="tick br"></span>
+        <div class="step-visual">
           <div class="terminal-head"><div class="dots"><i></i><i></i><i></i></div><span class="fname"><b>inventory</b>.pds</span></div>
           <div class="editor-pane" style="border-right:none">
             <div class="code-block"><div class="gutter" id="describe-gutter"></div><div class="code" id="describe-code"></div></div>
@@ -28,8 +27,7 @@
           <h2 class="statement">Iterate until the model is <span class="hot">well-formed.</span></h2>
           <p class="lede">The Linter flags missing docs, crossed references, and unreachable nodes as you go. Resolve them and the problem list empties.</p>
         </div>
-        <div class="step-visual ticked" id="refine-visual">
-          <span class="tick tl"></span><span class="tick br"></span>
+        <div class="step-visual" id="refine-visual">
           <div class="panel-head"><span class="pl">Problems</span><span class="sp"></span><span class="count" id="prob-count">3 problems</span></div>
           <ul class="problems-list" id="problems">
             <li class="error"><div class="row"><span class="badge">error</span><span class="prob-file">orders</span><span class="prob-loc">14:3</span><span class="prob-msg">unresolved reference <code>payments::Charge</code></span></div></li>
@@ -47,8 +45,7 @@
           <h2 class="statement">Artefacts your <span class="hot">agents</span> can build against.</h2>
           <p class="lede">Every diagram is projected from the spec — C4 context, container, component, and the sequence diagrams that trace a saga end to end. Machine-readable by construction.</p>
         </div>
-        <div class="step-visual ticked">
-          <span class="tick tl"></span><span class="tick br"></span>
+        <div class="step-visual">
           <div class="terminal-head"><div class="dots"><i></i><i></i><i></i></div><span class="fname">checkout · <b>sequence</b></span></div>
           <div class="seq" id="seq-visual">
             <svg viewBox="0 0 460 300" id="seq-svg" role="img" aria-label="Checkout saga sequence diagram"></svg>
