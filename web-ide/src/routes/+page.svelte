@@ -6,7 +6,7 @@
   import { fsSupported, createWorkspace, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import { collapseSequence } from "$lib/sequence.js";
   import { SAMPLES, loadSample } from "$lib/samples.js";
-  import { getRecents, recordSample, recordFolder, reopenFolder, forget } from "$lib/recents.js";
+  import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
   import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
@@ -246,7 +246,10 @@
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
   let settingsOpen = $state(false);
   let recents = $state([]);
-  const refreshRecents = () => (recents = getRecents());
+  // Only persisted projects (folders) are recents; in-memory samples re-open
+  // from the catalogue, so they're never recorded — and legacy sample entries
+  // are filtered out of the list.
+  const refreshRecents = () => (recents = getRecents().filter((r) => r.kind !== "sample"));
 
   const source = $derived(
     openFile?.isManifest
@@ -1022,10 +1025,12 @@ system ${pascalName(leaf)} {
     const loaded = loadSample(id);
     if (!loaded) return;
     moduleSources = Object.fromEntries(loaded.workspace.files.map((f) => [f.fqn, f.source]));
-    persisted = {}; // session-only sample: no on-disk baseline, never dirty
+    // Session-only: there's no folder to save to, but seed the baseline from the
+    // example so edits register as unsaved (the save indicator reads "session ·
+    // N unsaved"). A sample isn't recorded in recents — it persists nowhere and
+    // always re-opens from the examples catalogue.
+    persisted = { ...moduleSources };
     mountWorkspace(loaded.workspace, loaded.landing);
-    recordSample(SAMPLES.find((s) => s.id === id));
-    refreshRecents();
   }
 
   // Re-open a recent project: a sample by id, or a folder from its stored handle

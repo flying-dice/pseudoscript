@@ -10,6 +10,7 @@ import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 
 import { check, semanticTokens } from "./pds.js";
+import { byteToChar } from "./offsets.js";
 
 // A structure-only language: it carries the `//` comment config (so Mod-/ works)
 // but does no colouring — the semantic-token decorator below owns highlighting,

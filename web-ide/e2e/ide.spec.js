@@ -51,6 +51,19 @@ test("completion narrows as the prefix is typed (scope fix)", async ({ page }) =
   await expect(page.locator(".cm-tooltip-autocomplete li")).toHaveCount(1);
 });
 
+test("diagnostics render with no runtime error", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  const content = page.getByTestId("editor").locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Control+End");
+  // a stray token makes the module invalid → the linter must produce a marker
+  await page.keyboard.type("\n%% broken");
+  await expect(page.locator(".cm-lintRange, .cm-lint-marker").first()).toBeVisible({ timeout: 5000 });
+  // the byte→char mapping in the linter must not throw (regressed once)
+  expect(errors.join("\n")).not.toContain("byteToChar");
+});
+
 test("folding ranges come from the compiler (blocks fold)", async ({ page }) => {
   // The IDE folds blocks by default using the compiler's AST fold ranges; a
   // folded region renders CodeMirror's placeholder.

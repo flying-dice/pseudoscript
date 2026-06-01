@@ -112,7 +112,11 @@
   {#if workspaceName}
     <div class="save" aria-live="polite">
       {#if !canPersist}
-        <span class="save-label dim" title="Bundled example — edits live in memory only">session</span>
+        {#if dirtyCount > 0}
+          <span class="save-dot warn"></span><span class="save-label warn" title="In-memory session — Save to a folder to keep these edits">session · {dirtyCount} unsaved</span>
+        {:else}
+          <span class="save-dot dim"></span><span class="save-label dim" title="Bundled example — edits live in memory only">session</span>
+        {/if}
       {:else if saveState === "saving"}
         <span class="save-dot busy"></span><span class="save-label">saving…</span>
       {:else if saveState === "error"}
@@ -254,6 +258,7 @@
   }
   .save-dot.warn { background: var(--warn); }
   .save-dot.bad { background: var(--err); }
+  .save-dot.dim { background: var(--ink-faint); }
   .save-dot.busy { background: var(--ink-faint); animation: pulse-dot 1.2s ease-in-out infinite; }
   .save-label.dim { color: var(--ink-faint); }
   .save-label.warn { color: var(--warn); }
