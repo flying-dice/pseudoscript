@@ -1,23 +1,16 @@
 <script lang="ts">
-  import { Monitor, Moon, Search, Sun, WandSparkles } from "@lucide/svelte";
+  import { ArrowLeft, ArrowRight, Search, WandSparkles } from "@lucide/svelte";
 
   import { Button } from "$lib/components/ui/button/index.js";
-  import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
-  import type { ThemePref } from "$lib/theme.svelte.js";
   import FileMenu from "./FileMenu.svelte";
-  import ProblemsBadge from "./ProblemsBadge.svelte";
-
-  type Problem = { severity: string; message: string; file?: string; start_line: number; start_col: number; code?: string };
 
   type Props = {
     workspaceName?: string | null;
     building?: boolean;
-    base?: string;
-    saveState?: "idle" | "saving" | "saved" | "error";
-    dirtyCount?: number;
-    problems?: Problem[];
-    errorCount?: number;
-    onproblempick?: (d: Problem) => void;
+    canBack?: boolean;
+    canForward?: boolean;
+    onback?: () => void;
+    onforward?: () => void;
     onopenfolder?: () => void;
     ongoto?: () => void;
     onnewfile?: () => void;
@@ -34,23 +27,13 @@
   let {
     workspaceName = null,
     building = false,
-    base = "",
-    saveState = "idle",
-    dirtyCount = 0,
-    problems = [],
-    errorCount = 0,
-    onproblempick,
+    canBack = false,
+    canForward = false,
+    onback,
+    onforward,
     onformat,
     ...menu
   }: Props = $props();
-
-  const THEME_ICON: Record<ThemePref, typeof Monitor> = { system: Monitor, light: Sun, dark: Moon };
-  const THEME_LABEL: Record<ThemePref, string> = { system: "System", light: "Light", dark: "Dark" };
-  const ThemeIcon = $derived(THEME_ICON[theme.pref]);
-  function cycleTheme(): void {
-    const i = THEME_OPTIONS.indexOf(theme.pref);
-    theme.set(THEME_OPTIONS[(i + 1) % THEME_OPTIONS.length]);
-  }
 
   const mod = typeof navigator !== "undefined" && /mac/i.test(navigator.platform) ? "⌘" : "Ctrl";
 </script>
@@ -59,6 +42,16 @@
   <div class="left">
     <span class="brand">pds</span>
     <FileMenu {workspaceName} {building} {...menu} />
+    {#if workspaceName}
+      <div class="nav">
+        <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back">
+          <ArrowLeft size={15} strokeWidth={2} aria-hidden="true" />
+        </button>
+        <button class="icon-btn" onclick={onforward} disabled={!canForward} title="Forward (next location)" aria-label="Forward">
+          <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+        </button>
+      </div>
+    {/if}
   </div>
 
   {#if workspaceName}
@@ -70,41 +63,10 @@
   {/if}
 
   <div class="right">
-    {#if workspaceName}
-      <div class="save" aria-live="polite">
-        {#if saveState === "saving"}
-          <span class="dot busy"></span><span class="lbl">saving…</span>
-        {:else if saveState === "error"}
-          <span class="dot bad"></span><span class="lbl bad">save failed</span>
-        {:else if dirtyCount > 0}
-          <span class="dot warn"></span><span class="lbl warn">{dirtyCount} unsaved</span>
-        {:else}
-          <span class="dot ok"></span><span class="lbl">saved</span>
-        {/if}
-      </div>
-    {/if}
-
     <Button variant="ghost" size="sm" onclick={onformat} title="Format the active file">
       <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
       Format
     </Button>
-
-    <button class="icon-btn" onclick={cycleTheme} title={`Theme: ${THEME_LABEL[theme.pref]}`} aria-label={`Theme: ${THEME_LABEL[theme.pref]}`}>
-      <ThemeIcon size={15} strokeWidth={1.75} aria-hidden="true" />
-    </button>
-
-    <a
-      class="icon-btn"
-      href="{base}/pseudocode-skill.zip"
-      download="pseudocode-skill.zip"
-      title="Download the PseudoScript authoring skill (.zip)"
-      aria-label="Download the authoring skill"
-      data-testid="download-skill"
-    >
-      <span aria-hidden="true">📥</span>
-    </a>
-
-    <ProblemsBadge {problems} {errorCount} onpick={onproblempick} />
   </div>
 </header>
 
@@ -124,6 +86,12 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+    margin-left: 0.2rem;
   }
   .brand {
     font-family: var(--font-display);
@@ -183,46 +151,12 @@
     text-decoration: none;
     font-size: 0.85rem;
   }
-  .icon-btn:hover {
+  .icon-btn:hover:not(:disabled) {
     background: var(--surface-2);
     color: var(--ink);
   }
-  .save {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--ink-faint);
-  }
-  .dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 999px;
-    background: var(--ink-faint);
-  }
-  .dot.ok {
-    background: var(--ok);
-  }
-  .dot.warn {
-    background: var(--warn);
-  }
-  .dot.bad {
-    background: var(--err);
-  }
-  .dot.busy {
-    background: var(--accent);
-    animation: pulse 1s ease-in-out infinite;
-  }
-  .lbl.warn {
-    color: var(--warn);
-  }
-  .lbl.bad {
-    color: var(--err);
-  }
-  @keyframes pulse {
-    50% {
-      opacity: 0.35;
-    }
+  .icon-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 </style>

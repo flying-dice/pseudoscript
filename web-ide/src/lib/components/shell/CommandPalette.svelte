@@ -24,7 +24,7 @@
   }
 </script>
 
-<Command.Dialog bind:open>
+<Command.Dialog bind:open class="w-[min(56rem,92vw)] sm:max-w-[56rem]">
   <Command.Input placeholder="Go to file or symbol…" />
   <Command.List>
     <Command.Empty>No matching file or symbol.</Command.Empty>

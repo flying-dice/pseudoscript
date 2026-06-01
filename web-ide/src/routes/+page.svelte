@@ -1625,12 +1625,10 @@ show('index.html');
   <TopBar
     workspaceName={workspace?.name ?? null}
     {building}
-    {base}
-    {saveState}
-    {dirtyCount}
-    {problems}
-    {errorCount}
-    onproblempick={onProblemPick}
+    {canBack}
+    {canForward}
+    onback={goBack}
+    onforward={goForward}
     onopenfolder={() => (ui.projectOpen = true)}
     ongoto={() => (ui.commandOpen = true)}
     onnewfile={startNewFile}
@@ -1692,10 +1690,6 @@ show('index.html');
 
       <section class="center island reveal r2">
         <header class="content-bar">
-          <div class="nav-buttons">
-            <button class="nav-btn" onclick={goBack} disabled={!canBack} title="Back (previous location)" aria-label="Back">←</button>
-            <button class="nav-btn" onclick={goForward} disabled={!canForward} title="Forward (next location)" aria-label="Forward">→</button>
-          </div>
           {@render breadcrumb()}
           {#if openFile?.isDoc}
             <div class="bar-actions">{@render mdHelp()}{@render docWidthToggle()}</div>
@@ -1767,6 +1761,11 @@ show('index.html');
     moduleCount={workspace?.files.length ?? 0}
     toast={notifications.toast}
     mode={view}
+    {saveState}
+    {dirtyCount}
+    {problems}
+    {errorCount}
+    onproblempick={onProblemPick}
   />
 </div>
 

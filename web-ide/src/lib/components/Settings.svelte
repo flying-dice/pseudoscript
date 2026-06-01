@@ -1,12 +1,18 @@
 <script lang="ts">
+  import { base } from "$app/paths";
+
   import type { Command } from "$lib/keybindings.svelte.js";
   import { COMMANDS, PROFILES, chordFromEvent, formatChord, keybindings } from "$lib/keybindings.svelte.js";
+  import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
+  import type { ThemePref } from "$lib/theme.svelte.js";
 
   type Props = {
     onclose: () => void;
   };
 
   let { onclose }: Props = $props();
+
+  const THEME_LABEL: Record<ThemePref, string> = { system: "System", light: "Light", dark: "Dark" };
 
   // A command row enriched with its effective chord and customised flag.
   type Row = Command & { chord: string; custom: boolean };
@@ -69,9 +75,32 @@
 <div class="scrim" role="presentation" onclick={onclose}></div>
 <div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
   <header>
-    <h2>Keyboard shortcuts</h2>
+    <h2>Settings</h2>
     <button class="x" aria-label="Close" onclick={onclose}>✕</button>
   </header>
+
+  <div class="prefs">
+    <section class="pref">
+      <h3>Appearance</h3>
+      <div class="seg" role="group" aria-label="Theme">
+        {#each THEME_OPTIONS as pref (pref)}
+          <button class="seg-btn" class:on={theme.pref === pref} onclick={() => theme.set(pref)} aria-pressed={theme.pref === pref}>
+            {THEME_LABEL[pref]}
+          </button>
+        {/each}
+      </div>
+    </section>
+    <section class="pref">
+      <h3>Authoring skill</h3>
+      <a
+        class="skill-dl"
+        href="{base}/pseudocode-skill.zip"
+        download="pseudocode-skill.zip"
+        data-testid="download-skill"
+        aria-label="Download the authoring skill"
+      >📥 Download skill (.zip)</a>
+    </section>
+  </div>
 
   <div class="profile-bar">
     <label for="keymap-profile">Keymap</label>
@@ -133,6 +162,65 @@
     z-index: 50;
     background: color-mix(in srgb, var(--bg) 70%, transparent);
     backdrop-filter: blur(2px);
+  }
+  .prefs {
+    display: grid;
+    gap: 0.9rem;
+    padding: 0.9rem 1.1rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .pref {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .pref h3 {
+    margin: 0;
+    min-width: 7rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .seg {
+    display: inline-flex;
+    gap: 0.15rem;
+    padding: 0.15rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+  }
+  .seg-btn {
+    padding: 0.25rem 0.7rem;
+    background: transparent;
+    border: none;
+    border-radius: calc(var(--radius-sm) - 2px);
+    color: var(--ink-faint);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  .seg-btn:hover {
+    color: var(--ink);
+  }
+  .seg-btn.on {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .skill-dl {
+    padding: 0.3rem 0.7rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--ink-soft);
+    font-size: 0.78rem;
+    text-decoration: none;
+  }
+  .skill-dl:hover {
+    border-color: var(--accent);
+    color: var(--ink);
   }
   .panel {
     position: fixed;

@@ -88,7 +88,9 @@ test("folding ranges come from the compiler (blocks fold)", async ({ page }) => 
   expect(docVisible).toBe(true);
 });
 
-test("the toolbar downloads the authoring skill folder as a zip", async ({ page }) => {
+test("Settings downloads the authoring skill folder as a zip", async ({ page }) => {
+  // Skill download lives in Settings now, reached from the activity-bar gear.
+  await page.getByLabel("Settings").click();
   const link = page.getByTestId("download-skill");
   await expect(link).toBeVisible();
   const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
