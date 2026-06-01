@@ -1361,6 +1361,7 @@ dependencies = [
  "cucumber",
  "futures",
  "pseudoscript-emit",
+ "pseudoscript-layout",
  "pseudoscript-model",
  "pulldown-cmark",
  "rquickjs",

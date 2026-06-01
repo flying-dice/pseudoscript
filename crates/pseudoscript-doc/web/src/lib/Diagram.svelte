@@ -10,11 +10,14 @@
   onMount(async () => {
     if (!host || diagram.diagram === "empty") return;
     const { mount } = await import("svelte");
-    const mod =
-      diagram.diagram === "c4"
-        ? await import("./C4Flow.svelte")
-        : await import("./FlowTimeline.svelte");
-    mount(mod.default, { target: host, props: { scene: diagram.scene } });
+    const isC4 = diagram.diagram === "c4";
+    const mod = isC4 ? await import("./C4Flow.svelte") : await import("./FlowTimeline.svelte");
+    // The sequence timeline renders the positioned layout from the compiler (the
+    // same geometry the web IDE draws); C4 lays itself out client-side.
+    const props = isC4
+      ? { scene: diagram.scene }
+      : { scene: diagram.scene, layout: diagram.layout };
+    mount(mod.default, { target: host, props });
   });
 </script>
 

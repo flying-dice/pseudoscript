@@ -9,6 +9,7 @@
 //! out and animate them.
 
 use pseudoscript_emit::{C4Scene, SequenceScene};
+use pseudoscript_layout::sequence::Layout;
 use serde::{Deserialize, Serialize};
 
 /// The complete props for one page. Serialised to JSON, passed to the SSR
@@ -239,12 +240,16 @@ pub(crate) enum Diagram {
         /// The laid-out C4 scene (nodes + edges).
         scene: C4Scene,
     },
-    /// A sequence view, animated by the timeline component.
+    /// A sequence view, drawn as the IDE's lifeline/message diagram.
     Sequence {
         /// The figure caption.
         caption: String,
         /// The sequence scene (participants + ordered items).
         scene: SequenceScene,
+        /// The positioned layout (lifelines, activations, fragments, messages)
+        /// from `pseudoscript-layout` — the same geometry the web IDE renders,
+        /// so the figure needs no client-side layout engine.
+        layout: Layout,
     },
     /// A view that could not be projected (e.g. an empty boundary).
     Empty {

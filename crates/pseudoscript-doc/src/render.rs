@@ -7,7 +7,7 @@
 use crate::config::{DocConfig, DocPage};
 use crate::nav::{callables_of, child_nodes, module_top_level, sorted_modules};
 use crate::url::{UrlMap, anchor, doc_page_path, module_page_path};
-use pseudoscript_emit::{Scene, View, project};
+use pseudoscript_emit::{Scene, View, layout_sequence_scene, project};
 use pseudoscript_model::{Edge, EdgeKind, Graph, GraphNode, NodeKind, Visibility};
 use pulldown_cmark::{BlockQuoteKind, Event, Options, Parser, Tag, TagEnd, html};
 
@@ -349,6 +349,7 @@ fn build_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> Dia
         },
         Ok(Scene::Sequence(scene)) => Diagram::Sequence {
             caption: caption.to_owned(),
+            layout: layout_sequence_scene(&scene),
             scene,
         },
         Err(_) => Diagram::Empty {
