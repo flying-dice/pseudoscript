@@ -119,27 +119,42 @@ system Platform {
 `;
 }
 
+/** One file to write when scaffolding a project: a base-relative path + text. */
+export interface SeedFile {
+  path: string;
+  content: string;
+}
+
+/** The seed for the empty template: a one-module starter that compiles and draws. */
+export function emptySeed(name: string): SeedFile[] {
+  const safe = sanitizeProjectName(name) || DEFAULT_PROJECT_NAME;
+  return [
+    { path: "pds.toml", content: starterManifest(safe) },
+    { path: "main.pds", content: starterModule(safe) },
+  ];
+}
+
 /**
- * Scaffolds a new workspace: prompts for a parent directory, creates a `<name>`
- * subdirectory under it, writes a starter `pds.toml` + `main.pds`, and returns
- * the same shape as `readWorkspace` so `mountWorkspace` just works. The name is
- * sanitized (falling back to the default if it sanitizes to empty).
+ * Bootstraps a project on disk: prompts for a parent directory, creates a
+ * `<name>` subdirectory, writes every seed file (creating nested dirs), and
+ * reads it back as a {@link Workspace} so `mountWorkspace` just works. The name
+ * is sanitized (falling back to the default if it sanitizes to empty). This is
+ * the single entry point for every new project — empty or from a template.
  */
-export async function createWorkspace(name: string): Promise<Workspace> {
+export async function scaffoldWorkspace(name: string, seed: SeedFile[]): Promise<Workspace> {
   const safe = sanitizeProjectName(name) || DEFAULT_PROJECT_NAME;
   const parent = await window.showDirectoryPicker({ mode: "readwrite" });
   const root = await parent.getDirectoryHandle(safe, { create: true });
+  for (const file of seed) {
+    const handle = await fileHandleAt(root, file.path);
+    await writeFile(handle, file.content);
+  }
+  return readWorkspace(root);
+}
 
-  const manifestToml = starterManifest(safe);
-  const manifestHandle = await root.getFileHandle("pds.toml", { create: true });
-  await writeFile(manifestHandle, manifestToml);
-
-  const moduleHandle = await root.getFileHandle("main.pds", { create: true });
-  await writeFile(moduleHandle, starterModule(safe));
-
-  const files: WorkspaceFile[] = [{ path: "main.pds", handle: moduleHandle, fqn: "main" }];
-  const manifest: WorkspaceManifest = { handle: manifestHandle, path: "pds.toml" };
-  return { name: safe, root, base: "", manifestToml, manifest, files };
+/** Bootstraps an empty project — the one-file starter. */
+export function createWorkspace(name: string): Promise<Workspace> {
+  return scaffoldWorkspace(name, emptySeed(name));
 }
 
 /**

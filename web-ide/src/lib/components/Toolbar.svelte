@@ -11,10 +11,8 @@
     workspaceName?: string | null;
     building?: boolean;
     // Save state for the workspace indicator: number of files differing from
-    // disk, whether the workspace can persist (a real folder vs a sample), and
-    // the active write lifecycle (idle | saving | saved | error).
+    // disk, and the active write lifecycle (idle | saving | saved | error).
     dirtyCount?: number;
-    canPersist?: boolean;
     saveState?: SaveState;
     onformat?: () => void;
     onproject?: () => void;
@@ -30,7 +28,6 @@
     workspaceName = null,
     building = false,
     dirtyCount = 0,
-    canPersist = false,
     saveState = "idle",
     onformat,
     onproject,
@@ -143,13 +140,7 @@
 
   {#if workspaceName}
     <div class="save" aria-live="polite">
-      {#if !canPersist}
-        {#if dirtyCount > 0}
-          <span class="save-dot warn"></span><span class="save-label warn" title="In-memory session — Save to a folder to keep these edits">session · {dirtyCount} unsaved</span>
-        {:else}
-          <span class="save-dot dim"></span><span class="save-label dim" title="Bundled example — edits live in memory only">session</span>
-        {/if}
-      {:else if saveState === "saving"}
+      {#if saveState === "saving"}
         <span class="save-dot busy"></span><span class="save-label">saving…</span>
       {:else if saveState === "error"}
         <span class="save-dot bad"></span><span class="save-label bad">save failed</span>
@@ -291,9 +282,7 @@
   }
   .save-dot.warn { background: var(--warn); }
   .save-dot.bad { background: var(--err); }
-  .save-dot.dim { background: var(--ink-faint); }
   .save-dot.busy { background: var(--ink-faint); animation: pulse-dot 1.2s ease-in-out infinite; }
-  .save-label.dim { color: var(--ink-faint); }
   .save-label.warn { color: var(--warn); }
   .save-label.bad { color: var(--err); }
 

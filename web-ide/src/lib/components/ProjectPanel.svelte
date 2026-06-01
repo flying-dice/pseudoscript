@@ -1,55 +1,44 @@
 <script lang="ts">
-  // The project launcher: opens on start and from the toolbar. Recent projects
-  // (samples + re-openable folders) on the left, the examples catalogue on the
-  // right, "open a folder" below. Drafting-terminal styling to match the IDE.
-  import type { Sample } from "$lib/samples";
+  // The project launcher: opens on start and from the toolbar. Open a folder or
+  // re-open a recent on the left; start a New project from a template (Empty, or a
+  // worked example) on the right. Every project is a real folder on disk — a
+  // template's files are scaffolded into a chosen directory. Drafting styling.
   import type { Recent } from "$lib/recents";
 
+  // A project template: the empty starter or a bundled example.
+  type Template = { id: string; name: string; description: string; moduleCount: number };
+
   type Props = {
-    examples?: Sample[];
+    templates?: Template[];
     recents?: Recent[];
-    canOpenFolder?: boolean;
     dismissible?: boolean;
-    onpicksample?: (id: string) => void;
     onpickrecent?: (recent: Recent) => void;
     onopenfolder?: () => void;
-    onnewproject?: (name: string) => void;
-    onimport?: () => void;
+    onnewproject?: (name: string, templateId: string) => void;
     onforget?: (recent: Recent) => void;
     onclose?: () => void;
   };
 
   let {
-    examples = [],
+    templates = [],
     recents = [],
-    canOpenFolder = false,
     dismissible = false,
-    onpicksample,
     onpickrecent,
     onopenfolder,
     onnewproject,
-    onimport,
     onforget,
     onclose,
   }: Props = $props();
 
-  // "New workspace" expands an inline name field rather than stacking a second
-  // modal over this one; submitting hands the name to `onnewproject`, which then
-  // prompts for a parent directory (a native picker, fired by this user gesture).
-  let creating = $state(false);
-  let newName = $state("");
+  // The name for the next New project. Picking a template hands the name + id to
+  // `onnewproject`, which then prompts for a parent folder (a native picker fired
+  // by this click) and scaffolds the template's files there. A blank name falls
+  // back to a default downstream.
+  let name = $state("");
+  const choose = (templateId: string) => onnewproject?.(name.trim(), templateId);
 
-  function submitNew(e: SubmitEvent) {
-    e.preventDefault();
-    onnewproject?.(newName);
-    creating = false;
-    newName = "";
-  }
-
-  // Focus the name field the moment the form appears.
-  function autofocus(node: HTMLInputElement) {
-    node.focus();
-  }
+  // Only folder recents re-open (examples are templates now, not session mounts).
+  const folderRecents = $derived(recents.filter((r) => r.kind !== "sample"));
 
   function ago(ts: number): string {
     const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -64,22 +53,6 @@
   }
 
   const close = () => dismissible && onclose?.();
-
-  // Examples grouped by category, preserving the catalogue's sort order so the
-  // list reads like a handbook table of contents (Application, Edge, Resilience,
-  // Messaging, …).
-  const grouped = $derived.by(() => {
-    const order: string[] = [];
-    const by = new Map<string, Sample[]>();
-    for (const ex of examples) {
-      if (!by.has(ex.category)) {
-        by.set(ex.category, []);
-        order.push(ex.category);
-      }
-      by.get(ex.category)!.push(ex);
-    }
-    return order.map((cat) => ({ cat, items: by.get(cat)! }));
-  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -104,54 +77,18 @@
     </header>
 
     <h1 class="title">Open a project</h1>
-    <p class="lede">Architecture as code. Resume where you left off, explore a worked example, or open a folder of <code>.pds</code> modules.</p>
+    <p class="lede">Architecture as code, on disk. Open a folder of <code>.pds</code> modules, resume a recent project, or start a new one from a template.</p>
 
     <div class="grid">
       <div class="col start">
         <h2 class="kicker">Start</h2>
         <ul class="rows">
           <li>
-            {#if creating}
-              <form class="row action newform" onsubmit={submitNew}>
-                <span class="glyph new" aria-hidden="true">+</span>
-                <input
-                  class="newname"
-                  data-testid="new-workspace-name"
-                  bind:value={newName}
-                  placeholder="my-architecture"
-                  aria-label="New workspace name"
-                  use:autofocus
-                  onkeydown={(e) => { if (e.key === "Escape") creating = false; }}
-                />
-                <button class="mk" type="submit" data-testid="new-workspace-create">Create</button>
-              </form>
-            {:else}
-              <button class="row action" data-testid="new-workspace" onclick={() => (creating = true)} disabled={!canOpenFolder}>
-                <span class="glyph new" aria-hidden="true">+</span>
-                <span class="meta">
-                  <span class="name">New workspace</span>
-                  <span class="sub">scaffold a fresh project on disk</span>
-                </span>
-                <span class="chev" aria-hidden="true">→</span>
-              </button>
-            {/if}
-          </li>
-          <li>
-            <button class="row action" data-testid="open-folder" onclick={() => onopenfolder?.()} disabled={!canOpenFolder}>
+            <button class="row action" data-testid="open-folder" onclick={() => onopenfolder?.()}>
               <span class="glyph folder" aria-hidden="true">▢</span>
               <span class="meta">
                 <span class="name">Open a folder</span>
-                <span class="sub">a directory of <code>.pds</code> modules</span>
-              </span>
-              <span class="chev" aria-hidden="true">→</span>
-            </button>
-          </li>
-          <li>
-            <button class="row action" data-testid="import-workspace" onclick={() => onimport?.()}>
-              <span class="glyph import" aria-hidden="true">↧</span>
-              <span class="meta">
-                <span class="name">Import a workspace</span>
-                <span class="sub">a shared <code>.pdsx</code> file</span>
+                <span class="sub">an existing project of <code>.pds</code> modules</span>
               </span>
               <span class="chev" aria-hidden="true">→</span>
             </button>
@@ -159,15 +96,15 @@
         </ul>
 
         <h2 class="kicker">Recent</h2>
-        {#if recents.length}
+        {#if folderRecents.length}
           <ul class="rows recents">
-            {#each recents as r (r.key)}
+            {#each folderRecents as r (r.key)}
               <li>
-                <button class="row" onclick={() => onpickrecent?.(r)}>
-                  <span class="glyph {r.kind}" aria-hidden="true">{r.kind === "sample" ? "▣" : "▢"}</span>
+                <button class="row" data-testid="recent-{r.key}" onclick={() => onpickrecent?.(r)}>
+                  <span class="glyph folder" aria-hidden="true">▢</span>
                   <span class="meta">
                     <span class="name">{r.name}</span>
-                    <span class="sub">{r.kind === "sample" ? "example" : "folder"} · {ago(r.at)}</span>
+                    <span class="sub">folder · {ago(r.at)}</span>
                   </span>
                 </button>
                 <button class="forget" title="Remove from recent" aria-label="Remove {r.name} from recent" onclick={() => onforget?.(r)}>✕</button>
@@ -175,34 +112,38 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty">No recent projects yet — open an example to begin.</p>
-        {/if}
-
-        {#if !canOpenFolder}
-          <p class="note">Local folders need a Chromium browser (File System Access API). Examples and import work everywhere.</p>
+          <p class="empty">No recent projects yet — start one from a template.</p>
         {/if}
       </div>
 
       <div class="col examples">
-        <h2 class="kicker">Examples</h2>
-        {#each grouped as group (group.cat)}
-          <h3 class="group">{group.cat}</h3>
-          <ul class="cards">
-            {#each group.items as ex (ex.id)}
-              <li>
-                <button class="card" data-testid="sample-{ex.id}" onclick={() => onpicksample?.(ex.id)}>
-                  <span class="ct tl"></span><span class="ct br"></span>
-                  <span class="card-top">
-                    <span class="card-name">{ex.name}</span>
-                    <span class="count">{ex.moduleCount} module{ex.moduleCount === 1 ? "" : "s"}</span>
-                  </span>
-                  <span class="desc">{ex.description}</span>
-                  <span class="go">Open <span class="arr" aria-hidden="true">→</span></span>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/each}
+        <h2 class="kicker">New project</h2>
+        <label class="namefield">
+          <span class="namelabel">Name</span>
+          <input
+            class="newname"
+            data-testid="new-project-name"
+            bind:value={name}
+            placeholder="my-architecture"
+            aria-label="New project name"
+          />
+        </label>
+        <p class="pick">Choose a template — you'll pick where to save it on disk next.</p>
+        <ul class="cards">
+          {#each templates as t (t.id)}
+            <li>
+              <button class="card" data-testid="template-{t.id}" onclick={() => choose(t.id)}>
+                <span class="ct tl"></span><span class="ct br"></span>
+                <span class="card-top">
+                  <span class="card-name">{t.name}</span>
+                  <span class="count">{t.moduleCount} module{t.moduleCount === 1 ? "" : "s"}</span>
+                </span>
+                <span class="desc">{t.description}</span>
+                <span class="go">Use template <span class="arr" aria-hidden="true">→</span></span>
+              </button>
+            </li>
+          {/each}
+        </ul>
       </div>
     </div>
   </section>
@@ -331,16 +272,14 @@
     padding-right: 0.4rem;
   }
 
-  /* category subheading within the examples column (the handbook's sections) */
-  .group {
-    margin: 1.1rem 0 0.55rem;
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--ink-soft);
+  /* the New-project name field + the "choose a template" hint */
+  .namefield { display: block; margin-bottom: 0.7rem; }
+  .namelabel {
+    display: block; margin-bottom: 0.3rem;
+    font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-faint);
   }
-  .group:first-of-type { margin-top: 0; }
+  .pick { margin: 0 0 0.85rem; font-size: 0.8rem; color: var(--ink-soft); line-height: 1.5; }
 
   /* one row language for both Start actions and Recent entries */
   .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
@@ -370,32 +309,18 @@
     border: 1px solid var(--line-strong); border-radius: 6px;
     background: var(--surface);
   }
-  .glyph.sample { color: var(--accent); }
   .glyph.folder { color: var(--k-container); }
-  .glyph.import { color: var(--k-person); }
-  .glyph.new { color: var(--accent); font-weight: 700; }
 
-  /* the inline new-workspace form reuses the action-row frame */
-  .newform { gap: 0.55rem; }
+  /* the New-project name field */
   .newname {
-    flex: 1; min-width: 0;
-    padding: 0.3rem 0.5rem;
-    font-family: var(--font-mono); font-size: 0.86rem;
+    width: 100%; min-width: 0;
+    padding: 0.4rem 0.6rem;
+    font-family: var(--font-mono); font-size: 0.88rem;
     color: var(--ink);
     background: var(--surface); border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
   }
   .newname:focus { outline: none; border-color: var(--accent); }
-  .mk {
-    flex: none;
-    padding: 0.34rem 0.7rem;
-    font-family: var(--font-mono); font-size: 0.7rem; font-weight: 600;
-    letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--accent-ink); background: var(--accent);
-    border: 1px solid var(--accent); border-radius: var(--radius-sm);
-    cursor: pointer;
-  }
-  .mk:hover { filter: brightness(1.08); }
   .meta { display: flex; flex-direction: column; min-width: 0; }
   .meta .name { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .meta .sub { font-family: var(--font-mono); font-size: 0.66rem; color: var(--ink-faint); }
@@ -411,7 +336,6 @@
   .forget:hover { color: var(--err); border-color: var(--err); }
 
   .empty { margin: 0.2rem 0 0; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.5; }
-  .note { margin: 1.1rem 0 0; font-size: 0.72rem; color: var(--ink-faint); line-height: 1.45; }
 
   .cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.7rem; }
   .card {

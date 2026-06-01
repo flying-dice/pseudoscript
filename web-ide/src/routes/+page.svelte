@@ -4,11 +4,11 @@
   import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outline, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
   import type { Module, Occurrence, Scene as PdsScene } from "$lib/pds.js";
   import { charToByte } from "$lib/offsets.js";
-  import { fsSupported, createWorkspace, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
+  import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import { collapseSequence } from "$lib/sequence.js";
   import type { Depth, Info } from "$lib/sequence.js";
-  import { SAMPLES, loadSample } from "$lib/samples.js";
+  import { SAMPLES, sampleSeed } from "$lib/samples.js";
   import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
   import type { Recent } from "$lib/recents.js";
   import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
@@ -714,12 +714,26 @@
     ver = version();
     refreshRecents();
     ready = true;
+    // Disk-only: without the File System Access API there's nowhere to read or
+    // write a project, so the render shows an unsupported notice and the launcher
+    // never opens.
+    if (!fsSupported) return;
     // A `#w=` share link restores its workspace and skips the project panel;
     // otherwise open the panel on start (never autoload a model).
     const restored = await restoreFromHash();
     projectOpen = !restored;
   }
   onMount(boot);
+
+  // Watch for edits made outside the IDE while this tab is visible: an immediate
+  // re-read on focus, plus a modest backstop timer (visible-only, so a hidden tab
+  // does no disk churn). `reloadExternalChanges` no-ops without an open folder.
+  onMount(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") reloadExternalChanges();
+    }, 2500);
+    return () => clearInterval(timer);
+  });
 
   // Swap in a freshly-loaded workspace, resetting navigation to `landing`.
   async function mountWorkspace(ws: PageWorkspace, landing?: string | null) {
@@ -1151,25 +1165,13 @@ system ${pascalName(leaf)} {
     notify("success", `Deleted ${file.fqn}`);
   }
 
-  // Load a bundled example (edits are session-only). Called from the project
-  // panel's examples block.
-  function openSample(id: string) {
-    const loaded = loadSample(id);
-    if (!loaded) return;
-    moduleSources = Object.fromEntries(loaded.workspace.files.map((f) => [f.fqn, f.source]));
-    // Session-only: there's no folder to save to, but seed the baseline from the
-    // example so edits register as unsaved (the save indicator reads "session ·
-    // N unsaved"). A sample isn't recorded in recents — it persists nowhere and
-    // always re-opens from the examples catalogue.
-    persisted = { ...moduleSources };
-    mountWorkspace(loaded.workspace, loaded.landing);
-  }
-
-  // Re-open a recent project: a sample by id, or a folder from its stored handle
-  // (falling back to the picker if the handle is gone or permission is denied).
+  // Re-open a recent project from its stored folder handle (falling back to the
+  // picker if the handle is gone or permission is denied). Legacy sample recents
+  // (from before examples became templates) no longer re-open — they're forgotten.
   async function openRecent(entry: Recent) {
     if (entry.kind === "sample") {
-      if (entry.sampleId) openSample(entry.sampleId);
+      forget(entry.key);
+      refreshRecents();
       return;
     }
     const handle = await reopenFolder(entry.key);
@@ -1179,13 +1181,7 @@ system ${pascalName(leaf)} {
     }
     try {
       const ws = await readWorkspace(handle);
-      const sources: Record<string, string> = {};
-      for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
-      moduleSources = sources;
-      persisted = { ...sources }; // seed the on-disk baseline: opened files start clean
-      mountWorkspace(ws, ws.files[0]?.fqn);
-      await recordFolder(ws.name, ws.root);
-      refreshRecents();
+      await adoptWorkspace(ws);
       flash(`Opened ${ws.name} · ${ws.files.length} modules`);
     } catch {
       openFolder();
@@ -1240,6 +1236,53 @@ system ${pascalName(leaf)} {
       notify("error", "Could not save to disk", String((e as Error)?.message ?? e));
       throw e;
     }
+  }
+
+  // Pull in edits made outside the IDE: re-read every open file's handle and, for
+  // any whose disk content diverged from our baseline, reload it — provided its
+  // buffer is clean. A buffer with unsaved edits is left alone (the conflict is
+  // surfaced once) so external changes never clobber in-flight work. Runs on
+  // window focus and a modest visible-only timer; comparing content (not mtime)
+  // means our own saves never look external.
+  async function reloadExternalChanges() {
+    if (!workspace?.root || pendingWrite || saveState === "saving") return;
+    const targets: { key: string; handle: FileSystemFileHandle; kind: "module" | "doc" | "manifest" }[] = [];
+    for (const f of workspace.files) if (f.handle && f.fqn) targets.push({ key: f.fqn, handle: f.handle, kind: "module" });
+    if (workspace.manifest?.handle && manifestKey)
+      targets.push({ key: manifestKey, handle: workspace.manifest.handle, kind: "manifest" });
+    for (const g of docGroups) for (const it of g.items) if (it.handle) targets.push({ key: it.path, handle: it.handle, kind: "doc" });
+
+    let conflicts = 0;
+    for (const { key, handle, kind } of targets) {
+      const base = persisted[key];
+      if (base === undefined) continue;
+      let disk: string;
+      try {
+        disk = await readFile(handle);
+      } catch {
+        continue; // file removed or unreadable this tick — skip
+      }
+      if (disk === base) continue; // unchanged on disk
+      const buffer = kind === "module" ? moduleSources[key] : kind === "doc" ? docSources[key] : manifestSource;
+      if (buffer !== base) {
+        conflicts += 1;
+        continue;
+      }
+      applyExternalReload(key, disk, kind);
+    }
+    if (conflicts > 0) flash(`${conflicts} file(s) changed on disk — your unsaved edits are kept`);
+  }
+
+  // Apply one externally-changed file: update its live buffer (which flows to the
+  // editor and re-derives the model) and advance its baseline so it reads clean.
+  function applyExternalReload(key: string, disk: string, kind: "module" | "doc" | "manifest") {
+    if (kind === "module") moduleSources = { ...moduleSources, [key]: disk };
+    else if (kind === "doc") docSources = { ...docSources, [key]: disk };
+    else {
+      manifestSource = disk;
+      resolveManifest(disk);
+    }
+    persisted = { ...persisted, [key]: disk };
   }
 
   // Toast notifications (kind: success | error | info), shown stacked top-right.
@@ -1379,19 +1422,32 @@ system ${pascalName(leaf)} {
     if (d.file) recordLocation({ fileFqn: d.file, line: d.start_line, col: d.start_col, label: d.message });
   }
 
-  // Scaffold a brand-new project: prompt for a name + parent directory, write a
-  // starter pds.toml + main.pds, then mount it like any opened folder. A blank
-  // name falls back to the default; cancelling the picker is a silent no-op.
-  async function newProject(name: string) {
-    try {
-      const ws = await createWorkspace(name);
-      const sources: Record<string, string> = {};
-      for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
-      moduleSources = sources;
-      persisted = { ...sources }; // freshly written = on-disk baseline, starts clean
-      mountWorkspace(ws, ws.files[0]?.fqn);
+  // Read every module into the live buffer, seed a clean on-disk baseline, mount,
+  // and record the folder in recents. The single adopt path shared by opening a
+  // folder, scaffolding a new project, and re-opening a recent — every workspace
+  // is disk-backed, so this always has real handles to read and persist against.
+  async function adoptWorkspace(ws: PageWorkspace, landing?: string | null) {
+    const sources: Record<string, string> = {};
+    for (const file of ws.files) if (file.handle) sources[file.fqn ?? ""] = await readFile(file.handle);
+    moduleSources = sources;
+    persisted = { ...sources };
+    await mountWorkspace(ws, landing ?? ws.files[0]?.fqn);
+    if (ws.root) {
       await recordFolder(ws.name, ws.root);
       refreshRecents();
+    }
+  }
+
+  // Bootstrap a project from a template — the empty one-module starter, or an
+  // example scaffolded onto disk. Prompts for a parent directory, writes the
+  // files, then opens it like any folder. Cancelling the picker is a no-op.
+  async function newProject(name: string, templateId: string) {
+    const tpl =
+      templateId === "empty" ? { seed: emptySeed(name), landing: null as string | null } : sampleSeed(templateId);
+    if (!tpl) return;
+    try {
+      const ws = await scaffoldWorkspace(name, tpl.seed);
+      await adoptWorkspace(ws, tpl.landing);
       flash(`Created ${ws.name}`);
     } catch {
       // picker cancelled or permission denied — keep the current workspace
@@ -1401,18 +1457,20 @@ system ${pascalName(leaf)} {
   async function openFolder() {
     try {
       const ws = await openWorkspace();
-      const sources: Record<string, string> = {};
-      for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
-      moduleSources = sources;
-      persisted = { ...sources }; // seed the on-disk baseline: opened files start clean
-      mountWorkspace(ws, ws.files[0]?.fqn);
-      await recordFolder(ws.name, ws.root);
-      refreshRecents();
+      await adoptWorkspace(ws);
       flash(`Opened ${ws.name} · ${ws.files.length} modules`);
     } catch {
       // picker cancelled or permission denied — keep the current workspace
     }
   }
+
+  // New-project templates: the empty one-module starter, then every bundled
+  // example (its files scaffold onto disk when chosen). The launcher's New-project
+  // flow lists these; picking one runs `newProject(name, id)`.
+  const templates = [
+    { id: "empty", name: "Empty project", description: "A single module to build on.", moduleCount: 1 },
+    ...SAMPLES.map((s) => ({ id: s.id, name: s.name, description: s.description, moduleCount: s.moduleCount })),
+  ];
 
   async function onformat() {
     if (!openFile) return;
@@ -1697,9 +1755,10 @@ show('index.html');
       saveActiveFile();
     }
   }}
+  onfocus={reloadExternalChanges}
   onbeforeunload={(e) => {
     // Warn before closing with unsaved work that can be persisted, or with a
-    // write still in flight. Samples are session-only and never trigger this.
+    // write still in flight.
     if (canPersist && (dirtyCount > 0 || pendingWrite)) {
       e.preventDefault();
       e.returnValue = "";
@@ -1758,15 +1817,12 @@ show('index.html');
 
 {#if ready && projectOpen}
   <ProjectPanel
-    examples={SAMPLES}
+    {templates}
     {recents}
-    canOpenFolder={fsSupported}
     dismissible={!!workspace}
-    onpicksample={openSample}
     onpickrecent={openRecent}
     onopenfolder={openFolder}
     onnewproject={newProject}
-    onimport={onimport}
     onforget={forgetRecent}
     onclose={() => (projectOpen = false)}
   />
@@ -1901,7 +1957,6 @@ show('index.html');
     workspaceName={workspace?.name ?? null}
     {building}
     {dirtyCount}
-    {canPersist}
     {saveState}
     {onformat}
     onproject={() => (projectOpen = true)}
@@ -1917,6 +1972,15 @@ show('index.html');
       <div class="kicker">compiler failed to load</div>
       <p class="msg">{wasmError}</p>
       <button class="retry" onclick={boot}>Retry</button>
+    </div>
+  {:else if !fsSupported}
+    <div class="curtain">
+      <div class="kicker">browser not supported</div>
+      <p class="msg">
+        The PseudoScript IDE reads and writes your project as real files on disk, which needs the File
+        System Access API. That's available in Chromium browsers — Chrome, Edge, Brave, Arc. Firefox and
+        Safari don't support it yet.
+      </p>
     </div>
   {:else if ready && workspace}
     <main class="workspace has-tree">

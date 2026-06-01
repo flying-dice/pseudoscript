@@ -6,11 +6,11 @@
 // hardcodes a particular sample.
 //
 // Bundled at build time via Vite's glob so the catalogue stays in sync with the
-// files. The page never autoloads one: a sample is materialised into a workspace
-// only when the user picks it (the examples block / project menu), through
-// `loadSample(id)`.
+// files. The page never autoloads one: a sample is a project *template* — the New
+// project flow scaffolds its files onto disk via `sampleSeed(id)`.
 
 import type { EnvelopeFile } from "./codec";
+import type { SeedFile } from "./workspace";
 
 /** The `meta.json` shape that sits beside each sample's `.pds` files. */
 interface SampleMeta {
@@ -21,8 +21,7 @@ interface SampleMeta {
   order?: number;
 }
 
-/** A source module within a sample, with the in-memory FS handle the IDE fills
- *  in once the sample is mounted (null on disk-less, session-only edits). */
+/** A source module within a sample template: its path, fqn, and raw text. */
 export interface SampleFile extends EnvelopeFile {
   handle: FileSystemFileHandle | null;
 }
@@ -48,19 +47,6 @@ export interface Sample {
   files: SampleFile[];
   manifestToml: string | null;
   docs: Record<string, string>;
-}
-
-/** The in-memory workspace `{ workspace, landing }` `loadSample` hands the IDE. */
-export interface LoadedSample {
-  workspace: {
-    name: string;
-    root: FileSystemDirectoryHandle | null;
-    sampleId: string;
-    files: SampleFile[];
-    manifestToml: string | null;
-    docs: Record<string, string>;
-  };
-  landing: string | null;
 }
 
 const pdsSources = import.meta.glob<string>("./samples/*/*.pds", {
@@ -124,24 +110,16 @@ export const SAMPLES: Sample[] = [...byId.values()]
   .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 
 /**
- * Materialise a sample as an in-memory workspace (file handles null = edits are
- * session-only), shaped exactly like an opened folder, plus the module to open
- * first. Returns null for an unknown id.
+ * A sample as scaffold seed: every `.pds` module, the `pds.toml`, and each doc
+ * page, plus the page to open first. Used by the new-project flow to bootstrap
+ * the example onto disk as a real workspace. Returns null for an unknown id.
  */
-export function loadSample(id: string): LoadedSample | null {
+export function sampleSeed(id: string): { seed: SeedFile[]; landing: string | null } | null {
   const sample = SAMPLES.find((s) => s.id === id);
   if (!sample) return null;
-  return {
-    workspace: {
-      name: `${sample.name} · sample`,
-      root: null,
-      sampleId: sample.id,
-      files: sample.files,
-      // The raw `[doc]` manifest and a path→Markdown map, so the doc build
-      // renders `[[doc.sidebar]]` pages the same way a real folder would.
-      manifestToml: sample.manifestToml,
-      docs: sample.docs,
-    },
-    landing: sample.landing,
-  };
+  const seed: SeedFile[] = sample.files.map((f) => ({ path: f.path, content: f.source }));
+  if (sample.manifestToml) seed.push({ path: "pds.toml", content: sample.manifestToml });
+  for (const [path, content] of Object.entries(sample.docs)) seed.push({ path, content });
+  return { seed, landing: sample.landing };
 }
+

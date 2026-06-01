@@ -1,16 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { createProject, stubPicker } from "./harness";
 
-// Opens the ACME Tickets sample and its `orders` module before each test. All
+// Bootstraps the ACME Tickets template into a real (OPFS) folder and opens its
+// `orders` module before each test — the disk-backed path a user takes. All
 // navigation is via data-testid; editor internals use CodeMirror's documented
 // classes and our data-sem highlight attributes.
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
-  await page.getByTestId("sample-acme-tickets").click();
-  await page.getByTestId("file-orders").click();
-  const content = page.getByTestId("editor").locator(".cm-content");
-  await expect(content).toBeVisible();
-  // wait until the compiler has produced highlight marks (wasm is ready)
-  await expect(page.locator('[data-sem="keyword"]').first()).toBeVisible();
+  await stubPicker(page);
+  await createProject(page, "acme-tickets", "orders");
 });
 
 test("highlighting is AST-aware: tokens carry their LSP role", async ({ page }) => {
