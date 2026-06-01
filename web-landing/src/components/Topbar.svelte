@@ -6,7 +6,6 @@
 <header class="topbar">
   <div class="wrap bar">
     <a class="brand" href="#top">
-      <span class="dot"></span>
       <Mark />
       <span class="word">PseudoScript</span>
     </a>
