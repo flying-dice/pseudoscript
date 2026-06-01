@@ -24,6 +24,7 @@
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
   import { completion as symbolCompletion, definition as symbolDefinition, foldRanges, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
+  import { reportError } from "$lib/errors.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
   import type { Module, Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
@@ -626,6 +627,7 @@
         button("Go to definition", () => {
           const fqn = fqnAt();
           if (fqn) ctx.ongotodefinition?.(fqn);
+          else reportError("GOTO_NO_SYMBOL", `${ctx.moduleFqn} @ byte ${offset}`);
         });
         button("Find usages", () => findUsages(view, pos));
         button("Canvas", () => {

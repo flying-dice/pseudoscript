@@ -10,6 +10,7 @@
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import { collapseSequence } from "$lib/sequence.js";
   import type { Depth, Info } from "$lib/sequence.js";
+  import { reportError } from "$lib/errors.js";
   import { SAMPLES, sampleSeed } from "$lib/samples.js";
   import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
   import type { Recent } from "$lib/recents.js";
@@ -513,10 +514,15 @@
       const layout = isSeq && shown ? layoutScene(shown) : null;
       return { scene: shown, layout, error: "" };
     } catch (e) {
-      // Unprojectable (e.g. a data type) — still show the symbol as a lifeline
-      // when one is selected, rather than an error note.
-      if (selected) return lifelineFallback();
-      return { scene: null, layout: null, error: String((e as Error)?.message ?? e) };
+      const detail = String((e as Error)?.message ?? e);
+      // Unprojectable (e.g. a feature, or a data type) — still show the symbol as
+      // a lifeline when one is selected, rather than an error note.
+      if (selected) {
+        reportError("DIAGRAM_PROJECTION_FAILED", `${selected.fqn}: ${detail}`);
+        return lifelineFallback();
+      }
+      reportError("DIAGRAM_RENDER_FAILED", detail);
+      return { scene: null, layout: null, error: detail };
     }
   });
 
@@ -636,11 +642,41 @@
   // Select a structure node: open its declaring file and remember it as the
   // current scope. `goto` (a nav click) also shows the code and jumps the editor
   // to the declaration; a canvas drill leaves the view alone.
+  // The nearest enclosing structural node for a member/field fqn: drop trailing
+  // `::segment`s until one names a node. A field fqn like `M::Conv::id` isn't a
+  // node, so without this go-to-definition on a field would silently do nothing.
+  function ownerNodeOf(fqn: string): string | null {
+    let cur = fqn;
+    while (cur.includes("::")) {
+      cur = cur.slice(0, cur.lastIndexOf("::"));
+      if (nodeIndex.has(cur)) return cur;
+    }
+    return null;
+  }
+
   function selectNode(fqn: string, { goto = false }: { goto?: boolean } = {}) {
-    const hit = nodeIndex.get(fqn);
-    if (!hit) return;
-    const file = workspace?.files.find((f) => f.fqn === hit.fileFqn);
-    if (!file?.fqn) return;
+    // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
+    // isn't itself a node — fall back to its owner so go-to-definition on a field
+    // opens its declaring type instead of no-opping (PDS-GOTO-002).
+    let targetFqn = fqn;
+    let hit = nodeIndex.get(targetFqn);
+    if (!hit) {
+      const owner = ownerNodeOf(fqn);
+      if (owner) {
+        reportError("GOTO_MEMBER_FALLBACK", `${fqn} → ${owner}`);
+        targetFqn = owner;
+        hit = nodeIndex.get(owner);
+      }
+    }
+    if (!hit) {
+      reportError("GOTO_UNRESOLVED", fqn, { nodeCount: nodeIndex.size });
+      return;
+    }
+    const file = workspace?.files.find((f) => f.fqn === hit!.fileFqn);
+    if (!file?.fqn) {
+      reportError("GOTO_FILE_MISSING", `${targetFqn} declared in ${hit.fileFqn}`);
+      return;
+    }
     const fileFqn = file.fqn;
     // Record the pre-jump caret before the file/scope changes, so Back returns.
     if (goto && view !== "canvas") recordOrigin();
@@ -648,13 +684,13 @@
       flushSave();
       openFile = file;
     }
-    selected = { fqn, line: hit.node.line, col: hit.node.col, fileFqn };
+    selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
     // isn't showing; on the canvas the new scope is the navigation, so stay put.
     if (goto && view !== "canvas") {
       view = "code";
       pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
-      recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn, label: nodeTitle(fqn) });
+      recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
     }
   }
 

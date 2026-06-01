@@ -28,6 +28,19 @@ import init, {
   version as wasmVersion,
 } from "./pds-wasm/pseudoscript_wasm.js";
 import type { InitOutput } from "./pds-wasm/pseudoscript_wasm.js";
+import { reportError } from "./errors.js";
+
+// Run a wasm bridge call, tagging any throw with its origin (PDS-WASM-001) so a
+// language-server failure is never silent. Rethrows — callers that recover (the
+// editor's go-to-definition, the diagram canvas) still see the original error.
+function callWasm<T>(name: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    reportError("WASM_CALL_FAILED", `${name}: ${String((e as Error)?.message ?? e)}`);
+    throw e;
+  }
+}
 
 // ---- Workspace + payload shapes ------------------------------------------
 
@@ -202,7 +215,7 @@ export function format(source: string): string {
 
 /** Project a diagram view to its laid-out scene object. */
 export function emitScene(source: string, view: string, target = ""): Scene {
-  return JSON.parse(wasmEmitScene(source, view, target));
+  return callWasm("emitScene", () => JSON.parse(wasmEmitScene(source, view, target)));
 }
 
 /**
@@ -223,7 +236,7 @@ export function outlineModules(modules: Module[]): OutlineNode[] {
  * across modules (a container's components, cross-system calls).
  */
 export function emitSceneModules(modules: Module[], view: string, target = ""): Scene {
-  return JSON.parse(wasmEmitSceneModules(JSON.stringify(modules), view, target));
+  return callWasm("emitSceneModules", () => JSON.parse(wasmEmitSceneModules(JSON.stringify(modules), view, target)));
 }
 
 /**
@@ -232,12 +245,12 @@ export function emitSceneModules(modules: Module[], view: string, target = ""): 
  * the positioned `Layout` the renderer draws verbatim.
  */
 export function layoutScene(scene: Scene): Scene {
-  return JSON.parse(wasmLayoutScene(JSON.stringify(scene)));
+  return callWasm("layoutScene", () => JSON.parse(wasmLayoutScene(JSON.stringify(scene))));
 }
 
 /** Project a diagram view to an SVG string. */
 export function emitSvg(source: string, view: string, target = ""): string {
-  return wasmEmitSvg(source, view, target);
+  return callWasm("emitSvg", () => wasmEmitSvg(source, view, target));
 }
 
 /**
@@ -247,7 +260,7 @@ export function emitSvg(source: string, view: string, target = ""): string {
  * diagram. `modules` is `[{ fqn, source }]`.
  */
 export function hover(modules: Module[], moduleFqn: string, offset: number): Hover | null {
-  return JSON.parse(wasmHover(JSON.stringify(modules), moduleFqn, offset));
+  return callWasm("hover", () => JSON.parse(wasmHover(JSON.stringify(modules), moduleFqn, offset)));
 }
 
 /**
@@ -257,7 +270,7 @@ export function hover(modules: Module[], moduleFqn: string, offset: number): Hov
  * `[{ fqn, source }]`.
  */
 export function definition(modules: Module[], moduleFqn: string, offset: number): string | null {
-  return JSON.parse(wasmDefinition(JSON.stringify(modules), moduleFqn, offset));
+  return callWasm("definition", () => JSON.parse(wasmDefinition(JSON.stringify(modules), moduleFqn, offset)));
 }
 
 /**
@@ -268,7 +281,7 @@ export function definition(modules: Module[], moduleFqn: string, offset: number)
  * no resolvable symbol. `modules` is `[{ fqn, source }]`.
  */
 export function references(modules: Module[], moduleFqn: string, offset: number): References | null {
-  return JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset));
+  return callWasm("references", () => JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset)));
 }
 
 /**
@@ -280,7 +293,7 @@ export function references(modules: Module[], moduleFqn: string, offset: number)
  * `[{ fqn, source }]`.
  */
 export function completion(modules: Module[], moduleFqn: string, offset: number): CompletionItem[] {
-  return JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset));
+  return callWasm("completion", () => JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset)));
 }
 
 /**
@@ -308,6 +321,10 @@ export function foldRanges(source: string): FoldingRange[] {
  * interactive counterpart of {@link hover}'s `svg`, for a side panel or
  * full-screen view). `modules` is `[{ fqn, source }]`.
  */
+// A throw here is control flow, not an error: a non-projectable symbol (a
+// feature, a data type) signals the canvas to show its lifeline fallback, which
+// reports PDS-DIAGRAM-001. Wrapping it in `callWasm` would double-log at error
+// severity — leave it to the caller's recovery.
 export function symbolScene(modules: Module[], fqn: string): Scene {
   return JSON.parse(wasmSymbolScene(JSON.stringify(modules), fqn));
 }

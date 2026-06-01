@@ -870,7 +870,7 @@ fn to_json<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        check, check_modules_impl, completion_impl, doc_config, doc_manifest_impl,
+        check, check_modules_impl, completion_impl, definition_impl, doc_config, doc_manifest_impl,
         emit_scene_modules_impl, format_impl, hover_impl, layout_scene_impl, outline, parse,
         project_view, references_impl, symbol_scene_impl, symbol_svg_impl, to_json,
     };
@@ -1078,6 +1078,18 @@ mod tests {
         let svg = symbol_svg_impl(&workspace_json(), "sys::Shop").expect("renders");
         assert!(svg.contains("<svg"), "{svg}");
         assert!(svg.contains("Web"), "{svg}");
+    }
+
+    #[test]
+    fn definition_resolves_a_data_field_to_its_owner_qualified_fqn() {
+        // A field resolves to `Owner::field` — not a graph node. The IDE relies on
+        // this shape to fall back to the owning node (open the data type) rather
+        // than no-op a field go-to-definition (PDS-GOTO-002).
+        let src = "//! m\npublic data Conv { id: uuid }\n";
+        let input = format!(r#"[{{"fqn":"m","source":{}}}]"#, to_json(&src));
+        let offset = (src.find("id:").expect("`id` field present")) as u32;
+        let fqn = definition_impl(&input, "m", offset).expect("resolves");
+        assert_eq!(fqn, r#""m::Conv::id""#, "{fqn}");
     }
 
     #[test]
