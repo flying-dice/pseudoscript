@@ -20,6 +20,9 @@
   import * as nav from "$lib/core/navigation.js";
   import { computeDiagnostics } from "$lib/core/diagnostics.js";
   import * as ops from "$lib/core/workspace-ops.js";
+  import { keyOf, computeDirty, dirtyPaths as dirtyPathsOf, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
+  import * as share from "$lib/core/share.js";
+  import * as docs from "$lib/core/docs.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -159,7 +162,7 @@
   let manifestError = $state<string | null>(null);
   // Whether the live manifest declares a `[dependencies]` table — drives the
   // read-only "resolved by pds install" note.
-  const manifestHasDeps = $derived(/^\s*\[dependencies/m.test(manifestSource));
+  const manifestHasDeps = $derived(docs.manifestHasDeps(manifestSource));
 
   // The persisted baseline: the text last read from / written to disk, keyed the
   // same way as the live buffers (FQN for modules, path for docs). A file is
@@ -170,10 +173,6 @@
   // saved | error. `saved` shows briefly after a successful write.
   let saveState = $state<"idle" | "saving" | "saved" | "error">("idle");
   let saveStateTimer: ReturnType<typeof setTimeout> | undefined;
-
-  // A file's buffer key: its path for a doc or the manifest, its FQN for a module.
-  const keyOf = (file: OpenFile | null): string | undefined =>
-    file?.isManifest ? file.path : file?.isDoc ? file.path : file?.fqn;
 
   // Whether the workspace can persist to disk at all (a real opened folder, not a
   // bundled in-memory sample).
@@ -187,16 +186,7 @@
   // against the open doc's dir and match a loaded doc page by path.
   function resolveDocLink(rel: string) {
     if (!openFile?.isDoc || !openFile.path) return;
-    const path = openFile.path;
-    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-    const stack = dir ? dir.split("/").filter(Boolean) : [];
-    for (const seg of rel.replace(/[#?].*$/, "").split("/")) {
-      if (seg === "" || seg === ".") continue;
-      if (seg === "..") stack.pop();
-      else stack.push(seg);
-    }
-    const target = stack.join("/");
-    const item = docGroups.flatMap((g) => g.items).find((it) => it.path === target);
+    const item = docs.findDocByPath(docGroups, docs.resolveDocPath(openFile.path, rel));
     if (item) openDoc(item);
   }
 
@@ -218,29 +208,11 @@
   // Only files with a recorded baseline (i.e. backed by a handle) can be dirty;
   // sample buffers have no baseline and are reported as session-only instead.
   const manifestKey = $derived(workspace?.manifest?.path ?? null);
-  const dirty = $derived.by(() => {
-    const set = new Set<string>();
-    for (const key of Object.keys(persisted)) {
-      let current: string | undefined;
-      if (key === manifestKey) current = manifestSource;
-      else if (key in moduleSources) current = moduleSources[key];
-      else current = docSources[key];
-      if (current !== undefined && current !== persisted[key]) set.add(key);
-    }
-    return set;
-  });
+  const dirty = $derived(computeDirty(persisted, { manifestKey, manifestSource, moduleSources, docSources }));
   const dirtyCount = $derived(dirty.size);
 
-  // Dirty keys mapped to their tree paths, for the FileTree row dot. Module keys
-  // are FQNs (resolved to paths); doc keys are already paths.
-  const dirtyPaths = $derived.by(() => {
-    const paths = new Set<string>();
-    if (!workspace) return paths;
-    const pathByFqn = new Map<string, string>();
-    for (const f of workspace.files) if (f.fqn && f.path) pathByFqn.set(f.fqn, f.path);
-    for (const key of dirty) paths.add(pathByFqn.get(key) ?? key);
-    return paths;
-  });
+  // Dirty keys mapped to their tree paths, for the FileTree row dot.
+  const dirtyPaths = $derived(workspace ? dirtyPathsOf(dirty, workspace.files) : new Set<string>());
 
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   let docWidth = $state(loadDocWidth());
@@ -1105,9 +1077,7 @@
   // Seed the persisted baseline for a batch of files read from disk, so they
   // start clean. `entries` is `[{ key, text }]`.
   function seedBaseline(entries: { key: string; text: string }[]) {
-    const next = { ...persisted };
-    for (const { key, text } of entries) next[key] = text;
-    persisted = next;
+    persisted = advanceBaseline(persisted, entries);
   }
 
   // Write one buffer to disk and, on success, advance its baseline so it's no
@@ -1153,9 +1123,10 @@
       } catch {
         continue; // file removed or unreadable this tick — skip
       }
-      if (disk === base) continue; // unchanged on disk
       const buffer = kind === "module" ? moduleSources[key] : kind === "doc" ? docSources[key] : manifestSource;
-      if (buffer !== base) {
+      const action = classifyReload(disk, base, buffer);
+      if (action === "skip") continue;
+      if (action === "conflict") {
         conflicts += 1;
         continue;
       }
@@ -1420,30 +1391,13 @@
   // Assembles the doc-site config from the doc state loaded on open: site
   // name/theme from `[doc]`, plus the `[[doc.sidebar]]` pages with their live
   // (possibly edited) Markdown content. Degrades to name + theme when no docs.
-  function buildDocConfig() {
-    return {
-      name: docMeta.name ?? workspace?.name ?? "",
-      theme: docMeta.theme ?? "dark",
-      docs: docGroups.map((g) => ({
-        title: g.title,
-        items: g.items.map((i) => ({ title: i.title, path: i.path, content: docSources[i.path] ?? "" })),
-      })),
-    };
-  }
+  const buildDocConfig = () =>
+    docs.buildDocConfig({ name: docMeta.name ?? workspace?.name ?? "", theme: docMeta.theme ?? "dark", docGroups, docSources });
 
-  // Folds the bundled sample Markdown into the manifest sidebar, dropping any
-  // page with no bundled content (mirrors the folder path's warn-and-skip).
-  function sampleDocPages(
+  const sampleDocPages = (
     sidebar: { title: string; items?: { title: string; path: string }[] }[] | null | undefined,
     docMap: Record<string, string>,
-  ): { title: string; items: { title: string; path: string; content: string }[] }[] {
-    return (sidebar ?? []).map((group) => ({
-      title: group.title,
-      items: (group.items ?? [])
-        .filter((item) => docMap[item.path] != null)
-        .map((item) => ({ ...item, content: docMap[item.path] })),
-    }));
-  }
+  ) => docs.sampleDocPages(sidebar, docMap);
 
   // Renders the site, then writes it to `target/doc/` (opened folder) or opens a
   // preview (example), reporting the outcome as a notification.
@@ -1521,21 +1475,20 @@ show('index.html');
   // ── Share / import / export (client-only codec) ──────────────────────────
   // Snapshot the live workspace (current edits, manifest, docs) into the codec's
   // serialisable shape. Shared by the URL-hash share (T6) and the file export (T7).
-  function snapshotWorkspace() {
-    const files = (workspace?.files ?? []).map((f) => ({
-      path: f.path ?? "",
-      fqn: f.fqn ?? "",
-      source: moduleSources[f.fqn ?? ""] ?? "",
-    }));
-    const docs: { path: string; content: string }[] = [];
-    for (const g of docGroups) for (const it of g.items) docs.push({ path: it.path, content: docSources[it.path] ?? "" });
-    return { name: workspace?.name ?? "shared-workspace", manifestToml: manifestSource || null, files, docs };
-  }
+  const snapshotWorkspace = () =>
+    share.snapshotWorkspace({
+      name: workspace?.name ?? "shared-workspace",
+      files: workspace?.files ?? [],
+      moduleSources,
+      manifestSource,
+      docGroups,
+      docSources,
+    });
 
   // Mount a decoded workspace (from a share link or imported file) in-memory,
   // session-only until "Save to folder" — exactly the sample-load path.
   function mountDecoded({ workspace: ws, landing }: MountInput) {
-    moduleSources = Object.fromEntries((ws.files as { fqn?: string; source?: string }[]).map((f) => [f.fqn ?? "", f.source ?? ""]));
+    moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
     persisted = {}; // imported/shared: no on-disk baseline, session-only
     mountWorkspace(ws, landing);
   }
@@ -1611,10 +1564,10 @@ show('index.html');
   // Restore a workspace from a `#w=<payload>` share link on first load. Cleared
   // from the URL after mounting so a refresh doesn't re-trigger it.
   async function restoreFromHash() {
-    const m = location.hash.match(/[#&]w=([^&]+)/);
-    if (!m) return false;
+    const payload = share.parseHashPayload(location.hash);
+    if (!payload) return false;
     try {
-      const bytes = base64UrlToBytes(m[1]) as Uint8Array<ArrayBuffer>;
+      const bytes = base64UrlToBytes(payload) as Uint8Array<ArrayBuffer>;
       mountDecoded(await decodeWorkspace(bytes));
       window.history.replaceState(null, "", location.pathname + location.search);
       flash("Restored shared workspace");
