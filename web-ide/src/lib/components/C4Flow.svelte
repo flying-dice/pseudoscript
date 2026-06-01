@@ -11,7 +11,7 @@
   import C4Node from "./C4Node.svelte";
   import { theme } from "$lib/theme.svelte.js";
 
-  let { scene, onpick, onup, flows = null } = $props();
+  let { scene, onpick, onup, flows = null, oninfo = null, oninfoend = null, onusages = null } = $props();
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
@@ -164,6 +164,15 @@
   function onnodeclick({ node }) {
     picked = node.data;
   }
+  // Hover a node → the shared info card, the same affordance as the sequence
+  // canvas and the code hover. The card is the passive popover in +page; the
+  // richer click popover (flows / drill-in) stays on click.
+  function onnodepointerenter({ event, node }) {
+    if (node?.data?.fqn) oninfo?.(node.data.fqn, event);
+  }
+  function onnodepointerleave() {
+    oninfoend?.();
+  }
   function open(fqn) {
     onpick?.(fqn);
     picked = null;
@@ -183,6 +192,8 @@
     nodesConnectable={false}
     proOptions={{ hideAttribution: true }}
     {onnodeclick}
+    {onnodepointerenter}
+    {onnodepointerleave}
   >
     <Background gap={24} />
     <MiniMap pannable zoomable />

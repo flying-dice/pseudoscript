@@ -32,7 +32,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline {scene} {layout} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow {scene} {onpick} {onup} {flows} />{/if}
+      {#if isFlow}<FlowTimeline {scene} {layout} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow {scene} {onpick} {onup} {flows} {oninfo} {oninfoend} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">
