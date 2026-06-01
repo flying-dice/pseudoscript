@@ -1632,6 +1632,7 @@ show('index.html');
     {errorCount}
     onproblempick={onProblemPick}
     onopenfolder={() => (ui.projectOpen = true)}
+    ongoto={() => (ui.commandOpen = true)}
     onnewfile={startNewFile}
     onnewdoc={startNewDoc}
     onsave={saveActiveFile}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Monitor, Moon, Sun, WandSparkles } from "@lucide/svelte";
+  import { Monitor, Moon, Search, Sun, WandSparkles } from "@lucide/svelte";
 
   import { Button } from "$lib/components/ui/button/index.js";
   import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
@@ -19,6 +19,7 @@
     errorCount?: number;
     onproblempick?: (d: Problem) => void;
     onopenfolder?: () => void;
+    ongoto?: () => void;
     onnewfile?: () => void;
     onnewdoc?: () => void;
     onsave?: () => void;
@@ -50,6 +51,8 @@
     const i = THEME_OPTIONS.indexOf(theme.pref);
     theme.set(THEME_OPTIONS[(i + 1) % THEME_OPTIONS.length]);
   }
+
+  const mod = typeof navigator !== "undefined" && /mac/i.test(navigator.platform) ? "⌘" : "Ctrl";
 </script>
 
 <header class="topbar">
@@ -57,6 +60,14 @@
     <span class="brand">pds</span>
     <FileMenu {workspaceName} {building} {...menu} />
   </div>
+
+  {#if workspaceName}
+    <button class="search" onclick={() => menu.ongoto?.()} title="Go to file or symbol">
+      <Search size={13} strokeWidth={2} aria-hidden="true" />
+      <span class="search-label">{workspaceName}</span>
+      <kbd>{mod}K</kbd>
+    </button>
+  {/if}
 
   <div class="right">
     {#if workspaceName}
@@ -121,6 +132,43 @@
     color: var(--accent);
     letter-spacing: 0.02em;
     padding-right: 0.2rem;
+  }
+  /* the VS-Code-style centre "go to" pill */
+  .search {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 16rem;
+    max-width: 26rem;
+    height: 1.55rem;
+    padding: 0 0.5rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--ink-faint);
+    cursor: pointer;
+  }
+  .search:hover {
+    border-color: var(--accent);
+    color: var(--ink-soft);
+  }
+  .search-label {
+    flex: 1;
+    text-align: center;
+    font-family: var(--font-sans);
+    font-size: 0.76rem;
+    color: var(--ink-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .search kbd {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    padding: 0.05rem 0.3rem;
+    border-radius: 4px;
+    background: var(--surface-3);
+    color: var(--ink-faint);
   }
   .icon-btn {
     width: 1.7rem;

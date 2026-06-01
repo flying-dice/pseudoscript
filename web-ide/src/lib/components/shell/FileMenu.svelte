@@ -7,6 +7,7 @@
     workspaceName?: string | null;
     building?: boolean;
     onopenfolder?: () => void;
+    ongoto?: () => void;
     onnewfile?: () => void;
     onnewdoc?: () => void;
     onsave?: () => void;
@@ -21,6 +22,7 @@
     workspaceName = null,
     building = false,
     onopenfolder,
+    ongoto,
     onnewfile,
     onnewdoc,
     onsave,
@@ -31,6 +33,9 @@
     onbuilddocs,
   }: Props = $props();
 
+  // The platform-correct modifier glyph for the shortcut hints.
+  const mod = typeof navigator !== "undefined" && /mac/i.test(navigator.platform) ? "⌘" : "Ctrl";
+
   const hasWorkspace = $derived(!!workspaceName);
 </script>
 
@@ -40,12 +45,19 @@
     <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
   </DropdownMenu.Trigger>
   <DropdownMenu.Content class="file-menu" align="start" sideOffset={4}>
-    <DropdownMenu.Item onSelect={() => onopenfolder?.()}>Open folder…</DropdownMenu.Item>
+    <DropdownMenu.Item onSelect={() => onopenfolder?.()}>Open project…</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => ongoto?.()}>
+      Go to file or symbol…
+      <DropdownMenu.Shortcut>{mod}K</DropdownMenu.Shortcut>
+    </DropdownMenu.Item>
     <DropdownMenu.Separator />
     <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onnewfile?.()}>New file…</DropdownMenu.Item>
     <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onnewdoc?.()}>New doc…</DropdownMenu.Item>
     <DropdownMenu.Separator />
-    <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onsave?.()}>Save</DropdownMenu.Item>
+    <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onsave?.()}>
+      Save
+      <DropdownMenu.Shortcut>{mod}S</DropdownMenu.Shortcut>
+    </DropdownMenu.Item>
     <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onsaveall?.()}>Save all</DropdownMenu.Item>
     <DropdownMenu.Separator />
     <DropdownMenu.Item disabled={!hasWorkspace} onSelect={() => onshare?.()}>Copy share link</DropdownMenu.Item>
