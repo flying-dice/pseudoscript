@@ -1,6 +1,6 @@
 # Go-live backlog
 
-Final push to ship the CLI + web-ide. 16 tasks. Per-task refinement specs (current state, file:line, approach, acceptance criteria) live in [`refinement/`](refinement/). This file is the map: sequencing, sizes, dependencies, and the decisions already settled.
+Final push to ship the CLI + web-ide. 17 tasks. Per-task refinement specs (current state, file:line, approach, acceptance criteria) live in [`refinement/`](refinement/). This file is the map: sequencing, sizes, dependencies, and the decisions already settled.
 
 Each task is meant to run in its own session/worktree. Pull anything marked **Ready**.
 
@@ -53,6 +53,7 @@ web-ide independent (start anytime, isolated files):
 | T14 | 3–4 composed-pattern example workspaces (+ T15 sample-landing pass) | web-ide | L | **Ready** | `pseudocode` skill | `lib/samples/*` (zero-build glob) |
 | T15 | Default to first doc when no `landing` set | web-ide | S | **Ready** | coord mount w/ T3/T6/T7 | `+page.svelte` |
 | T16 | Logo + styling pass; light/dark toggle; token scales | web-ide | M–L | **Ready** | owns `app.css` tokens; `frontend-design` skill | `app.css`, `app.html`, `static/`, components |
+| T17 | Cloudflare Workers Builds for web-ide + web-landing (prod-on-main + PR preview URLs) | ops | S | **Ready** | needs CF dashboard access | CF dashboard config — [spec](refinement/17-cloudflare-workers-builds.md) |
 
 ## Coordination notes
 
