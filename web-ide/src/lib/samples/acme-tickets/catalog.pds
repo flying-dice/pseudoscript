@@ -53,19 +53,19 @@ public container Catalog for context::AcmeTickets;
 public component Events for Catalog {
   /// Create a new event in `Draft`.
   public create(draft: NewEvent): Event {
-    id = Catalog::EventStore.nextId()
-    event = Event from { id, draft, Draft }
+    id: shared::EventId = Catalog::EventStore.nextId()
+    event: Event = Event from { id, draft, Draft }
     Catalog::EventStore.save(event)
     return event
   }
 
   /// Put a draft event on sale.
   public putOnSale(id: shared::EventId): Result<Event, EventNotFound> {
-    found = Catalog::EventStore.fetch(id)
+    found: Option<Event> = Catalog::EventStore.fetch(id)
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    live = self.transition(found.value, OnSale)
+    live: Event = self.transition(found.value, OnSale)
     Catalog::EventStore.save(live)
     return Ok(live)
   }
@@ -73,11 +73,11 @@ public component Events for Catalog {
   /// Cancel an event: mark it `Cancelled` and raise `EventCancelled` so orders
   /// bulk-refunds and holders are notified.
   public cancel(id: shared::EventId): Result<Event, EventNotFound> {
-    found = Catalog::EventStore.fetch(id)
+    found: Option<Event> = Catalog::EventStore.fetch(id)
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    dead = self.transition(found.value, Cancelled)
+    dead: Event = self.transition(found.value, Cancelled)
     Catalog::EventStore.save(dead)
     Catalog::Signals.cancelled(EventCancelled from { id })
     return Ok(dead)
@@ -86,9 +86,9 @@ public component Events for Catalog {
   /// Advance an event's lifecycle if warranted: `SoldOut` when inventory is
   /// exhausted, `Closed` once the event has passed (driven by the curator job).
   public settle(id: shared::EventId): void {
-    found = Catalog::EventStore.fetch(id)
+    found: Option<Event> = Catalog::EventStore.fetch(id)
     if (found.isSome) {
-      next = self.lifecycle(found.value)
+      next: Option<Event> = self.lifecycle(found.value)
       if (next.isSome) {
         Catalog::EventStore.save(next.value)
       }
@@ -132,15 +132,15 @@ public component Listings for Catalog {
 public component Tiers for Catalog {
   /// Add a tier to an event.
   public add(tier: NewTier): Tier {
-    id = Catalog::TierStore.nextId()
-    created = Tier from { id, tier }
+    id: shared::TierId = Catalog::TierStore.nextId()
+    created: Tier = Tier from { id, tier }
     Catalog::TierStore.save(created)
     return created
   }
 
   /// The base price of a tier (before surge), or `TierNotFound`.
   public priceOf(id: shared::TierId): Result<shared::Money, TierNotFound> {
-    tier = Catalog::TierStore.fetch(id)
+    tier: Option<Tier> = Catalog::TierStore.fetch(id)
     if (tier.isNone) {
       return Err(TierNotFound from { id })
     }

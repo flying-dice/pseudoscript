@@ -481,6 +481,40 @@ impl Checker<'_> {
 
         // §7 (ADR-023): an `if`/`while` condition is boolean.
         self.check_conditions(body, &vars);
+
+        // §7.1: a binding's annotation must match a determinable initialiser.
+        self.check_binding_types(body, &vars);
+    }
+
+    /// §7.1: a binding states its type (`x: T = expr`). Where the initialiser's
+    /// type is determinable — a literal, marker, `from`, or bare reference — it
+    /// must match the annotation. Calls, field accesses, `self`, and `::` paths
+    /// infer to `Unknown` (ADR-022), so the annotation is authoritative there and
+    /// nothing is flagged. A generic annotation (`Result<…>`/`Option<…>`) is
+    /// compared only by its constructor, not its inner types.
+    fn check_binding_types(&mut self, block: &Block, vars: &FxHashMap<String, Ty>) {
+        for_each_stmt(block, &mut |stmt| {
+            let StmtKind::Assign { name, ty, value } = &stmt.kind else {
+                return;
+            };
+            // The placeholder type of an untyped-assignment parse error names no
+            // type; the missing-annotation diagnostic already stands.
+            if !ty.generics.is_empty() || type_leaf(ty).is_empty() {
+                return;
+            }
+            let found = infer(value, vars);
+            if !arg_matches(&found, type_leaf(ty), ty.is_array, &self.unions) {
+                self.error(
+                    value.span,
+                    format!(
+                        "binding `{}` is annotated `{}` but its value is `{}`",
+                        name.name,
+                        type_display(ty),
+                        ty_display(&found)
+                    ),
+                );
+            }
+        });
     }
 
     /// §7: an `if`/`while` condition whose type is inferable must be `bool`.
@@ -979,7 +1013,9 @@ fn build_vars(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
 
 fn collect_binding_types(block: &Block, vars: &mut FxHashMap<String, Ty>) {
     for_each_stmt(block, &mut |stmt| match &stmt.kind {
-        StmtKind::Assign { name, value } => {
+        StmtKind::Assign { name, value, .. } => {
+            // The result-flow lattice keeps inferring from the RHS (calls stay
+            // Unknown, ADR-022); the annotation is validated separately.
             let ty = infer(value, vars);
             vars.insert(name.name.clone(), ty);
         }

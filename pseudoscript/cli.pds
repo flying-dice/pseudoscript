@@ -54,15 +54,15 @@ component Loader for Cli {
 
   /// Load the project rooted at `root`: parse the manifest and collect modules.
   load(root: string): Result<Workspace, IoError> {
-    config = self.loadManifest(root)
+    config: Result<Workspace, IoError> = self.loadManifest(root)
     if (config.isErr) {
       return Err(config.error)
     }
-    modules = self.loadModules(root)
+    modules: Result<model::WorkspaceModule[], IoError> = self.loadModules(root)
     if (modules.isErr) {
       return Err(modules.error)
     }
-    project = Workspace from { config.value, root, modules.value }
+    project: Workspace = Workspace from { config.value, root, modules.value }
     return Ok(project)
   }
 
@@ -81,7 +81,7 @@ component Loader for Cli {
 component InitCmd for Cli {
   #[manual]
   public run(path: string, name: string): Result<void, IoError> {
-    exists = self.manifestExists(path)
+    exists: Result<bool, IoError> = self.manifestExists(path)
     if (exists.isErr) {
       return Err(exists.error)
     }
@@ -106,19 +106,19 @@ public component DocCmd for Cli {
   /// Invoked by the Developer (`context::Developer.renderDocs`).
   /// #headline
   public run(path: string): Result<void, IoError> {
-    root = Cli::Loader.findRoot(path)
+    root: Result<string, IoError> = Cli::Loader.findRoot(path)
     if (root.isErr) {
       return Err(root.error)
     }
-    project = Cli::Loader.load(root.value)
+    project: Result<Workspace, IoError> = Cli::Loader.load(root.value)
     if (project.isErr) {
       return Err(project.error)
     }
-    diagnostics = model::Checks.checkWorkspace(project.value.modules)
+    diagnostics: syntax::Diagnostic[] = model::Checks.checkWorkspace(project.value.modules)
     self.report(diagnostics)
-    graph = model::Builder.graph(project.value.modules)
-    site = doc::SiteBuilder.render(graph, project.value.config)
-    written = self.write(site, project.value.outDir)
+    graph: Graph = model::Builder.graph(project.value.modules)
+    site: Result<Site, RenderError> = doc::SiteBuilder.render(graph, project.value.config)
+    written: Result<void, IoError> = self.write(site, project.value.outDir)
     if (written.isErr) {
       return Err(written.error)
     }
@@ -130,7 +130,7 @@ public component DocCmd for Cli {
   /// `watch` is set. `watch` implies `serve`.
   #[manual]
   public serve(path: string, serve: bool, watch: bool, port: number): Result<void, IoError> {
-    built = self.run(path)
+    built: Result<void, IoError> = self.run(path)
     if (built.isErr) {
       return Err(built.error)
     }
@@ -158,9 +158,9 @@ public component DocCmd for Cli {
 component CheckCmd for Cli {
   #[manual]
   public run(text: string): Result<void, IoError> {
-    diagnostics = model::Checks.check(text)
+    diagnostics: syntax::Diagnostic[] = model::Checks.check(text)
     if (self.anyError(diagnostics)) {
-      err = IoError from { diagnostics }
+      err: IoError = IoError from { diagnostics }
       return Err(err)
     }
     return Ok
@@ -176,7 +176,7 @@ component CheckCmd for Cli {
 component FmtCmd for Cli {
   #[manual]
   public run(text: string, write: bool): Result<void, format::FormatError> {
-    out = format::Formatter.format(text)
+    out: Result<string, FormatError> = format::Formatter.format(text)
     if (out.isErr) {
       return Err(out.error)
     }
@@ -199,7 +199,7 @@ component FmtCmd for Cli {
 component TokensCmd for Cli {
   #[manual]
   public run(text: string): Result<void, IoError> {
-    stream = syntax::Lexer.renderTokens(text)
+    stream: string = syntax::Lexer.renderTokens(text)
     self.print(stream)
     return Ok
   }

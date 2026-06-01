@@ -69,8 +69,8 @@ Feature: Resolved relationship graph (LANG.md §9)
       public system Shop;
       public container Web for shop::Shop {
         public checkout(): void {
-          a = self.price()
-          cart = shop::Cart from { Web.lookup() }
+          a: number = self.price()
+          cart: shop::Cart = shop::Cart from { Web.lookup() }
         }
         price(): number { return 0 }
         lookup(): number { return 0 }

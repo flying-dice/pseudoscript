@@ -217,8 +217,13 @@ fn block_tokens(block: &ast::Block, out: &mut Vec<SemToken>) {
 /// Colours one statement and its sub-expressions.
 fn stmt_tokens(stmt: &ast::Stmt, out: &mut Vec<SemToken>) {
     match &stmt.kind {
-        ast::StmtKind::Assign { name, value } => {
+        ast::StmtKind::Assign { name, ty, value } => {
             push(out, name.span, SemKind::Variable, true);
+            // A placeholder type (untyped-assignment error recovery) is an
+            // empty-named path at the binding span — don't re-colour it.
+            if !ty.name.segments.iter().all(|s| s.name.is_empty()) {
+                type_tokens(ty, out);
+            }
             expr_tokens(value, out);
         }
         ast::StmtKind::Return(value) => {

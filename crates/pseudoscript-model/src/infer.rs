@@ -1,10 +1,11 @@
-//! Local-binding type inference, for inlay hints and hover.
+//! Local-binding types and right-hand-side inference, for hover and completion.
 //!
-//! `PseudoScript` assignments are untyped (`x = expr`). This module infers a
-//! binding's type from its right-hand side — a call's return type, a field
-//! access, a `from` expression, or a literal — so the editor can show
-//! `x: Token[]` without the author writing it. Inference is best-effort: an
-//! expression it can't type yields no hint rather than a guess.
+//! A binding's type is its explicit annotation (`x: T = expr`, §7.1), so
+//! [`local_types`]/[`binding_type_at`] read the annotation directly. Inference
+//! from the right-hand side is still needed elsewhere: a `for` binding's element
+//! type, the type of a chain receiver mid-expression ([`owner_at_dot`]), and
+//! validating an annotation against its initialiser. Inference is best-effort —
+//! an expression it can't type yields nothing rather than a guess.
 
 use crate::{Workspace, ast};
 use pseudoscript_syntax::Span;
@@ -67,12 +68,15 @@ fn walk_decl(ws: &Workspace, from_fqn: &str, decl: &ast::Decl, out: &mut Vec<Loc
 fn walk_block(ws: &Workspace, from_fqn: &str, block: &ast::Block, out: &mut Vec<LocalType>) {
     for stmt in &block.stmts {
         match &stmt.kind {
-            ast::StmtKind::Assign { name, value } => {
-                if let Some(ty) = expr_type(ws, from_fqn, value) {
+            ast::StmtKind::Assign { name, ty, .. } => {
+                // A binding's type is its explicit annotation (§7.1). The empty
+                // placeholder of an untyped assignment renders empty — skip it.
+                let rendered = crate::model::render_type(ty);
+                if !rendered.is_empty() {
                     out.push(LocalType {
                         name: name.name.clone(),
                         name_span: name.span,
-                        ty,
+                        ty: rendered,
                     });
                 }
             }
@@ -109,7 +113,8 @@ fn walk_block(ws: &Workspace, from_fqn: &str, block: &ast::Block, out: &mut Vec<
     }
 }
 
-/// The inferred type of an expression, or `None` when it can't be typed.
+/// The inferred type of an expression, or `None` when it can't be typed —
+/// a call's return type, a field access, a `from`, or a literal.
 fn expr_type(ws: &Workspace, from_fqn: &str, expr: &ast::Expr) -> Option<String> {
     match &expr.kind {
         ast::ExprKind::Literal(ast::Literal::String { .. }) => Some("string".to_owned()),
@@ -329,17 +334,17 @@ mod tests {
         Workspace::build(modules.iter().map(|(f, s)| ((*f).to_owned(), parse(s).ast)))
     }
 
-    // Mirrors the `syntax` module: `tokens` is the `Token[]` returned by
-    // `Lexer.tokenize`, reached through the container-qualified `Syntax::Lexer`.
+    // Mirrors the `syntax` module: `tokens` is annotated `Token[]`, reached
+    // through the container-qualified `Syntax::Lexer`.
     const SYNTAX: &str = "//! syntax\n\n\
         public data Token { kind: string }\n\n\
         public component Lexer for Syntax {\n  tokenize(text: string): Token[];\n}\n\n\
         public component Parser for Syntax {\n  \
         public parse(text: string): string {\n    \
-        tokens = Syntax::Lexer.tokenize(text)\n    return tokens.kind\n  }\n}\n";
+        tokens: Token[] = Syntax::Lexer.tokenize(text)\n    return tokens.kind\n  }\n}\n";
 
     #[test]
-    fn infers_local_from_member_call_return() {
+    fn local_type_reads_the_annotation() {
         let workspace = ws(&[("syntax", SYNTAX)]);
         let locals = local_types(&workspace, "syntax");
         let tokens = locals
@@ -367,8 +372,8 @@ mod tests {
     }
 
     #[test]
-    fn infers_literal_and_from_expression() {
-        let src = "//! m\n\nsystem S {\n  go() {\n    n = 42\n    p = Parsed from { n }\n  }\n}\n\npublic data Parsed { x: number }\n";
+    fn local_types_read_literal_and_from_annotations() {
+        let src = "//! m\n\nsystem S {\n  go() {\n    n: number = 42\n    p: Parsed = Parsed from { n }\n  }\n}\n\npublic data Parsed { x: number }\n";
         let workspace = ws(&[("m", src)]);
         let locals = local_types(&workspace, "m");
         assert_eq!(locals.iter().find(|l| l.name == "n").unwrap().ty, "number");

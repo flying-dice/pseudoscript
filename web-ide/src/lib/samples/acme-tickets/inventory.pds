@@ -58,16 +58,16 @@ public component Holds for Inventory {
   /// tier pool. Overselling is impossible: if the pool cannot satisfy the
   /// request the allocation fails and no hold is created.
   public reserve(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity, owner: shared::UserId): Result<Hold, InventoryError> {
-    free = self.noActiveHold(owner, event)
+    free: Result<void, InventoryError> = self.noActiveHold(owner, event)
     if (free.isErr) {
       return Err(free.error)
     }
-    taken = self.allocateSharded(event, tier, quantity)
+    taken: Result<SeatShard, PoolExhausted> = self.allocateSharded(event, tier, quantity)
     if (taken.isErr) {
       return Err(OutOfStock)
     }
-    id = Inventory::HoldStore.nextId()
-    hold = Hold from { id, event, tier, quantity, owner, Held, taken.value }
+    id: shared::HoldId = Inventory::HoldStore.nextId()
+    hold: Hold = Hold from { id, event, tier, quantity, owner, Held, taken.value }
     Inventory::HoldStore.save(hold)
     return Ok(hold)
   }
@@ -77,8 +77,8 @@ public component Holds for Inventory {
   /// tier is genuinely sold out — not merely when one shard ran dry — so
   /// sharding adds throughput without weakening the no-oversell guarantee.
   allocateSharded(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<SeatShard, PoolExhausted> {
-    preferred = self.pickShard(event, tier)
-    first = Inventory::Pool.allocateFrom(preferred, quantity)
+    preferred: SeatShard = self.pickShard(event, tier)
+    first: Result<void, PoolExhausted> = Inventory::Pool.allocateFrom(preferred, quantity)
     if (first.isOk) {
       return Ok(preferred)
     }
@@ -87,11 +87,11 @@ public component Holds for Inventory {
 
   /// Validate that a hold is still live and owned by `owner`.
   public validate(id: shared::HoldId, owner: shared::UserId): Result<Hold, InventoryError> {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
     }
-    live = self.ensureLive(found.value, owner)
+    live: Result<void, InventoryError> = self.ensureLive(found.value, owner)
     if (live.isErr) {
       return Err(live.error)
     }
@@ -102,15 +102,15 @@ public component Holds for Inventory {
   /// reaper will not expire it while payment is in flight. Returns the committed
   /// hold; `Err(InvalidState)` if it is no longer `Held` (lost a race).
   public commit(id: shared::HoldId): Result<Hold, InventoryError> {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
     }
-    held = self.ensureHeld(found.value)
+    held: Result<void, InventoryError> = self.ensureHeld(found.value)
     if (held.isErr) {
       return Err(held.error)
     }
-    moved = self.transition(found.value, Committing)
+    moved: Hold = self.transition(found.value, Committing)
     Inventory::HoldStore.save(moved)
     return Ok(moved)
   }
@@ -120,19 +120,19 @@ public component Holds for Inventory {
   /// (idempotent: an already-`Confirmed` hold returns its allocation), so the
   /// reaper — which only touches `Held` — can never confirm-race the buyer.
   public confirm(id: shared::HoldId): Result<Allocation, InventoryError> {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
     }
-    done = self.existingAllocation(found.value)
+    done: Option<Allocation> = self.existingAllocation(found.value)
     if (done.isSome) {
       return Ok(done.value)
     }
-    ready = self.ensureCommitting(found.value)
+    ready: Result<void, InventoryError> = self.ensureCommitting(found.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
-    allocation = self.allocate(found.value)
+    allocation: Allocation = self.allocate(found.value)
     Inventory::HoldStore.save(self.transition(found.value, Confirmed))
     return Ok(allocation)
   }
@@ -142,9 +142,9 @@ public component Holds for Inventory {
   /// released hold is a no-op, so seats are never double-counted back in. To
   /// return the seats of a CONFIRMED hold on refund, use `releaseSold`.
   public release(id: shared::HoldId): void {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isSome) {
-      live = self.ensureReleasable(found.value)
+      live: Result<void, InventoryError> = self.ensureReleasable(found.value)
       if (live.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
         Inventory::HoldStore.save(self.transition(found.value, Released))
@@ -157,9 +157,9 @@ public component Holds for Inventory {
   /// state is a no-op. Without this, a refund could not put the seat back on sale
   /// (`release` no-ops on a confirmed hold).
   public releaseSold(id: shared::HoldId): void {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isSome) {
-      sold = self.ensureConfirmed(found.value)
+      sold: Result<void, InventoryError> = self.ensureConfirmed(found.value)
       if (sold.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
         Inventory::HoldStore.save(self.transition(found.value, Released))
@@ -171,9 +171,9 @@ public component Holds for Inventory {
   /// Only a `Held` hold expires; a hold being confirmed mid-checkout has already
   /// left `Held`, so the reaper cannot release seats the buyer just paid for.
   public expire(id: shared::HoldId): void {
-    found = Inventory::HoldStore.fetch(id)
+    found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isSome) {
-      held = self.ensureHeld(found.value)
+      held: Result<void, InventoryError> = self.ensureHeld(found.value)
       if (held.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
         Inventory::HoldStore.save(self.transition(found.value, Expired))

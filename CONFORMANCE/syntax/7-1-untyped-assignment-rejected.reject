@@ -1,0 +1,10 @@
+// LANG.md §7.1 (ADR-027): a binding states its type. An unannotated
+// `x = Expr` no longer parses.
+
+public system S;
+public container C for S {
+  run(): void {
+    x = self.make()
+  }
+  make(): number;
+}

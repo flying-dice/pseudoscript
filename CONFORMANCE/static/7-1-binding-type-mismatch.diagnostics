@@ -1,0 +1,1 @@
+binding `n` is annotated `number` but its value is `string`

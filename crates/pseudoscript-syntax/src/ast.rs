@@ -329,8 +329,8 @@ pub struct Stmt {
 /// The statement forms (§7).
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    /// `x = Expr` single-assignment (§7.1).
-    Assign { name: Ident, value: Expr },
+    /// `x: T = Expr` single-assignment (§7.1): a binding states its type.
+    Assign { name: Ident, ty: Type, value: Expr },
     /// `return [Expr]` (§7).
     Return(Option<Expr>),
     /// `if (C) { } [else { }]` (§7).
@@ -475,6 +475,28 @@ pub struct Type {
     pub is_array: bool,
     /// Source span of the whole type.
     pub span: Span,
+}
+
+impl Type {
+    /// A placeholder type at `span` — an empty-named path, mirroring the
+    /// error-recovery [`Ident`] convention. The parser inserts one for an
+    /// untyped assignment so the statement still carries a `ty` while the
+    /// missing-annotation diagnostic stands on its own.
+    #[must_use]
+    pub fn placeholder(span: Span) -> Self {
+        Type {
+            name: Path {
+                segments: vec![Ident {
+                    name: String::new(),
+                    span,
+                }],
+                span,
+            },
+            generics: Vec::new(),
+            is_array: false,
+            span,
+        }
+    }
 }
 
 /// A `::`-separated path of identifiers (§2.2, §10 `Path`).

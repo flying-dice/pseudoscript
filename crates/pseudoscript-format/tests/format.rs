@@ -42,12 +42,12 @@ public container Web for Shop {
   #[http("POST /checkout")]
   public checkout(cart: Sku[]): Result<Receipt, OrderError> {
     for (item in cart) {
-      line = Warehouse::Pricing.price(item)
+      line: Result<Receipt, OrderError> = Warehouse::Pricing.price(item)
       if (line.isErr) {
         return Err(line.error)
       }
     }
-    r = self.finalize(cart)
+    r: Result<Receipt, OrderError> = self.finalize(cart)
     return Ok(r.value)
   }
 
@@ -58,8 +58,8 @@ public container Warehouse for Shop;
 
 component Pricing for Warehouse {
   price(item: Sku): Result<Receipt, OrderError> {
-    base = Catalog.lookup(item).value
-    receipt = Receipt from { base }
+    base: Receipt = Catalog.lookup(item).value
+    receipt: Receipt = Receipt from { base }
     return Ok(receipt)
   }
 }

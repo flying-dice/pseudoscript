@@ -47,27 +47,27 @@ public component RefundService for Refunds {
   /// merchant; the network is reversed before any balance moves, and a failed
   /// reversal is surfaced rather than silently debiting the merchant.
   public create(merchant: shared::MerchantId, req: RefundRequest): Result<Refund, RefundError> {
-    prior = Refunds::RefundStore.byRequest(req)
+    prior: Option<Refund> = Refunds::RefundStore.byRequest(req)
     if (prior.isSome) {
       return Ok(prior.value)
     }
-    intent = intents::PaymentIntents.getFor(merchant, req.intent)
+    intent: Result<PaymentIntent, IntentError> = intents::PaymentIntents.getFor(merchant, req.intent)
     if (intent.isErr) {
       return Err(IntentNotFound)
     }
-    ready = self.refundable(intent.value)
+    ready: Result<void, RefundError> = self.refundable(intent.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
-    id = Refunds::RefundStore.nextId()
-    pending = Refund from { id, merchant, req, Pending }
+    id: shared::RefundId = Refunds::RefundStore.nextId()
+    pending: Refund = Refund from { id, merchant, req, Pending }
     Refunds::RefundStore.save(pending)
-    back = charges::ChargeService.refund(req.intent, req.amount)
+    back: Result<context::NetworkRefund, ChargeError> = charges::ChargeService.refund(req.intent, req.amount)
     if (back.isErr) {
       Refunds::RefundStore.save(self.markFailed(pending, back.error))
       return Err(self.declined(back.error))
     }
-    done = self.markSucceeded(pending)
+    done: Refund = self.markSucceeded(pending)
     Refunds::RefundStore.save(done)
     Refunds::Events.refunded(RefundSucceeded from { done.id, done.merchant, done.amount })
     return Ok(done)

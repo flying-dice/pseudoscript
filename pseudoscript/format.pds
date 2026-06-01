@@ -38,13 +38,13 @@ public component Formatter for Format {
   /// rendered messages and leave the source unrewritten; otherwise print the
   /// tree.
   public format(text: string): Result<string, FormatError> {
-    parsed = syntax::Parser.parse(text)
+    parsed: Parsed = syntax::Parser.parse(text)
     if (self.hasErrors(parsed)) {
-      errors = self.collectErrors(parsed)
-      err = FormatError from { errors }
+      errors: string[] = self.collectErrors(parsed)
+      err: FormatError = FormatError from { errors }
       return Err(err)
     }
-    out = Format::Printer.print(parsed.ast)
+    out: string = Format::Printer.print(parsed.ast)
     return Ok(out)
   }
 
@@ -79,8 +79,8 @@ component Printer for Format {
   /// the `//!` inner docs, a blank separator if items follow, then each item in
   /// source order.
   print(ast: syntax::Module): string {
-    state = self.writeModule(ast)
-    out = self.finish(state)
+    state: PrinterState = self.writeModule(ast)
+    out: string = self.finish(state)
     return out
   }
 

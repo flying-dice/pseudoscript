@@ -932,12 +932,33 @@ impl Parser {
             TokenKind::KwIf => self.parse_if(),
             TokenKind::KwFor => self.parse_for(),
             TokenKind::KwWhile => self.parse_while(),
-            // `Ident =` is an assignment; otherwise an expression statement.
+            // `name: Type = Expr` is the sole assignment form (§7.1): a binding
+            // states its type. `name = Expr` (no annotation) is still parsed —
+            // tolerantly, with a placeholder type — so the error is one precise
+            // diagnostic rather than a confusing expression-parse failure.
+            TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Colon) => {
+                let name = self.expect_ident("binding name");
+                self.bump(); // `:`
+                let ty = self.parse_type();
+                if self.eat(TokenKind::Eq).is_none() {
+                    self.error(self.cur_span(), "expected `=` after the binding type");
+                }
+                let value = self.parse_expr();
+                StmtKind::Assign { name, ty, value }
+            }
             TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Eq) => {
                 let name = self.expect_ident("binding name");
+                self.error(
+                    name.span,
+                    "assignment requires a type annotation: write `name: Type = …`",
+                );
                 self.bump(); // `=`
                 let value = self.parse_expr();
-                StmtKind::Assign { name, value }
+                StmtKind::Assign {
+                    ty: Type::placeholder(name.span),
+                    name,
+                    value,
+                }
             }
             _ => StmtKind::Expr(self.parse_expr()),
         };

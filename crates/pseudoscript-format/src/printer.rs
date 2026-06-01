@@ -386,8 +386,10 @@ impl Printer {
 
     fn write_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Assign { name, value } => {
+            StmtKind::Assign { name, ty, value } => {
                 self.push(&name.name);
+                self.push(": ");
+                self.write_type(ty);
                 self.push(" = ");
                 self.write_expr(value);
                 self.newline();

@@ -340,9 +340,9 @@ mod tests {
 
     #[test]
     fn members_after_local_binding() {
-        // `a = Repo.fetch(x); a.` — the binding's inferred type (Account) drives
+        // `a: Account = Repo.fetch(x); a.` — the binding's declared type drives
         // member completion, even though `a` is not a declared node.
-        let src = "//! m\n\ndata Account { id: uuid, owner: string }\n\nsystem Repo {\n  fetch(x: uuid): Account;\n}\n\nsystem S {\n  run() {\n    a = Repo.fetch(x)\n    a.\n  }\n}\n";
+        let src = "//! m\n\ndata Account { id: uuid, owner: string }\n\nsystem Repo {\n  fetch(x: uuid): Account;\n}\n\nsystem S {\n  run() {\n    a: Account = Repo.fetch(x)\n    a.\n  }\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("a.\n").unwrap() + 2) as u32;
         let labels = labels_at(&ws, "m", src, offset);

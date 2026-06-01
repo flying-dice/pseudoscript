@@ -10,7 +10,7 @@ public system Registry;
 
 public container Directory for Registry {
   public find(id: number): Option<Person> {
-    o = self.lookup(id)
+    o: Option<Person> = self.lookup(id)
     if (o.isNone) {
       return Some(o.value)
     }
