@@ -631,7 +631,9 @@ impl Checker<'_> {
     /// §6: every `.name(args)` call in a body whose receiver's type is statically
     /// known names a callable of that type.
     fn check_call_members(&mut self, block: &Block, recv_types: &FxHashMap<String, Ty>) {
-        for_each_expr(block, &mut |expr| self.check_call_member_at(expr, recv_types));
+        for_each_expr(block, &mut |expr| {
+            self.check_call_member_at(expr, recv_types);
+        });
     }
 
     /// Checks the call segments of one postfix chain. Walks from a typed root —
@@ -651,7 +653,11 @@ impl Checker<'_> {
             return;
         };
         for seg in segments {
-            let member = self.model.members(&recv).iter().find(|m| m.name == seg.name.name);
+            let member = self
+                .model
+                .members(&recv)
+                .iter()
+                .find(|m| m.name == seg.name.name);
             if seg.call_args.is_some() {
                 if !member.is_some_and(|m| m.kind == MemberKind::Callable) {
                     let cands: Vec<&str> = self
@@ -662,7 +668,10 @@ impl Checker<'_> {
                         .map(|m| m.name.as_str())
                         .collect();
                     let hint = suggest(&seg.name.name, &cands);
-                    self.error(seg.span, format!("no method `{}` on `{recv}`{hint}", seg.name.name));
+                    self.error(
+                        seg.span,
+                        format!("no method `{}` on `{recv}`{hint}", seg.name.name),
+                    );
                 }
                 return; // a call result's type is not inferred (ADR-022)
             }
@@ -686,11 +695,18 @@ impl Checker<'_> {
             return None;
         }
         let name = &path.segments[0].name;
-        if self.model.symbol(name).is_some_and(|s| s.kind != SymbolKind::Data) {
+        if self
+            .model
+            .symbol(name)
+            .is_some_and(|s| s.kind != SymbolKind::Data)
+        {
             return Some(name.clone());
         }
         match recv_types.get(name) {
-            Some(Ty::Named { name: ty, array: false }) if self.is_record(ty) => Some(ty.clone()),
+            Some(Ty::Named {
+                name: ty,
+                array: false,
+            }) if self.is_record(ty) => Some(ty.clone()),
             _ => None,
         }
     }
