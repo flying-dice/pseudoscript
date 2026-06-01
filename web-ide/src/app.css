@@ -327,20 +327,18 @@ button { font: inherit; cursor: pointer; color: inherit; }
 }
 .cm-nav-flash { animation: pds-nav-flash 1.3s ease-out forwards; }
 
-/* Editor hover card: symbol info + its compiler-rendered diagram. The tooltip
-   wrapper CodeMirror injects (.cm-tooltip) is reset so the card paints itself.
-   CodeMirror dismisses a hover tooltip the moment the pointer leaves the symbol
-   range unless it stays within ~4px of the card's box, so crossing the gap to
-   the card dismisses it. The transparent vertical padding extends that hit box
-   up to the symbol (and below, when the card flips above); the equal negative
-   margin keeps the visible card where CodeMirror placed it. */
+/* Editor hover card: symbol info + actions. The tooltip wrapper CodeMirror
+   injects (.cm-tooltip) is reset so the card paints itself. The wrapper is
+   pointer-transparent so it never steals a click or double-click from the
+   editor text beneath it (the card itself re-enables pointer events, so its
+   buttons stay clickable and hovering it keeps the tooltip open). */
 .cm-tooltip:has(.pds-hover) {
   border: none;
   background: transparent;
-  padding: 16px 0;
-  margin: -16px 0;
+  pointer-events: none;
 }
 .pds-hover {
+  pointer-events: auto;
   width: 360px;
   max-width: 80vw;
   padding: 0.7rem 0.8rem;
