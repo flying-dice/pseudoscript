@@ -65,6 +65,18 @@
     histIndex = history.length - 1;
   }
 
+  // Before a jump, record where the caret currently is so Back returns to the
+  // starting point — otherwise the first jump only records its destination and
+  // the origin is lost. Skips when the caret already sits at the history cursor.
+  function recordOrigin() {
+    const loc = editorApi?.location?.();
+    if (!loc || !openFile) return;
+    const here = { fileFqn: openFile.fqn, line: loc.line, col: loc.col, label: `${openFile.fqn.split("::").at(-1)}:${loc.line}` };
+    const cur = history[histIndex];
+    if (cur && cur.fileFqn === here.fileFqn && cur.line === here.line && cur.col === here.col) return;
+    recordLocation(here);
+  }
+
   // Apply a location without recording it (back/forward, history-list click):
   // open its file, jump the editor there, and re-scope to its node when it has one.
   function applyLocation(loc) {
@@ -84,6 +96,7 @@
 
   // Open a find-usages occurrence: jump to it and record it in history.
   function openUsage(occ) {
+    recordOrigin();
     applyLocation({ fileFqn: occ.fqn, line: occ.line, col: occ.col });
     recordLocation({ fileFqn: occ.fqn, line: occ.line, col: occ.col, label: occ.text || `${occ.fqn}:${occ.line}` });
   }
@@ -511,6 +524,8 @@
     if (!hit) return;
     const file = workspace?.files.find((f) => f.fqn === hit.fileFqn);
     if (!file) return;
+    // Record the pre-jump caret before the file/scope changes, so Back returns.
+    if (goto && view !== "canvas") recordOrigin();
     if (openFile?.fqn !== file.fqn) {
       flushSave();
       openFile = file;

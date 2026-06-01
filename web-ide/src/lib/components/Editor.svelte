@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { acceptCompletion, completionKeymap, startCompletion } from "@codemirror/autocomplete";
   import { copyLineDown, defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
-  import { Compartment, EditorSelection, EditorState, StateEffect, StateField } from "@codemirror/state";
+  import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
   import { codeFolding, foldEffect, foldGutter, foldKeymap, foldService, unfoldEffect } from "@codemirror/language";
   import { lintGutter } from "@codemirror/lint";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
@@ -578,6 +578,9 @@
   const shortcutKeymap = () =>
     keymap.of(Object.entries(shortcutRun).map(([id, run]) => ({ key: keybindings.keyFor(id), run })));
   const keysCompartment = new Compartment();
+  // Holds the undo history so a file switch can reset it (otherwise Ctrl+Z would
+  // undo across the boundary into the previous file's content).
+  const historyCompartment = new Compartment();
 
   // Completion candidates from the shared LSP engine (via wasm), scoped to the
   // trigger before the caret. The active module uses the live document text so a
@@ -638,7 +641,7 @@
           lineNumbers(),
           highlightActiveLine(),
           highlightActiveLineGutter(),
-          history(),
+          historyCompartment.of(history()),
           // Customisable shortcuts first (highest precedence), so a user
           // rebind beats the default bundles below. Configured in Settings;
           // see keybindings.svelte.js for the catalogue and defaults.
@@ -687,7 +690,15 @@
     applyFold(editor, null);
     // Expose `openSettings` so the shell can drive it from a menu if needed;
     // it requests the same shell-owned modal the keyboard command does.
-    onready?.({ goto, openSettings: () => onopensettings?.() });
+    // `location()` reports the caret as a 1-based line / byte-column (the same
+    // shape `goto` accepts), so the shell can record where a jump started.
+    const location = () => {
+      if (!editor) return null;
+      const head = editor.state.selection.main.head;
+      const lineObj = editor.state.doc.lineAt(head);
+      return { line: lineObj.number, col: charToByte(lineObj.text, head - lineObj.from) + 1 };
+    };
+    onready?.({ goto, location, openSettings: () => onopensettings?.() });
   });
 
   onDestroy(() => editor?.destroy());
@@ -700,17 +711,30 @@
     return { destroy: () => node.remove() };
   }
 
-  // Reflect an external `value` change (file switch / Format) without re-firing onchange.
+  // Reflect an external `value` change (file switch / Format) without re-firing
+  // onchange. A *file switch* (moduleFqn changed) also resets the undo history,
+  // so Ctrl+Z can't undo back across the boundary into the previous file; a
+  // same-file replace (Format) stays undoable.
+  let loadedFqn = moduleFqn;
   $effect(() => {
     const next = value;
-    if (editor && next !== editor.state.doc.toString()) {
-      applyingExternal = true;
-      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: next } });
-      applyingExternal = false;
-      usagesMenu = null; // anchor is stale after a file switch / reformat
-      // Collapse the freshly-loaded file; a queued goto then reopens its target.
-      applyFold(editor, null);
+    const fqn = moduleFqn;
+    if (!editor) return;
+    const switched = fqn !== loadedFqn;
+    if (next === editor.state.doc.toString() && !switched) return;
+    applyingExternal = true;
+    const spec = { changes: { from: 0, to: editor.state.doc.length, insert: next } };
+    if (switched) {
+      // Clear history (fresh `history()`); the load itself isn't an undo step.
+      spec.effects = historyCompartment.reconfigure(history());
+      spec.annotations = Transaction.addToHistory.of(false);
     }
+    editor.dispatch(spec);
+    applyingExternal = false;
+    loadedFqn = fqn;
+    usagesMenu = null; // anchor is stale after a file switch / reformat
+    // Collapse the freshly-loaded file; a queued goto then reopens its target.
+    applyFold(editor, null);
   });
 </script>
 

@@ -107,25 +107,26 @@ const semanticHighlighter = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 );
 
-// Colours for each role, themed off the editor's CSS variables.
+// Colours for each role, taken from the theme's `--hl-*` tokens so they flip
+// with light/dark mode (the light values are darker for contrast on paper).
 const semanticTheme = EditorView.theme({
-  ".pst-keyword": { color: "var(--accent)", fontWeight: "600" },
-  ".pst-namespace": { color: "#2dd4bf" },
-  ".pst-type": { color: "#5eead4" },
-  ".pst-class": { color: "#2dd4bf" },
-  ".pst-parameter": { color: "#d6a96b" },
-  ".pst-variable": { color: "var(--ink)" },
-  ".pst-property": { color: "#dcc98a" },
-  ".pst-enumMember": { color: "#6e8bff" },
-  ".pst-method": { color: "#82aaff" },
+  ".pst-keyword": { color: "var(--hl-keyword)", fontWeight: "600" },
+  ".pst-namespace": { color: "var(--hl-namespace)" },
+  ".pst-type": { color: "var(--hl-type)" },
+  ".pst-class": { color: "var(--hl-class)" },
+  ".pst-parameter": { color: "var(--hl-parameter)" },
+  ".pst-variable": { color: "var(--hl-variable)" },
+  ".pst-property": { color: "var(--hl-property)" },
+  ".pst-enumMember": { color: "var(--hl-enum)" },
+  ".pst-method": { color: "var(--hl-method)" },
   ".pst-comment": {
-    color: "var(--ink-faint)",
+    color: "var(--hl-comment)",
     fontStyle: "italic",
     fontFamily: "var(--font-prose, ui-sans-serif, system-ui, sans-serif)",
   },
-  ".pst-string": { color: "#7fd88f" },
-  ".pst-number": { color: "#e0a93f" },
-  ".pst-decorator": { color: "#e0a93f" },
+  ".pst-string": { color: "var(--hl-string)" },
+  ".pst-number": { color: "var(--hl-number)" },
+  ".pst-decorator": { color: "var(--hl-decorator)" },
 });
 
 /** The PseudoScript language with AST-aware (LSP-sourced) highlighting. */

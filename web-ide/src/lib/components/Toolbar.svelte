@@ -1,4 +1,6 @@
 <script>
+  import { theme, THEME_OPTIONS } from "$lib/theme.svelte.js";
+
   let {
     errorCount = 0,
     workspaceName = null,
@@ -20,6 +22,14 @@
 
   // The share/transport overflow menu (Share link · Export · Import).
   let shareOpen = $state(false);
+
+  // Theme: cycle system → light → dark. The glyph shows the current preference.
+  const THEME_ICON = { system: "◐", light: "☀", dark: "☾" };
+  const THEME_LABEL = { system: "System", light: "Light", dark: "Dark" };
+  function cycleTheme() {
+    const i = THEME_OPTIONS.indexOf(theme.pref);
+    theme.set(THEME_OPTIONS[(i + 1) % THEME_OPTIONS.length]);
+  }
 </script>
 
 <header class="toolbar">
@@ -77,6 +87,15 @@
   <button class="ghost build" onclick={onbuilddocs} disabled={building} title="Build the static documentation site (pds doc)">
     <span class="ico" aria-hidden="true">⚙</span>
     {building ? "Building…" : "Build docs"}
+  </button>
+
+  <button
+    class="ghost icon-only theme"
+    onclick={cycleTheme}
+    title={`Theme: ${THEME_LABEL[theme.pref]} — click to change`}
+    aria-label={`Theme: ${THEME_LABEL[theme.pref]}`}
+  >
+    <span class="ico" aria-hidden="true">{THEME_ICON[theme.pref]}</span>
   </button>
 
   <button
