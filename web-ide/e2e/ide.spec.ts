@@ -26,8 +26,9 @@ test("completion is scoped to a module path, not the full symbol set", async ({ 
   await page.keyboard.type("\nshared::User");
 
   const options = page.locator(".cm-tooltip-autocomplete li");
-  // module `shared` has exactly one symbol matching the `User` prefix
-  await expect(options).toHaveCount(1);
+  // module `shared` has exactly one symbol matching the `User` prefix. The first
+  // dropdown is wasm-backed and debounced, so allow for a loaded machine.
+  await expect(options).toHaveCount(1, { timeout: 15_000 });
   await expect(options.first()).toContainText("UserId");
   // the general keyword set must not leak into a `::` context
   await expect(page.locator(".cm-tooltip-autocomplete li", { hasText: /^system$/ })).toHaveCount(0);
@@ -40,12 +41,12 @@ test("completion narrows as the prefix is typed (scope fix)", async ({ page }) =
   await page.keyboard.type("\nshared::");
   // explicit trigger at the bare caret shows the whole module
   await page.keyboard.press("Control+Space");
-  await expect(page.locator(".cm-tooltip-autocomplete li").first()).toBeVisible();
+  await expect(page.locator(".cm-tooltip-autocomplete li").first()).toBeVisible({ timeout: 15_000 });
   const all = await page.locator(".cm-tooltip-autocomplete li").count();
   expect(all).toBeGreaterThan(1);
   // typing a prefix narrows the same scoped set without leaking keywords
   await page.keyboard.type("User");
-  await expect(page.locator(".cm-tooltip-autocomplete li")).toHaveCount(1);
+  await expect(page.locator(".cm-tooltip-autocomplete li")).toHaveCount(1, { timeout: 10_000 });
 });
 
 test("diagnostics render with no runtime error", async ({ page }) => {

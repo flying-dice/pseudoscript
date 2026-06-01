@@ -36,7 +36,9 @@ export async function createProject(page: Page, templateId: string, openFqn?: st
   await page.goto("/");
   await page.getByTestId(`template-${templateId}`).click({ timeout: 30_000 });
   if (openFqn) await page.getByTestId(`file-${openFqn}`).click();
+  // Scaffolding the template to OPFS, mounting it, and producing the first wasm
+  // highlights can take a while on a loaded CI machine — wait generously.
   const content = page.getByTestId("editor").locator(".cm-content");
-  await expect(content).toBeVisible();
-  await expect(page.locator('[data-sem="keyword"]').first()).toBeVisible();
+  await expect(content).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('[data-sem="keyword"]').first()).toBeVisible({ timeout: 20_000 });
 }

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { dev } from "$app/environment";
+  import { base } from "$app/paths";
   import "../app.css";
   import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outline, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
   import type { Module, Occurrence, Scene as PdsScene } from "$lib/pds.js";
@@ -725,6 +727,14 @@
     projectOpen = !restored;
   }
   onMount(boot);
+
+  // Register the PWA service worker in production only (dev skips it to keep
+  // Vite's HMR/module loading uncontended — see svelte.config.js).
+  onMount(() => {
+    if (!dev && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register(`${base}/service-worker.js`, { type: "module" });
+    }
+  });
 
   // Watch for edits made outside the IDE while this tab is visible: an immediate
   // re-read on focus, plus a modest backstop timer (visible-only, so a hidden tab
