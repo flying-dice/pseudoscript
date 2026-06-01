@@ -1,7 +1,49 @@
-/* Svelte Flow base styles first, so the dark `.svelte-flow` overrides further
- * down win the cascade (importing it inside the diagram components injects it
- * after this sheet and leaves the pane white). */
+@import "tailwindcss";
+@import "tw-animate-css";
+/* Svelte Flow base styles, so the dark `.svelte-flow` overrides further down win
+ * the cascade (importing it inside the diagram components injects it after this
+ * sheet and leaves the pane white). Tailwind's layers sit below the unlayered
+ * hand-written styles below, so existing UI keeps winning — only shadcn-svelte
+ * components (utility classes) draw from Tailwind. */
 @import "@xyflow/svelte/dist/style.css";
+
+/* `dark:` keys off the project's `data-theme` (set pre-paint in app.html), not a
+ * `.dark` class. Most shadcn components theme via the semantic tokens below and
+ * never need this; it's here for completeness. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Map shadcn-svelte's semantic tokens onto the existing design tokens, so its
+ * components inherit our colours and stay theme-aware automatically — the
+ * underlying --bg/--ink/--accent vars are re-pointed per [data-theme]. Brand
+ * accent → `primary`; shadcn's muted `accent` surface → `--surface-3`. Fonts
+ * already share Tailwind's `--font-sans`/`--font-mono` names. Shapes follow
+ * shadcn's radius scale, derived from --radius. */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface-2);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-ink);
+  --color-secondary: var(--surface-3);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--ink-soft);
+  --color-accent: var(--surface-3);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--err);
+  --color-destructive-foreground: var(--accent-ink);
+  --color-border: var(--line);
+  --color-input: var(--line-strong);
+  --color-ring: var(--accent);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
 
 /* PseudoScript Web IDE — "Drafting Terminal".
  *
