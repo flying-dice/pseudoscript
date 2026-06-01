@@ -24,6 +24,8 @@ class UiStore {
   // The right-hand Structure panel (open by default) and the Problems popover.
   structureOpen = $state(true);
   problemsOpen = $state(false);
+  // The ⌘K command palette (go-to file / symbol).
+  commandOpen = $state(false);
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   docWidth = $state(readDocWidth());
   // Doc-build progress + the example-vs-folder modal.

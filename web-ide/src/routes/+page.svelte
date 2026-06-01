@@ -37,6 +37,7 @@
   import ActivityBar from "$lib/components/shell/ActivityBar.svelte";
   import StructurePanel from "$lib/components/shell/StructurePanel.svelte";
   import StatusBar from "$lib/components/shell/StatusBar.svelte";
+  import CommandPalette from "$lib/components/shell/CommandPalette.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
   import ProblemsPane from "$lib/components/ProblemsPane.svelte";
   import Notifications from "$lib/components/Notifications.svelte";
@@ -1416,6 +1417,11 @@ show('index.html');
       e.preventDefault();
       saveActiveFile();
     }
+    // Cmd/Ctrl-K opens the go-to file/symbol palette.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (workspace) ui.commandOpen = true;
+    }
   }}
   onfocus={reloadExternalChanges}
   onbeforeunload={(e) => {
@@ -1476,6 +1482,19 @@ show('index.html');
 {/if}
 
 <Notifications notes={notifications.notes} ondismiss={dismissNote} />
+
+{#if workspace}
+  <CommandPalette
+    bind:open={ui.commandOpen}
+    files={workspace.files.filter((f) => f.fqn).map((f) => ({ fqn: f.fqn!, path: f.path ?? "" }))}
+    symbols={symbols as never}
+    onopenfile={(f) => {
+      const real = workspace?.files.find((x) => x.fqn === f.fqn);
+      if (real) selectFile(real);
+    }}
+    onpicksymbol={(fqn) => selectNode(fqn, { goto: true })}
+  />
+{/if}
 
 {#if ready && projectOpen}
   <ProjectPanel
