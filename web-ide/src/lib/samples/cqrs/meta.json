@@ -1,7 +1,0 @@
-{
-  "name": "CQRS",
-  "category": "Data",
-  "order": 50,
-  "landing": "cqrs",
-  "description": "Kudos (recognition) — light writes and a hammered leaderboard; separate read and write models."
-}

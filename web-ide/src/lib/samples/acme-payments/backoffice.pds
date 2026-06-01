@@ -1,0 +1,99 @@
+//! backoffice — the dashboard actions staff take on a merchant's account: an
+//! analyst rules on payments the fraud engine flagged for review, and support
+//! issues refunds. Staff authenticate with *restricted* keys scoped to the action
+//! (reviews, refunds), and every action acts only on the authenticated merchant's
+//! data — so both the scope check and the ownership check are disclosed here.
+//! Because a flagged payment already captured, an analyst's ruling is approve
+//! (clear the flag) or reject (refund it), not a gate on money that hasn't moved.
+
+/// An analyst's ruling on a flagged payment.
+public data ReviewVerdict =
+  | Approve
+  | Reject
+
+/// A ruling on one flagged payment.
+public data ReviewDecision {
+  intent: shared::PaymentIntentId,
+  verdict: ReviewVerdict
+}
+
+/// Why a console action was refused.
+public data ConsoleError =
+  | Unauthorized
+  | NotFound
+  | Rejected { reason: string }
+
+/// `backoffice` — internal staff tooling over the merchant API.
+public container Backoffice for context::AcmePay;
+
+/// Analyst and support actions, each scope-checked and merchant-scoped.
+public component Console for Backoffice {
+  /// Rule on a payment the fraud engine flagged. Approve clears the flag and
+  /// leaves the captured payment in place; reject refunds it in full. Requires a
+  /// key with the `Reviews` scope, and the payment must belong to that merchant.
+  public resolveReview(key: identity::RestrictedKey, decision: ReviewDecision): Result<void, ConsoleError> {
+    merchant = identity::Keys.authenticateRestricted(key, identity::Reviews)
+    if (merchant.isErr) {
+      return Err(Unauthorized)
+    }
+    owned = intents::PaymentIntents.getFor(merchant.value.id, decision.intent)
+    if (owned.isErr) {
+      return Err(NotFound)
+    }
+    keep = self.approves(decision.verdict)
+    if (keep.isOk) {
+      risk::ReviewQueue.clear(decision.intent)
+      return Ok
+    }
+    refunded = refunds::RefundService.create(merchant.value.id, RefundRequest from { decision.intent, owned.value.amount })
+    if (refunded.isErr) {
+      return Err(self.refundRejected(refunded.error))
+    }
+    risk::ReviewQueue.clear(decision.intent)
+    return Ok
+  }
+
+  /// Refund a captured payment on the merchant's behalf. Requires the `Refunds`
+  /// scope.
+  public refund(key: identity::RestrictedKey, req: refunds::RefundRequest): Result<refunds::Refund, ConsoleError> {
+    merchant = identity::Keys.authenticateRestricted(key, identity::Refunds)
+    if (merchant.isErr) {
+      return Err(Unauthorized)
+    }
+    done = refunds::RefundService.create(merchant.value.id, req)
+    if (done.isErr) {
+      return Err(self.refundRejected(done.error))
+    }
+    return Ok(done.value)
+  }
+
+  /// List payments awaiting a review decision. Requires the `Reviews` scope.
+  public reviewQueue(key: identity::RestrictedKey): Result<shared::PaymentIntentId[], ConsoleError> {
+    merchant = identity::Keys.authenticateRestricted(key, identity::Reviews)
+    if (merchant.isErr) {
+      return Err(Unauthorized)
+    }
+    return Ok(risk::ReviewQueue.pending())
+  }
+
+  /// `Ok` only if the verdict approves (keeps) the payment.
+  approves(verdict: ReviewVerdict): Result<void, ConsoleError>;
+  /// Map a refund failure to a console error.
+  refundRejected(e: refunds::RefundError): ConsoleError;
+}
+
+/// An analyst cannot resolve a review for another merchant's payment.
+feature ReviewIsMerchantScoped for Console {
+  given "a restricted key for one merchant with the reviews scope"
+  when  "a review is resolved for an intent owned by a different merchant"
+  then  "the action is refused as not found"
+  and   "the other merchant's payment is untouched"
+}
+
+/// Rejecting a flagged payment refunds it.
+feature RejectedReviewRefunds for Console {
+  given "a captured payment flagged for review"
+  when  "an analyst rejects it"
+  then  "the payment is refunded in full"
+  and   "it is removed from the review queue"
+}

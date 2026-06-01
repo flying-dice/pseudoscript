@@ -1,7 +1,0 @@
-{
-  "name": "Claim Check",
-  "category": "Messaging",
-  "order": 33,
-  "landing": "claim_check",
-  "description": "Reelbox (video) — store the big upload, queue only a small claim the transcoder redeems."
-}

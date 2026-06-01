@@ -3,16 +3,32 @@
     errorCount = 0,
     workspaceName = null,
     building = false,
+    // Save state for the workspace indicator: number of files differing from
+    // disk, whether the workspace can persist (a real folder vs a sample), and
+    // the active write lifecycle (idle | saving | saved | error).
+    dirtyCount = 0,
+    canPersist = false,
+    saveState = "idle",
     onformat,
     onproject,
     onbuilddocs,
+    onshare,
+    onexport,
+    onimport,
     onopensettings,
   } = $props();
+
+  // The share/transport overflow menu (Share link · Export · Import).
+  let shareOpen = $state(false);
 </script>
 
 <header class="toolbar">
   <a class="brand" href="https://github.com/flying-dice/pseudoscript" target="_blank" rel="noreferrer" aria-label="PseudoScript Web IDE">
-    <span class="dot" aria-hidden="true"></span>
+    <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="19" height="19" rx="4" stroke="currentColor" stroke-width="1.4" opacity="0.45" />
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2.6" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="12" cy="12" r="2.3" fill="var(--accent)" />
+    </svg>
     <span class="word">PseudoScript</span>
   </a>
 
@@ -25,6 +41,38 @@
   <div class="spacer"></div>
 
   <p class="hint">Hover a symbol for its diagram</p>
+
+  <div class="share-wrap">
+    <button
+      class="ghost share"
+      class:open={shareOpen}
+      onclick={() => (shareOpen = !shareOpen)}
+      title="Share, export, or import a workspace"
+      aria-haspopup="menu"
+      aria-expanded={shareOpen}
+    >
+      <span class="ico" aria-hidden="true">↗</span>
+      Share
+      <span class="chev" aria-hidden="true">▾</span>
+    </button>
+    {#if shareOpen}
+      <button class="share-scrim" aria-label="Close" onclick={() => (shareOpen = false)}></button>
+      <div class="share-menu" role="menu">
+        <button role="menuitem" disabled={!workspaceName} onclick={() => { shareOpen = false; onshare?.(); }}>
+          <span class="mi-title">Copy share link</span>
+          <span class="mi-sub">Whole workspace, in the URL</span>
+        </button>
+        <button role="menuitem" disabled={!workspaceName} onclick={() => { shareOpen = false; onexport?.(); }}>
+          <span class="mi-title">Export <code>.pdsx</code></span>
+          <span class="mi-sub">Download a compressed file</span>
+        </button>
+        <button role="menuitem" onclick={() => { shareOpen = false; onimport?.(); }}>
+          <span class="mi-title">Import <code>.pdsx</code>…</span>
+          <span class="mi-sub">Open an exported workspace</span>
+        </button>
+      </div>
+    {/if}
+  </div>
 
   <button class="ghost build" onclick={onbuilddocs} disabled={building} title="Build the static documentation site (pds doc)">
     <span class="ico" aria-hidden="true">⚙</span>
@@ -42,6 +90,22 @@
 
   <button class="format" onclick={onformat}>Format</button>
 
+  {#if workspaceName}
+    <div class="save" aria-live="polite">
+      {#if !canPersist}
+        <span class="save-label dim" title="Bundled example — edits live in memory only">session</span>
+      {:else if saveState === "saving"}
+        <span class="save-dot busy"></span><span class="save-label">saving…</span>
+      {:else if saveState === "error"}
+        <span class="save-dot bad"></span><span class="save-label bad">save failed</span>
+      {:else if dirtyCount > 0}
+        <span class="save-dot warn"></span><span class="save-label warn">{dirtyCount} unsaved</span>
+      {:else}
+        <span class="save-dot ok"></span><span class="save-label">saved</span>
+      {/if}
+    </div>
+  {/if}
+
   <div class="status" class:bad={errorCount > 0} aria-live="polite">
     <span class="status-dot" class:bad={errorCount > 0}></span>
     {errorCount === 0 ? "no errors" : `${errorCount} error${errorCount === 1 ? "" : "s"}`}
@@ -58,6 +122,12 @@
     border-bottom: 1px solid var(--line);
     background: color-mix(in srgb, var(--surface) 78%, transparent);
     backdrop-filter: blur(10px) saturate(1.3);
+    /* `backdrop-filter` makes the toolbar a stacking context, so the share
+       dropdown's z-index is local to it. Lift the whole toolbar above the
+       workspace panes (z-index ≤ 41) — but below modals (≥ 50) — so the
+       dropdown isn't painted over by the main body. */
+    position: relative;
+    z-index: 45;
   }
 
   .brand {
@@ -67,14 +137,14 @@
     color: inherit;
     text-decoration: none;
   }
-  .brand .dot {
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    background: var(--accent);
+  .brand .logo {
+    width: 22px;
+    height: 22px;
     align-self: center;
-    animation: pulse-dot 2.8s ease-out infinite;
+    color: var(--ink-soft);
+    transition: color 0.16s, transform 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
+  .brand:hover .logo { color: var(--ink); transform: rotate(-90deg); }
   .brand .word {
     font-family: var(--font-display);
     font-weight: 700;
@@ -148,4 +218,70 @@
     background: var(--ok);
   }
   .status-dot.bad { background: var(--err); }
+
+  .save {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+  }
+  .save-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+  }
+  .save-dot.warn { background: var(--warn); }
+  .save-dot.bad { background: var(--err); }
+  .save-dot.busy { background: var(--ink-faint); animation: pulse-dot 1.2s ease-in-out infinite; }
+  .save-label.dim { color: var(--ink-faint); }
+  .save-label.warn { color: var(--warn); }
+  .save-label.bad { color: var(--err); }
+
+  /* share / export / import overflow menu */
+  .share-wrap { position: relative; }
+  .share.open { border-color: var(--accent); color: var(--ink); }
+  .share-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: transparent;
+    border: none;
+  }
+  .share-menu {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    left: 0;
+    z-index: 41;
+    width: 16rem;
+    display: flex;
+    flex-direction: column;
+    padding: 0.3rem;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg, 0 18px 50px rgba(0, 0, 0, 0.5));
+  }
+  .share-menu button {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    text-align: left;
+    padding: 0.45rem 0.6rem;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+  }
+  .share-menu button:hover:not(:disabled) { background: var(--surface-2); }
+  .share-menu button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .share-menu .mi-title { font-size: 0.82rem; font-weight: 600; }
+  .share-menu .mi-title code {
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    color: var(--accent);
+  }
+  .share-menu .mi-sub { font-size: 0.72rem; color: var(--ink-faint); }
 </style>

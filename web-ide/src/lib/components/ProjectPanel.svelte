@@ -10,6 +10,7 @@
     onpicksample,
     onpickrecent,
     onopenfolder,
+    onimport,
     onforget,
     onclose,
   } = $props();
@@ -52,7 +53,11 @@
 
     <header class="head">
       <div class="brand">
-        <span class="dot" aria-hidden="true"></span>
+        <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="2.5" y="2.5" width="19" height="19" rx="4" stroke="currentColor" stroke-width="1.4" opacity="0.45" />
+          <rect x="6.5" y="6.5" width="11" height="11" rx="2.6" stroke="currentColor" stroke-width="1.5" />
+          <circle cx="12" cy="12" r="2.3" fill="var(--accent)" />
+        </svg>
         <span class="word">PseudoScript</span>
         <span class="sep">/</span>
         <span class="eyebrow">Project</span>
@@ -91,8 +96,12 @@
           <span class="ico" aria-hidden="true">▢</span>
           Open a folder…
         </button>
+        <button class="folder" onclick={() => onimport?.()}>
+          <span class="ico" aria-hidden="true">↧</span>
+          Import a workspace…
+        </button>
         {#if !canOpenFolder}
-          <p class="note">Local folders need a Chromium browser (File System Access API). Examples work everywhere.</p>
+          <p class="note">Local folders need a Chromium browser (File System Access API). Examples work everywhere. Import a <code>.pdsx</code> file anywhere.</p>
         {/if}
       </div>
 
@@ -150,7 +159,7 @@
     background-color: var(--surface);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
-    box-shadow: 0 30px 80px -28px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-lg), 0 0 0 1px var(--line);
     animation: dossier-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
   @keyframes dossier-in {
@@ -179,10 +188,9 @@
     animation: rise 0.4s 0.02s both;
   }
   .brand { display: flex; align-items: baseline; gap: 0.55rem; }
-  .brand .dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--accent); align-self: center;
-    animation: pulse-dot 2.8s ease-out infinite;
+  .brand .logo {
+    width: 20px; height: 20px; align-self: center;
+    color: var(--ink-soft);
   }
   .brand .word { font-family: var(--font-display); font-weight: 700; font-size: 1.04rem; letter-spacing: -0.025em; }
   .brand .sep { color: var(--ink-faint); }

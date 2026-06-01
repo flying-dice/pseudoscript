@@ -1,7 +1,0 @@
-{
-  "name": "Competing Consumers",
-  "category": "Messaging",
-  "order": 31,
-  "landing": "competing_consumers",
-  "description": "Thumbly (thumbnailer) — a pool of workers pull resize jobs off a queue; scale by adding workers."
-}

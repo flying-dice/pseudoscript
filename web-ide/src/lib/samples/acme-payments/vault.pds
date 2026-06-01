@@ -1,0 +1,75 @@
+//! vault — the PCI boundary. Raw card data crosses into the platform exactly
+//! once, at tokenisation, and is immediately exchanged with the network for a
+//! token; the vault stores only that token and a safe display representation.
+//! Everywhere else in the model a card is a `PaymentMethodId` — the PAN never
+//! reaches charges, intents, or the ledger.
+
+/// Raw card data, supplied once at tokenisation. This is the only place a PAN
+/// appears in the model; it is exchanged for a token and never stored.
+public data CardEntry { pan: string, exp: string, cvc: string }
+
+/// A tokenised, reusable payment instrument — safe to store and reference.
+public data PaymentMethod { id: shared::PaymentMethodId, brand: string, last4: string }
+
+/// Why a card could not be tokenised.
+public data TokenizeError =
+  | InvalidCard { reason: string }
+  | Unreachable
+
+/// `vault` — tokenisation and the network-instrument map.
+/// #critical
+public container Vault for context::AcmePay;
+
+/// Exchanges raw card data for a stored token.
+public component Tokenizer for Vault {
+  /// Tokenise a card: validate it, exchange it with the network for an
+  /// instrument token, store only the token plus a safe display form.
+  public tokenize(merchant: shared::MerchantId, card: CardEntry): Result<PaymentMethod, TokenizeError> {
+    valid = self.validate(card)
+    if (valid.isErr) {
+      return Err(valid.error)
+    }
+    instrument = self.exchange(card)
+    if (instrument.isErr) {
+      return Err(instrument.error)
+    }
+    id = Vault::TokenStore.nextId()
+    method = self.represent(id, card)
+    Vault::TokenStore.save(merchant, method, instrument.value)
+    return Ok(method)
+  }
+
+  /// `Err(InvalidCard)` if the number, expiry, or CVC is malformed.
+  validate(card: CardEntry): Result<void, TokenizeError>;
+  /// Exchange raw card data with the network for a reusable instrument token.
+  exchange(card: CardEntry): Result<context::NetworkInstrument, TokenizeError>;
+  /// Build the safe display representation (brand + last four) for a card.
+  represent(id: shared::PaymentMethodId, card: CardEntry): PaymentMethod;
+}
+
+/// Resolves a stored payment method to the network instrument that charges it.
+/// The only path from a `PaymentMethodId` back to something the network can
+/// charge — and it never yields a PAN.
+public component Instruments for Vault {
+  /// The network instrument for a stored payment method, if it exists and
+  /// belongs to the merchant.
+  public instrumentFor(merchant: shared::MerchantId, method: shared::PaymentMethodId): Option<context::NetworkInstrument> {
+    return Vault::TokenStore.instrument(merchant, method)
+  }
+}
+
+/// Durable token records: payment method id → network instrument, scoped to a
+/// merchant. Stores tokens only — never card numbers.
+component TokenStore for Vault {
+  nextId(): shared::PaymentMethodId;
+  save(merchant: shared::MerchantId, method: PaymentMethod, instrument: context::NetworkInstrument): void;
+  instrument(merchant: shared::MerchantId, method: shared::PaymentMethodId): Option<context::NetworkInstrument>;
+}
+
+/// A tokenised card never exposes its number again.
+feature TokenisationHidesThePan for Tokenizer {
+  given "a card tokenised into a payment method"
+  when  "the payment method is later used to charge"
+  then  "only the network instrument token is read"
+  but   "the card number is never stored or returned"
+}

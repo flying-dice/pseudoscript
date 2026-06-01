@@ -1,0 +1,243 @@
+//! disputes — chargebacks. The network opens a dispute out of band; ACME Pay
+//! immediately holds the disputed funds (a debit the ledger applies on
+//! `DisputeOpened`), alerts the merchant, and waits for evidence. The merchant
+//! contests; the network rules. A win returns the funds; a loss leaves them
+//! debited. Inbound network callbacks are signature-verified and de-duplicated,
+//! so a replayed dispute webhook never double-debits.
+
+/// A dispute's lifecycle.
+public data DisputeStatus =
+  | NeedsResponse
+  | UnderReview
+  | Won
+  | Lost
+
+/// A dispute (chargeback) raised against a captured payment.
+public data Dispute {
+  id: shared::DisputeId,
+  merchant: shared::MerchantId,
+  intent: shared::PaymentIntentId,
+  amount: shared::Money,
+  ref: context::DisputeRef,
+  status: DisputeStatus
+}
+
+/// A dispute-opened callback from the network's webhook.
+public data DisputeEvent {
+  eventId: string,
+  dispute: shared::DisputeId,
+  merchant: shared::MerchantId,
+  intent: shared::PaymentIntentId,
+  amount: shared::Money,
+  ref: context::DisputeRef,
+  signature: string
+}
+
+/// How the network ruled on a contested dispute.
+public data DisputeRuling =
+  | MerchantWon
+  | MerchantLost
+
+/// A dispute-resolution callback from the network's webhook.
+public data ResolutionEvent {
+  eventId: string,
+  dispute: shared::DisputeId,
+  ruling: DisputeRuling,
+  signature: string
+}
+
+/// A merchant's evidence contesting a dispute. The merchant is taken from the
+/// authenticated API key at the edge, never from the body.
+public data EvidenceSubmission {
+  dispute: shared::DisputeId,
+  evidence: string
+}
+
+/// Acknowledgement returned to the network for a processed callback.
+public data Acknowledged { eventId: string }
+
+/// Why a dispute operation was refused.
+public data DisputeError =
+  | NotFound
+  | WrongMerchant
+  | NotContestable
+  | BadSignature
+  | NetworkUnreachable
+
+/// Event: a dispute was opened. The ledger debits the disputed amount plus the
+/// dispute fee on it, keyed on the dispute id.
+public data DisputeOpened { dispute: shared::DisputeId, merchant: shared::MerchantId, amount: shared::Money }
+
+/// Event: a dispute was won. The ledger returns the disputed amount on it.
+public data DisputeWon { dispute: shared::DisputeId, merchant: shared::MerchantId, amount: shared::Money }
+
+/// `disputes` — chargeback handling.
+public container Disputes for context::AcmePay;
+
+/// Owns the dispute lifecycle: open (from the network), contest (from the
+/// merchant), and resolve (from the network).
+public component DisputeService for Disputes {
+  /// The network opens a dispute. Signature-verified and de-duplicated before the
+  /// dispute is recorded and `DisputeOpened` raised, so a replayed callback is
+  /// acknowledged but holds funds only once.
+  #[http("POST /v1/network/disputes")]
+  public open(event: DisputeEvent): Result<Acknowledged, DisputeError> {
+    verified = self.verify(event)
+    if (verified.isErr) {
+      return Err(verified.error)
+    }
+    seen = Disputes::CallbackLog.seen(event.eventId)
+    if (seen.isOk) {
+      return Ok(Acknowledged from { event.eventId })
+    }
+    dispute = Dispute from { event, NeedsResponse }
+    Disputes::DisputeStore.save(dispute)
+    Disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
+    Disputes::CallbackLog.record(event.eventId)
+    return Ok(Acknowledged from { event.eventId })
+  }
+
+  /// The merchant contests a dispute with evidence: forward it to the network and
+  /// move the dispute to `UnderReview`.
+  public submitEvidence(merchant: shared::MerchantId, req: EvidenceSubmission): Result<Dispute, DisputeError> {
+    loaded = self.getFor(merchant, req.dispute)
+    if (loaded.isErr) {
+      return Err(loaded.error)
+    }
+    open = self.contestable(loaded.value)
+    if (open.isErr) {
+      return Err(open.error)
+    }
+    sent = context::CardNetwork.submitEvidence(loaded.value.ref, req.evidence)
+    if (sent.isErr) {
+      return Err(NetworkUnreachable)
+    }
+    reviewing = self.mark(loaded.value, UnderReview)
+    Disputes::DisputeStore.save(reviewing)
+    return Ok(reviewing)
+  }
+
+  /// The network rules on a contested dispute. A win raises `DisputeWon` so the
+  /// ledger returns the held funds; a loss leaves them debited. De-duplicated so
+  /// a replayed ruling settles once.
+  #[http("POST /v1/network/dispute-outcomes")]
+  public resolve(event: ResolutionEvent): Result<Acknowledged, DisputeError> {
+    verified = self.verifyResolution(event)
+    if (verified.isErr) {
+      return Err(verified.error)
+    }
+    seen = Disputes::CallbackLog.seen(event.eventId)
+    if (seen.isOk) {
+      return Ok(Acknowledged from { event.eventId })
+    }
+    loaded = self.get(event.dispute)
+    if (loaded.isOk) {
+      self.applyRuling(loaded.value, event.ruling)
+    }
+    Disputes::CallbackLog.record(event.eventId)
+    return Ok(Acknowledged from { event.eventId })
+  }
+
+  /// Disputes past their response deadline still awaiting evidence (drives the
+  /// deadline sweep).
+  public unanswered(): Dispute[] {
+    return Disputes::DisputeStore.unanswered()
+  }
+
+  /// Forfeit a dispute the merchant never answered: mark it `Lost`. The funds
+  /// were already held at open, so no further debit is needed.
+  public forfeit(dispute: shared::DisputeId): void {
+    loaded = self.get(dispute)
+    if (loaded.isOk) {
+      open = self.contestable(loaded.value)
+      if (open.isOk) {
+        Disputes::DisputeStore.save(self.mark(loaded.value, Lost))
+      }
+    }
+  }
+
+  /// Apply a ruling: a win records `Won` and raises `DisputeWon`; a loss records
+  /// `Lost`.
+  applyRuling(dispute: Dispute, ruling: DisputeRuling): void {
+    won = self.isWin(ruling)
+    if (won.isOk) {
+      Disputes::DisputeStore.save(self.mark(dispute, Won))
+      Disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
+    } else {
+      Disputes::DisputeStore.save(self.mark(dispute, Lost))
+    }
+  }
+
+  /// Read a dispute on behalf of `merchant`, refusing one that belongs to
+  /// another merchant.
+  public getFor(merchant: shared::MerchantId, dispute: shared::DisputeId): Result<Dispute, DisputeError> {
+    loaded = self.get(dispute)
+    if (loaded.isErr) {
+      return Err(loaded.error)
+    }
+    owns = self.ownedBy(loaded.value, merchant)
+    if (owns.isErr) {
+      return Err(owns.error)
+    }
+    return Ok(loaded.value)
+  }
+
+  /// Read a dispute, or `NotFound`.
+  get(dispute: shared::DisputeId): Result<Dispute, DisputeError> {
+    found = Disputes::DisputeStore.fetch(dispute)
+    if (found.isNone) {
+      return Err(NotFound)
+    }
+    return Ok(found.value)
+  }
+
+  /// A copy of `dispute` in a new state.
+  mark(dispute: Dispute, status: DisputeStatus): Dispute;
+  /// `Err(BadSignature)` if the open callback's signature does not verify.
+  verify(event: DisputeEvent): Result<void, DisputeError>;
+  /// `Err(BadSignature)` if the resolution callback's signature does not verify.
+  verifyResolution(event: ResolutionEvent): Result<void, DisputeError>;
+  /// `Err(NotContestable)` unless the dispute still needs a response.
+  contestable(dispute: Dispute): Result<void, DisputeError>;
+  /// `Err(WrongMerchant)` if the dispute is not owned by `merchant`.
+  ownedBy(dispute: Dispute, merchant: shared::MerchantId): Result<void, DisputeError>;
+  /// `Ok` only if the ruling is a win.
+  isWin(ruling: DisputeRuling): Result<void, DisputeError>;
+}
+
+/// Durable dispute records.
+component DisputeStore for Disputes {
+  save(dispute: Dispute): void;
+  fetch(dispute: shared::DisputeId): Option<Dispute>;
+  unanswered(): Dispute[];
+}
+
+/// De-duplicates inbound network callbacks by event id.
+component CallbackLog for Disputes {
+  /// `Ok` if this event id was already processed (a replay).
+  seen(eventId: string): Result<void, DisputeError>;
+  /// Mark an event id processed.
+  record(eventId: string): void;
+}
+
+/// Raises `DisputeOpened` and `DisputeWon`. At-least-once through a transactional
+/// outbox; the ledger consumer de-duplicates on the dispute id.
+component Events for Disputes {
+  opened(event: DisputeOpened): void;
+  won(event: DisputeWon): void;
+}
+
+/// An opened dispute holds the funds before the merchant can spend them.
+feature DisputeHoldsFundsImmediately for DisputeService {
+  given "a captured payment whose balance is available"
+  when  "the network opens a dispute for it"
+  then  "the disputed amount and the dispute fee are debited from available"
+  and   "the merchant is alerted to respond"
+}
+
+/// A won dispute returns the held funds.
+feature WonDisputeReturnsFunds for DisputeService {
+  given "a dispute whose funds were held at open"
+  when  "the network rules in the merchant's favour"
+  then  "the disputed amount is returned to available"
+}

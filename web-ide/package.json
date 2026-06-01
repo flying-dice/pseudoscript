@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
+    "postbuild": "printf '_worker.js\\n_routes.json\\n' > .svelte-kit/cloudflare/.assetsignore",
     "preview": "vite preview",
     "build:wasm": "wasm-pack build ../crates/pseudoscript-wasm --release --target web --out-dir ../../web-ide/src/lib/pds-wasm && rm -f src/lib/pds-wasm/.gitignore src/lib/pds-wasm/package.json src/lib/pds-wasm/README.md"
   },
@@ -23,6 +24,7 @@
     "@codemirror/language": "^6.12.3",
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/lint": "^6.9.6",
+    "@codemirror/search": "^6.7.0",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.0",
     "@dagrejs/dagre": "3.0.0",
@@ -30,6 +32,7 @@
     "@lezer/markdown": "^1.6.4",
     "@lucide/svelte": "^1.17.0",
     "@xyflow/svelte": "1.5.2",
-    "codemirror": "^6.0.2"
+    "codemirror": "^6.0.2",
+    "prettier": "^3.8.3"
   }
 }

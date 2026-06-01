@@ -1,7 +1,0 @@
-{
-  "name": "Bulkhead",
-  "category": "Resilience",
-  "order": 21,
-  "landing": "bulkhead",
-  "description": "Wanderlust (travel search) — flights, hotels, and cars each in an isolated pool; one stall cannot sink the rest."
-}

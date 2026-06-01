@@ -137,7 +137,7 @@
     background: var(--surface);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
-    box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.85);
+    box-shadow: var(--shadow-lg);
     overflow: hidden;
   }
   header {

@@ -3,10 +3,12 @@
   import "../app.css";
   import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outline, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
   import { charToByte } from "$lib/offsets.js";
-  import { fsSupported, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite } from "$lib/workspace.js";
+  import { fsSupported, createWorkspace, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import { collapseSequence } from "$lib/sequence.js";
   import { SAMPLES, loadSample } from "$lib/samples.js";
   import { getRecents, recordSample, recordFolder, reopenFolder, forget } from "$lib/recents.js";
+  import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
+  import { theme } from "$lib/theme.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -15,6 +17,7 @@
   import Notifications from "$lib/components/Notifications.svelte";
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
   import Settings from "$lib/components/Settings.svelte";
+  import PromptDialog from "$lib/components/PromptDialog.svelte";
 
   let ready = $state(false);
   let wasmError = $state(null);
@@ -68,7 +71,7 @@
     const file = workspace?.files.find((f) => f.fqn === loc.fileFqn);
     if (!file) return;
     if (openFile?.fqn !== file.fqn) {
-      clearTimeout(saveTimer);
+      flushSave();
       openFile = file;
     }
     if (loc.fqn) selected = { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
@@ -96,6 +99,94 @@
   let docGroups = $state([]);
   let docSources = $state({});
   let docMeta = $state({});
+
+  // The raw `pds.toml` text, editable as a first-class file. Keyed in the dirty
+  // baseline by the manifest path. Re-resolved (doc nav / name / theme) on save.
+  let manifestSource = $state("");
+  // The last manifest parse error, shown inline above the editor when the open
+  // file is the manifest (the IDE keeps the last good doc nav meanwhile).
+  let manifestError = $state(null);
+  // Whether the live manifest declares a `[dependencies]` table — drives the
+  // read-only "resolved by pds install" note.
+  const manifestHasDeps = $derived(/^\s*\[dependencies/m.test(manifestSource));
+
+  // The persisted baseline: the text last read from / written to disk, keyed the
+  // same way as the live buffers (FQN for modules, path for docs). A file is
+  // "dirty" when its live buffer differs from this baseline. Bundled samples have
+  // no handle and never enter this map — they're session-only, not dirty.
+  let persisted = $state({});
+  // The save lifecycle of the active file, for the status cue: idle | saving |
+  // saved | error. `saved` shows briefly after a successful write.
+  let saveState = $state("idle");
+  let saveStateTimer;
+
+  // A file's buffer key: its path for a doc or the manifest, its FQN for a module.
+  const keyOf = (file) => (file?.isManifest ? file.path : file?.isDoc ? file.path : file?.fqn);
+
+  // Whether the workspace can persist to disk at all (a real opened folder, not a
+  // bundled in-memory sample).
+  const canPersist = $derived(!!workspace?.root);
+
+  // Whether the open doc is folder-backed (a real on-disk page that can resolve
+  // relative assets/links). A sample doc and the manifest are not.
+  const isFolderBacked = $derived(!!(workspace?.root && openFile?.isDoc && openFile?.handle));
+
+  // Resolve a relative doc link to a sibling page in the IDE: normalise it
+  // against the open doc's dir and match a loaded doc page by path.
+  function resolveDocLink(rel) {
+    if (!openFile?.isDoc) return;
+    const dir = openFile.path.includes("/") ? openFile.path.slice(0, openFile.path.lastIndexOf("/")) : "";
+    const stack = dir ? dir.split("/").filter(Boolean) : [];
+    for (const seg of rel.replace(/[#?].*$/, "").split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") stack.pop();
+      else stack.push(seg);
+    }
+    const target = stack.join("/");
+    const item = docGroups.flatMap((g) => g.items).find((it) => it.path === target);
+    if (item) openDoc(item);
+  }
+
+  // Markdown live-preview options for the open doc. Folder docs resolve relative
+  // images from disk and relative `.md` links to sibling pages; samples/manifest
+  // get only the (inert) link resolver — relative images show a placeholder.
+  const previewOpts = $derived(
+    openFile?.isDoc
+      ? {
+          resolveLink: resolveDocLink,
+          resolveAsset: isFolderBacked
+            ? (rel) => resolveDocAsset(workspace.root, openFile.path, rel)
+            : null,
+        }
+      : {},
+  );
+
+  // The set of dirty file keys: live buffer differs from the on-disk baseline.
+  // Only files with a recorded baseline (i.e. backed by a handle) can be dirty;
+  // sample buffers have no baseline and are reported as session-only instead.
+  const manifestKey = $derived(workspace?.manifest?.path ?? null);
+  const dirty = $derived.by(() => {
+    const set = new Set();
+    for (const key of Object.keys(persisted)) {
+      let current;
+      if (key === manifestKey) current = manifestSource;
+      else if (key in moduleSources) current = moduleSources[key];
+      else current = docSources[key];
+      if (current !== undefined && current !== persisted[key]) set.add(key);
+    }
+    return set;
+  });
+  const dirtyCount = $derived(dirty.size);
+
+  // Dirty keys mapped to their tree paths, for the FileTree row dot. Module keys
+  // are FQNs (resolved to paths); doc keys are already paths.
+  const dirtyPaths = $derived.by(() => {
+    const paths = new Set();
+    if (!workspace) return paths;
+    const pathByFqn = new Map(workspace.files.map((f) => [f.fqn, f.path]));
+    for (const key of dirty) paths.add(pathByFqn.get(key) ?? key);
+    return paths;
+  });
 
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   let docWidth = $state(loadDocWidth());
@@ -145,11 +236,13 @@
   const refreshRecents = () => (recents = getRecents());
 
   const source = $derived(
-    openFile?.isDoc
-      ? (docSources[openFile.path] ?? "")
-      : openFile
-        ? (moduleSources[openFile.fqn] ?? "")
-        : "",
+    openFile?.isManifest
+      ? manifestSource
+      : openFile?.isDoc
+        ? (docSources[openFile.path] ?? "")
+        : openFile
+          ? (moduleSources[openFile.fqn] ?? "")
+          : "",
   );
 
   // Every module as {fqn, source} — diagrams and the target list span the whole
@@ -253,21 +346,46 @@
     return m;
   });
 
+  // A minimal single-lifeline scene for a selected symbol that has nothing to
+  // project (a leaf node with no structure, or a data type) — so the canvas
+  // reads as "this exists, no interactions yet" rather than a blank note.
+  function singleLifelineScene(sel) {
+    const node = nodeIndex.get(sel.fqn)?.node;
+    return {
+      participants: [
+        { fqn: sel.fqn, label: node?.name ?? sel.fqn.split("::").at(-1), kind: node?.kind ?? "participant" },
+      ],
+      messages: [],
+      fragments: [],
+    };
+  }
+
   // The CANVAS diagram: the selected node's fitting view, or the whole-model
   // context overview when nothing is selected. The compiler picks the view; a
   // sequence scene is then collapsed to the chosen depth in the IDE.
   const canvas = $derived.by(() => {
     if (!ready || !workspace) return { scene: null, error: "" };
+    const lifelineFallback = () => {
+      const scene = singleLifelineScene(selected);
+      return { scene, layout: layoutScene(scene), error: "" };
+    };
     try {
-      const scene = selected
+      const raw = selected
         ? symbolScene(allModules, selected.fqn)
         : emitSceneModules(allModules, "context", "");
-      const isSeq = scene && Array.isArray(scene.participants);
-      const shown = isSeq ? collapseSequence(scene, seqDepth, nodeInfo) : scene;
+      const isSeq = raw && Array.isArray(raw.participants);
+      const shown = isSeq ? collapseSequence(raw, seqDepth, nodeInfo) : raw;
+      // Nothing to draw for a selected symbol → fall back to its own lifeline
+      // (an empty whole-model context still shows the placeholder note).
+      const isEmpty = isSeq ? !shown?.participants?.length : !shown?.nodes?.length;
+      if (isEmpty && selected) return lifelineFallback();
       // A sequence scene is positioned by the layout engine; C4 stays as-is.
       const layout = isSeq ? layoutScene(shown) : null;
       return { scene: shown, layout, error: "" };
     } catch (e) {
+      // Unprojectable (e.g. a data type) — still show the symbol as a lifeline
+      // when one is selected, rather than an error note.
+      if (selected) return lifelineFallback();
       return { scene: null, layout: null, error: String(e?.message ?? e) };
     }
   });
@@ -394,7 +512,7 @@
     const file = workspace?.files.find((f) => f.fqn === hit.fileFqn);
     if (!file) return;
     if (openFile?.fqn !== file.fqn) {
-      clearTimeout(saveTimer);
+      flushSave();
       openFile = file;
     }
     selected = { fqn, line: hit.node.line, col: hit.node.col, fileFqn: file.fqn };
@@ -456,6 +574,7 @@
 
   async function boot() {
     wasmError = null;
+    theme.init(); // sync runtime theme state with the inline-head choice; watch OS
     try {
       await initWasm();
     } catch (e) {
@@ -465,15 +584,21 @@
     ver = version();
     refreshRecents();
     ready = true;
-    projectOpen = true; // open the project panel on start — never autoload a model
+    // A `#w=` share link restores its workspace and skips the project panel;
+    // otherwise open the panel on start (never autoload a model).
+    const restored = await restoreFromHash();
+    projectOpen = !restored;
   }
   onMount(boot);
 
   // Swap in a freshly-loaded workspace, resetting navigation to `landing`.
-  function mountWorkspace(ws, landing) {
-    clearTimeout(saveTimer);
+  async function mountWorkspace(ws, landing) {
+    flushSave();
     workspace = ws;
-    openFile = ws.files.find((f) => f.fqn === landing) ?? ws.files[0] ?? null;
+    // An explicit landing FQN (meta.json) resolves to its module immediately;
+    // otherwise tentatively open the first module and revisit once docs load.
+    const explicit = landing ? ws.files.find((f) => f.fqn === landing) : null;
+    openFile = explicit ?? ws.files[0] ?? null;
     selected = null;
     pendingGoto = null;
     view = "code";
@@ -483,27 +608,51 @@
     docGroups = [];
     docSources = {};
     docMeta = {};
-    loadWorkspaceDocs(ws); // async: populates the Documentation section when ready
+    // Reset the dirty/save state for the new workspace; module baselines are
+    // seeded by the opener (folder/recent) before mount, doc baselines on load.
+    saveState = "idle";
+    clearTimeout(saveStateTimer);
+    // Seed the editable manifest buffer; folder manifests also get an on-disk
+    // baseline so the manifest row only shows dirty after a real edit.
+    manifestSource = ws.manifestToml ?? "";
+    manifestError = null;
+    if (ws.root && ws.manifest) seedBaseline([{ key: ws.manifest.path, text: ws.manifestToml ?? "" }]);
+
+    // Docs load async; await them so the initial open can prefer the docs
+    // landing page. `loadWorkspaceDocs` returns null for a stale (superseded)
+    // load — in which case a newer mount owns the open file, so leave it alone.
+    const groups = await loadWorkspaceDocs(ws);
+    if (groups === null) return; // a faster switch superseded this mount
+    // With no explicit landing, prefer the first authored doc page (manifest
+    // sidebar order); fall back to the first module already opened above. Don't
+    // override a doc/manifest the user navigated to while docs loaded.
+    if (!explicit && !openFile?.isDoc && !openFile?.isManifest) {
+      const firstDoc = groups.flatMap((g) => g.items).find((it) => it?.path);
+      if (firstDoc) openDoc(firstDoc);
+    }
   }
 
   // Parses the workspace `[doc]` manifest and loads its `[[doc.sidebar]]` pages
   // (from disk for a folder, from the bundled map for a sample) into the doc
   // state the FileTree and the site build read.
   let docLoadSeq = 0;
+  // Returns the loaded doc groups (`[{ title, items:[{title,path,handle}] }]`)
+  // so the caller can prefer a docs landing page, `[]` when the workspace has no
+  // (or malformed) manifest, or `null` when a faster mount superseded this load.
   async function loadWorkspaceDocs(ws) {
     const seq = (docLoadSeq += 1);
-    if (!ws.manifestToml) return;
+    if (!ws.manifestToml) return [];
     let manifest;
     try {
       manifest = docManifest(ws.manifestToml);
     } catch {
-      return; // malformed pds.toml — the auto docs still build
+      return []; // malformed pds.toml — the auto docs still build
     }
     const groups = ws.root
       ? await readDocPages(ws.root, ws.base, manifest.sidebar)
       : sampleDocPages(manifest.sidebar, ws.docs ?? {});
     // A later workspace may have mounted while we awaited; ignore a stale load.
-    if (seq !== docLoadSeq) return;
+    if (seq !== docLoadSeq) return null;
     const sources = {};
     for (const g of groups) for (const it of g.items) sources[it.path] = it.content;
     docSources = sources;
@@ -512,6 +661,344 @@
       title: g.title,
       items: g.items.map(({ title, path, handle }) => ({ title, path, handle: handle ?? null })),
     }));
+    // Seed the on-disk baseline for folder-backed doc pages (those with a handle)
+    // so they start clean; sample doc pages stay session-only (no baseline).
+    if (ws.root) {
+      const docBaseline = [];
+      for (const g of groups) for (const it of g.items) if (it.handle) docBaseline.push({ key: it.path, text: it.content });
+      seedBaseline(docBaseline);
+    }
+    return docGroups;
+  }
+
+  // ---- shared file-set mutation (T9/T10/T11) -------------------------------
+  // The single affordance through which the FileTree create/rename/move/delete
+  // flows reshape the model. It reassigns `workspace.files` and applies seed/
+  // rename/drop edits to `moduleSources`, re-seeding the dirty baseline so
+  // seeded/renamed buffers start clean. Reassigning these reactive maps re-runs
+  // the whole `$derived` resolution chain off `allModules` — no explicit
+  // re-resolve call is needed.
+  //
+  //   seed   : { [fqn]: text } modules to add with a clean baseline.
+  //   rename : { from, to } to move a module's source (+ baseline) to a new key.
+  //   drop   : [fqn] modules to remove from sources (+ baseline).
+  function applyFileSet(files, { seed = {}, rename = null, drop = [] } = {}) {
+    const sources = { ...moduleSources };
+    const base = { ...persisted };
+    if (rename && rename.from !== rename.to) {
+      if (rename.from in sources) {
+        sources[rename.to] = sources[rename.from];
+        delete sources[rename.from];
+      }
+      if (rename.from in base) {
+        base[rename.to] = base[rename.from];
+        delete base[rename.from];
+      }
+    }
+    for (const fqn of drop) {
+      delete sources[fqn];
+      delete base[fqn];
+    }
+    for (const [fqn, text] of Object.entries(seed)) {
+      sources[fqn] = text;
+      if (workspace?.root) base[fqn] = text; // folder-backed → on-disk baseline (clean)
+    }
+    moduleSources = sources;
+    persisted = base;
+    workspace = { ...workspace, files };
+  }
+
+  // Persist a programmatic `[[doc.sidebar]]` manifest change (T10): update the
+  // live `workspace.manifestToml` + editable buffer, write `pds.toml` to disk
+  // when folder-backed, re-seed its baseline, and re-resolve doc nav.
+  async function persistManifest(toml) {
+    const handle = workspace?.manifest?.handle;
+    workspace = { ...workspace, manifestToml: toml };
+    manifestSource = toml;
+    if (handle) {
+      await writeFile(handle, toml);
+      seedBaseline([{ key: workspace.manifest.path, text: toml }]);
+    }
+  }
+
+  // One dialog drives every FileTree name prompt. `dialog` holds its config or
+  // is null when closed; `confirmDialog` is the destructive-action confirm.
+  let dialog = $state(null);
+  let confirmDialog = $state(null);
+
+  // A minimal valid `.pds` module: a system shell with one container and one
+  // behaviour, mirroring the new-workspace starter so it resolves clean.
+  function pdsSkeleton(fqn) {
+    const leaf = fqn.split("::").pop();
+    const title = leaf.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    return `# ${title} — describe this module's architecture here.
+system ${pascalName(leaf)} {
+  container Api {
+    fn health() {
+      # describe what happens here
+    }
+  }
+}
+`;
+  }
+
+  function pascalName(s) {
+    return s.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\s+/g, "") || "Module";
+  }
+
+  // ---- T9: new .pds file ---------------------------------------------------
+  // Normalise a typed name into a base-relative leaf path: trim, drop a leading
+  // slash, append `.pds` when no extension is given.
+  function normalizePdsPath(name) {
+    let p = name.trim().replace(/^\/+/, "");
+    if (!/\.[a-z0-9]+$/i.test(p)) p += ".pds";
+    return p;
+  }
+
+  // Validate a new .pds path against the file set + reserved names. `/` is a
+  // directory separator (subdirectory placement); `\` and empty are rejected.
+  function validateNewFile(name) {
+    const raw = name.trim();
+    if (!raw) return "Name can't be empty.";
+    if (raw.includes("\\")) return "Use forward slashes for folders.";
+    if (raw.endsWith("/")) return "Name a file, not a folder.";
+    const lower = raw.toLowerCase();
+    if (lower.endsWith(".md")) return "Use New doc for Markdown files.";
+    if (/(^|\/)pds\.toml$/i.test(raw)) return "pds.toml is reserved.";
+    if (/\.[a-z0-9]+$/i.test(raw) && !lower.endsWith(".pds")) return "Only .pds files are supported here.";
+    const path = withBase(normalizePdsPath(raw));
+    if ((workspace?.files ?? []).some((f) => f.path === path)) return "A file with that path already exists.";
+    return null;
+  }
+
+  // Prefix a base-relative path with the workspace base dir (the manifest dir).
+  function withBase(rel) {
+    return workspace?.base ? `${workspace.base}/${rel}` : rel;
+  }
+
+  function startNewFile() {
+    if (!workspace) return;
+    dialog = {
+      title: "New .pds file",
+      label: "Module path",
+      placeholder: "banking/core",
+      value: "",
+      confirmLabel: "Create",
+      hint: "A .pds extension is added automatically. Use / for subfolders.",
+      validate: validateNewFile,
+      run: createNewFile,
+    };
+  }
+
+  async function createNewFile(name) {
+    const rel = normalizePdsPath(name);
+    const path = withBase(rel);
+    const fqn = fqnOf(path, workspace.base ?? "");
+    const skeleton = pdsSkeleton(fqn);
+    let handle = null;
+    if (workspace.root) {
+      try {
+        handle = await createFile(workspace.root, path, skeleton);
+      } catch (e) {
+        notify("error", "Couldn't create file", String(e?.message ?? e));
+        return;
+      }
+    }
+    const newFile = { path, fqn, handle };
+    const files = [...workspace.files, newFile].sort((a, b) => a.fqn.localeCompare(b.fqn));
+    applyFileSet(files, { seed: { [fqn]: skeleton } });
+    selectFile(newFile);
+    notify("success", `Created ${rel}`);
+  }
+
+  // ---- T10: new doc (.md + [[doc.sidebar]] registration) -------------------
+  function slugify(title) {
+    return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+
+  // Every doc path already in the live sidebar (base-relative).
+  function docPathSet() {
+    const set = new Set();
+    for (const g of docGroups) for (const it of g.items) set.add(it.path);
+    return set;
+  }
+
+  function validateNewDoc(title) {
+    const t = title.trim();
+    if (!t) return "Title can't be empty.";
+    const slug = slugify(t);
+    if (!slug) return "Title needs at least one letter or number.";
+    if (docPathSet().has(`docs/${slug}.md`)) return `A doc at docs/${slug}.md already exists.`;
+    return null;
+  }
+
+  function startNewDoc() {
+    if (!workspace) return;
+    dialog = {
+      title: "New doc page",
+      label: "Page title",
+      placeholder: "Release Notes",
+      value: "",
+      confirmLabel: "Create",
+      hint: "Saved as docs/<slug>.md and added to the sidebar.",
+      validate: validateNewDoc,
+      run: createNewDoc,
+    };
+  }
+
+  async function createNewDoc(title) {
+    const path = `docs/${slugify(title)}.md`;
+    const body = `# ${title}\n\nDescribe ${title} here.\n`;
+
+    let handle = null;
+    if (workspace.root) {
+      try {
+        handle = await createFile(workspace.root, withBase(path), body);
+      } catch (e) {
+        notify("error", "Couldn't create doc", String(e?.message ?? e));
+        return;
+      }
+    }
+
+    // Register in the manifest: append to the first sidebar group, or a new
+    // "Docs" group when none exist. Reuse the wasm manifest model, then
+    // serialise back to TOML.
+    let toml;
+    try {
+      const manifest = docManifest(workspace.manifestToml ?? "");
+      const sidebar = (manifest.sidebar ?? []).map((g) => ({ title: g.title, items: [...(g.items ?? [])] }));
+      if (sidebar.length === 0) sidebar.push({ title: "Docs", items: [] });
+      sidebar[0].items.push({ title, path });
+      toml = serializeManifest(workspace.manifestToml ?? "", { ...manifest, sidebar });
+    } catch (e) {
+      if (handle && workspace.root) {
+        try {
+          await deletePath(workspace.root, withBase(path)); // don't orphan an unregistered page
+        } catch {}
+      }
+      notify("error", "Couldn't register doc", String(e?.message ?? e));
+      return;
+    }
+
+    // Live: add to docGroups + docSources so the sidebar/preview update now.
+    const item = { title, path, handle };
+    docSources = { ...docSources, [path]: body };
+    if (workspace.root && handle) seedBaseline([{ key: path, text: body }]);
+    docGroups = docGroups.length
+      ? docGroups.map((g, i) => (i === 0 ? { ...g, items: [...g.items, item] } : g))
+      : [{ title: "Docs", items: [item] }];
+
+    try {
+      await persistManifest(toml);
+    } catch (e) {
+      notify("error", "Saved the page, but couldn't write pds.toml", String(e?.message ?? e));
+    }
+    openDoc(item);
+    notify("success", `Created ${path}`);
+  }
+
+  // ---- T11: rename / move / delete .pds ------------------------------------
+  function validateRename(file, name) {
+    const err = validateNewFile(name);
+    if (!err) return null;
+    // Allow the unchanged name, and a collision only against the file itself.
+    if (err === "A file with that path already exists.") {
+      const target = withBase(normalizePdsPath(name));
+      if (!(workspace?.files ?? []).some((f) => f !== file && f.path === target)) return null;
+    }
+    return err;
+  }
+
+  function startRenameFile(file) {
+    if (!workspace) return;
+    const rel = workspace.base ? file.path.slice(workspace.base.length + 1) : file.path;
+    dialog = {
+      title: "Rename module",
+      label: "Module path",
+      placeholder: "banking/core",
+      value: rel.replace(/\.pds$/, ""),
+      confirmLabel: "Rename",
+      hint: "Renaming changes the module FQN; importers of the old name may dangle.",
+      validate: (name) => validateRename(file, name),
+      run: (name) => renameFile(file, name),
+    };
+  }
+
+  async function renameFile(file, name) {
+    const newPath = withBase(normalizePdsPath(name));
+    if (newPath !== file.path) await relocate(file, newPath);
+  }
+
+  // Drag-and-drop move: `destDir` is a base-relative directory ("" = root).
+  async function moveFile({ file, destDir }) {
+    const leaf = file.path.split("/").pop();
+    const prefix = destDir ? withBase(destDir) : (workspace.base ?? "");
+    const newPath = prefix ? `${prefix}/${leaf}` : leaf;
+    if (newPath === file.path) return; // same folder → no-op
+    if ((workspace.files ?? []).some((f) => f.path === newPath)) {
+      notify("error", "Can't move file", "A file with that name already exists there.");
+      return;
+    }
+    await relocate(file, newPath);
+  }
+
+  // Shared rename/move core: disk move (with rollback), then memory rekey.
+  async function relocate(file, newPath) {
+    const newFqn = fqnOf(newPath, workspace.base ?? "");
+    const source = moduleSources[file.fqn] ?? "";
+    let handle = file.handle;
+    if (workspace.root) {
+      try {
+        handle = await movePath(workspace.root, file.path, newPath, source);
+      } catch (e) {
+        notify("error", "Couldn't move file", String(e?.message ?? e)); // disk unchanged → leave memory
+        return;
+      }
+    }
+    const updated = { path: newPath, fqn: newFqn, handle };
+    const files = workspace.files.map((f) => (f === file ? updated : f)).sort((a, b) => a.fqn.localeCompare(b.fqn));
+    applyFileSet(files, { rename: { from: file.fqn, to: newFqn } });
+    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === file.fqn) openFile = updated;
+    const importers = danglingImporters(newFqn, file.fqn);
+    if (importers.length) notify("info", `Renamed to ${newFqn}`, `${importers.length} module(s) still import the old name.`);
+    else notify("success", `Renamed to ${newFqn}`);
+  }
+
+  // Best-effort scan for modules whose source still references the old FQN — a
+  // warn-only signal (we do not auto-rewrite importers; see T11 decision). An
+  // FQN appears verbatim in import/alias statements, so a substring test suffices.
+  function danglingImporters(newFqn, oldFqn) {
+    return workspace.files
+      .filter((f) => f.fqn !== newFqn && (moduleSources[f.fqn] ?? "").includes(oldFqn))
+      .map((f) => f.fqn);
+  }
+
+  function requestDeleteFile(file) {
+    if (!workspace) return;
+    confirmDialog = {
+      title: "Delete module",
+      message: `Delete ${file.fqn}? This removes the file from disk and the model. Importers will dangle.`,
+      confirmLabel: "Delete",
+      run: () => deleteFile(file),
+    };
+  }
+
+  async function deleteFile(file) {
+    if (workspace.root) {
+      try {
+        await deletePath(workspace.root, file.path);
+      } catch (e) {
+        notify("error", "Couldn't delete file", String(e?.message ?? e));
+        return;
+      }
+    }
+    const files = workspace.files.filter((f) => f !== file);
+    applyFileSet(files, { drop: [file.fqn] });
+    if (openFile && !openFile.isDoc && !openFile.isManifest && openFile.fqn === file.fqn) {
+      if (files[0]) selectFile(files[0]);
+      else openFile = null;
+    }
+    notify("success", `Deleted ${file.fqn}`);
   }
 
   // Load a bundled example (edits are session-only). Called from the project
@@ -520,6 +1007,7 @@
     const loaded = loadSample(id);
     if (!loaded) return;
     moduleSources = Object.fromEntries(loaded.workspace.files.map((f) => [f.fqn, f.source]));
+    persisted = {}; // session-only sample: no on-disk baseline, never dirty
     mountWorkspace(loaded.workspace, loaded.landing);
     recordSample(SAMPLES.find((s) => s.id === id));
     refreshRecents();
@@ -542,6 +1030,7 @@
       const sources = {};
       for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
       moduleSources = sources;
+      persisted = { ...sources }; // seed the on-disk baseline: opened files start clean
       mountWorkspace(ws, ws.files[0]?.fqn);
       await recordFolder(ws.name, ws.root);
       refreshRecents();
@@ -557,11 +1046,48 @@
   }
 
   let saveTimer;
+  // The pending debounced write, captured so a file switch (or Cmd/Ctrl-S) can
+  // flush it instead of dropping it — the old silent-data-loss path.
+  let pendingWrite = null; // { handle, text, key }
   let toastTimer;
   function flash(message) {
     toast = message;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (toast = null), 2400);
+  }
+
+  // Briefly show a "saved" cue after a successful write, then settle to idle.
+  function markSaved() {
+    saveState = "saved";
+    clearTimeout(saveStateTimer);
+    saveStateTimer = setTimeout(() => (saveState = "idle"), 1600);
+  }
+
+  // Seed the persisted baseline for a batch of files read from disk, so they
+  // start clean. `entries` is `[{ key, text }]`.
+  function seedBaseline(entries) {
+    const next = { ...persisted };
+    for (const { key, text } of entries) next[key] = text;
+    persisted = next;
+  }
+
+  // Write one buffer to disk and, on success, advance its baseline so it's no
+  // longer dirty. Returns the write promise (already resolved for handle-less
+  // samples). Failure keeps the baseline stale (still dirty) and surfaces it.
+  async function persistFile(handle, key, text) {
+    if (!handle) return; // in-memory sample: session-only, no baseline to advance
+    saveState = "saving";
+    try {
+      await writeFile(handle, text);
+      persisted = { ...persisted, [key]: text };
+      markSaved();
+      // A saved manifest re-resolves the doc nav / name / theme.
+      if (key === manifestKey) resolveManifest(text);
+    } catch (e) {
+      saveState = "error";
+      notify("error", "Could not save to disk", String(e?.message ?? e));
+      throw e;
+    }
   }
 
   // Toast notifications (kind: success | error | info), shown stacked top-right.
@@ -576,26 +1102,105 @@
     notes = notes.filter((n) => n.id !== id);
   }
 
-  function scheduleSave(handle, text) {
+  // Debounce a disk write for the active file. The pending write is captured so a
+  // file switch or Cmd/Ctrl-S can flush it (rather than the old clearTimeout that
+  // silently dropped a sub-400 ms edit).
+  function scheduleSave(handle, key, text) {
     if (!handle) return; // in-memory sample: session-only
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => writeFile(handle, text).catch(() => flash("Could not save to disk")), 400);
+    pendingWrite = { handle, key, text };
+    saveTimer = setTimeout(() => {
+      const w = pendingWrite;
+      pendingWrite = null;
+      if (w) persistFile(w.handle, w.key, w.text).catch(() => {});
+    }, 400);
+  }
+
+  // Flush any debounced write immediately and await it — called before switching
+  // files (so the outgoing edit lands) and from manual save.
+  async function flushSave() {
+    if (!pendingWrite) return;
+    clearTimeout(saveTimer);
+    const w = pendingWrite;
+    pendingWrite = null;
+    await persistFile(w.handle, w.key, w.text).catch(() => {});
+  }
+
+  // Manual save (Cmd/Ctrl-S): flush a pending debounce, else write the active
+  // file's current buffer straight away. A clean file is a no-op cue.
+  async function saveActiveFile() {
+    if (pendingWrite) {
+      await flushSave();
+      return;
+    }
+    if (!openFile?.handle) return;
+    const key = keyOf(openFile);
+    if (!dirty.has(key)) {
+      markSaved();
+      return;
+    }
+    await persistFile(openFile.handle, key, source).catch(() => {});
   }
 
   function onEditorChange(value) {
     if (!openFile) return;
-    if (openFile.isDoc) {
+    if (openFile.isManifest) {
+      manifestSource = value;
+      // A folder manifest re-resolves on save (debounced write); a session-only
+      // sample has no save, so re-resolve live instead.
+      if (openFile.handle) validateManifest(value);
+      else resolveManifest(value);
+    } else if (openFile.isDoc) {
       docSources = { ...docSources, [openFile.path]: value };
     } else {
       moduleSources = { ...moduleSources, [openFile.fqn]: value };
     }
-    scheduleSave(openFile.handle, value);
+    scheduleSave(openFile.handle, keyOf(openFile), value);
+  }
+
+  // Live parse check for the inline error cue; doesn't touch the doc nav.
+  function validateManifest(toml) {
+    try {
+      docManifest(toml);
+      manifestError = null;
+    } catch (e) {
+      manifestError = String(e?.message ?? e);
+    }
+  }
+
+  // Re-resolve the workspace doc nav / name / theme from the saved manifest. A
+  // parse error keeps the last good doc nav; reuses the shared doc loader by
+  // swapping the live manifest text onto the workspace.
+  function resolveManifest(toml) {
+    try {
+      docManifest(toml); // throws on malformed TOML
+      manifestError = null;
+    } catch (e) {
+      manifestError = String(e?.message ?? e);
+      return; // keep the last good doc nav
+    }
+    if (workspace) loadWorkspaceDocs({ ...workspace, manifestToml: toml });
+  }
+
+  // Open the workspace manifest (`pds.toml`) as raw, editable TOML. A folder's
+  // manifest persists to its handle; a sample's is session-only (no handle).
+  function openManifest() {
+    if (!workspace?.manifest) return;
+    flushSave();
+    openFile = {
+      isManifest: true,
+      path: workspace.manifest.path,
+      title: "pds.toml",
+      handle: workspace.manifest.handle ?? null,
+    };
+    selected = null;
+    view = "code";
   }
 
   // Opening a file from the nav clears any node scope; it shows the source,
   // unless the canvas is up — then it stays on the canvas (whole-model context).
   function selectFile(file) {
-    clearTimeout(saveTimer);
+    flushSave();
     openFile = file;
     selected = null;
     if (view !== "canvas") view = "code";
@@ -605,7 +1210,7 @@
   // Marked `isDoc` so the editor drops PseudoScript language features and edits
   // route to `docSources` (and save to the page's handle on a real folder).
   function openDoc(item) {
-    clearTimeout(saveTimer);
+    flushSave();
     openFile = { isDoc: true, path: item.path, title: item.title, handle: item.handle ?? null };
     selected = null;
     view = "code";
@@ -622,12 +1227,32 @@
     if (d.file) recordLocation({ fileFqn: d.file, line: d.start_line, col: d.start_col, label: d.message });
   }
 
+  // Scaffold a brand-new project: prompt for a name + parent directory, write a
+  // starter pds.toml + main.pds, then mount it like any opened folder. A blank
+  // name falls back to the default; cancelling the picker is a silent no-op.
+  async function newProject(name) {
+    try {
+      const ws = await createWorkspace(name);
+      const sources = {};
+      for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
+      moduleSources = sources;
+      persisted = { ...sources }; // freshly written = on-disk baseline, starts clean
+      mountWorkspace(ws, ws.files[0]?.fqn);
+      await recordFolder(ws.name, ws.root);
+      refreshRecents();
+      flash(`Created ${ws.name}`);
+    } catch {
+      // picker cancelled or permission denied — keep the current workspace
+    }
+  }
+
   async function openFolder() {
     try {
       const ws = await openWorkspace();
       const sources = {};
       for (const file of ws.files) sources[file.fqn] = await readFile(file.handle);
       moduleSources = sources;
+      persisted = { ...sources }; // seed the on-disk baseline: opened files start clean
       mountWorkspace(ws, ws.files[0]?.fqn);
       await recordFolder(ws.name, ws.root);
       refreshRecents();
@@ -637,9 +1262,27 @@
     }
   }
 
-  function onformat() {
+  async function onformat() {
     if (!openFile) return;
-    if (openFile.isDoc) return; // the PseudoScript formatter doesn't apply to Markdown
+    // Markdown docs reflow via Prettier (lazy-loaded); `.pds` modules use the
+    // wasm formatter. The manifest (raw TOML) has no formatter — leave it.
+    if (openFile.isManifest) return;
+    if (openFile.isDoc) {
+      try {
+        const [{ format }, markdownPlugin] = await Promise.all([
+          import("prettier/standalone"),
+          import("prettier/plugins/markdown"),
+        ]);
+        const formatted = await format(source, {
+          parser: "markdown",
+          plugins: [markdownPlugin.default ?? markdownPlugin],
+        });
+        onEditorChange(formatted);
+      } catch {
+        flash("Cannot format Markdown — check the document");
+      }
+      return;
+    }
     try {
       onEditorChange(formatSource(source));
     } catch {
@@ -737,18 +1380,190 @@
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
+  // ── Share / import / export (client-only codec) ──────────────────────────
+  // Snapshot the live workspace (current edits, manifest, docs) into the codec's
+  // serialisable shape. Shared by the URL-hash share (T6) and the file export (T7).
+  function snapshotWorkspace() {
+    const files = (workspace?.files ?? []).map((f) => ({
+      path: f.path,
+      fqn: f.fqn,
+      source: moduleSources[f.fqn] ?? "",
+    }));
+    const docs = [];
+    for (const g of docGroups) for (const it of g.items) docs.push({ path: it.path, content: docSources[it.path] ?? "" });
+    return { name: workspace?.name ?? "shared-workspace", manifestToml: manifestSource || null, files, docs };
+  }
+
+  // Mount a decoded workspace (from a share link or imported file) in-memory,
+  // session-only until "Save to folder" — exactly the sample-load path.
+  function mountDecoded({ workspace: ws, landing }) {
+    moduleSources = Object.fromEntries(ws.files.map((f) => [f.fqn, f.source]));
+    persisted = {}; // imported/shared: no on-disk baseline, session-only
+    mountWorkspace(ws, landing);
+  }
+
+  let busyShare = $state(false);
+
+  // Share: encode the live workspace, base64url it into the URL hash, and copy
+  // the link. Over the size guard, fall back to a file export instead.
+  async function onshare() {
+    if (!workspace || busyShare) return;
+    busyShare = true;
+    try {
+      const bytes = await encodeWorkspace(snapshotWorkspace());
+      if (bytes.length > MAX_HASH_BYTES) {
+        notify("info", "Workspace too large to share by link", "Exported it as a file instead.");
+        await onexport();
+        return;
+      }
+      const payload = bytesToBase64Url(bytes);
+      const url = `${location.origin}${location.pathname}#w=${payload}`;
+      // `window.` qualified: the component's nav `history` $state array shadows
+      // the global `history`.
+      window.history.replaceState(null, "", `#w=${payload}`);
+      try {
+        await navigator.clipboard.writeText(url);
+        flash("Share link copied to clipboard");
+      } catch {
+        flash("Share link is in the address bar");
+      }
+    } catch (e) {
+      notify("error", "Could not create share link", String(e?.message ?? e));
+    } finally {
+      busyShare = false;
+    }
+  }
+
+  // Export: download the gzipped workspace as `<name>.pdsx`.
+  async function onexport() {
+    if (!workspace) return;
+    try {
+      const bytes = await encodeWorkspace(snapshotWorkspace());
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${workspace.name || "workspace"}.pdsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      flash(`Exported ${a.download}`);
+    } catch (e) {
+      notify("error", "Could not export workspace", String(e?.message ?? e));
+    }
+  }
+
+  // Import: pick a `.pdsx`, decode it, and mount in-memory (session-only).
+  function onimport() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdsx,application/octet-stream";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        mountDecoded(await decodeWorkspace(bytes));
+        flash(`Imported ${file.name}`);
+      } catch (e) {
+        notify("error", "Could not import workspace", String(e?.message ?? e));
+      }
+    };
+    input.click();
+  }
+
+  // Restore a workspace from a `#w=<payload>` share link on first load. Cleared
+  // from the URL after mounting so a refresh doesn't re-trigger it.
+  async function restoreFromHash() {
+    const m = location.hash.match(/[#&]w=([^&]+)/);
+    if (!m) return false;
+    try {
+      const bytes = base64UrlToBytes(m[1]);
+      mountDecoded(await decodeWorkspace(bytes));
+      window.history.replaceState(null, "", location.pathname + location.search);
+      flash("Restored shared workspace");
+      return true;
+    } catch (e) {
+      notify("error", "Could not open shared link", String(e?.message ?? e));
+      window.history.replaceState(null, "", location.pathname + location.search);
+      return false;
+    }
+  }
+
 </script>
 
 <svelte:head><title>PseudoScript Web IDE</title></svelte:head>
 
-<svelte:window onkeydown={(e) => {
-  if (e.key === "Escape") {
-    if (buildNotice) buildNotice = false;
-    if (projectOpen && workspace) projectOpen = false;
-    canvasInfo = null;
-    canvasUsages = null;
-  }
-}} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape") {
+      if (buildNotice) buildNotice = false;
+      if (projectOpen && workspace) projectOpen = false;
+      canvasInfo = null;
+      canvasUsages = null;
+    }
+    // Cmd/Ctrl-S saves the active file even when the editor isn't focused (e.g.
+    // on the canvas or problems view). The editor's own keymap handles the
+    // focused case; this prevents the browser's "save page" dialog regardless.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      saveActiveFile();
+    }
+  }}
+  onbeforeunload={(e) => {
+    // Warn before closing with unsaved work that can be persisted, or with a
+    // write still in flight. Samples are session-only and never trigger this.
+    if (canPersist && (dirtyCount > 0 || pendingWrite)) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  }}
+/>
+
+{#if dialog}
+  <PromptDialog
+    title={dialog.title}
+    label={dialog.label}
+    placeholder={dialog.placeholder}
+    value={dialog.value}
+    confirmLabel={dialog.confirmLabel}
+    hint={dialog.hint}
+    validate={dialog.validate}
+    onconfirm={(v) => {
+      const run = dialog.run;
+      dialog = null;
+      run?.(v);
+    }}
+    oncancel={() => (dialog = null)}
+  />
+{/if}
+
+{#if confirmDialog}
+  <div
+    class="confirm-backdrop"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) confirmDialog = null;
+    }}
+  >
+    <div class="confirm" role="alertdialog" aria-modal="true" aria-label={confirmDialog.title}>
+      <h2>{confirmDialog.title}</h2>
+      <p>{confirmDialog.message}</p>
+      <div class="confirm-actions">
+        <button class="ghost" type="button" onclick={() => (confirmDialog = null)}>Cancel</button>
+        <button
+          class="danger"
+          type="button"
+          onclick={() => {
+            const run = confirmDialog.run;
+            confirmDialog = null;
+            run?.();
+          }}
+        >
+          {confirmDialog.confirmLabel ?? "Delete"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <Notifications {notes} ondismiss={dismissNote} />
 
@@ -761,6 +1576,8 @@
     onpicksample={openSample}
     onpickrecent={openRecent}
     onopenfolder={openFolder}
+    onnewproject={newProject}
+    onimport={onimport}
     onforget={forgetRecent}
     onclose={() => (projectOpen = false)}
   />
@@ -894,9 +1711,15 @@
     {errorCount}
     workspaceName={workspace?.name ?? null}
     {building}
+    {dirtyCount}
+    {canPersist}
+    {saveState}
     {onformat}
     onproject={() => (projectOpen = true)}
     {onbuilddocs}
+    {onshare}
+    {onexport}
+    {onimport}
     onopensettings={() => (settingsOpen = true)}
   />
 
@@ -918,8 +1741,17 @@
           {symbols}
           selectedFqn={selected?.fqn ?? null}
           {errorPaths}
+          {dirtyPaths}
+          manifestPath={workspace?.manifest?.path ?? null}
+          base={workspace?.base ?? ""}
+          onmanifestopen={openManifest}
           onopen={selectFile}
           onpicknode={(fqn) => selectNode(fqn, { goto: true })}
+          oncreatefile={startNewFile}
+          oncreatedoc={startNewDoc}
+          onrenamefile={startRenameFile}
+          onmovefile={moveFile}
+          ondeletefile={requestDeleteFile}
         />
       </section>
 
@@ -936,20 +1768,33 @@
           </div>
         </header>
         <div class="content-body">
-          <div class="layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
+          <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
+            {#if openFile?.isManifest && manifestError}
+              <div class="manifest-error" role="status">
+                <span class="me-kicker">manifest error</span>
+                <span class="me-msg">{manifestError}</span>
+              </div>
+            {/if}
+            {#if openFile?.isManifest && manifestHasDeps}
+              <div class="manifest-note" role="note">
+                <code>[dependencies]</code> are resolved by <code>pds install</code> (CLI) — editing them here won't fetch or update them.
+              </div>
+            {/if}
             <Editor
               value={source}
               onchange={onEditorChange}
               onready={(api) => (editorApi = api)}
               modules={allModules}
               moduleFqn={openFile?.fqn ?? ""}
-              plain={openFile?.isDoc ?? false}
+              plain={(openFile?.isDoc || openFile?.isManifest) ?? false}
               markdown={openFile?.isDoc ?? false}
+              {previewOpts}
               {symbols}
               onopensymbol={revealSymbol}
               ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
               onnavigate={openUsage}
               {onformat}
+              onsave={saveActiveFile}
               onopensettings={() => (settingsOpen = true)}
             />
           </div>
@@ -978,7 +1823,10 @@
     <span class="seg accent">pds</span>
     <span class="seg">wasm{ver ? ` ${ver}` : ""}</span>
     {#if workspace}
-      <span class="seg">{openFile?.fqn ?? "—"}</span>
+      <span class="seg file" class:dirty={openFile && dirty.has(keyOf(openFile))}>
+        {#if openFile && dirty.has(keyOf(openFile))}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
+        {openFile?.fqn ?? openFile?.title ?? "—"}
+      </span>
       <span class="seg dim">{workspace.files.length} modules</span>
     {/if}
     <span class="grow"></span>
@@ -989,6 +1837,61 @@
 </div>
 
 <style>
+  /* destructive-action confirm modal (file delete) */
+  .confirm-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--bg, #000) 62%, transparent);
+    backdrop-filter: blur(2px);
+  }
+  .confirm {
+    width: min(26rem, calc(100vw - 2rem));
+    background: var(--surface, #fff);
+    border: 1px solid var(--line);
+    border-radius: var(--radius, 10px);
+    padding: 1.1rem 1.2rem 1.2rem;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+  }
+  .confirm h2 {
+    margin: 0 0 0.5rem;
+    font-size: 0.95rem;
+    color: var(--ink);
+  }
+  .confirm p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+  }
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 1.1rem;
+  }
+  .confirm-actions button {
+    padding: 0.45rem 0.85rem;
+    font-size: 0.8rem;
+    border-radius: var(--radius-sm, 6px);
+    cursor: pointer;
+    border: 1px solid var(--line);
+  }
+  .confirm-actions .ghost {
+    background: transparent;
+    color: var(--ink-soft);
+  }
+  .confirm-actions .ghost:hover {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  .confirm-actions .danger {
+    background: var(--err);
+    border-color: var(--err);
+    color: #fff;
+  }
+
   .app {
     display: grid;
     grid-template-rows: var(--topbar-h) 1fr var(--status-h);
@@ -1059,6 +1962,43 @@
     min-height: 0;
   }
   .layer.hidden { display: none; }
+  /* the code layer stacks any manifest banners above the editor, which flexes
+     to fill the rest. */
+  .code-layer { display: flex; flex-direction: column; }
+  .code-layer :global(.editor) { flex: 1; min-height: 0; }
+
+  .manifest-error,
+  .manifest-note {
+    flex: none;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    border-bottom: 1px solid var(--line);
+  }
+  .manifest-error {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    background: color-mix(in srgb, var(--err) 12%, transparent);
+    color: var(--ink);
+  }
+  .manifest-error .me-kicker {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--err);
+  }
+  .manifest-error .me-msg { font-family: var(--font-mono); font-size: 0.74rem; color: var(--ink-soft); }
+  .manifest-note { background: var(--surface-2); color: var(--ink-soft); }
+  .manifest-note code {
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    color: var(--ink);
+    background: var(--surface-3);
+    padding: 0.05rem 0.3rem;
+    border-radius: var(--radius-sm);
+  }
   .canvas-layer {
     background:
       radial-gradient(900px 520px at 60% -10%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
@@ -1251,7 +2191,7 @@
     background: var(--surface);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-lg);
     padding: 1.3rem 1.4rem;
     animation: rise 0.22s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   }
@@ -1379,6 +2319,16 @@
   .statusbar .seg.toast { color: var(--accent); }
   .statusbar .grow { flex: 1; }
 
+  /* active-file segment: an unsaved dot when the open file differs from disk */
+  .statusbar .seg.file { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .statusbar .seg.file.dirty { color: var(--warn); }
+  .statusbar .unsaved-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warn);
+  }
+
   /* canvas hover/usages popovers, anchored at the pointer */
   .canvas-backdrop {
     position: fixed;
@@ -1397,7 +2347,7 @@
     background: var(--surface-2);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7);
+    box-shadow: var(--shadow-md);
     pointer-events: auto;
   }
   .canvas-pop.info { display: flex; flex-direction: column; gap: 0.15rem; pointer-events: none; }

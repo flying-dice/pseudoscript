@@ -1,0 +1,30 @@
+# Root of the ACME Pay PseudoScript project. `pds doc` documents every `.pds`
+# file under this directory; module FQNs derive from each file's path
+# (LANG.md §8.1, ADR-017). One module per bounded context.
+[doc]
+name  = "ACME Pay — Card Payments Platform Architecture"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "light"
+
+[[doc.sidebar]]
+title = "ACME Pay"
+items = [
+  { title = "Overview", path = "docs/overview.md" },
+  { title = "Bounded Contexts", path = "docs/contexts.md" },
+]
+
+[[doc.sidebar]]
+title = "Deep Dives"
+items = [
+  { title = "The PaymentIntent Lifecycle", path = "docs/payment-intent.md" },
+  { title = "Money Movement & Idempotency", path = "docs/money-movement.md" },
+  { title = "Balance, Payouts & Disputes", path = "docs/balance-payouts.md" },
+]
+
+[[doc.sidebar]]
+title = "Review"
+items = [
+  { title = "Edge Cases & Resilience", path = "docs/edge-cases.md" },
+  { title = "Design Notes", path = "docs/design-notes.md" },
+]

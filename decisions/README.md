@@ -151,3 +151,9 @@ Read in full for the resolution model, the side-by-side identity rule, and the r
 `pds doc` has one renderer: a Svelte presentation, prebuilt and embedded, server-rendered through an embedded `QuickJS` engine (a wasm host supplies its own). Diagrams ship as `Scene` geometry and hydrate into interactive client islands. The Rust HTML renderer, the `--static` flag, and the `[doc].renderer` key are removed. Amends ADR-017; the `Scene` IR stays the conformance surface.
 
 Read in full for the SSR seam, the embedded-bundle stance, and the rejected two-renderer / server-SVG / JS-toolchain alternatives.
+
+## [026 — Local path dependencies](026-local-path-dependencies.md)
+
+A `[dependencies]` entry with `path` and no `git` is a local sibling workspace, resolved relative to `pds.toml`. `path` is overloaded — repo subdir under a git source, local dir without. A local dependency is read live, not version-pinned, and has no `pds.lock` entry; it MUST NOT be a git dependency's resolved source. Extends ADR-024.
+
+Read in full for the source-selection rule, the no-lock rationale, and the rejected distinct-key / lock-local alternatives.

@@ -1,7 +1,0 @@
-{
-  "name": "Event Sourcing",
-  "category": "Data",
-  "order": 51,
-  "landing": "event_sourcing",
-  "description": "Tallyho (shared expenses) — the balance is the fold of an append-only event log."
-}

@@ -596,7 +596,7 @@ const livePreviewTheme = EditorView.baseTheme({
  * The Markdown live-preview bundle: GFM-aware parsing, the in-place render
  * decorations, and their theme. Drop into a CodeMirror editor's extensions.
  */
-export function markdownLivePreview() {
+export function markdownLivePreview(opts = {}) {
   return [
     // `codeLanguages` nests real language parsers into fenced blocks; `languages`
     // lazy-loads each on first use, so the initial bundle stays small.

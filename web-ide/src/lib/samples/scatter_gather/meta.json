@@ -1,7 +1,0 @@
-{
-  "name": "Scatter-Gather",
-  "category": "Coordination",
-  "order": 71,
-  "landing": "scatter_gather",
-  "description": "QuoteMesh (insurance) — fan a quote to many insurers and aggregate the best offer."
-}

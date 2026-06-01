@@ -5,6 +5,7 @@
   import { Compartment, EditorSelection, EditorState, StateEffect, StateField } from "@codemirror/state";
   import { codeFolding, foldEffect, foldGutter, foldKeymap, foldService, unfoldEffect } from "@codemirror/language";
   import { lintGutter } from "@codemirror/lint";
+  import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import {
     Decoration,
     EditorView,
@@ -33,6 +34,7 @@
     ongotodefinition,
     onnavigate,
     onformat,
+    onsave,
     onopensettings,
     // Plain-text mode: drop the PseudoScript language, completion, and linter so
     // a non-`.pds` file opens without false squiggles.
@@ -40,6 +42,9 @@
     // Markdown mode: render the document live (Obsidian-style) instead of the
     // PseudoScript language. Implies plain (no PseudoScript features).
     markdown = false,
+    // Markdown preview options: `{ resolveAsset(rel)->Promise<Blob|null>,
+    // resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
+    previewOpts = {},
   } = $props();
 
   let host;
@@ -290,7 +295,7 @@
         border: "1px solid var(--line-strong)",
         borderRadius: "var(--radius-sm)",
         background: "var(--surface)",
-        boxShadow: "0 18px 40px rgba(0, 0, 0, 0.45)",
+        boxShadow: "var(--shadow-md)",
         overflow: "hidden",
       },
       // Two-class selector to match (and outrank, by injection order)
@@ -527,6 +532,8 @@
     toggleComment,
     duplicateLine: copyLineDown,
     formatDocument: () => (onformat?.(), true),
+    saveDocument: () => (onsave?.(), true),
+    openSearch: openSearchPanel,
     goToDefinition: (v) => gotoDefinition(v, v.state.selection.main.head),
     findUsages: (v) => findUsages(v, v.state.selection.main.head),
     openSettings: () => (onopensettings?.(), true),
@@ -540,7 +547,7 @@
   // of PseudoScript highlighting/lint while rendering it in place.
   const langCompartment = new Compartment();
   const languageBundle = () => {
-    if (markdown) return markdownLivePreview();
+    if (markdown) return markdownLivePreview(previewOpts);
     if (plain) return [];
     return [
       pseudoscript(),
@@ -558,10 +565,12 @@
     editor?.dispatch({ effects: keysCompartment.reconfigure(shortcutKeymap()) });
   });
 
-  // Swap the language bundle when the file type flips (file switch).
+  // Swap the language bundle when the file type flips (file switch) or the
+  // markdown preview options change (a different doc resolves assets/links).
   $effect(() => {
     markdown;
     plain;
+    previewOpts;
     editor?.dispatch({ effects: langCompartment.reconfigure(languageBundle()) });
   });
 
@@ -584,8 +593,11 @@
             ...defaultKeymap,
             ...historyKeymap,
             ...foldKeymap,
+            ...searchKeymap,
             indentWithTab,
           ]),
+          // The find/replace panel, docked at the top of the editor.
+          search({ top: true }),
           langCompartment.of(languageBundle()),
           codeFolding(),
           foldGutter(),
@@ -712,7 +724,7 @@
     background: var(--surface-2);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.85);
+    box-shadow: var(--shadow-md);
   }
   .um-head {
     position: sticky;

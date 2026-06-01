@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <!-- Nested C4 boundaries: an outer system, an inner container, a core component.
+       Uses currentColor so it adapts to the toolbar ink; the core takes the accent
+       via its own fill. -->
+  <rect x="2.5" y="2.5" width="19" height="19" rx="4" stroke="currentColor" stroke-width="1.4" opacity="0.45"/>
+  <rect x="6.5" y="6.5" width="11" height="11" rx="2.6" stroke="currentColor" stroke-width="1.5"/>
+  <circle cx="12" cy="12" r="2.3" fill="var(--accent, #ff5a36)"/>
+</svg>

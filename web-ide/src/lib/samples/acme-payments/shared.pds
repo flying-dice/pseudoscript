@@ -1,0 +1,31 @@
+//! shared — value objects used across every context (a shared kernel).
+
+/// Money in minor units (e.g. cents) with an ISO currency code.
+public data Money { currency: string, minor: number }
+
+/// A merchant account's stable identifier.
+public data MerchantId { value: string }
+
+/// A customer's stable identifier (the merchant's end buyer).
+public data CustomerId { value: string }
+
+/// A PaymentIntent's stable identifier.
+public data PaymentIntentId { value: string }
+
+/// A charge's stable identifier (one authorise/capture against the network).
+public data ChargeId { value: string }
+
+/// A refund's stable identifier.
+public data RefundId { value: string }
+
+/// A payout's stable identifier (money moving out to a merchant's bank).
+public data PayoutId { value: string }
+
+/// A dispute's (chargeback's) stable identifier.
+public data DisputeId { value: string }
+
+/// A tokenised payment instrument's stable identifier (never a card number).
+public data PaymentMethodId { value: string }
+
+/// A balance-transaction's stable identifier (one immutable ledger entry).
+public data BalanceTxnId { value: string }
