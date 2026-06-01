@@ -5,7 +5,7 @@
 <section id="converge" data-screen-label="Convergence">
   <div class="wrap">
     <div class="converge-head">
-      <div class="eyebrow-row reveal" style="justify-content:center"><span class="lbl accent">Pseudo programming</span></div>
+      <div class="eyebrow-row reveal" style="justify-content:center"><span class="lbl accent">One toolchain</span></div>
       <h2 class="statement reveal d1">Four disciplines, <span class="hot">one practice.</span></h2>
       <p class="lede reveal d2">Spec-driven development, agentic coding, refinement, and design were separate steps. PseudoScript collapses them into a single source you write — and everything downstream regenerates.</p>
     </div>
@@ -20,7 +20,7 @@
         <div class="core-mark" id="core-mark">
           <span class="pulse-ring"></span>
           <Mark strokeWidth={1.2} />
-          <span class="core-word">PseudoScript</span>
+          <span class="core-word">Pseudo programming</span>
         </div>
       </div>
 
