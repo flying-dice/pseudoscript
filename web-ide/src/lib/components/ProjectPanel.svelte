@@ -71,10 +71,34 @@
     <p class="lede">Architecture as code. Resume where you left off, explore a worked example, or open a folder of <code>.pds</code> modules.</p>
 
     <div class="grid">
-      <div class="col recent">
+      <div class="col start">
+        <h2 class="kicker">Start</h2>
+        <ul class="rows">
+          <li>
+            <button class="row action" data-testid="open-folder" onclick={() => onopenfolder?.()} disabled={!canOpenFolder}>
+              <span class="glyph folder" aria-hidden="true">▢</span>
+              <span class="meta">
+                <span class="name">Open a folder</span>
+                <span class="sub">a directory of <code>.pds</code> modules</span>
+              </span>
+              <span class="chev" aria-hidden="true">→</span>
+            </button>
+          </li>
+          <li>
+            <button class="row action" data-testid="import-workspace" onclick={() => onimport?.()}>
+              <span class="glyph import" aria-hidden="true">↧</span>
+              <span class="meta">
+                <span class="name">Import a workspace</span>
+                <span class="sub">a shared <code>.pdsx</code> file</span>
+              </span>
+              <span class="chev" aria-hidden="true">→</span>
+            </button>
+          </li>
+        </ul>
+
         <h2 class="kicker">Recent</h2>
         {#if recents.length}
-          <ul class="recents">
+          <ul class="rows recents">
             {#each recents as r (r.key)}
               <li>
                 <button class="row" onclick={() => onpickrecent?.(r)}>
@@ -89,19 +113,11 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty">No recent projects yet. Open an example to get started.</p>
+          <p class="empty">No recent projects yet — open an example to begin.</p>
         {/if}
 
-        <button class="folder" onclick={() => onopenfolder?.()} disabled={!canOpenFolder}>
-          <span class="ico" aria-hidden="true">▢</span>
-          Open a folder…
-        </button>
-        <button class="folder" onclick={() => onimport?.()}>
-          <span class="ico" aria-hidden="true">↧</span>
-          Import a workspace…
-        </button>
         {#if !canOpenFolder}
-          <p class="note">Local folders need a Chromium browser (File System Access API). Examples work everywhere. Import a <code>.pdsx</code> file anywhere.</p>
+          <p class="note">Local folders need a Chromium browser (File System Access API). Examples and import work everywhere.</p>
         {/if}
       </div>
 
@@ -241,7 +257,8 @@
   }
   .kicker::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
-  .col.recent { animation: rise 0.4s 0.14s both; display: flex; flex-direction: column; }
+  .col.start { animation: rise 0.4s 0.14s both; display: flex; flex-direction: column; }
+  .col.start .kicker:not(:first-child) { margin-top: 1.4rem; }
   /* the catalogue can run long (the patterns handbook), so it scrolls inside the
      dossier while the header and recent column stay put. */
   .col.examples {
@@ -263,8 +280,9 @@
   }
   .group:first-of-type { margin-top: 0; }
 
-  .recents { list-style: none; margin: 0 0 1rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
-  .recents li { position: relative; display: flex; align-items: stretch; }
+  /* one row language for both Start actions and Recent entries */
+  .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+  .rows li { position: relative; display: flex; align-items: stretch; }
   .row {
     flex: 1;
     display: flex; align-items: center; gap: 0.7rem;
@@ -274,7 +292,16 @@
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
   }
-  .row:hover { background: var(--surface-2); border-color: var(--line-strong); }
+  .row:hover:not(:disabled) { background: var(--surface-2); border-color: var(--line-strong); }
+  .row.action { background: var(--surface-2); border-color: var(--line); }
+  .row.action:hover:not(:disabled) { border-color: var(--accent); }
+  .row.action:disabled { opacity: 0.45; cursor: not-allowed; }
+  .row .chev {
+    margin-left: auto; flex: none; color: var(--accent);
+    font-family: var(--font-mono); opacity: 0; transform: translateX(-3px);
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  .row.action:hover:not(:disabled) .chev { opacity: 1; transform: none; }
   .glyph {
     flex: none; width: 1.9rem; height: 1.9rem; display: grid; place-items: center;
     font-family: var(--font-mono); font-size: 0.9rem;
@@ -283,9 +310,12 @@
   }
   .glyph.sample { color: var(--accent); }
   .glyph.folder { color: var(--k-container); }
+  .glyph.import { color: var(--k-person); }
   .meta { display: flex; flex-direction: column; min-width: 0; }
   .meta .name { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .meta .sub { font-family: var(--font-mono); font-size: 0.66rem; color: var(--ink-faint); }
+  .meta .sub code { font-size: 0.95em; color: var(--ink-soft); }
+  .recents { margin-top: 0; }
   .forget {
     position: absolute; right: 0.35rem; top: 50%; transform: translateY(-50%);
     width: 1.5rem; height: 1.5rem; display: grid; place-items: center;
@@ -295,19 +325,8 @@
   .recents li:hover .forget { opacity: 1; }
   .forget:hover { color: var(--err); border-color: var(--err); }
 
-  .empty { margin: 0 0 1rem; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.5; }
-
-  .folder {
-    margin-top: auto;
-    display: inline-flex; align-items: center; gap: 0.5rem; align-self: flex-start;
-    color: var(--ink-soft); background: var(--surface-2);
-    border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
-    padding: 0.55rem 0.95rem; font-family: var(--font-mono); font-size: 0.8rem;
-  }
-  .folder .ico { color: var(--accent); }
-  .folder:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
-  .folder:disabled { opacity: 0.45; cursor: not-allowed; }
-  .note { margin: 0.55rem 0 0; font-size: 0.72rem; color: var(--ink-faint); line-height: 1.45; }
+  .empty { margin: 0.2rem 0 0; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.5; }
+  .note { margin: 1.1rem 0 0; font-size: 0.72rem; color: var(--ink-faint); line-height: 1.45; }
 
   .cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.7rem; }
   .card {
