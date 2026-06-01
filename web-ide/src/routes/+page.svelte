@@ -3,7 +3,7 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outline, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
+  import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, initWasm, layoutScene, outlineModules, references, renderDocSite, symbolScene, version } from "$lib/pds.js";
   import type { Module, Occurrence, Scene as PdsScene } from "$lib/pds.js";
   import { charToByte } from "$lib/offsets.js";
   import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
@@ -414,18 +414,20 @@
     }
   });
   // The C4 nodes each file declares, keyed by file FQN, so the workspace tree can
-  // nest a module's structure beneath it. Per-file (not the workspace outline) so
-  // each module shows only what it contributes.
+  // nest a module's structure beneath it. Derived from the *workspace* outline so
+  // node FQNs use the file's path-derived module name — the same scheme `hover`,
+  // `definition`, and `references` resolve against. (Single-file `outline` keys
+  // nodes by the `//!` header instead, which diverges from the path FQN and made
+  // go-to-definition miss `nodeIndex`.) Each node is grouped to its file by the
+  // longest module FQN that prefixes it.
   const structureByFile = $derived.by<Record<string, StructureNode[]>>(() => {
     const by: Record<string, StructureNode[]> = {};
     if (!ready || !workspace) return by;
-    for (const f of workspace.files) {
-      const fqn = f.fqn ?? "";
-      try {
-        by[fqn] = outline(moduleSources[fqn] ?? "") as unknown as StructureNode[];
-      } catch {
-        by[fqn] = [];
-      }
+    for (const f of workspace.files) if (f.fqn) by[f.fqn] = [];
+    const moduleFqns = allModules.map((m) => m.fqn).sort((a, b) => b.length - a.length);
+    for (const n of nodes) {
+      const fileFqn = moduleFqns.find((mf) => n.fqn === mf || n.fqn.startsWith(`${mf}::`)) ?? "";
+      (by[fileFqn] ??= []).push(n);
     }
     return by;
   });
@@ -930,12 +932,17 @@
   function pdsSkeleton(fqn: string): string {
     const leaf = fqn.split("::").pop() ?? "";
     const title = leaf.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    return `# ${title} — describe this module's architecture here.
-system ${pascalName(leaf)} {
-  container Api {
-    fn health() {
-      # describe what happens here
-    }
+    const sys = pascalName(leaf);
+    return `//! ${leaf}
+
+/// The ${title} system — describe this module's architecture here.
+public system ${sys};
+
+/// A first container. Add components, data, and callables beneath it.
+public container Api for ${sys} {
+  /// A first behaviour. Replace with your own flows.
+  public Health(): void {
+    // Describe what happens here.
   }
 }
 `;

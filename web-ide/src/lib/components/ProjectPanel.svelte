@@ -58,8 +58,6 @@
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) close(); }}>
   <section class="dossier" role="dialog" aria-modal="true" aria-label="Open a project">
-    <span class="tick tl"></span><span class="tick tr"></span><span class="tick bl"></span><span class="tick br"></span>
-
     <header class="head">
       <div class="brand">
         <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">

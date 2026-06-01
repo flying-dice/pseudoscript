@@ -1093,6 +1093,20 @@ mod tests {
     }
 
     #[test]
+    fn definition_qualifies_by_the_workspace_module_fqn_not_the_header() {
+        // `definition` qualifies a target by the module's *path* FQN (the
+        // `module_fqn` the IDE passes), not the `//!` header — even when they
+        // differ. The IDE keys its node index the same way (via `outline_modules`),
+        // so go-to-definition lands. (Regression: keying the index by single-file
+        // `outline`, which uses the header, made GOTO miss — PDS-GOTO-003.)
+        let src = "//! header-name\npublic data Thing { id: uuid }\npublic system S;\npublic container C for S {\n  run(t: Thing): void {}\n}";
+        let input = format!(r#"[{{"fqn":"realmod","source":{}}}]"#, to_json(&src));
+        let offset = (src.find("t: Thing").expect("param present") + "t: ".len()) as u32;
+        let fqn = definition_impl(&input, "realmod", offset).expect("resolves");
+        assert_eq!(fqn, r#""realmod::Thing""#, "{fqn}");
+    }
+
+    #[test]
     fn symbol_scene_errors_on_a_non_node_symbol() {
         // The outline lists `feature` blocks as selectable symbols, but a feature
         // is not a graph node — projecting one errors rather than panics. The IDE

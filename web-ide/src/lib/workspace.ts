@@ -106,14 +106,17 @@ function starterManifest(name: string): string {
 /** The starter `main.pds`: a minimal valid model that compiles clean and draws. */
 function starterModule(name: string): string {
   const title = name.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  return `# The ${title} system — your architecture starts here.
-system Platform {
-  # A first container. Add components, data, and callables beneath it.
-  container Api {
-    # A first behaviour. Replace with your own flows.
-    fn health() {
-      # describe what happens here
-    }
+  const sys = title.replace(/\s+/g, "") || "Platform";
+  return `//! main
+
+/// The ${title} system — your architecture starts here.
+public system ${sys};
+
+/// A first container. Add components, data, and callables beneath it.
+public container Api for ${sys} {
+  /// A first behaviour. Replace with your own flows.
+  public Health(): void {
+    // Describe what happens here.
   }
 }
 `;
