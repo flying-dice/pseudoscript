@@ -36,12 +36,19 @@ function walk(dir) {
 }
 
 const enc = new TextEncoder();
-const entries = walk(skillDir).map((full) => {
-  const path = `${rootName}/${relative(skillDir, full).split(/[\\/]/).join("/")}`;
-  const raw = new Uint8Array(readFileSync(full));
+const entry = (path, bytes) => {
+  const raw = new Uint8Array(bytes);
   const deflated = Bun.deflateSync(raw, { raw: true }); // Bun supplies DEFLATE
   return { name: enc.encode(path), raw, deflated, crc: crc32(raw) };
-});
+};
+
+const entries = walk(skillDir).map((full) =>
+  entry(`${rootName}/${relative(skillDir, full).split(/[\\/]/).join("/")}`, readFileSync(full)),
+);
+// SKILL.md defers every syntax question to `references/LANG.md`; ship the
+// canonical spec (the repo root LANG.md) at that path so the skill is
+// self-contained once downloaded.
+entries.push(entry(`${rootName}/references/LANG.md`, readFileSync(join(here, "../../LANG.md"))));
 
 const locals = [];
 const central = [];
