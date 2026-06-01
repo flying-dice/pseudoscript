@@ -105,8 +105,10 @@ fn comment_pass(src: &str, out: &mut Vec<SemToken>) {
     }
 }
 
-/// Whether `kind` is one of the reserved keywords (§2.3). `self`, `Ok`, `Err`,
-/// `true`, and `false` count, so the AST pass need not re-colour them.
+/// Whether `kind` is one of the reserved keywords (§2.3) — every `Kw*` token,
+/// including the `Ok`/`Err`/`Some`/`None` constructors and the `feature`/
+/// given/when/then/and/but BDD words. Colouring them all here means the AST pass
+/// need not re-colour any keyword.
 fn is_keyword(kind: TokenKind) -> bool {
     matches!(
         kind,
@@ -123,12 +125,20 @@ fn is_keyword(kind: TokenKind) -> bool {
             | TokenKind::KwReturn
             | TokenKind::KwOk
             | TokenKind::KwErr
+            | TokenKind::KwSome
+            | TokenKind::KwNone
             | TokenKind::KwIf
             | TokenKind::KwElse
             | TokenKind::KwWhile
             | TokenKind::KwIn
             | TokenKind::KwTrue
             | TokenKind::KwFalse
+            | TokenKind::KwFeature
+            | TokenKind::KwGiven
+            | TokenKind::KwWhen
+            | TokenKind::KwThen
+            | TokenKind::KwAnd
+            | TokenKind::KwBut
     )
 }
 
@@ -387,6 +397,26 @@ mod tests {
         assert_eq!(at(&tokens, src, "/* inline */").kind, SemKind::Comment);
         // the `//!` module doc still colours too
         assert_eq!(at(&tokens, src, "//! m").kind, SemKind::Comment);
+    }
+
+    #[test]
+    fn feature_and_step_keywords_are_coloured() {
+        let src = "//! m\n\npublic system S;\n\nfeature Open for S {\n  given \"a user\"\n  when \"they act\"\n  then \"it works\"\n}\n";
+        let tokens = semantic_tokens(src);
+        assert_eq!(at(&tokens, src, "feature").kind, SemKind::Keyword);
+        assert_eq!(at(&tokens, src, "given").kind, SemKind::Keyword);
+        assert_eq!(at(&tokens, src, "when").kind, SemKind::Keyword);
+        assert_eq!(at(&tokens, src, "then").kind, SemKind::Keyword);
+        // the feature name is still a declared namespace
+        assert_eq!(at(&tokens, src, "Open").kind, SemKind::Namespace);
+    }
+
+    #[test]
+    fn option_markers_are_coloured() {
+        let src = "//! m\n\nsystem S {\n  f(): void {\n    x: Option<number> = Some(1)\n    y: Option<number> = None\n  }\n}\n";
+        let tokens = semantic_tokens(src);
+        assert_eq!(at(&tokens, src, "Some").kind, SemKind::Keyword);
+        assert_eq!(at(&tokens, src, "None").kind, SemKind::Keyword);
     }
 
     #[test]
