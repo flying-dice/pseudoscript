@@ -59,12 +59,14 @@ test("folding ranges come from the compiler (blocks fold)", async ({ page }) => 
   // A fold must not swallow the lines between declarations: every fold starts
   // at its declaration header, so no rendered line jams two closing braces or
   // leaks a sibling's content (the regression when folds began at doc comments).
-  const jammed = await page.evaluate(() =>
+  // No jamming, and a folded brace sits flush against the placeholder — the
+  // closing line's indentation folds away too (no `…   }` trailing space).
+  const bad = await page.evaluate(() =>
     [...document.querySelectorAll(".cm-content .cm-line")]
       .map((l) => l.innerText)
-      .filter((t) => /…\}…\}/.test(t)).length,
+      .filter((t) => /…\}…\}/.test(t) || /…\s+\}/.test(t)).length,
   );
-  expect(jammed).toBe(0);
+  expect(bad).toBe(0);
 
   // The doc comment above a record stays visible; the record body folds to `{…}`.
   const docVisible = await page.evaluate(() =>

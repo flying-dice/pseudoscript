@@ -370,17 +370,22 @@
   // open. Fold extents come from the compiler's AST-accurate fold ranges, served
   // as standard LSP `FoldingRange`s (0-based line numbers), memoised per
   // document. Each maps to `{ open, close }` editor offsets: `open` on the header
-  // line, `close` at the start of the closing line (so the `}` stays visible).
+  // line, `close` at the closing brace itself — past the closing line's
+  // indentation, so a nested `}` folds flush against the `…` (no trailing space).
   const rangeCache = new WeakMap();
   function rangesOf(doc) {
     let r = rangeCache.get(doc);
     if (!r) {
       r = foldRanges(doc.toString())
         .filter((range) => range.endLine > range.startLine && range.endLine < doc.lines)
-        .map((range) => ({
-          open: doc.line(range.startLine + 1).from,
-          close: doc.line(range.endLine + 1).from,
-        }));
+        .map((range) => {
+          const closeLine = doc.line(range.endLine + 1);
+          const indent = closeLine.text.length - closeLine.text.trimStart().length;
+          return {
+            open: doc.line(range.startLine + 1).from,
+            close: closeLine.from + indent,
+          };
+        });
       rangeCache.set(doc, r);
     }
     return r;
