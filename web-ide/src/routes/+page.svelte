@@ -1765,10 +1765,10 @@ show('index.html');
     onpicksample={openSample}
     onpickrecent={openRecent}
     onopenfolder={openFolder}
+    onnewproject={newProject}
     onimport={onimport}
     onforget={forgetRecent}
     onclose={() => (projectOpen = false)}
-    {...({ onnewproject: newProject } as Record<string, unknown>)}
   />
 {/if}
 

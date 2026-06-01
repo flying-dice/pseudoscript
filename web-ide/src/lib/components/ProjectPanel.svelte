@@ -13,6 +13,7 @@
     onpicksample?: (id: string) => void;
     onpickrecent?: (recent: Recent) => void;
     onopenfolder?: () => void;
+    onnewproject?: (name: string) => void;
     onimport?: () => void;
     onforget?: (recent: Recent) => void;
     onclose?: () => void;
@@ -26,10 +27,29 @@
     onpicksample,
     onpickrecent,
     onopenfolder,
+    onnewproject,
     onimport,
     onforget,
     onclose,
   }: Props = $props();
+
+  // "New workspace" expands an inline name field rather than stacking a second
+  // modal over this one; submitting hands the name to `onnewproject`, which then
+  // prompts for a parent directory (a native picker, fired by this user gesture).
+  let creating = $state(false);
+  let newName = $state("");
+
+  function submitNew(e: SubmitEvent) {
+    e.preventDefault();
+    onnewproject?.(newName);
+    creating = false;
+    newName = "";
+  }
+
+  // Focus the name field the moment the form appears.
+  function autofocus(node: HTMLInputElement) {
+    node.focus();
+  }
 
   function ago(ts: number): string {
     const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -90,6 +110,32 @@
       <div class="col start">
         <h2 class="kicker">Start</h2>
         <ul class="rows">
+          <li>
+            {#if creating}
+              <form class="row action newform" onsubmit={submitNew}>
+                <span class="glyph new" aria-hidden="true">+</span>
+                <input
+                  class="newname"
+                  data-testid="new-workspace-name"
+                  bind:value={newName}
+                  placeholder="my-architecture"
+                  aria-label="New workspace name"
+                  use:autofocus
+                  onkeydown={(e) => { if (e.key === "Escape") creating = false; }}
+                />
+                <button class="mk" type="submit" data-testid="new-workspace-create">Create</button>
+              </form>
+            {:else}
+              <button class="row action" data-testid="new-workspace" onclick={() => (creating = true)} disabled={!canOpenFolder}>
+                <span class="glyph new" aria-hidden="true">+</span>
+                <span class="meta">
+                  <span class="name">New workspace</span>
+                  <span class="sub">scaffold a fresh project on disk</span>
+                </span>
+                <span class="chev" aria-hidden="true">→</span>
+              </button>
+            {/if}
+          </li>
           <li>
             <button class="row action" data-testid="open-folder" onclick={() => onopenfolder?.()} disabled={!canOpenFolder}>
               <span class="glyph folder" aria-hidden="true">▢</span>
@@ -327,6 +373,29 @@
   .glyph.sample { color: var(--accent); }
   .glyph.folder { color: var(--k-container); }
   .glyph.import { color: var(--k-person); }
+  .glyph.new { color: var(--accent); font-weight: 700; }
+
+  /* the inline new-workspace form reuses the action-row frame */
+  .newform { gap: 0.55rem; }
+  .newname {
+    flex: 1; min-width: 0;
+    padding: 0.3rem 0.5rem;
+    font-family: var(--font-mono); font-size: 0.86rem;
+    color: var(--ink);
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+  }
+  .newname:focus { outline: none; border-color: var(--accent); }
+  .mk {
+    flex: none;
+    padding: 0.34rem 0.7rem;
+    font-family: var(--font-mono); font-size: 0.7rem; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent-ink); background: var(--accent);
+    border: 1px solid var(--accent); border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .mk:hover { filter: brightness(1.08); }
   .meta { display: flex; flex-direction: column; min-width: 0; }
   .meta .name { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .meta .sub { font-family: var(--font-mono); font-size: 0.66rem; color: var(--ink-faint); }
