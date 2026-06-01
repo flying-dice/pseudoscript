@@ -3,7 +3,7 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { checkModules, docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renderDocSite, symbolScene } from "$lib/pds.js";
+  import { docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renderDocSite, symbolScene } from "$lib/pds.js";
   import type { Module, Occurrence } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
@@ -16,7 +16,6 @@
   import type { MountableWorkspace } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
   import * as nav from "$lib/core/navigation.js";
-  import { computeDiagnostics } from "$lib/core/diagnostics.js";
   import * as ops from "$lib/core/workspace-ops.js";
   import { keyOf, computeDirty, dirtyPaths as dirtyPathsOf, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
   import * as share from "$lib/core/share.js";
@@ -28,6 +27,8 @@
   import { navigation } from "$lib/stores/navigation.svelte.js";
   import { wsStore } from "$lib/stores/workspace.svelte.js";
   import { selection } from "$lib/stores/selection.svelte.js";
+  import { saveStore } from "$lib/stores/save.svelte.js";
+  import { diagnostics } from "$lib/stores/diagnostics.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
@@ -145,10 +146,10 @@
   // same way as the live buffers (FQN for modules, path for docs). A file is
   // "dirty" when its live buffer differs from this baseline. Bundled samples have
   // no handle and never enter this map — they're session-only, not dirty.
-  let persisted = $state<Record<string, string>>({});
-  // The save lifecycle of the active file, for the status cue: idle | saving |
-  // saved | error. `saved` shows briefly after a successful write.
-  let saveState = $state<"idle" | "saving" | "saved" | "error">("idle");
+  // Persisted baseline + save cue are owned by the save store; read via aliases,
+  // written via `saveStore.X = …`. The debounce/FS methods stay in the view.
+  const persisted = $derived(saveStore.persisted);
+  const saveState = $derived(saveStore.saveState);
   let saveStateTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Whether the workspace can persist to disk at all (a real opened folder, not a
@@ -251,21 +252,12 @@
           : "",
   );
 
-  // Every module as {fqn, source} — diagrams and the target list span the whole
-  // workspace (cross-module containers/components/edges), not just the open file.
-  const allModules = $derived<Module[]>(
-    workspace ? workspace.files.map((f) => ({ fqn: f.fqn ?? "", source: moduleSources[f.fqn ?? ""] ?? "" })) : [],
-  );
-
-  // Static-check the whole workspace; the view reads its problems/errors/paths.
-  const diag = $derived.by(() =>
-    ready && workspace
-      ? computeDiagnostics(allModules, workspace.files, checkModules)
-      : { results: null, problems: [], errorCount: 0, errorPaths: new Set<string>() },
-  );
-  const problems = $derived(diag.problems);
-  const errorCount = $derived(diag.errorCount);
-  const errorPaths = $derived(diag.errorPaths);
+  // Every module as {fqn, source}, and the workspace diagnostics — both owned by
+  // their stores; the view reads them through these aliases.
+  const allModules = $derived(wsStore.allModules);
+  const problems = $derived(diagnostics.problems);
+  const errorCount = $derived(diagnostics.errorCount);
+  const errorPaths = $derived(diagnostics.errorPaths);
 
   const nodes = $derived.by<StructureNode[]>(() => {
     if (!ready || !workspace) return [];
@@ -512,7 +504,7 @@
     wsStore.docMeta = {};
     // Reset the dirty/save state for the new workspace; module baselines are
     // seeded by the opener (folder/recent) before mount, doc baselines on load.
-    saveState = "idle";
+    saveStore.saveState = "idle";
     clearTimeout(saveStateTimer);
     // Seed the editable manifest buffer; folder manifests also get an on-disk
     // baseline so the manifest row only shows dirty after a real edit.
@@ -614,7 +606,7 @@
       if (workspace?.root) base[fqn] = text; // folder-backed → on-disk baseline (clean)
     }
     wsStore.moduleSources = sources;
-    persisted = base;
+    saveStore.persisted = base;
     wsStore.workspace = { ...workspace!, files };
   }
 
@@ -888,15 +880,15 @@
 
   // Briefly show a "saved" cue after a successful write, then settle to idle.
   function markSaved() {
-    saveState = "saved";
+    saveStore.saveState = "saved";
     clearTimeout(saveStateTimer);
-    saveStateTimer = setTimeout(() => (saveState = "idle"), 1600);
+    saveStateTimer = setTimeout(() => (saveStore.saveState = "idle"), 1600);
   }
 
   // Seed the persisted baseline for a batch of files read from disk, so they
   // start clean. `entries` is `[{ key, text }]`.
   function seedBaseline(entries: { key: string; text: string }[]) {
-    persisted = advanceBaseline(persisted, entries);
+    saveStore.persisted = advanceBaseline(persisted, entries);
   }
 
   // Write one buffer to disk and, on success, advance its baseline so it's no
@@ -904,15 +896,15 @@
   // samples). Failure keeps the baseline stale (still dirty) and surfaces it.
   async function persistFile(handle: FileSystemFileHandle | null | undefined, key: string, text: string) {
     if (!handle) return; // in-memory sample: session-only, no baseline to advance
-    saveState = "saving";
+    saveStore.saveState = "saving";
     try {
       await writeFile(handle, text);
-      persisted = { ...persisted, [key]: text };
+      saveStore.persisted = { ...persisted, [key]: text };
       markSaved();
       // A saved manifest re-resolves the doc nav / name / theme.
       if (key === manifestKey) resolveManifest(text);
     } catch (e) {
-      saveState = "error";
+      saveStore.saveState = "error";
       notify("error", "Could not save to disk", String((e as Error)?.message ?? e));
       throw e;
     }
@@ -963,7 +955,7 @@
       wsStore.manifestSource = disk;
       resolveManifest(disk);
     }
-    persisted = { ...persisted, [key]: disk };
+    saveStore.persisted = { ...persisted, [key]: disk };
   }
 
   // Toast notifications — owned by the notifications store; thin view wrappers.
@@ -1103,7 +1095,7 @@
     const sources: Record<string, string> = {};
     for (const file of ws.files) if (file.handle) sources[file.fqn ?? ""] = await readFile(file.handle);
     wsStore.moduleSources = sources;
-    persisted = { ...sources };
+    saveStore.persisted = { ...sources };
     await mountWorkspace(ws, landing ?? ws.files[0]?.fqn);
     if (ws.root) {
       await recordFolder(ws.name, ws.root);
@@ -1300,7 +1292,7 @@ show('index.html');
   // session-only until "Save to folder" — exactly the sample-load path.
   function mountDecoded({ workspace: ws, landing }: MountInput) {
     wsStore.moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
-    persisted = {}; // imported/shared: no on-disk baseline, session-only
+    saveStore.persisted = {}; // imported/shared: no on-disk baseline, session-only
     mountWorkspace(ws, landing);
   }
 

@@ -5,7 +5,7 @@
 // the impure mutations (FS IO, mount); this store is just the owned state. Named
 // `wsStore` so it doesn't clash with the many `const ws = …` locals in the view.
 
-import type { LiveDocGroup, OpenFile, WorkspaceModel } from "$lib/core/types.js";
+import type { LiveDocGroup, Module, OpenFile, WorkspaceModel } from "$lib/core/types.js";
 
 class WorkspaceStore {
   // The live workspace: a real on-disk workspace or an in-memory sample/share.
@@ -25,6 +25,14 @@ class WorkspaceStore {
   manifestSource = $state("");
   // The last manifest parse error, shown inline when the manifest is open.
   manifestError = $state<string | null>(null);
+
+  // Every module as {fqn, source} — diagrams and diagnostics span the whole
+  // workspace (cross-module edges), not just the open file.
+  get allModules(): Module[] {
+    return this.workspace
+      ? this.workspace.files.map((f) => ({ fqn: f.fqn ?? "", source: this.moduleSources[f.fqn ?? ""] ?? "" }))
+      : [];
+  }
 }
 
 export const wsStore = new WorkspaceStore();
