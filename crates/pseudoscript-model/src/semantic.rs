@@ -5,12 +5,12 @@
 //! offsets:
 //!
 //! - **Token pass** ([`tokenize`]) colours the leaves the tree does not expose
-//!   as convenient spans: keywords, doc comments, string/number literals, and
-//!   the `#[` macro opener. These kinds are never identifiers.
+//!   as convenient spans: keywords, doc comments, and string/number literals.
 //! - **AST pass** ([`parse`]) colours identifiers by their *role* — a `system`
 //!   name is a namespace, a `data` name a class, a callable a method, a
-//!   parameter a parameter, a `.f()` step a method call. Identifiers are never
-//!   touched by the token pass, so the two sets cannot overlap.
+//!   parameter a parameter, a `.f()` step a method call — and a whole `#[…]`
+//!   macro invocation as one decorator span. A later token overlapping an
+//!   earlier one is dropped, so the macro span subsumes its arguments.
 //!
 //! Offsets are bytes, so the engine is adapter-neutral: the LSP delta-encodes to
 //! `lsp_types`, the IDE serialises to JSON and decorates ranges.
@@ -73,7 +73,7 @@ pub fn semantic_tokens(src: &str) -> Vec<SemToken> {
     out
 }
 
-/// Colours keywords, doc comments, literals, and the `#[` macro opener.
+/// Colours keywords, doc comments, and string/number literals.
 fn token_pass(src: &str, out: &mut Vec<SemToken>) {
     for token in tokenize(src) {
         let kind = match token.kind {
@@ -81,7 +81,8 @@ fn token_pass(src: &str, out: &mut Vec<SemToken>) {
             TokenKind::Doc | TokenKind::InnerDoc | TokenKind::Tag => SemKind::Comment,
             TokenKind::String => SemKind::String,
             TokenKind::Number => SemKind::Number,
-            TokenKind::HashLBracket => SemKind::Decorator,
+            // `#[…]` is coloured whole as a decorator by the AST pass, so the
+            // opener is not coloured here (it would pre-empt the full span).
             _ => continue,
         };
         push(out, token.span, kind, false);
@@ -298,21 +299,10 @@ fn type_tokens(ty: &ast::Type, out: &mut Vec<SemToken>) {
     }
 }
 
-/// Colours a macro's name path as a decorator; its path arguments take type
-/// colours (literals are already coloured by the token pass).
+/// Colours the whole macro invocation (`#[name(args)]`) as one decorator span,
+/// so it reads as a cohesive unit rather than a name plus typed arguments.
 fn macro_tokens(mac: &ast::Macro, out: &mut Vec<SemToken>) {
-    for segment in &mac.name.segments {
-        push(out, segment.span, SemKind::Decorator, false);
-    }
-    if let ast::MacroArgs::List(args) = &mac.args {
-        for arg in args {
-            match arg {
-                ast::MacroArg::Path(path) => type_path(path, out),
-                ast::MacroArg::Nested(nested) => macro_tokens(nested, out),
-                ast::MacroArg::Literal(_) => {}
-            }
-        }
-    }
+    push(out, mac.span, SemKind::Decorator, false);
 }
 
 /// Colours a value-reference path: trailing name as a variable, qualifiers as
@@ -413,6 +403,23 @@ mod tests {
         let tokens = semantic_tokens(src);
         assert_eq!(at(&tokens, src, "\"boom\"").kind, SemKind::String);
         assert_eq!(at(&tokens, src, "Err").kind, SemKind::Keyword);
+    }
+
+    #[test]
+    fn macro_invocation_is_one_decorator_span() {
+        let src = "//! m\n\n#[onevent(a::B)]\nsystem S;\n";
+        let tokens = semantic_tokens(src);
+        let dec = at(&tokens, src, "#[onevent");
+        assert_eq!(dec.kind, SemKind::Decorator);
+        // covers the whole `#[…]`, subsuming the name and the path argument
+        let close = (src.find(']').unwrap() + 1) as u32;
+        assert!(dec.end >= close, "{dec:?}");
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| t.start > dec.start && t.start < close),
+            "args must be subsumed: {tokens:?}"
+        );
     }
 
     #[test]
