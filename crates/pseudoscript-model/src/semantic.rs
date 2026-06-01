@@ -15,7 +15,7 @@
 //! Offsets are bytes, so the engine is adapter-neutral: the LSP delta-encodes to
 //! `lsp_types`, the IDE serialises to JSON and decorates ranges.
 
-use pseudoscript_syntax::{Span, TokenKind, ast, parse, tokenize};
+use pseudoscript_syntax::{Span, TokenKind, Trivia, ast, lex, parse, tokenize};
 use serde::Serialize;
 
 /// A semantic token's role. Names follow the LSP standard token types so the
@@ -58,6 +58,7 @@ pub struct SemToken {
 pub fn semantic_tokens(src: &str) -> Vec<SemToken> {
     let mut raws = Vec::new();
     token_pass(src, &mut raws);
+    comment_pass(src, &mut raws);
     ast_pass(&parse(src).ast, &mut raws);
     raws.sort_by_key(|t| t.start);
 
@@ -86,6 +87,21 @@ fn token_pass(src: &str, out: &mut Vec<SemToken>) {
             _ => continue,
         };
         push(out, token.span, kind, false);
+    }
+}
+
+/// Colours `//` line and `/* */` block comments. The lexer keeps these as
+/// trivia (no token), so `token_pass` never sees them; without this pass only
+/// `///` doc comments would be coloured. Blank-line trivia carries no glyph and
+/// is skipped.
+fn comment_pass(src: &str, out: &mut Vec<SemToken>) {
+    for entry in lex(src).trivia {
+        if matches!(
+            entry.trivia,
+            Trivia::LineComment(_) | Trivia::BlockComment(_)
+        ) {
+            push(out, entry.span, SemKind::Comment, false);
+        }
     }
 }
 
@@ -360,6 +376,17 @@ mod tests {
             .iter()
             .find(|t| t.start == start)
             .unwrap_or_else(|| panic!("no token at {needle:?}"))
+    }
+
+    #[test]
+    fn line_and_block_comments_are_coloured() {
+        // `//` and `/* */` are trivia, not tokens — they still colour as comments.
+        let src = "//! m\n\n// a line note\nsystem S { /* inline */ }\n";
+        let tokens = semantic_tokens(src);
+        assert_eq!(at(&tokens, src, "// a line note").kind, SemKind::Comment);
+        assert_eq!(at(&tokens, src, "/* inline */").kind, SemKind::Comment);
+        // the `//!` module doc still colours too
+        assert_eq!(at(&tokens, src, "//! m").kind, SemKind::Comment);
     }
 
     #[test]
