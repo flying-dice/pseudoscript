@@ -25,8 +25,7 @@
     </div>
 
     <!-- drafting terminal: live code -> diagram -->
-    <div class="terminal ticked reveal d2" id="hero-terminal">
-      <span class="tick tl"></span><span class="tick tr"></span><span class="tick bl"></span><span class="tick br"></span>
+    <div class="terminal reveal d2" id="hero-terminal">
       <div class="terminal-head">
         <div class="dots"><i></i><i></i><i></i></div>
         <span class="fname"><b>context</b>.pds</span>
