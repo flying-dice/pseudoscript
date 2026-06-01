@@ -1,0 +1,1 @@
+unresolved reference `void`; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)

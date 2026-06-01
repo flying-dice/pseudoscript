@@ -1,0 +1,14 @@
+// LANG.md §7.2: a `from` source set holds bare references (bindings, field
+// accesses, or calls), separated by `,` and closed by `}`. A `key: value`
+// label is not a source — `data` is never constructed with field values
+// (ADR-003) — so the `:` is rejected at the source set.
+
+//! example
+
+public data Thing { name: string }
+
+public system S;
+
+public container C for S {
+  make(): Thing { return Thing from { name: "x" } }
+}

@@ -645,14 +645,19 @@ impl Checker<'_> {
             && self.is_record(&name)
             && !self.has_field(&name, &seg.name.name)
         {
-            let hint = {
-                let cands: Vec<&str> = self
-                    .model
-                    .members(&name)
-                    .iter()
-                    .map(|m| m.name.as_str())
-                    .collect();
-                suggest(&seg.name.name, &cands)
+            // A close real field wins (`.values` typo'd as `.value`); only when
+            // none is near do we explain a `Result`/`Option` accessor misuse.
+            let cands: Vec<&str> = self
+                .model
+                .members(&name)
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            let suggestion = suggest(&seg.name.name, &cands);
+            let hint = if suggestion.is_empty() {
+                accessor_hint(&seg.name.name, &name)
+            } else {
+                suggestion
             };
             self.error(
                 seg.span,
@@ -702,7 +707,12 @@ impl Checker<'_> {
             && self.model.alias(name).is_none()
             && !self.variant_names.contains(name.as_str())
         {
-            let hint = {
+            let hint = if name == "void" {
+                // `void` is a type, not a value: a void callable returns with a
+                // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
+                "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)"
+                    .to_owned()
+            } else {
                 let candidates: Vec<&str> = scope
                     .iter()
                     .copied()
@@ -1175,6 +1185,26 @@ fn suggest(typed: &str, candidates: &[&str]) -> String {
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| format!("; did you mean `{c}`?"))
         .unwrap_or_default()
+}
+
+/// A hint when `name` is a `Result`/`Option` accessor (§6) read off a value that
+/// is neither — the common cause is a field declared as a plain type that should
+/// be `Option<T>`. Empty when `name` is an ordinary (mistyped) field.
+fn accessor_hint(name: &str, receiver: &str) -> String {
+    match name {
+        "isOk" | "isErr" | "error" => {
+            format!("; `.{name}` is a `Result` accessor (§6.1) — `{receiver}` is not a `Result`")
+        }
+        "isSome" | "isNone" => {
+            format!(
+                "; `.{name}` is an `Option` accessor (§6.2) — type the value `Option<{receiver}>` to use it"
+            )
+        }
+        "value" => {
+            format!("; `.value` reads a `Result`/`Option` payload (§6) — `{receiver}` is neither")
+        }
+        _ => String::new(),
+    }
 }
 
 /// Visits every statement in `block`, descending into nested `if`/`for`/`while`
