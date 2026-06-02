@@ -1,14 +1,12 @@
-//! Markdown documentation renderer: each page as a self-contained `.md` file
-//! with its diagrams inlined as SVG.
+//! Markdown documentation renderer: one `.md` per page, with each diagram
+//! written as a **standalone `.svg` file** and referenced (`![caption](…)`).
 //!
-//! An engine-free alternative to the Svelte HTML site — the same page model
-//! ([`build_pages`](crate::render::build_pages)) rendered to Markdown instead of
-//! driven through SSR, so it needs no JavaScript and runs on every target. The
-//! output reads on GitHub, in an editor preview, or by an agent.
-//!
-//! Diagrams are embedded as self-contained SVG rendered with the **light**
-//! palette (dark ink on white cards), which stays legible on any Markdown
-//! background — the dark palette's light ink would vanish on a white page.
+//! Inline `<svg>` inside Markdown is dropped or sanitised by many renderers
+//! (GitHub, IDE previews); a referenced `.svg` image renders everywhere, text
+//! included. The same page model ([`build_pages`](crate::render::build_pages))
+//! rendered to Markdown instead of driven through SSR — no JavaScript, every
+//! target. Diagrams use the workspace's configured theme (`[doc].theme`), so the
+//! Markdown and HTML outputs match.
 
 use std::fmt::Write as _;
 
@@ -20,13 +18,30 @@ use crate::props::{
 };
 use crate::site::SiteFile;
 
-/// Renders every built page to a Markdown [`SiteFile`], mirroring the HTML
-/// site's paths with a `.md` extension.
-pub(crate) fn pages_to_markdown(pages: &[(String, PageProps)]) -> Vec<SiteFile> {
-    pages
-        .iter()
-        .map(|(path, props)| SiteFile::new(md_path(path), render_page(props)))
-        .collect()
+/// State threaded through one page: the diagram theme, the page's `../`-to-root
+/// prefix (so an image link resolves to the site-root `diagrams/` dir), and the
+/// collector the standalone `.svg` files are pushed onto.
+struct Ctx<'a> {
+    theme: Theme,
+    prefix: &'a str,
+    svgs: &'a mut Vec<SiteFile>,
+}
+
+/// Renders the built pages to Markdown `SiteFile`s plus the `diagrams/*.svg`
+/// files they reference. `theme` drives the diagrams.
+pub(crate) fn pages_to_markdown(pages: &[(String, PageProps)], theme: Theme) -> Vec<SiteFile> {
+    let mut svgs: Vec<SiteFile> = Vec::new();
+    let mut files: Vec<SiteFile> = Vec::with_capacity(pages.len());
+    for (path, props) in pages {
+        let mut ctx = Ctx {
+            theme,
+            prefix: &props.site.prefix,
+            svgs: &mut svgs,
+        };
+        files.push(SiteFile::new(md_path(path), render_page(props, &mut ctx)));
+    }
+    files.append(&mut svgs);
+    files
 }
 
 /// Swaps a page's `.html` extension for `.md`, leaving its directory intact.
@@ -52,20 +67,20 @@ fn md_href(href: &str) -> String {
     }
 }
 
-/// Renders one page's body to Markdown.
-fn render_page(props: &PageProps) -> String {
+/// Renders one page's body to Markdown, collecting its diagrams into `ctx`.
+fn render_page(props: &PageProps, ctx: &mut Ctx) -> String {
     let mut out = String::new();
     match &props.page {
-        PageBody::Index(index) => render_index(&mut out, index),
-        PageBody::Module(module) => render_module(&mut out, module),
+        PageBody::Index(index) => render_index(&mut out, index, ctx),
+        PageBody::Module(module) => render_module(&mut out, module, ctx),
         PageBody::Doc(doc) => render_doc(&mut out, doc),
     }
     out
 }
 
-fn render_index(out: &mut String, index: &IndexProps) {
+fn render_index(out: &mut String, index: &IndexProps, ctx: &mut Ctx) {
     let _ = writeln!(out, "# {}\n", index.title);
-    render_diagram(out, &index.context_diagram);
+    emit_diagram(out, &index.context_diagram, "context", ctx);
     if !index.cards.is_empty() {
         out.push_str("## Modules\n\n");
         for card in &index.cards {
@@ -81,10 +96,10 @@ fn render_index(out: &mut String, index: &IndexProps) {
     }
 }
 
-fn render_module(out: &mut String, module: &ModuleProps) {
+fn render_module(out: &mut String, module: &ModuleProps, ctx: &mut Ctx) {
     let _ = writeln!(out, "# {}\n", module.name);
     for section in &module.sections {
-        render_section(out, section);
+        render_section(out, section, ctx);
     }
 }
 
@@ -96,7 +111,7 @@ fn render_doc(out: &mut String, doc: &DocPageProps) {
     out.push('\n');
 }
 
-fn render_section(out: &mut String, section: &NodeSection) {
+fn render_section(out: &mut String, section: &NodeSection, ctx: &mut Ctx) {
     let _ = writeln!(out, "## {}\n", section.name);
     let _ = writeln!(
         out,
@@ -122,8 +137,8 @@ fn render_section(out: &mut String, section: &NodeSection) {
 
     render_relationships(out, &section.relationships);
     render_scenarios(out, &section.scenarios);
-    for diagram in &section.diagrams {
-        render_diagram(out, diagram);
+    for (i, diagram) in section.diagrams.iter().enumerate() {
+        emit_diagram(out, diagram, &format!("{}-{i}", section.id), ctx);
     }
 }
 
@@ -163,34 +178,26 @@ fn render_scenarios(out: &mut String, scenarios: &[ScenarioCard]) {
     out.push('\n');
 }
 
-/// Inlines a diagram as a self-contained SVG, captioned. An unprojectable view
-/// becomes a one-line note.
-fn render_diagram(out: &mut String, diagram: &Diagram) {
-    match diagram {
-        Diagram::C4 { caption, scene } => {
-            figure(
-                out,
-                caption,
-                &render_svg_themed(&Scene::C4(scene.clone()), Theme::Light),
-            );
-        }
-        Diagram::Sequence { caption, scene, .. } => {
-            figure(
-                out,
-                caption,
-                &render_svg_themed(&Scene::Sequence(scene.clone()), Theme::Light),
-            );
-        }
+/// Writes a diagram as a standalone `diagrams/<stem>.svg` file and references it
+/// from the page with a captioned image link. An unprojectable view becomes a
+/// one-line note (no file).
+fn emit_diagram(out: &mut String, diagram: &Diagram, stem: &str, ctx: &mut Ctx) {
+    let (caption, svg) = match diagram {
+        Diagram::C4 { caption, scene } => (
+            caption,
+            render_svg_themed(&Scene::C4(scene.clone()), ctx.theme),
+        ),
+        Diagram::Sequence { caption, scene, .. } => (
+            caption,
+            render_svg_themed(&Scene::Sequence(scene.clone()), ctx.theme),
+        ),
         Diagram::Empty { caption, eyebrow } => {
             let _ = writeln!(out, "_{caption}: no {eyebrow}._\n");
+            return;
         }
-    }
-}
-
-/// A captioned SVG figure. The SVG is set off by blank lines, since Markdown
-/// treats an HTML block as raw only when surrounded by them.
-fn figure(out: &mut String, caption: &str, svg: &str) {
+    };
+    let file = format!("diagrams/{stem}.svg");
     let _ = writeln!(out, "**{caption}**\n");
-    out.push_str(svg);
-    out.push_str("\n\n");
+    let _ = writeln!(out, "![{caption}]({}{file})\n", ctx.prefix);
+    ctx.svgs.push(SiteFile::new(file, svg));
 }

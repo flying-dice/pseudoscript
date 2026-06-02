@@ -271,7 +271,7 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         );
     }
 
-    out.push_str("</svg>");
+    crate::render::svg_close(&mut out);
     out
 }
 
@@ -608,7 +608,7 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
         draw_edge_label(&mut out, label);
     }
 
-    out.push_str("</svg>");
+    crate::render::svg_close(&mut out);
     out
 }
 
@@ -780,6 +780,9 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
         ink = pal().ink,
         shadow = pal().shadow,
     );
+    // `<text>` inherits the font from this group even in renderers (e.g. JSVG, in
+    // the JetBrains plugin) that don't inherit it from the root `<svg>`.
+    out.push_str(crate::render::SVG_FONT_GROUP);
 }
 
 /// Draws a captured routed edge as a polyline with an arrowhead at the target.

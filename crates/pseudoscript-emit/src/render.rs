@@ -328,6 +328,19 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
          fill=\"{}\"/></marker></defs>",
         pal().arrow_seq,
     );
+    // Set the font on a group: `<text>` inherits it here even in renderers (e.g.
+    // JSVG, used by the JetBrains plugin) that don't inherit it from the root
+    // `<svg>`. Concrete families first so font-less rasterisers still resolve one.
+    out.push_str(SVG_FONT_GROUP);
+}
+
+/// Opens the font-bearing group; pair with [`svg_close`]. Shared with the C4
+/// renderer so both diagram kinds carry the font on a group, not the root.
+pub(crate) const SVG_FONT_GROUP: &str = "<g font-family=\"Helvetica, Arial, sans-serif\">";
+
+/// Closes the font group and the document opened by `svg_open`.
+pub(crate) fn svg_close(out: &mut String) {
+    out.push_str("</g></svg>");
 }
 
 /// Positions a sequence scene with the layout engine, returning absolute
@@ -408,7 +421,7 @@ fn render_sequence(scene: &SequenceScene) -> String {
         }
     }
 
-    out.push_str("</svg>");
+    svg_close(&mut out);
     out
 }
 
