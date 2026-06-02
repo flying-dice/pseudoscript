@@ -10,8 +10,10 @@
   import SequenceLifeline from "./SequenceLifeline.svelte";
   import SequenceFragment from "./SequenceFragment.svelte";
   import SequenceMessages from "./SequenceMessages.svelte";
+  import CanvasMenu from "./CanvasMenu.svelte";
   import DiagramExport from "./DiagramExport.svelte";
   import { theme } from "$lib/theme.svelte.js";
+  import type { MenuRequest, MenuSection } from "$lib/core/types.js";
 
   // The triggered scene this flow projects; only `entry` is read here for the
   // header label (the rest is consumed by the layout engine upstream).
@@ -37,19 +39,36 @@
     messages: unknown;
   };
 
-  // A hover/usages callback fired with a symbol fqn and the originating event.
+  // A usages/source callback fired with a symbol fqn and the originating event.
   type SymbolHandler = (fqn: string, event: MouseEvent) => void;
 
   type Props = {
     scene: Scene | null;
     layout: Layout | null;
-    oninfo?: SymbolHandler | null;
-    oninfoend?: (() => void) | null;
     onusages?: SymbolHandler | null;
+    onsource?: ((fqn: string) => void) | null;
     typeFqn?: string | null;
   };
 
-  let { scene, layout, oninfo = null, oninfoend = null, onusages = null, typeFqn = null }: Props = $props();
+  let { scene, layout, onusages = null, onsource = null, typeFqn = null }: Props = $props();
+
+  // The symbol a right-click opened the menu on, anchored at the pointer; `event`
+  // is kept so "Find usages" can position its popover where the click was. A
+  // lifeline card, a message label, or a signature type token can open it.
+  type MenuState = { fqn: string; kind: string; label: string; x: number; y: number; event: MouseEvent };
+  let menu = $state<MenuState | null>(null);
+  const onmenu: MenuRequest = (target, event) => {
+    menu = { ...target, x: event.clientX, y: event.clientY, event };
+  };
+  const closeMenu = () => (menu = null);
+  const menuSections = (m: MenuState): MenuSection[] => [
+    {
+      items: [
+        { label: "Go to definition", run: () => onsource?.(m.fqn) },
+        { label: "Find usages", run: () => onusages?.(m.fqn, m.event) },
+      ],
+    },
+  ];
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas follows
   // light/dark instead of being pinned dark.
@@ -98,7 +117,7 @@
         position: { x: 0, y: 0 },
         width: l.width,
         height: l.height,
-        data: { placed: p, act: actByPid.get(p.id) ?? null, oninfo, oninfoend, onusages },
+        data: { placed: p, act: actByPid.get(p.id) ?? null, onmenu },
         class: "seq-shell",
         draggable: false,
         selectable: false,
@@ -111,7 +130,7 @@
         position: { x: 0, y: 0 },
         width: l.width,
         height: l.height,
-        data: { messages: l.messages, width: l.width, height: l.height, lifelineX, oninfo, oninfoend, onusages, typeFqn },
+        data: { messages: l.messages, width: l.width, height: l.height, lifelineX, onmenu, typeFqn },
         class: "seq-shell",
         draggable: false,
         selectable: false,
@@ -163,6 +182,11 @@
       <MiniMap pannable zoomable />
       <Controls showLock={false} />
     </SvelteFlow>
+
+    {#if menu}
+      {@const m = menu}
+      <CanvasMenu kind={m.kind} label={m.label} x={m.x} y={m.y} sections={menuSections(m)} onclose={closeMenu} />
+    {/if}
   </div>
 </div>
 

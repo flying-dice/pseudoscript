@@ -4,8 +4,8 @@
   // bar spanning its involvement. The node fills the canvas, so every coordinate
   // here is absolute (no geometry is computed in the component).
 
-  // A hover/usages callback fired with a symbol id and the originating event.
-  type SymbolHandler = (id: string, event: MouseEvent) => void;
+  import type { MenuRequest } from "$lib/core/types.js";
+
   // A placed participant lifeline from the layout engine (PlacedParticipant).
   type Placed = {
     id: string;
@@ -30,9 +30,7 @@
   type LifelineData = {
     placed: Placed;
     act?: Activation | null;
-    oninfo?: SymbolHandler | null;
-    oninfoend?: (() => void) | null;
-    onusages?: SymbolHandler | null;
+    onmenu?: MenuRequest | null;
   };
 
   type Props = {
@@ -64,15 +62,14 @@
   const nameLabel = initiator ? initiator.title : p.label;
   const cardKind = initiator ? "initiator" : p.kind;
 
-  // Canvas interaction mirrors the editor: hover shows info, Cmd/Ctrl-click shows
-  // usages. Every lifeline participates — declared nodes resolve to their doc and
-  // usages; synthesised trigger actors (client/scheduler/event) get a blurb.
-  const interactive = !!p.id;
-  const onclick = (e: MouseEvent) => {
-    if (interactive && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      data.onusages?.(p.id, e);
-    }
+  // Canvas interaction mirrors the C4 graph: right-click opens the actions menu
+  // (go-to-definition / find-usages). Only declared nodes participate; synthesised
+  // trigger actors (client/scheduler/event) have no resolvable symbol.
+  const interactive = !!p.id && !initiator;
+  const oncontextmenu = (e: MouseEvent) => {
+    if (!interactive) return;
+    e.preventDefault();
+    data.onmenu?.({ fqn: p.id, kind: cardKind, label: nameLabel }, e);
   };
 </script>
 
@@ -81,11 +78,9 @@
     class="seq-card c4-node {cardKind}"
     class:interactive
     style="left:{p.card.x}px; top:{p.card.y}px; width:{p.card.w}px; height:{p.card.h}px"
-    role={interactive ? "button" : undefined}
-    tabindex={interactive ? 0 : undefined}
-    onmouseenter={(e) => interactive && data.oninfo?.(p.id, e)}
-    onmouseleave={() => interactive && data.oninfoend?.()}
-    {onclick}
+    role="button"
+    tabindex="-1"
+    {oncontextmenu}
   >
     <span class="seq-kind">{kindLabel}</span>
     <span class="seq-name">{nameLabel}</span>

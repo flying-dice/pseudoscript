@@ -5,7 +5,7 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renameApply, renderDocSite, symbolScene } from "$lib/pds.js";
+  import { docManifest, emitSceneModules, format as formatSource, layoutScene, outlineModules, references, renameApply, renderDocSite, symbolScene } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
@@ -70,7 +70,6 @@
     LiveDocGroup,
     Loc,
     EditorApi,
-    CanvasInfo,
     CanvasUsages,
     Dialog,
     NoteKind,
@@ -335,67 +334,24 @@
   );
   const canvasHint = $derived(canvasHintOf(selected));
 
-  // Canvas interaction mirrors the code editor: hovering a node shows its
-  // information; Cmd/Ctrl-clicking shows its usages. Both are popovers anchored
-  // at the pointer.
-  const canvasInfo = $derived(ui.canvasInfo); // { kind, name, fqn, x, y }
+  // Canvas interaction mirrors the C4 graph: right-clicking a symbol opens its
+  // actions menu (go-to-definition / find-usages). Find-usages lists references
+  // in a popover anchored at the pointer.
   const canvasUsages = $derived(ui.canvasUsages); // { name, items, x, y }
 
   // The byte offset of a node's declaration in its module source.
   const nodeByteOffset = (fileFqn: string, line: number, col: number) =>
     model.nodeByteOffset(moduleSources[fileFqn] ?? "", line, col);
 
-  // Synthesised trigger actors aren't declared nodes; give them a fixed blurb.
-  const ACTOR_DOC: Record<string, { kind: string; title: string; body: string }> = {
-    client: { kind: "person", title: "client", body: "An external client calling in over HTTP." },
-    scheduler: { kind: "system", title: "scheduler", body: "A scheduled trigger (timer / cron)." },
-    caller: { kind: "person", title: "caller", body: "The caller of this operation." },
-  };
-
   const resolveNodeFqn = (fqn: string) => model.resolveNodeFqn(index, fqn);
 
-  // A symbol's { kind, title, body } documentation via the editor hover, or null.
-  function docFor(fqn: string): { kind: string; title: string; body: string } | null {
-    const hit = nodeIndex.get(fqn);
-    if (!hit) return null;
-    let info = null;
-    try {
-      info = hover(allModules, hit.fileFqn, nodeByteOffset(hit.fileFqn, hit.node.line, hit.node.col))?.info;
-    } catch {
-      info = null;
-    }
-    return { kind: hit.node.kind, title: info?.title || hit.node.name, body: info?.body || "" };
-  }
-
-  function showCanvasInfo(fqn: string, e: MouseEvent) {
-    const at = { fqn, x: e.clientX, y: e.clientY };
-    if (ACTOR_DOC[fqn]) {
-      ui.canvasInfo = { ...ACTOR_DOC[fqn], ...at };
-      return;
-    }
-    // An `event:<fqn>` actor documents the event node it names.
-    const real = fqn.startsWith("event:") ? fqn.slice(6) : resolveNodeFqn(fqn);
-    const doc = real ? docFor(real) : null;
-    ui.canvasInfo = doc
-      ? { ...doc, fqn: real ?? undefined, x: e.clientX, y: e.clientY }
-      : fqn.startsWith("event:")
-        ? { kind: "system", title: fqn.slice(6), body: "Triggered by this event.", ...at }
-        : null;
-  }
-  const hideCanvasInfo = () => (ui.canvasInfo = null);
-
   function showCanvasUsages(fqn: string, e: MouseEvent) {
-    if (ACTOR_DOC[fqn]) {
-      notify("info", "No usages", `\`${fqn}\` is a trigger actor, not a declared symbol.`);
-      return;
-    }
     const target = resolveNodeFqn(fqn.startsWith("event:") ? fqn.slice(6) : fqn);
     const hit = target ? nodeIndex.get(target) : null;
     if (!hit) {
       notify("info", "No usages", "Not a resolvable symbol.");
       return;
     }
-    ui.canvasInfo = null;
     let refs = null;
     try {
       refs = references(allModules, hit.fileFqn, nodeByteOffset(hit.fileFqn, hit.node.line, hit.node.col));
@@ -1876,7 +1832,6 @@ show('index.html');
       if (buildNotice) ui.buildNotice = false;
       if (settingsOpen) ui.settingsOpen = false;
       if (projectOpen && workspace) ui.projectOpen = false;
-      ui.canvasInfo = null;
       ui.canvasUsages = null;
     }
     // Cmd/Ctrl-S saves the active file (Cmd/Ctrl-Shift-S saves all) even when the
@@ -1984,16 +1939,6 @@ show('index.html');
 
 {#if settingsOpen}
   <Settings onclose={() => (ui.settingsOpen = false)} />
-{/if}
-
-<!-- Canvas hover info: kind eyebrow, name, FQN, anchored at the pointer. -->
-{#if canvasInfo}
-  <div class="canvas-pop info" style="left:{canvasInfo.x + 14}px; top:{canvasInfo.y + 14}px">
-    <span class="kind {canvasInfo.kind}">{canvasInfo.kind}</span>
-    <span class="name">{canvasInfo.title}</span>
-    {#if canvasInfo.body}<p class="doc">{canvasInfo.body}</p>{/if}
-    <span class="fqn">{canvasInfo.fqn}</span>
-  </div>
 {/if}
 
 <!-- Canvas usages: a click-away list of references; picking one jumps to it. -->
@@ -2246,7 +2191,7 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} />
             </div>
           {/if}
         </div>
@@ -2670,7 +2615,7 @@ show('index.html');
     font-weight: 700;
   }
 
-  /* canvas hover/usages popovers, anchored at the pointer */
+  /* canvas find-usages popover, anchored at the pointer */
   .canvas-backdrop {
     position: fixed;
     inset: 0;
@@ -2691,30 +2636,6 @@ show('index.html');
     box-shadow: var(--shadow-md);
     pointer-events: auto;
   }
-  .canvas-pop.info { display: flex; flex-direction: column; gap: 0.15rem; pointer-events: none; }
-  .canvas-pop .kind {
-    font-family: var(--font-mono);
-    font-size: 0.52rem;
-    font-weight: 600;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--k, var(--ink-faint));
-  }
-  .canvas-pop .kind.person { --k: var(--k-person); }
-  .canvas-pop .kind.system { --k: var(--k-system); }
-  .canvas-pop .kind.container { --k: var(--k-container); }
-  .canvas-pop .kind.component { --k: var(--k-component); }
-  .canvas-pop .kind.data { --k: var(--k-data); }
-  .canvas-pop .kind.callable { --k: var(--k-callable); }
-  .canvas-pop .name { font-family: var(--font-mono); font-weight: 600; color: var(--ink); }
-  .canvas-pop .doc {
-    margin: 0.35rem 0 0;
-    font-size: 0.8rem;
-    line-height: 1.5;
-    color: var(--ink-soft);
-    white-space: pre-wrap;
-  }
-  .canvas-pop .fqn { margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-faint); }
   .canvas-pop .usages-head {
     font-size: 0.72rem;
     color: var(--ink-soft);

@@ -91,9 +91,17 @@ export type EditorApi = {
 // A laid-out diagram scene + its positioned layout, or an error to show instead.
 export type Canvas = { scene: Scene | null; layout?: Scene | null; error: string };
 
-// Canvas pointer popovers.
-export type CanvasInfo = { kind: string; title: string; body: string; fqn?: string; x: number; y: number };
+// The canvas find-usages popover: a reference list anchored at the pointer.
 export type CanvasUsages = { name: string; items: Occurrence[]; x: number; y: number };
+
+// The right-click menu, shared by the C4 graph and the sequence timeline. A
+// target is the identity of the symbol clicked; a request opens the menu for it
+// at the event point. A row carries its action plus optional adornments (a
+// leading glyph, a trailing badge); a section is a rule-separated group of rows.
+export type MenuTarget = { fqn: string; kind: string; label: string };
+export type MenuRequest = (target: MenuTarget, event: MouseEvent) => void;
+export type MenuItem = { label: string; run: () => void; icon?: string; badge?: string };
+export type MenuSection = { label?: string; items: MenuItem[] };
 
 // A FileTree name-prompt dialog config, and the destructive-confirm config.
 export type Dialog = {

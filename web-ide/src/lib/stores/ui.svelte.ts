@@ -1,11 +1,11 @@
 // Ephemeral UI state — a reactive rune store.
 //
 // Panel/modal visibility, the doc reading width (persisted), the recents list,
-// the canvas popovers, and the name-prompt / confirm dialogs. The handlers that
-// open these (showCanvasInfo, the dialog `run` callbacks, refreshRecents) stay in
-// the view; this store just owns the state.
+// the canvas usages popover, and the name-prompt / confirm dialogs. The handlers
+// that open these (showCanvasUsages, the dialog `run` callbacks, refreshRecents)
+// stay in the view; this store just owns the state.
 
-import type { CanvasInfo, CanvasUsages, ConfirmDialog, Dialog } from "$lib/core/types.js";
+import type { CanvasUsages, ConfirmDialog, Dialog } from "$lib/core/types.js";
 import type { Recent } from "$lib/recents.js";
 
 function readDocWidth(): string {
@@ -37,8 +37,7 @@ class UiStore {
   buildNotice = $state(false);
   // Recent projects (folder handles), for the launcher.
   recents = $state<Recent[]>([]);
-  // Canvas pointer popovers: hover info / find-usages.
-  canvasInfo = $state<CanvasInfo | null>(null);
+  // Canvas pointer popover: the find-usages reference list.
   canvasUsages = $state<CanvasUsages | null>(null);
   // The FileTree name-prompt and destructive-confirm dialogs.
   dialog = $state<Dialog | null>(null);

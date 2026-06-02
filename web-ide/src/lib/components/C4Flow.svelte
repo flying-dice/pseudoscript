@@ -14,6 +14,7 @@
   import type { Graph } from "@dagrejs/dagre";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
+  import CanvasMenu from "./CanvasMenu.svelte";
   import CanvasSettings from "./CanvasSettings.svelte";
   import DiagramExport from "./DiagramExport.svelte";
   import FitView from "./FitView.svelte";
@@ -21,6 +22,7 @@
   import { theme } from "$lib/theme.svelte.js";
   import { canvasPrefs } from "$lib/stores/canvas-prefs.svelte.js";
   import type { LayoutAlgo, LayoutDir } from "$lib/stores/canvas-prefs.svelte.js";
+  import type { MenuItem, MenuSection } from "$lib/core/types.js";
 
   // A node in the projected scene (one C4 element).
   type SceneNode = {
@@ -343,8 +345,6 @@
   // `event` is kept so "Find usages" can position its popover where the click was.
   type MenuState = { fqn: string; kind: string; label: string; isBoundary: boolean; x: number; y: number; event: MouseEvent };
   let menu = $state<MenuState | null>(null);
-  const menuFlows = $derived<Flow[]>(menu && flows ? (flows.get(menu.fqn) ?? []) : []);
-  let menuEl = $state<HTMLDivElement | null>(null);
 
   function onnodecontextmenu({ event, node }: { event: MouseEvent; node: Node }): void {
     event.preventDefault();
@@ -352,28 +352,38 @@
     menu = { fqn: data.fqn, kind: data.kind, label: data.label, isBoundary: node.type === "boundary", x: event.clientX, y: event.clientY, event };
   }
   const closeMenu = () => (menu = null);
-  // Run a menu action and dismiss.
-  function act(run: () => void): void {
-    run();
-    closeMenu();
-  }
 
-  // Render the menu under <body> so its `position: fixed` resolves against the
-  // viewport. Inside the canvas islands a transformed/animated ancestor forms a
-  // containing block, which would otherwise offset `left: clientX` by the rail +
-  // explorer width.
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
+  // CanvasMenu renders these rule-separated. A row's `run` closes over the opened
+  // node — drill / go up the structure, jump to a flow, reveal the definition, or
+  // list usages at the click point.
+  function menuSections(m: MenuState): MenuSection[] {
+    const sections: MenuSection[] = [];
 
-  // Move keyboard focus to the menu when it opens so arrows / Enter / Escape work.
-  $effect(() => {
-    if (menu) menuEl?.focus();
-  });
+    const nav: MenuItem[] = [];
+    if (m.isBoundary) {
+      if (onup) nav.push({ label: "Go up a level", run: () => onup?.() });
+    } else if (DRILL[m.kind]) {
+      nav.push({ label: DRILL[m.kind], run: () => onpick?.(m.fqn) });
+    }
+    if (nav.length) sections.push({ items: nav });
+
+    const mFlows = flows?.get(m.fqn) ?? [];
+    if (mFlows.length) {
+      sections.push({
+        label: "Flows",
+        items: mFlows.map((f) => ({ label: f.name, run: () => onpick?.(f.fqn), icon: "▶", badge: f.triggered ? "triggered" : undefined })),
+      });
+    }
+
+    sections.push({
+      items: [
+        { label: "Go to definition", run: () => onsource?.(m.fqn) },
+        { label: "Find usages", run: () => onusages?.(m.fqn, m.event) },
+      ],
+    });
+    return sections;
+  }
 </script>
-
-<svelte:window onkeydown={(e) => menu && e.key === "Escape" && closeMenu()} />
 
 <div class="flow" bind:this={flowEl}>
   <SvelteFlow
@@ -408,46 +418,7 @@
 
   {#if menu}
     {@const m = menu}
-    <div use:portal>
-    <!-- A transparent layer that dismisses on any click or another right-click. -->
-    <button
-      class="menu-scrim"
-      aria-label="Close menu"
-      onclick={closeMenu}
-      oncontextmenu={(e) => {
-        e.preventDefault();
-        closeMenu();
-      }}
-    ></button>
-    <div bind:this={menuEl} class="ctx-menu" role="menu" tabindex="-1" aria-label="Node actions" style="left:{m.x}px; top:{m.y}px">
-      <div class="ctx-head">
-        <span class="kind {m.kind}">{m.kind}</span>
-        <span class="ctx-name">{m.label}</span>
-      </div>
-      <div class="ctx-sep"></div>
-
-      {#if m.isBoundary}
-        {#if onup}
-          <button role="menuitem" class="ctx-item" onclick={() => act(() => onup?.())}>Go up a level</button>
-        {/if}
-      {:else if DRILL[m.kind]}
-        <button role="menuitem" class="ctx-item" onclick={() => act(() => onpick?.(m.fqn))}>{DRILL[m.kind]}</button>
-      {/if}
-
-      {#if menuFlows.length}
-        <div class="ctx-label">Flows</div>
-        {#each menuFlows as f (f.fqn)}
-          <button role="menuitem" class="ctx-item flow" onclick={() => act(() => onpick?.(f.fqn))}>
-            <span class="play">▶</span><span class="flow-name">{f.name}</span>{#if f.triggered}<span class="trig">triggered</span>{/if}
-          </button>
-        {/each}
-      {/if}
-
-      <div class="ctx-sep"></div>
-      <button role="menuitem" class="ctx-item" onclick={() => act(() => onsource?.(m.fqn))}>Go to definition</button>
-      <button role="menuitem" class="ctx-item" onclick={() => act(() => onusages?.(m.fqn, m.event))}>Find usages</button>
-    </div>
-    </div>
+    <CanvasMenu kind={m.kind} label={m.label} x={m.x} y={m.y} sections={menuSections(m)} onclose={closeMenu} />
   {/if}
 </div>
 
@@ -462,115 +433,5 @@
     z-index: 5;
     display: flex;
     gap: 0.4rem;
-  }
-
-  .menu-scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    border: 0;
-    padding: 0;
-    background: transparent;
-    cursor: default;
-  }
-  .ctx-menu {
-    position: fixed;
-    z-index: 61;
-    min-width: 13rem;
-    max-width: 18rem;
-    padding: 0.3rem;
-    background: var(--surface);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-lg);
-    outline: none;
-  }
-  .ctx-head {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.3rem 0.45rem 0.4rem;
-  }
-  .ctx-head .kind {
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: 0.52rem;
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-    padding: 0.1rem 0.35rem;
-    border-radius: 4px;
-    border-left: 2px solid var(--k, var(--ink-faint));
-    background: var(--surface-3);
-  }
-  .ctx-head .kind.person { --k: var(--k-person); }
-  .ctx-head .kind.system { --k: var(--k-system); }
-  .ctx-head .kind.container { --k: var(--k-container); }
-  .ctx-head .kind.component { --k: var(--k-component); }
-  .ctx-head .kind.data { --k: var(--k-data); }
-  .ctx-head .kind.callable { --k: var(--k-callable); }
-  .ctx-name {
-    font-family: var(--font-display);
-    font-size: 0.86rem;
-    font-weight: 600;
-    color: var(--ink);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ctx-sep {
-    height: 1px;
-    margin: 0.2rem 0.2rem;
-    background: var(--line);
-  }
-  .ctx-label {
-    padding: 0.3rem 0.5rem 0.15rem;
-    font-family: var(--font-mono);
-    font-size: 0.52rem;
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-  }
-  .ctx-item {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    padding: 0.4rem 0.5rem;
-    font-family: var(--font-sans);
-    font-size: 0.8rem;
-    color: var(--ink-soft);
-    background: transparent;
-    border: 0;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    text-align: left;
-  }
-  .ctx-item:hover,
-  .ctx-item:focus-visible {
-    background: var(--surface-2);
-    color: var(--ink);
-    outline: none;
-  }
-  .ctx-item .flow-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ctx-item .play {
-    flex: none;
-    color: var(--k-callable);
-    font-size: 0.58rem;
-  }
-  .ctx-item .trig {
-    margin-left: auto;
-    flex: none;
-    font-family: var(--font-mono);
-    font-size: 0.52rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--accent);
   }
 </style>

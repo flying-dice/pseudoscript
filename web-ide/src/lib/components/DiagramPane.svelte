@@ -34,8 +34,6 @@
     flows?: Map<string, Flow[]> | null;
     depth?: Depth;
     ondepth?: ((id: Depth) => void) | null;
-    oninfo?: ((fqn: string, event: MouseEvent) => void) | null;
-    oninfoend?: (() => void) | null;
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
     onsource?: ((fqn: string) => void) | null;
     typeFqn?: string | null;
@@ -51,8 +49,6 @@
     flows = null,
     depth = "component",
     ondepth = null,
-    oninfo = null,
-    oninfoend = null,
     onusages = null,
     onsource = null,
     typeFqn = null,
@@ -81,7 +77,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">

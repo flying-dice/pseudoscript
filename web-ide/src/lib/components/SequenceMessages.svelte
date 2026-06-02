@@ -4,10 +4,7 @@
   // their Ok/Err marker with the payload as `<type>`; self-messages loop on their
   // lifeline. No geometry is computed here — only the absolute coords are drawn.
 
-  // A hover/usages callback fired with a symbol fqn and the originating event.
-  // The fqn is widened to allow nullable parts (the `{#if part.fqn}` guard in the
-  // markup gates non-null calls; Svelte can't narrow through the tspan closures).
-  type SymbolHandler = (fqn: string | null, event: MouseEvent) => void;
+  import type { MenuRequest } from "$lib/core/types.js";
 
   // A positioned message from the `pseudoscript-layout` crate: the pre-layout
   // call/return shape plus the absolute coordinates the engine placed it at.
@@ -30,9 +27,7 @@
     width: number;
     height: number;
     lifelineX: Record<string, number>;
-    oninfo?: SymbolHandler | null;
-    oninfoend?: (() => void) | null;
-    onusages?: SymbolHandler | null;
+    onmenu?: MenuRequest | null;
     typeFqn?: Record<string, string> | null;
   };
 
@@ -60,21 +55,17 @@
   // The badge sits just left of the source lifeline (centre − activation − gap).
   const badgeX = (m: Message): number => (data.lifelineX[m.from] ?? m.from_x) - 17;
 
-  // A call/self message targets a member callable: hover shows its info,
-  // Cmd/Ctrl-click its usages (matching the lifeline and editor behaviour).
+  // A call/self message targets a member callable; right-click opens its menu
+  // (go-to-definition / find-usages), matching the lifeline and C4 graph.
   const callee = (m: Message): string => (m.kind === "self" ? `${m.from}::${m.label}` : `${m.to}::${m.label}`);
-  const onLabelClick = (m: Message, e: MouseEvent): void => {
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault();
-      data.onusages?.(callee(m), e);
-    }
+  const onLabelMenu = (m: Message, e: MouseEvent): void => {
+    e.preventDefault();
+    data.onmenu?.({ fqn: callee(m), kind: "callable", label: m.label ?? "" }, e);
   };
-  const onTypeClick = (fqn: string | null, e: MouseEvent): void => {
-    if (!fqn) return;
-    if (e.metaKey || e.ctrlKey) {
-      e.preventDefault();
-      data.onusages?.(fqn, e);
-    }
+  const onTypeMenu = (part: TypePart, e: MouseEvent): void => {
+    if (!part.fqn) return;
+    e.preventDefault();
+    data.onmenu?.({ fqn: part.fqn, kind: "data", label: part.text }, e);
   };
 
   // Split a signature/return-type string into identifier and separator runs,
@@ -100,10 +91,8 @@
             class="seq-hit"
             role="button"
             tabindex="-1"
-            onmouseenter={(e) => data.oninfo?.(callee(m), e)}
-            onmouseleave={() => data.oninfoend?.()}
-            onclick={(e) => onLabelClick(m, e)}
-          >{m.label}</tspan>{#each typeParts(m.detail) as part, pi (pi)}{#if part.fqn}<tspan class="seq-type seq-type-link" role="button" tabindex="-1" onmouseenter={(e) => data.oninfo?.(part.fqn, e)} onmouseleave={() => data.oninfoend?.()} onclick={(e) => onTypeClick(part.fqn, e)}>{part.text}</tspan>{:else}<tspan class="seq-type">{part.text}</tspan>{/if}{/each}</text>
+            oncontextmenu={(e) => onLabelMenu(m, e)}
+          >{m.label}</tspan>{#each typeParts(m.detail) as part, pi (pi)}{#if part.fqn}<tspan class="seq-type seq-type-link" role="button" tabindex="-1" oncontextmenu={(e) => onTypeMenu(part, e)}>{part.text}</tspan>{:else}<tspan class="seq-type">{part.text}</tspan>{/if}{/each}</text>
       {/if}
       <circle class="seq-call-dot" cx={badgeX(m)} cy={m.y} r="8" />
       <text class="seq-call-num" x={badgeX(m)} y={m.y + 3} text-anchor="middle">{m.step}</text>
@@ -118,9 +107,7 @@
         text-anchor="start"
         role="button"
         tabindex="-1"
-        onmouseenter={(e) => data.oninfo?.(callee(m), e)}
-        onmouseleave={() => data.oninfoend?.()}
-        onclick={(e) => onLabelClick(m, e)}>{m.label}</text>
+        oncontextmenu={(e) => onLabelMenu(m, e)}>{m.label}</text>
       <circle class="seq-call-dot" cx={badgeX(m)} cy={m.y} r="8" />
       <text class="seq-call-num" x={badgeX(m)} y={m.y + 3} text-anchor="middle">{m.step}</text>
     {:else}
@@ -132,7 +119,7 @@
       <path class="seq-ret-head" d="M{m.to_x - m.dir * 7},{m.y - 4} L{m.to_x},{m.y} L{m.to_x - m.dir * 7},{m.y + 4}" stroke={r.color} />
       <rect class="seq-pill" x={mx - labelW(full) / 2} y={m.y - 21} width={labelW(full)} height="16" rx="4" />
       <text class="seq-ret-text" x={mx} y={m.y - 9} text-anchor="middle" fill={r.color}
-        >{r.text}{#each typeParts(type) as part, pi (pi)}{#if part.fqn}<tspan class="seq-type seq-type-link" role="button" tabindex="-1" onmouseenter={(e) => data.oninfo?.(part.fqn, e)} onmouseleave={() => data.oninfoend?.()} onclick={(e) => onTypeClick(part.fqn, e)}>{part.text}</tspan>{:else}<tspan class="seq-type">{part.text}</tspan>{/if}{/each}</text>
+        >{r.text}{#each typeParts(type) as part, pi (pi)}{#if part.fqn}<tspan class="seq-type seq-type-link" role="button" tabindex="-1" oncontextmenu={(e) => onTypeMenu(part, e)}>{part.text}</tspan>{:else}<tspan class="seq-type">{part.text}</tspan>{/if}{/each}</text>
     {/if}
   {/each}
 </svg>
