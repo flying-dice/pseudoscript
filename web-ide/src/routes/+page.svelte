@@ -2309,7 +2309,7 @@ show('index.html');
      collapsible explorer + structure islands flanking the centre. */
   .ide {
     display: grid;
-    grid-template-rows: var(--bar-h) minmax(0, 1fr) var(--status-h);
+    grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--status-h);
     height: 100vh;
   }
   .body {

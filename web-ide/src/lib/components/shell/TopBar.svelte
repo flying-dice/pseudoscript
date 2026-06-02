@@ -74,7 +74,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    height: var(--bar-h, 38px);
+    height: var(--topbar-h, 42px);
     padding: 0 var(--island-gap) 0 0.7rem;
     background: none;
   }

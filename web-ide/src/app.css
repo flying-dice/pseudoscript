@@ -107,9 +107,10 @@
   --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  --topbar-h: 60px;
+  /* top header bar; matches the 42px nav-rail width so the corners stay square */
+  --topbar-h: 42px;
   --status-h: 24px;
-  /* compact ("mira") chrome height for the island bars (top / content / panel heads) */
+  /* compact ("mira") chrome height for the island bars (content / tabs / panel heads) */
   --bar-h: 38px;
   --activity-w: 42px;
   --right-rail-w: 42px;
