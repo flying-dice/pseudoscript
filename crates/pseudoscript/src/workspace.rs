@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use pseudoscript_doc::{DocConfig, DocGroup, DocPage, Theme};
+
+use crate::DocFormat;
 use pseudoscript_model::WorkspaceModule;
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -33,6 +35,9 @@ pub struct Workspace {
     /// the dependency name. Indexed for cross-workspace resolution but not
     /// checked. Empty when the workspace has no `pds.lock`.
     pub dependencies: Vec<WorkspaceModule>,
+    /// The workspace's preferred `pds doc` output format (`[doc].format`), when
+    /// set. `None` leaves the choice to the CLI (a `--format` flag, else HTML).
+    pub doc_format: Option<DocFormat>,
 }
 
 /// The raw `pds.toml`, as parsed before mapping into a [`Workspace`].
@@ -49,6 +54,7 @@ struct DocTable {
     out: Option<String>,
     logo: Option<String>,
     theme: Option<String>,
+    format: Option<String>,
     #[serde(default)]
     sidebar: Vec<SidebarTable>,
 }
@@ -102,7 +108,7 @@ pub fn find_root(start: &Path) -> Result<PathBuf> {
 /// Returns an error if the manifest cannot be read or parsed, if `[doc].theme`
 /// is neither `light` nor `dark`, or if a `.pds` file cannot be read.
 pub fn load(root: &Path) -> Result<Workspace> {
-    let (config, out) = load_manifest(root)?;
+    let (config, out, doc_format) = load_manifest(root)?;
     let modules = load_modules(root)?;
     let dependencies = crate::deps::dependency_modules(root)?;
     Ok(Workspace {
@@ -110,12 +116,13 @@ pub fn load(root: &Path) -> Result<Workspace> {
         out_dir: root.join(out),
         modules,
         dependencies,
+        doc_format,
     })
 }
 
 /// Reads and parses `<root>/pds.toml`, mapping its `[doc]` table into a
 /// [`DocConfig`] and the (root-relative) output directory.
-fn load_manifest(root: &Path) -> Result<(DocConfig, PathBuf)> {
+fn load_manifest(root: &Path) -> Result<(DocConfig, PathBuf, Option<DocFormat>)> {
     let path = root.join(MANIFEST);
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading `{}`", path.display()))?;
@@ -128,9 +135,10 @@ impl DocTable {
     /// Maps the parsed `[doc]` table into a [`DocConfig`] and the root-relative
     /// output directory, applying defaults. Reads each `[[doc.sidebar]]` page's
     /// Markdown from disk, relative to `root`.
-    fn resolve(self, root: &Path) -> Result<(DocConfig, PathBuf)> {
+    fn resolve(self, root: &Path) -> Result<(DocConfig, PathBuf, Option<DocFormat>)> {
         let name = self.name.unwrap_or_else(|| default_name(root));
         let theme = self.theme.as_deref().map_or(Ok(Theme::Dark), parse_theme)?;
+        let format = self.format.as_deref().map(parse_format).transpose()?;
         let out = self.out.unwrap_or_else(|| "target/doc".to_owned());
         let docs = self
             .sidebar
@@ -143,7 +151,7 @@ impl DocTable {
             logo: self.logo,
             docs,
         };
-        Ok((config, PathBuf::from(out)))
+        Ok((config, PathBuf::from(out), format))
     }
 }
 
@@ -194,6 +202,16 @@ fn parse_theme(value: &str) -> Result<Theme> {
         "light" => Ok(Theme::Light),
         "dark" => Ok(Theme::Dark),
         other => bail!("invalid `[doc].theme` value `{other}`: expected `light` or `dark`"),
+    }
+}
+
+/// Parses a `[doc].format` value, rejecting anything but `html`/`md`
+/// (`markdown` is accepted as an alias for `md`).
+fn parse_format(value: &str) -> Result<DocFormat> {
+    match value {
+        "html" => Ok(DocFormat::Html),
+        "md" | "markdown" => Ok(DocFormat::Md),
+        other => bail!("invalid `[doc].format` value `{other}`: expected `html` or `md`"),
     }
 }
 
@@ -293,7 +311,7 @@ mod tests {
 
     #[test]
     fn manifest_defaults_when_doc_table_absent() {
-        let (config, out) = toml::from_str::<Manifest>("")
+        let (config, out, format) = toml::from_str::<Manifest>("")
             .unwrap()
             .doc
             .resolve(Path::new("/tmp/my-project"))
@@ -302,6 +320,7 @@ mod tests {
         assert_eq!(config.theme, Theme::Dark);
         assert!(config.logo.is_none());
         assert_eq!(out, Path::new("target/doc"));
+        assert_eq!(format, None);
     }
 
     #[test]
@@ -313,7 +332,7 @@ mod tests {
             logo = "media/logo.svg"
             theme = "dark"
         "#;
-        let (config, out) = toml::from_str::<Manifest>(src)
+        let (config, out, _) = toml::from_str::<Manifest>(src)
             .unwrap()
             .doc
             .resolve(Path::new("/tmp/proj"))
@@ -336,12 +355,36 @@ mod tests {
 
     #[test]
     fn manifest_has_no_docs_when_sidebar_absent() {
-        let (config, _) = toml::from_str::<Manifest>("[doc]\nname = \"X\"\n")
+        let (config, _, _) = toml::from_str::<Manifest>("[doc]\nname = \"X\"\n")
             .unwrap()
             .doc
             .resolve(Path::new("/tmp/proj"))
             .unwrap();
         assert!(config.docs.is_empty());
+    }
+
+    #[test]
+    fn manifest_reads_doc_format() {
+        let resolve = |toml: &str| {
+            toml::from_str::<Manifest>(toml)
+                .unwrap()
+                .doc
+                .resolve(Path::new("/tmp/proj"))
+        };
+        assert_eq!(resolve("[doc]\n").unwrap().2, None);
+        assert_eq!(
+            resolve("[doc]\nformat = \"md\"\n").unwrap().2,
+            Some(DocFormat::Md)
+        );
+        assert_eq!(
+            resolve("[doc]\nformat = \"markdown\"\n").unwrap().2,
+            Some(DocFormat::Md)
+        );
+        assert_eq!(
+            resolve("[doc]\nformat = \"html\"\n").unwrap().2,
+            Some(DocFormat::Html)
+        );
+        assert!(resolve("[doc]\nformat = \"pdf\"\n").is_err());
     }
 
     #[test]
@@ -360,7 +403,7 @@ mod tests {
               { title = "Gone",  path = "docs/missing.md" },
             ]
         "#;
-        let (config, _) = toml::from_str::<Manifest>(src)
+        let (config, _, _) = toml::from_str::<Manifest>(src)
             .unwrap()
             .doc
             .resolve(dir.path())

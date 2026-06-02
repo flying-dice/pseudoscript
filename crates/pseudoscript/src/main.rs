@@ -69,7 +69,7 @@ struct Cli {
 
 /// The output format for `pds doc`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum DocFormat {
+pub(crate) enum DocFormat {
     /// The interactive Svelte HTML site (default).
     Html,
     /// Static Markdown files with the diagrams inlined as self-contained SVG.
@@ -180,10 +180,11 @@ enum Command {
         #[arg(long, conflicts_with_all = ["serve", "watch"])]
         all: bool,
         /// Output format: the interactive HTML site (`html`), or static Markdown
-        /// files with the diagrams inlined as SVG (`md`). Markdown is generate-
-        /// only — `--serve`/`--watch` apply to `html`.
-        #[arg(long, value_enum, default_value_t = DocFormat::Html)]
-        format: DocFormat,
+        /// files with the diagrams inlined as SVG (`md`). Overrides
+        /// `[doc].format` in `pds.toml`; defaults to that, else `html`. Markdown
+        /// is generate-only — `--serve`/`--watch` apply to `html`.
+        #[arg(long, value_enum)]
+        format: Option<DocFormat>,
     },
     /// Download and install a release over the running binary.
     Upgrade {
@@ -401,7 +402,7 @@ fn check_one_workspace(root: &Path) -> bool {
 
 /// `pds doc --all`: generate docs for every discovered workspace under `root`.
 /// Exits non-zero if any workspace fails to build.
-fn cmd_doc_all(root: &Path, format: DocFormat) -> ExitCode {
+fn cmd_doc_all(root: &Path, format: Option<DocFormat>) -> ExitCode {
     let roots = match monorepo::discover(root) {
         Ok(roots) if roots.is_empty() => {
             eprintln!("no `pds.toml` workspace found under {}", root.display());
@@ -804,7 +805,13 @@ fn resolve_view(view: &str, target: &str) -> Result<View> {
 /// Model diagnostics are reported to stderr but, like `cargo doc`, never abort
 /// generation — a model with warnings still documents. Only I/O and load errors
 /// fail the command.
-fn cmd_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) -> ExitCode {
+fn cmd_doc(
+    path: &Path,
+    serve: bool,
+    watch: bool,
+    port: u16,
+    format: Option<DocFormat>,
+) -> ExitCode {
     // Watching only makes sense while serving (regenerate, then live-reload).
     let serve = serve || watch;
     match run_doc(path, serve, watch, port, format) {
@@ -818,11 +825,20 @@ fn cmd_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) 
 
 /// Generates the site once, then optionally serves it — with a workspace
 /// watcher and browser live-reload when `watch` is set.
-fn run_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) -> Result<()> {
-    if format == DocFormat::Md && (serve || watch) {
-        bail!("`pds doc --format md` writes Markdown files; --serve/--watch are not supported");
+fn run_doc(
+    path: &Path,
+    serve: bool,
+    watch: bool,
+    port: u16,
+    format: Option<DocFormat>,
+) -> Result<()> {
+    let (out_dir, format) = build_site(path, true, format)?;
+    if format == DocFormat::Md {
+        if serve || watch {
+            eprintln!("note: --serve/--watch are not supported for Markdown output");
+        }
+        return Ok(());
     }
-    let out_dir = build_site(path, true, format)?;
     if !serve {
         return Ok(());
     }
@@ -836,9 +852,15 @@ fn run_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) 
 /// Loads the workspace, renders the site, and writes it to the output dir,
 /// returning that dir. `announce` prints the file count (quieted on rebuilds,
 /// which print their own line).
-fn build_site(path: &Path, announce: bool, format: DocFormat) -> Result<PathBuf> {
+fn build_site(
+    path: &Path,
+    announce: bool,
+    cli_format: Option<DocFormat>,
+) -> Result<(PathBuf, DocFormat)> {
     let root = workspace::find_root(path)?;
     let project = workspace::load(&root)?;
+    // Precedence: an explicit `--format` wins over `[doc].format`, else HTML.
+    let format = cli_format.or(project.doc_format).unwrap_or(DocFormat::Html);
 
     report_diagnostics(&check_workspace_with_externals(
         &project.modules,
@@ -873,7 +895,7 @@ fn build_site(path: &Path, announce: bool, format: DocFormat) -> Result<PathBuf>
             project.out_dir.display()
         );
     }
-    Ok(project.out_dir)
+    Ok((project.out_dir, format))
 }
 
 /// Spawns a detached thread that watches the workspace and regenerates the site
@@ -920,7 +942,7 @@ fn watch_loop(path: &Path, out_dir: &Path, version: &AtomicU64) -> Result<()> {
         if !relevant {
             continue;
         }
-        match build_site(path, false, DocFormat::Html) {
+        match build_site(path, false, Some(DocFormat::Html)) {
             Ok(_) => {
                 version.fetch_add(1, Ordering::SeqCst);
                 println!("↻ regenerated");
