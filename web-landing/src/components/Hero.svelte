@@ -32,7 +32,7 @@
             <div class="code" id="hero-code"></div>
           </div>
         </div>
-        <div class="sheet-pane">
+        <div class="sheet-pane" aria-hidden="true">
           <div class="grid-dots"></div>
           <span class="lbl depth-label">System context</span>
           <div class="c4-stage" id="hero-stage">

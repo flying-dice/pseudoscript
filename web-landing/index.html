@@ -3,10 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PseudoScript — Model-driven engineering, pseudocode reignited</title>
-  <meta name="description" content="PseudoScript brings model-driven engineering and pseudocode together: write your architecture as plain pseudocode and generate C4 models and sequence diagrams. The model is the source of truth.">
 
-  <link rel="icon" href="/pds-logo.svg">
+  <title>PseudoScript — Model-driven development, pseudocode reignited</title>
+  <meta name="description" content="Model your system as plain pseudocode and generate always-current C4 and sequence diagrams. Model-driven development and pseudo-programming for the agentic era.">
+  <link rel="canonical" href="https://pdscript.dev/">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta name="keywords" content="PseudoScript, model-driven development, model-driven engineering, pseudocode, architecture as code, C4 model, sequence diagrams, spec-driven development, agentic, LSP">
+  <meta name="theme-color" content="#0a0b0e" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#e7eaef" media="(prefers-color-scheme: light)">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PseudoScript">
+  <meta property="og:title" content="PseudoScript — Model the intent. Implement the detail.">
+  <meta property="og:description" content="Model your system as plain pseudocode and generate always-current C4 and sequence diagrams. Model-driven development for the agentic era.">
+  <meta property="og:url" content="https://pdscript.dev/">
+  <meta property="og:image" content="https://pdscript.dev/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="PseudoScript — model the intent, implement the detail. A .pds model beside its generated C4 diagram.">
+  <meta property="og:locale" content="en_GB">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PseudoScript — Model the intent. Implement the detail.">
+  <meta name="twitter:description" content="Model your system as plain pseudocode and generate always-current C4 and sequence diagrams. Model-driven development for the agentic era.">
+  <meta name="twitter:image" content="https://pdscript.dev/og.png">
+
+  <link rel="icon" type="image/svg+xml" href="/pds-logo.svg">
+  <link rel="apple-touch-icon" href="/pds-logo.svg">
+
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://pdscript.dev/#website",
+        "url": "https://pdscript.dev/",
+        "name": "PseudoScript",
+        "description": "Model-driven development and pseudo-programming: model your system as plain pseudocode and generate always-current C4 and sequence diagrams.",
+        "inLanguage": "en"
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "PseudoScript",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Web, macOS, Linux, Windows",
+        "url": "https://pdscript.dev/",
+        "description": "An architecture-modelling language: write your system as plain pseudocode and the toolchain validates the model and generates C4 and sequence diagrams. Runs in the browser, as a CLI, and as a JetBrains plugin.",
+        "softwareHelp": "https://github.com/flying-dice/pseudoscript#readme",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    ]
+  }
+  </script>
+
   <script>
     // Resolve theme before first paint (no FOUC). Explicit choice wins; else follow the OS.
     try {
@@ -21,6 +74,28 @@
 </head>
 <body>
   <div id="app"></div>
+
+  <!-- Crawlable fallback: the app is client-rendered, so give crawlers and
+       no-JS visitors the core pitch and primary links up front. -->
+  <noscript>
+    <main>
+      <h1>PseudoScript — model the intent, implement the detail</h1>
+      <p>
+        PseudoScript powers model-driven development and pseudo-programming for
+        the agentic era. Model your system in plain pseudocode and the toolchain
+        validates the model and generates the C4 and sequence diagrams your team
+        and your agents build against.
+      </p>
+      <ul>
+        <li><a href="http://ide.pdscript.dev/">Open the Web IDE</a></li>
+        <li><a href="https://github.com/flying-dice/pseudoscript#readme">Documentation</a></li>
+        <li><a href="https://github.com/flying-dice/pseudoscript/blob/main/LANG.md">Language reference (LANG.md)</a></li>
+        <li><a href="https://en.wikipedia.org/wiki/Model-driven_engineering">Model-driven engineering</a></li>
+        <li><a href="https://en.wikipedia.org/wiki/Pseudocode">Pseudocode</a></li>
+      </ul>
+    </main>
+  </noscript>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
