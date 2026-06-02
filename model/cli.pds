@@ -8,16 +8,18 @@
 //! pds init   [path] [--name N]                       bootstrap a workspace
 //! pds doc    [path] [--serve] [--watch] [--port N]    headline (ADR-017)
 //! pds check  <file.pds>                               diagnostics; non-zero on error
+//! pds eval                                            stdin diagnostics; non-zero on error
 //! pds fmt    <file.pds> [--write]                     canonical formatting
 //! pds tokens <file.pds>                               lexical token stream
 //! pds lsp                                             language server over stdio
 
 /// The subcommand clap parsed from argv, with its resolved options: `init`,
-/// `doc`, `check`, `fmt`, `tokens`, or `lsp`.
+/// `doc`, `check`, `eval`, `fmt`, `tokens`, or `lsp`.
 public data Command =
   | InitCmd { path: string, name: string }
   | DocOpts { path: string, serve: bool, watch: bool, port: number }
   | CheckOpts { file: string }
+  | EvalOpts
   | FmtOpts { file: string, write: bool }
   | TokensOpts { file: string }
   | LspOpts
@@ -170,6 +172,25 @@ component CheckCmd for Cli {
   anyError(diagnostics: syntax::Diagnostic[]): bool;
 }
 
+/// `pds eval` — read a model from stdin and statically check it, printing each
+/// diagnostic as `<stdin>:line:col: severity: message` and exiting non-zero on
+/// any error. The fileless path: an agent pipes a snippet to check it without
+/// writing a file.
+component EvalCmd for Cli {
+  #[manual]
+  public run(text: string): Result<void, IoError> {
+    diagnostics: syntax::Diagnostic[] = model::Checks.check(text)
+    if (self.anyError(diagnostics)) {
+      err: IoError = IoError from { diagnostics }
+      return Err(err)
+    }
+    return Ok
+  }
+
+  /// Whether any diagnostic is error-severity — the non-zero-exit signal.
+  anyError(diagnostics: syntax::Diagnostic[]): bool;
+}
+
 /// `pds fmt` — format to canonical PseudoScript; `--write` overwrites the file in
 /// place, otherwise prints to stdout. A parse error is reported and the file is
 /// left untouched.
@@ -253,7 +274,7 @@ feature CompositionRoot for Cli {
 
 /// argv is parsed into one subcommand and dispatched.
 feature ParseSubcommand for Cli {
-  given "a command line for one of init, doc, check, fmt, tokens, or lsp"
+  given "a command line for one of init, doc, check, eval, fmt, tokens, or lsp"
   when "the CLI starts"
   then "clap parses argv into the chosen subcommand and its options"
   and "the matching command handler is invoked"
@@ -322,6 +343,15 @@ feature CheckExitCode for CheckCmd {
   given "a .pds source file"
   when "the developer runs `pds check` on it"
   then "every diagnostic is printed as path:line:col: severity: message"
+  but "the command exits non-zero if any diagnostic is error-severity"
+  and "a well-formed model prints nothing and exits zero"
+}
+
+/// `pds eval` reads stdin and exits non-zero when any error diagnostic is produced.
+feature EvalExitCode for EvalCmd {
+  given "a model piped to stdin"
+  when "the developer or an agent runs `pds eval`"
+  then "every diagnostic is printed as <stdin>:line:col: severity: message"
   but "the command exits non-zero if any diagnostic is error-severity"
   and "a well-formed model prints nothing and exits zero"
 }

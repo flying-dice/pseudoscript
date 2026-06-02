@@ -3,7 +3,7 @@
 Two kinds of idiom, one document:
 
 1. **Modeling idioms** — how to write `.pds` models (the language as used).
-2. **Implementation patterns** — how the compiler is built, crate by crate, mapped to the components in the [`pseudoscript/`](./pseudoscript/) workspace (one module per crate).
+2. **Implementation patterns** — how the compiler is built, crate by crate, mapped to the components in the [`model/`](./model/) workspace (one module per crate).
 
 The implementation half records the pattern **in use**, the prior art it draws on, and the alternatives weighed. Where the build chose differently from an obvious default (hand-written over `logos`, an index arena over `petgraph`), the rejected option is kept as an alternative, not presented as current.
 

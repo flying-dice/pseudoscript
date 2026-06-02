@@ -1,0 +1,8 @@
+# The PseudoScript compiler modelling its own design — one .pds module per crate
+# (cli, syntax, model, format, emit, doc, lsp). Lives at `<root>/model` by
+# convention; `pds doc model` renders its diagrams and doc site.
+[doc]
+name  = "PseudoScript"
+out   = "target/doc"
+logo  = "logo.svg"
+theme = "dark"
