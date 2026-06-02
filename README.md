@@ -27,7 +27,7 @@ reignited.
 | [`crates/`](crates/) | The Rust toolchain: parser, checker, formatter, diagram emitter, LSP, and the `pds` binary. |
 | [`web-ide/`](web-ide/) | The browser IDE — the whole toolchain compiled to WebAssembly. |
 | [`web-landing/`](web-landing/) | The marketing site. |
-| [`model/`](model/) | The compiler modelling its own design in PseudoScript (one module per crate). |
+| [`model/`](model/) | PseudoScript modelling its own design — the compiler crates, the web IDE, and the landing site. |
 
 ## The `pds` CLI
 

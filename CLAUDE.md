@@ -15,7 +15,7 @@ The language is defined across four artifacts that must stay consistent with eac
 - **`CONFORMANCE/`** — the executable contract, one sub-directory per spec layer: `lexical/` (§2 tokenisation), `syntax/` (§3–§10 parse/reject), `static/` (§6, §8 resolution/well-formedness), `generation/` (§9 diagrams — **deferred**, see its README). The spec leads; expected outputs are hand-written, never copied from an implementation. Read `CONFORMANCE/README.md` before touching cases.
 - **`PATTERNS.md`** — idioms and recipes for writing PseudoScript models.
 
-`model/` is a large worked-example model — the compiler modeling its own design, one `.pds` module per crate (bounded context), a buildable workspace (`pds doc model`). By convention a project's PseudoScript model lives at `<root>/model`. The flagship worked examples live under `web-ide/src/lib/samples/` (one folder per sample, each a buildable `pds` workspace plus a `meta.json` for the IDE's examples picker).
+`model/` is a large worked-example model — PseudoScript modeling its own design: one `.pds` module per compiler crate (bounded context), plus the web IDE (`ide`, including the `pseudoscript-wasm` bridge) and the landing site (`landing`). A buildable workspace (`pds doc model`). By convention a project's PseudoScript model lives at `<root>/model`. The flagship worked examples live under `web-ide/src/lib/samples/` (one folder per sample, each a buildable `pds` workspace plus a `meta.json` for the IDE's examples picker).
 
 When changing a language rule, the change usually touches several of these at once: the `LANG.md` clause, a `decisions/` entry if a fork was resolved, and a `CONFORMANCE/` case that exercises it. The ADRs each list the `LANG.md` sections they affect.
 

@@ -1,0 +1,107 @@
+//! ide — the browser IDE (web-ide/, ide.pdscript.dev): the whole toolchain
+//! compiled to WebAssembly and run client-side. No backend. An LSP client over
+//! the wasm bridge, with live C4 and sequence diagrams projected from the same
+//! model the CLI documents.
+//!
+//! "One LSP API, two transports": the wasm export of each language handler
+//! returns byte-for-byte what the stdio `lsp` server returns, so the editor's
+//! intelligence is the language server's, running in the tab.
+
+/// A completion candidate offered as the author types: the inserted label, the
+/// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text.
+public data Completion { label: string, kind: number, detail: string }
+
+/// The in-browser workspace: the open `.pds` modules and the `pds.toml` manifest.
+/// Held in memory (a decoded sample or share link) or backed by a local directory
+/// via the File System Access API. Edits never leave the browser.
+public data BrowserWorkspace { modules: model::WorkspaceModule[], manifest: string }
+
+/// `crates/pseudoscript-wasm` — the browser bridge. Each language export calls
+/// the same transport-neutral handler the stdio `lsp` server does and serialises
+/// its `lsp_types` result to JSON, so the WASM API is the LSP API. Diagram and
+/// doc exports (`emitScene`, `symbolScene`) are WASM-only — no LSP equivalent.
+public container Wasm for context::Pseudoscript {
+  /// Parse and statically check one module's source — the editor's linter,
+  /// rerun on every keystroke. Delegates to the same checker the CLI uses.
+  check(source: string): syntax::Diagnostic[] {
+    return model::Checks.check(source)
+  }
+  /// Workspace-wide diagnostics across every open module, so a cross-file issue
+  /// surfaces in the file that causes it.
+  checkModules(modules: model::WorkspaceModule[]): model::ModuleDiagnostics[];
+  /// Context-aware completions at a byte offset, resolved across the workspace.
+  completion(modules: model::WorkspaceModule[], moduleFqn: string, offset: number): Completion[];
+  /// Markdown hover for the symbol under the cursor.
+  hover(modules: model::WorkspaceModule[], moduleFqn: string, offset: number): string;
+  /// Go-to-definition: the FQN the identifier under the cursor points at.
+  definition(modules: model::WorkspaceModule[], moduleFqn: string, offset: number): string;
+  /// Delta-encoded semantic tokens for AST-aware highlighting.
+  semanticTokens(source: string): string;
+  /// Canonical formatting, the same transform as `pds fmt`.
+  format(source: string): string;
+  /// Project a diagram view of the workspace to a layout-ready scene.
+  emitScene(modules: model::WorkspaceModule[], view: emit::View, target: string): emit::Scene;
+  /// The fitting diagram for one symbol — the hover preview and drill target.
+  symbolScene(modules: model::WorkspaceModule[], fqn: string): emit::Scene;
+}
+
+/// `web-ide` — the IDE at `ide.pdscript.dev`. A SvelteKit app on Cloudflare
+/// Workers static assets: CodeMirror 6 editing, an interactive C4 + sequence
+/// canvas, and the full toolchain via `Wasm`. Entirely client-side.
+public container WebIde for context::Pseudoscript {
+  /// Open the IDE in the browser tab: load the wasm bundle and a workspace — a
+  /// decoded share link or bundled sample, or a local directory.
+  public open(): void;
+}
+
+/// The language client wiring CodeMirror to the `Wasm` bridge: re-checks on every
+/// edit, decodes delta-encoded semantic tokens to editor positions, and adapts
+/// completions, hover, and go-to-definition. The "LSP client" half of the
+/// two-transport design.
+public component LanguageClient for WebIde {
+  /// On each edit, check the active module and surface its diagnostics inline.
+  onEdit(source: string): syntax::Diagnostic[] {
+    return Wasm.check(source)
+  }
+  /// Decode delta-encoded semantic tokens into editor decorations.
+  highlight(source: string): void;
+  /// Offer completions at the cursor, mapping the integer kind to an icon.
+  complete(workspace: BrowserWorkspace, moduleFqn: string, offset: number): Completion[];
+}
+
+/// The CodeMirror 6 editor pane: PseudoScript highlighting, completion, inline
+/// diagnostics, hover, rename, and format, plus plain/markdown/toml modes for the
+/// companion files.
+public component Editor for WebIde;
+
+/// The diagram canvas: routes to an interactive C4 graph (Svelte Flow + Dagre) or
+/// a depth-collapsible sequence timeline, both projected from `Wasm.emitScene`,
+/// with PNG/SVG export.
+public component DiagramPane for WebIde {
+  /// Render a projected scene onto the canvas.
+  render(scene: emit::Scene): void;
+}
+
+/// The in-browser workspace store: holds the open modules and manifest, seeds
+/// bundled samples, and encodes the workspace to a share link or `.pdsx` file.
+public component WorkspaceStore for WebIde {
+  /// Encode the whole workspace into a shareable URL hash.
+  share(workspace: BrowserWorkspace): string;
+}
+
+/// The IDE runs the language server in the browser with no backend.
+feature LspOverWasm for Wasm {
+  given "the toolchain compiled to WebAssembly"
+  when "the IDE calls a language handler — check, completion, hover, definition"
+  then "the wasm export returns byte-for-byte what the stdio server returns"
+  and "it runs entirely in the browser tab with no network round-trip"
+}
+
+/// Editing a model in the browser checks and redraws it live.
+feature EditInBrowser for WebIde {
+  given "a .pds module open in the browser IDE"
+  when "the author edits it"
+  then "the module is re-checked on every keystroke via the wasm bridge"
+  and "diagnostics and the projected C4 or sequence diagram update live"
+  but "nothing is sent to a server"
+}

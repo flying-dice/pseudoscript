@@ -1,0 +1,44 @@
+//! landing — the marketing site (web-landing/, pdscript.dev): a static Svelte
+//! build served as Cloudflare Workers assets. One job: route a visitor into the
+//! product. Its only logic is conversion — try it in the browser, install the
+//! CLI, or get the JetBrains plugin.
+
+/// A prospective user reading the landing page.
+public person Visitor {
+  /// The primary conversion: open the zero-install browser IDE.
+  /// #headline
+  #[manual]
+  public tryInBrowser(): void {
+    Landing.openIde()
+  }
+
+  /// Take the model-driven workflow local with the CLI.
+  #[manual]
+  public installCli(): void {
+    Landing.showInstall()
+  }
+}
+
+/// `web-landing` — the marketing site at `pdscript.dev`. A static Svelte build on
+/// Cloudflare Workers static assets; no backend. It routes a visitor to one of
+/// three surfaces and otherwise just tells the model-driven story.
+public container Landing for context::Pseudoscript {
+  /// Send the visitor to the browser IDE at `ide.pdscript.dev`.
+  openIde(): void {
+    ide::WebIde.open()
+  }
+
+  /// Reveal the one-line CLI install command (copy-to-clipboard).
+  showInstall(): void;
+
+  /// Link out to the JetBrains plugin on the Marketplace.
+  getPlugin(): void;
+}
+
+/// The landing page's one job: get a visitor into the product.
+/// #headline
+feature OpenTheIde for Landing {
+  given "a visitor on pdscript.dev"
+  when "they choose to try it in the browser"
+  then "the zero-install Web IDE opens at ide.pdscript.dev"
+}
