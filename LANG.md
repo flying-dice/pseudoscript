@@ -427,13 +427,14 @@ The site MUST contain:
 - A **scenario** card for each `feature` (§5.2), rendered as its given/when/then steps on the target node's section.
 - **Cross-links**: every FQN reference links to the referenced node.
 
-The site MAY also carry **authored documentation pages**: Markdown files declared in `[[doc.sidebar]]` groups (below). Each page renders as its own HTML page; its sidebar group sits **above** the auto-generated module tree. A page whose file cannot be read MUST be skipped, not abort generation.
+The site MAY also carry **authored documentation pages**: Markdown files declared in `[[doc.sidebar]]` groups (below). Each page renders as its own page; its sidebar group sits **above** the auto-generated module tree. A page whose file cannot be read MUST be skipped, not abort generation.
 
 `[doc]` in `pds.toml` configures the site; all keys are optional:
 - `name` — site title. Defaults to the root directory name.
 - `out` — output directory, relative to `pds.toml`. Defaults to `target/doc`.
 - `logo` — path to a logo image, relative to `pds.toml`.
 - `theme` — `light` or `dark`. Defaults to `light`.
+- `format` — `html` or `md`. Defaults to `html`. `md` writes one Markdown file per page, each diagram inlined as a self-contained SVG. A `--format` flag on `pds doc` overrides this key.
 
 Each `[[doc.sidebar]]` table is one sidebar group: a `title` and an ordered `items` array of `{ title, path }` entries. Each `path` names a Markdown file relative to `pds.toml`.
 
