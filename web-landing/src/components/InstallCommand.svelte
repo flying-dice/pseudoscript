@@ -69,11 +69,6 @@
   .install {
     margin: 2.6rem auto 0;
     max-width: 760px;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    background: var(--surface);
-    box-shadow: var(--shadow-md);
-    padding: 1rem 1.1rem 1.1rem;
   }
   .install-head {
     display: flex;
@@ -113,9 +108,10 @@
     align-items: center;
     gap: .8rem;
     padding: .8rem .9rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    background: var(--bg);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   .install-cmd code {
     flex: 1;

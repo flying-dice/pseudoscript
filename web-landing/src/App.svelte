@@ -3,10 +3,9 @@
   import { initLanding } from './lib/landing-anim.js';
   import Topbar from './components/Topbar.svelte';
   import Hero from './components/Hero.svelte';
-  import Convergence from './components/Convergence.svelte';
+  import InstallCommand from './components/InstallCommand.svelte';
+  import AgentOnramp from './components/AgentOnramp.svelte';
   import Workflow from './components/Workflow.svelte';
-  import IdeShowcase from './components/IdeShowcase.svelte';
-  import Packages from './components/Packages.svelte';
   import Cta from './components/Cta.svelte';
   import SiteFooter from './components/SiteFooter.svelte';
   import Tweaks from './components/Tweaks.svelte';
@@ -20,12 +19,20 @@
 
 <Topbar />
 
+<!-- generation spine: one model, many projections — lights the active section -->
+<nav class="spine" aria-label="Sections">
+  <a href="#top"><span class="si">00</span><span class="sl">Model</span></a>
+  <a href="#workflow"><span class="si">01</span><span class="sl">Method</span></a>
+  <a href="#agents"><span class="si">02</span><span class="sl">Agent</span></a>
+</nav>
+
 <main id="top" class="shell">
   <Hero />
-  <Convergence />
+  <section id="install" class="install-section" data-screen-label="Install">
+    <div class="wrap"><InstallCommand /></div>
+  </section>
   <Workflow />
-  <IdeShowcase />
-  <Packages />
+  <AgentOnramp />
   <Cta />
   <SiteFooter />
 </main>

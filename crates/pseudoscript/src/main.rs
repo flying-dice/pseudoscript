@@ -7,6 +7,8 @@
 //! - `pds skill` — print the bundled authoring skill.
 //! - `pds lsp` — start the language server over stdio ([`pseudoscript_lsp`]).
 //! - `pds check <FILE>` — report diagnostics; exit non-zero on any error.
+//! - `pds eval` — read a model from stdin and report diagnostics; for agents
+//!   checking a snippet without writing a file.
 //! - `pds fmt <FILE> [--write]` — canonical formatting.
 //! - `pds tokens <FILE>` — the lexical token stream, for debugging.
 //! - `pds doc [PATH]` — generate the documentation site
@@ -99,6 +101,10 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Read a model from stdin and report diagnostics (exit non-zero on any
+    /// error). For agents: pipe a snippet to rapidly check it parses and
+    /// resolves, without writing a file — e.g. `pds eval < model.pds`.
+    Eval,
     /// Format a file to canonical `PseudoScript`.
     Fmt {
         /// The `.pds` file to format.
@@ -221,6 +227,7 @@ fn main() -> ExitCode {
                 cmd_check(&file)
             }
         }
+        Command::Eval => cmd_eval(),
         Command::Fmt { file, write } => cmd_fmt(&file, write),
         Command::Tokens { file } => cmd_tokens(&file),
         Command::Outline { path } => cmd_outline(&path),
@@ -541,14 +548,32 @@ fn cmd_check(path: &Path) -> ExitCode {
         Ok(src) => src,
         Err(code) => return code,
     };
-    let index = LineIndex::new(&src);
-    let diagnostics = check(&src);
+    report_source(&path.display().to_string(), &src)
+}
+
+/// `pds eval`: read a model from stdin and report diagnostics, exiting non-zero
+/// on any error. Lets an agent check a snippet's syntax and resolution without
+/// touching disk — `pds eval < model.pds` or a piped here-doc.
+fn cmd_eval() -> ExitCode {
+    match std::io::read_to_string(std::io::stdin()) {
+        Ok(src) => report_source("<stdin>", &src),
+        Err(err) => {
+            eprintln!("<stdin>: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Run `check` over a single source buffer, printing each diagnostic to stderr
+/// as `label:line:col: severity: message`. `label` is the file path or
+/// `<stdin>`. Returns `FAILURE` if any diagnostic is an error, else `SUCCESS`.
+fn report_source(label: &str, src: &str) -> ExitCode {
+    let index = LineIndex::new(src);
     let mut had_error = false;
-    for diag in &diagnostics {
+    for diag in &check(src) {
         let (line, col) = index.line_col(diag.span.start);
         eprintln!(
-            "{}:{line}:{col}: {}: {}",
-            path.display(),
+            "{label}:{line}:{col}: {}: {}",
             severity_label(diag.severity),
             diag.message
         );

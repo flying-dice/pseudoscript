@@ -1,10 +1,10 @@
 /* =============================================================================
    PseudoScript landing — interactions (ported from the design's landing.js).
    - live .pds typing in the hero, syncing a C4 diagram that assembles
-   - static syntax-highlighted panels (Describe step, IDE editor)
-   - diagnostics resolving (Refine step)
-   - a projected sequence diagram (Generate step)
-   - scroll reveals + the convergence core pulse
+   - a static syntax-highlighted panel (Describe step)
+   - diagnostics that resolve as you scroll (Refine step, scroll-linked)
+   - a projected sequence diagram that draws in with scroll (Generate step)
+   - scroll reveals + the generation-spine active-section tracking
    Triggers are scroll-driven (with an immediate initial pass) so they fire
    reliably regardless of IntersectionObserver quirks.
 
@@ -58,6 +58,15 @@ export function initLanding(): () => void {
     el.innerHTML = s;
   }
   function top(el: Element): number { return el.getBoundingClientRect().top; }
+
+  /* scroll progress 0..1 as el's top travels from start*vh down to end*vh.
+     start > end, e.g. (0.8, 0.35): p=0 as the element enters at 80% of the
+     viewport, p=1 once its top reaches 35%. Used to scrub scroll-linked anims. */
+  function prog(el: Element, vh: number, start: number, end: number): number {
+    const t = el.getBoundingClientRect().top;
+    const p = (start * vh - t) / ((start - end) * vh);
+    return p < 0 ? 0 : p > 1 ? 1 : p;
+  }
 
   /* registry of one-shot scroll triggers + always-run watchers */
   const oneShots: OneShot[] = [];   // { el, ratio, fired, fn }
@@ -116,25 +125,6 @@ export function initLanding(): () => void {
     'public data Hold { id: HoldId, seats: number }'
   ].join('\n');
 
-  const IDE_SRC = [
-    '//! context — the C4 system context.',
-    '',
-    'public person Attendee {',
-    '  #[manual]',
-    '  public hold(req: ReserveRequest): void {',
-    '    gateway::ReservationApi.reserve(req)',
-    '  }',
-    '}',
-    '',
-    '/// ACME Tickets — the ticketing platform.',
-    '/// #headline',
-    'public system AcmeTickets;',
-    '',
-    'public system PaymentProvider {',
-    '  public authorize(amt: Money): Result<Auth, Error>;',
-    '}'
-  ].join('\n');
-
   /* ---- static highlighted panels ----------------------------------------- */
   function paintStatic(codeId: string, gutId: string, src: string): void {
     const code = document.getElementById(codeId);
@@ -143,26 +133,6 @@ export function initLanding(): () => void {
     gutter(document.getElementById(gutId), src.split('\n').length);
   }
   paintStatic('describe-code', 'describe-gutter', DESCRIBE_SRC);
-  paintStatic('ide-code', 'ide-gutter', IDE_SRC);
-
-  /* ---- manifest (pds.toml) ----------------------------------------------- */
-  (function manifest(): void {
-    const el = document.getElementById('manifest');
-    if (!el) return;
-    const rows = [
-      '<span class="tag">[workspace]</span>',
-      '<span class="var">name</span>    <span class="punct">=</span> <span class="str">"acme-tickets"</span>',
-      '<span class="var">version</span> <span class="punct">=</span> <span class="str">"1.4.0"</span>',
-      '<span class="var">modules</span> <span class="punct">=</span> <span class="punct">[</span><span class="str">"context"</span>, <span class="str">"inventory"</span>,',
-      '           <span class="str">"orders"</span>, <span class="str">"payments"</span><span class="punct">]</span>',
-      '',
-      '<span class="tag">[dependencies]</span>',
-      '<span class="var">acme/inventory</span> <span class="punct">=</span> <span class="str">"1.4.0"</span>',
-      '<span class="var">std/money</span>      <span class="punct">=</span> <span class="str">"2.1.0"</span>',
-      '<span class="var">c4/patterns</span>    <span class="punct">=</span> <span class="str">"0.9.2"</span>'
-    ];
-    el.innerHTML = rows.join('\n');
-  })();
 
   /* ---- hero typing + diagram assembly ------------------------------------ */
   (function hero(): void {
@@ -227,30 +197,28 @@ export function initLanding(): () => void {
     } });
   })();
 
-  /* ---- refine: diagnostics resolving ------------------------------------- */
+  /* ---- refine: diagnostics resolve as you scroll ------------------------- */
   (function refine(): void {
     const box = document.getElementById('refine-visual');
     if (!box) return;
     const items = $all('#problems li');
     const count = document.getElementById('prob-count');
     const well = document.getElementById('well-formed');
-    function resolveSeq(): void {
-      if (reduce) {
-        items.forEach(function (li) { li.classList.add('resolved'); });
-        if (count) count.textContent = '0 problems';
-        if (well) well.classList.add('show');
-        return;
-      }
-      [0, 1, 2].forEach(function (idx, k) {
-        setTimeout(function () {
-          if (items[idx]) items[idx].classList.add('resolved');
-          const left = items.length - (k + 1);
-          if (count) count.textContent = left + (left === 1 ? ' problem' : ' problems');
-          if (k === 2 && well) setTimeout(function () { well.classList.add('show'); }, 250);
-        }, 600 + k * 650);
-      });
+    const n = items.length;
+    function setState(resolved: number): void {
+      items.forEach(function (li, i) { li.classList.toggle('resolved', i < resolved); });
+      const left = n - resolved;
+      if (count) count.textContent = left + (left === 1 ? ' problem' : ' problems');
+      if (well) well.classList.toggle('show', resolved >= n);
     }
-    oneShots.push({ el: box, ratio: 0.7, fired: false, fn: resolveSeq });
+    if (reduce) { setState(n); return; }
+    // scrub: hold all problems visible until the panel is well into view, then
+    // resolve as it scrolls toward the top — finishing late so it's readable,
+    // not "gone by half way down". one problem clears per 1/(n+1) of progress.
+    watchers.push(function (vh: number) {
+      const p = prog(box, vh, 0.7, 0.08);
+      setState(Math.min(n, Math.floor(p * (n + 1))));
+    });
   })();
 
   /* ---- generate: sequence diagram ---------------------------------------- */
@@ -314,20 +282,31 @@ export function initLanding(): () => void {
       svg.appendChild(g);
       groups.push(g);
     });
-    function play(): void {
-      if (reduce) { groups.forEach(function (g) { g.classList.add('in'); }); return; }
-      groups.forEach(function (g, i) { setTimeout(function () { g.classList.add('in'); }, 250 + i * 320); });
-    }
-    oneShots.push({ el: svg, ratio: 0.6, fired: false, fn: play });
+    if (reduce) { groups.forEach(function (g) { g.classList.add('in'); }); return; }
+    // scrub: messages draw in one by one as the diagram scrolls through view
+    const wrap = svg.closest('.seq') || svg;
+    const n = groups.length;
+    watchers.push(function (vh: number) {
+      const p = prog(wrap, vh, 0.8, 0.12);
+      const shown = Math.min(n, Math.floor(p * (n + 1)));
+      groups.forEach(function (g, i) { g.classList.toggle('in', i < shown); });
+    });
   })();
 
-  /* ---- convergence core pulse -------------------------------------------- */
-  (function core(): void {
-    const c = document.getElementById('core-mark');
-    if (!c || reduce) return;
+  /* ---- generation spine: light the active section's index ----------------- */
+  (function spine(): void {
+    const ticks = $all('.spine a') as HTMLElement[];
+    if (!ticks.length) return;
+    const targets = ticks.map(function (t) { return document.querySelector(t.getAttribute('href') || ''); });
+    // Not gated on `reduce`: this is a class toggle, not an animation, so the
+    // rail still tracks the active section under prefers-reduced-motion.
     watchers.push(function (vh: number) {
-      const r = c.getBoundingClientRect();
-      c.classList.toggle('live', r.top < vh * 0.8 && r.bottom > vh * 0.2);
+      let active = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const sec = targets[i];
+        if (sec && sec.getBoundingClientRect().top < vh * 0.4) active = i;
+      }
+      ticks.forEach(function (t, i) { t.classList.toggle('lit', i === active); });
     });
   })();
 
