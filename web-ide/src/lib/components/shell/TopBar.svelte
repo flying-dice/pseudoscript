@@ -50,10 +50,10 @@
     {#if workspaceName}
       <div class="nav">
         <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back">
-          <ArrowLeft size={15} strokeWidth={2} aria-hidden="true" />
+          <ArrowLeft size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
         <button class="icon-btn" onclick={onforward} disabled={!canForward} title="Forward (next location)" aria-label="Forward">
-          <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+          <ArrowRight size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>
     {/if}
@@ -62,7 +62,7 @@
   <div class="right">
     {#if workspaceName}
       <button class="icon-btn" onclick={() => menu.ongoto?.()} title="Go to file or symbol ({mod}K)" aria-label="Go to file or symbol">
-        <Search size={15} strokeWidth={2} aria-hidden="true" />
+        <Search size={18} strokeWidth={1.75} aria-hidden="true" />
       </button>
     {/if}
   </div>
@@ -105,8 +105,8 @@
     padding-right: 0.2rem;
   }
   .icon-btn {
-    width: 1.7rem;
-    height: 1.7rem;
+    width: 2rem;
+    height: 2rem;
     display: grid;
     place-items: center;
     background: transparent;
