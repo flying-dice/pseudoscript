@@ -26,6 +26,14 @@ pub struct PlacedParticipant {
     pub id: String,
     pub label: String,
     pub kind: String,
+    /// The ancestry shown dimmed under the name (the FQN minus its last segment),
+    /// for container/component lifelines only; `None` otherwise.
+    #[serde(default)]
+    pub parent_path: Option<String>,
+    /// The node's summary, wrapped to the card width and capped, drawn dimmed
+    /// under the name like a C4 card. Empty when the node has no summary.
+    #[serde(default)]
+    pub summary_lines: Vec<String>,
     /// The head card rectangle.
     pub card: Rect,
     /// The lifeline's centre x (the dashed line and activations sit here).

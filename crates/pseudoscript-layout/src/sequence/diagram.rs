@@ -13,13 +13,20 @@ pub struct Diagram {
     pub items: Vec<Item>,
 }
 
-/// A lifeline: a stable `id` the messages reference, a display `label`, and a
-/// `kind` token (the C4 kind, used only for head-card styling).
+/// A lifeline: a stable `id` the messages reference, a display `label`, a
+/// `kind` token (the C4 kind, used only for head-card styling), an optional
+/// `///` summary, and the dimmed parent path — both shown under the name. The
+/// projection supplies `parent_path` (the FQN is module-flat, so the engine
+/// cannot derive the C4 ancestry itself).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Participant {
     pub id: String,
     pub label: String,
     pub kind: String,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub parent_path: Option<String>,
 }
 
 /// One ordered element: a message or a nestable fragment.

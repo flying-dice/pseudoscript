@@ -37,8 +37,6 @@ pub struct Metrics {
     pub pad: i32,
     /// Minimum participant card width.
     pub node_w_min: i32,
-    /// Participant card height.
-    pub node_h: i32,
     /// Y where the head cards sit.
     pub lifeline_top: i32,
     /// Vertical advance per call/return row.
@@ -75,7 +73,6 @@ impl Default for Metrics {
             text: TextMetrics::default(),
             pad: 20,
             node_w_min: 168,
-            node_h: 60,
             lifeline_top: 64,
             msg_gap: 54,
             self_extra: 26,
@@ -124,6 +121,88 @@ impl Metrics {
     }
 }
 
+/// Lifeline head-card text geometry, in pixels from the card's top edge. Shared
+/// with the SVG renderer (`pseudoscript-emit`) so the card height computed here
+/// and the text baselines drawn there stay in lockstep across crates. The
+/// renderer draws the eyebrow, name, optional dimmed parent path, then the
+/// wrapped summary, each at the baseline these constants pin.
+pub mod head {
+    /// Eyebrow (kind) baseline.
+    pub const EYEBROW_Y: i32 = 20;
+    /// Name baseline.
+    pub const TITLE_Y: i32 = 40;
+    /// Dimmed parent-path baseline, when present.
+    pub const PARENT_Y: i32 = 56;
+    /// First summary-line baseline when no parent path is shown.
+    pub const DESC_TOP_Y: i32 = 58;
+    /// Extra downward shift applied to the summary lines when a parent path sits
+    /// above them.
+    pub const DESC_SHIFT_Y: i32 = 16;
+    /// Vertical advance per summary line.
+    pub const DESC_LINE_H: i32 = 15;
+    /// Padding below the last drawn baseline.
+    pub const BOTTOM_PAD: i32 = 14;
+    /// Minimum card height (an eyebrow + name with nothing extra).
+    pub const MIN_H: i32 = 60;
+    /// Summary wraps to at most this many lines.
+    pub const MAX_DESC_LINES: usize = 2;
+    /// Horizontal inset of the text column (left rule + both text pads), matching
+    /// the SVG card so the wrap budget agrees with what the renderer draws.
+    pub const TEXT_INSET: i32 = 33;
+
+    /// The card height a lifeline needs to fit its content: `has_parent` adds the
+    /// dimmed parent line, `desc_lines` the wrapped summary. All cards take the
+    /// max across participants so the header row stays flush.
+    #[must_use]
+    pub fn card_height(has_parent: bool, desc_lines: usize) -> i32 {
+        let desc_top = DESC_TOP_Y + if has_parent { DESC_SHIFT_Y } else { 0 };
+        let last_baseline = if desc_lines > 0 {
+            desc_top + i32::try_from(desc_lines.saturating_sub(1)).unwrap_or(0) * DESC_LINE_H
+        } else if has_parent {
+            PARENT_Y
+        } else {
+            TITLE_Y
+        };
+        (last_baseline + BOTTOM_PAD).max(MIN_H)
+    }
+}
+
+/// A lifeline head's text below the name: the dimmed parent path
+/// (container/component only) and the wrapped, capped summary.
+#[derive(Debug, Default)]
+struct HeadContent {
+    parent_path: Option<String>,
+    summary_lines: Vec<String>,
+}
+
+/// The head content for every participant, plus the uniform card height that
+/// fits the tallest. The text column matches the SVG card's inset, so the wrap
+/// budget agrees with what the renderer draws. `parent_path` comes from the
+/// projection (the FQN does not carry the C4 ancestry).
+fn head_content(
+    participants: &[Participant],
+    text: &TextMetrics,
+    node_w: i32,
+) -> (Vec<HeadContent>, i32) {
+    let text_w = (node_w - head::TEXT_INSET).max(1);
+    let content: Vec<HeadContent> = participants
+        .iter()
+        .map(|p| HeadContent {
+            parent_path: p.parent_path.clone(),
+            summary_lines: p
+                .summary
+                .as_deref()
+                .map(|s| text.wrap_desc(s, text_w, head::MAX_DESC_LINES))
+                .unwrap_or_default(),
+        })
+        .collect();
+    let node_h = content
+        .iter()
+        .map(|c| head::card_height(c.parent_path.is_some(), c.summary_lines.len()))
+        .fold(head::MIN_H, i32::max);
+    (content, node_h)
+}
+
 /// The sequence projection engine.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sequence;
@@ -165,6 +244,10 @@ pub fn layout(diagram: &Diagram, metrics: &Metrics) -> Layout {
         .map(|p| m.text.title_width(&p.label) + m.card_pad)
         .fold(m.node_w_min, i32::max);
 
+    // Lifeline head content (dimmed parent path + wrapped summary) and the
+    // uniform card height that fits the tallest.
+    let (content, node_h) = head_content(&diagram.participants, &m.text, node_w);
+
     // Pass 2 — column gap: fit the widest label per lane it spans, plus
     // self-message room, never tighter than card + gutter.
     let mut need_gap = 0;
@@ -179,7 +262,7 @@ pub fn layout(diagram: &Diagram, metrics: &Metrics) -> Layout {
     let max_x = xs.iter().copied().max().unwrap_or(m.pad) + m.frame_pad + m.ret_stub;
 
     // Pass 3 — vertical walk.
-    let body_top = m.lifeline_top + m.node_h + m.msg_gap;
+    let body_top = m.lifeline_top + node_h + m.msg_gap;
     let mut walk = Walk {
         m,
         col: &col,
@@ -207,9 +290,11 @@ pub fn layout(diagram: &Diagram, metrics: &Metrics) -> Layout {
             id: p.id.clone(),
             label: p.label.clone(),
             kind: p.kind.clone(),
-            card: Rect::new(xs[i] - node_w / 2, m.lifeline_top, node_w, m.node_h),
+            parent_path: content[i].parent_path.clone(),
+            summary_lines: content[i].summary_lines.clone(),
+            card: Rect::new(xs[i] - node_w / 2, m.lifeline_top, node_w, node_h),
             lifeline_x: xs[i],
-            top: m.lifeline_top + m.node_h,
+            top: m.lifeline_top + node_h,
             bottom: body_bottom,
         })
         .collect();
@@ -470,6 +555,8 @@ mod tests {
             id: id.to_owned(),
             label: id.to_owned(),
             kind: "component".to_owned(),
+            summary: None,
+            parent_path: None,
         }
     }
 
@@ -498,6 +585,45 @@ mod tests {
         let out = layout(&Diagram::default(), &Metrics::default());
         assert!(out.participants.is_empty());
         assert!(out.width > 0 && out.height > 0);
+    }
+
+    #[test]
+    fn component_lifeline_carries_parent_path_and_grows_card() {
+        let d = Diagram {
+            participants: vec![Participant {
+                id: "main::Validator".to_owned(),
+                label: "Validator".to_owned(),
+                kind: "component".to_owned(),
+                summary: Some("Checks the order is well formed before it is queued.".to_owned()),
+                parent_path: Some("shop::api".to_owned()),
+            }],
+            items: vec![],
+        };
+        let out = layout(&d, &Metrics::default());
+        let p = &out.participants[0];
+        assert_eq!(p.parent_path.as_deref(), Some("shop::api"));
+        assert!(!p.summary_lines.is_empty() && p.summary_lines.len() <= head::MAX_DESC_LINES);
+        // The card grew past the floor to fit the parent line + summary, and the
+        // dashed lifeline starts at the (taller) card's bottom.
+        assert!(p.card.h > head::MIN_H);
+        assert_eq!(p.top, Metrics::default().lifeline_top + p.card.h);
+    }
+
+    #[test]
+    fn person_lifeline_has_no_parent_path_and_keeps_floor_height() {
+        let d = Diagram {
+            participants: vec![Participant {
+                id: "main::Customer".to_owned(),
+                label: "Customer".to_owned(),
+                kind: "person".to_owned(),
+                summary: None,
+                parent_path: None,
+            }],
+            items: vec![],
+        };
+        let out = layout(&d, &Metrics::default());
+        assert_eq!(out.participants[0].parent_path, None);
+        assert_eq!(out.participants[0].card.h, head::MIN_H);
     }
 
     #[test]

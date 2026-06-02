@@ -416,6 +416,8 @@ A call to a **disclosed** callee expands inline: the callee becomes the active l
 
 In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
 
+Each lifeline head card shows the participant's C4 kind and name. A `container` or `component` participant SHOULD also show its `for` ancestry (enclosing node names, outermost first) dimmed beneath the name. Every declared participant SHOULD show its `///` summary, as on a C4 card (§9.1). A synthesised initiator carries neither.
+
 ### 9.3 Documentation site (`pds doc`)
 `pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded on the relevant pages.
 

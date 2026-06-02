@@ -59,7 +59,8 @@ export function buildModelIndex(nodes: StructureNode[], moduleFqns: string[]): M
   }
 
   const nodeInfo: Info = {};
-  for (const n of nodes) nodeInfo[n.fqn] = { kind: n.kind, parent: n.parent ?? null };
+  for (const n of nodes)
+    nodeInfo[n.fqn] = { kind: n.kind, parent: n.parent ?? null, summary: n.summary ?? null };
 
   const typeFqnByName: Record<string, string> = {};
   for (const n of nodes) if (n.kind === "data") typeFqnByName[n.name] = n.fqn;

@@ -51,7 +51,11 @@ describe("buildModelIndex", () => {
   it("buckets callables as flows under their owner, and maps types/info", () => {
     expect(idx.flowsByNode.get("m::core::Exchange")?.map((f) => f.name)).toEqual(["Run"]);
     expect(idx.typeFqnByName["Conv"]).toBe("m::core::Conv");
-    expect(idx.nodeInfo["m::core::Exchange"]).toEqual({ kind: "container", parent: "m::Sys" });
+    expect(idx.nodeInfo["m::core::Exchange"]).toEqual({
+      kind: "container",
+      parent: "m::Sys",
+      summary: null,
+    });
   });
 });
 
