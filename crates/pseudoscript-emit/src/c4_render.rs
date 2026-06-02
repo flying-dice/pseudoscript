@@ -37,20 +37,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use pseudoscript_model::NodeKind;
 
+use crate::render::pal;
 use crate::scene::{C4EdgeKind, C4Scene, PlacedNode, RoutedEdge};
 
-// Shared ink-on-paper palette (matches the sequence renderer for a cohesive
-// look across the static site's diagrams).
-/// Stroke colour for routed edges and arrowheads.
-const STROKE: &str = "#2a2f3a";
-/// Card border colour (cool hairline).
-const CARD_BORDER: &str = "#c3c8d2";
-/// Card background fill.
-const CARD_FILL: &str = "#ffffff";
-/// Title text colour.
-const TITLE_FILL: &str = "#2a2f3a";
-/// Description text colour (muted).
-const DESC_FILL: &str = "#6b7280";
+// All SVG colours come from the active theme palette (crate::render::pal); the
+// hand-written emitters bind their roles as locals at the top of each function.
+// The engine-side box/edge styles below feed the layout engine only — the
+// `Capture` backend ignores their colours — so they keep harmless literals.
 /// Margin added around the laid-out extent and inside the document.
 const MARGIN: f64 = 24.0;
 /// Font size handed to the layout engine for edge-label sizing.
@@ -220,16 +213,20 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
     let mut out = String::new();
     svg_open(&mut out, w.max(pad), h.max(pad));
 
+    #[allow(non_snake_case)]
+    let (CARD_BORDER, TITLE_FILL, STROKE) = (pal().hairline, pal().ink, pal().ink);
+
     for node in &scene.nodes {
         if Some(node.fqn.as_str()) != boundary {
             continue;
         }
         let _ = write!(
             out,
-            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" fill=\"#f6f7fa\" \
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" fill=\"{boundary_fill}\" \
              stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
              <text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" font-weight=\"700\" \
              fill=\"{TITLE_FILL}\">{label}</text>",
+            boundary_fill = pal().boundary_fill,
             x = node.rect.x,
             y = node.rect.y,
             w = node.rect.w,
@@ -282,9 +279,9 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
 /// needs to size and place a plain rectangle; its fill never reaches the SVG.
 fn node_style() -> StyleAttr {
     StyleAttr {
-        line_color: web_color(CARD_BORDER),
+        line_color: web_color("#c3c8d2"),
         line_width: 1,
-        fill_color: Some(web_color(CARD_FILL)),
+        fill_color: Some(web_color("#ffffff")),
         rounded: CARD_RADIUS_PX,
         font_size: FONT_SIZE,
     }
@@ -299,7 +296,7 @@ fn edge_arrow(edge: &RoutedEdge) -> Arrow {
         LineStyleKind::Normal
     };
     let look = StyleAttr {
-        line_color: web_color(STROKE),
+        line_color: web_color("#2a2f3a"),
         line_width: 1,
         fill_color: None,
         rounded: 0,
@@ -564,6 +561,8 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
     svg_open(&mut out, w, h);
 
     if let Some((frame_min, frame_max, title)) = &boundary_frame {
+        #[allow(non_snake_case)]
+        let (CARD_BORDER, TITLE_FILL) = (pal().hairline, pal().ink);
         let x = round(frame_min.x);
         let y = round(frame_min.y);
         let fw = round(frame_max.x - frame_min.x);
@@ -571,9 +570,10 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
         let _ = write!(
             &mut out,
             "<rect x=\"{x}\" y=\"{y}\" width=\"{fw}\" height=\"{fh}\" rx=\"12\" \
-             fill=\"#f6f7fa\" stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
+             fill=\"{boundary_fill}\" stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
              <text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" font-weight=\"700\" \
              fill=\"{TITLE_FILL}\">{label}</text>",
+            boundary_fill = pal().boundary_fill,
             tx = x + 12,
             ty = y + 19,
             label = escape_xml(title),
@@ -629,6 +629,9 @@ pub(crate) fn draw_card(
     title: &str,
     summary: Option<&str>,
 ) {
+    #[allow(non_snake_case)]
+    let (CARD_FILL, CARD_BORDER, TITLE_FILL, DESC_FILL) =
+        (pal().card_fill, pal().hairline, pal().ink, pal().muted);
     let accent = kind_color(kind);
     let r = CARD_RADIUS;
 
@@ -765,14 +768,17 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
         w = w,
         h = h,
     );
-    out.push_str(
+    let _ = write!(
+        out,
         "<defs>\
          <marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" \
          orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,0 L9,3 L0,6 z\" \
-         fill=\"#2a2f3a\"/></marker>\
+         fill=\"{ink}\"/></marker>\
          <filter id=\"cardlift\" x=\"-12%\" y=\"-12%\" width=\"124%\" height=\"140%\">\
-         <feDropShadow dx=\"0\" dy=\"2\" stdDeviation=\"3.5\" flood-color=\"#1a1f2a\" \
+         <feDropShadow dx=\"0\" dy=\"2\" stdDeviation=\"3.5\" flood-color=\"{shadow}\" \
          flood-opacity=\"0.12\"/></filter></defs>",
+        ink = pal().ink,
+        shadow = pal().shadow,
     );
 }
 
@@ -791,6 +797,8 @@ fn draw_arrow(out: &mut String, arrow: &CapturedArrow) {
     } else {
         ""
     };
+    #[allow(non_snake_case)]
+    let STROKE = pal().ink;
     let _ = write!(
         out,
         "<path d=\"{path}\" fill=\"none\" stroke=\"{STROKE}\"{dash} \
@@ -809,12 +817,15 @@ fn draw_edge_label(out: &mut String, label: &CapturedText) {
     let ly = round(label.xy.y);
     let chars = i32::try_from(label.text.chars().count()).unwrap_or(0);
     let plate_w = chars * 7 + 8;
+    #[allow(non_snake_case)]
+    let DESC_FILL = pal().muted;
     let _ = write!(
         out,
         "<rect x=\"{rx}\" y=\"{ry}\" width=\"{plate_w}\" height=\"16\" rx=\"4\" \
-         fill=\"#ffffffe6\"/>\
+         fill=\"{plate}\"/>\
          <text x=\"{lx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"11.5\" \
          fill=\"{DESC_FILL}\">{text}</text>",
+        plate = pal().edge_plate,
         rx = lx - plate_w / 2,
         ry = ly - 8,
         ty = ly + 4,

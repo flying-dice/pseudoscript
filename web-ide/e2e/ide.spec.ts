@@ -88,11 +88,51 @@ test("folding ranges come from the compiler (blocks fold)", async ({ page }) => 
   expect(docVisible).toBe(true);
 });
 
-test("Settings downloads the authoring skill folder as a zip", async ({ page }) => {
-  // Skill download lives in Settings now, reached from the activity-bar gear.
-  await page.getByLabel("Settings").click();
+test("the Help menu downloads the authoring skill folder as a zip", async ({ page }) => {
+  // Skill download lives under the Help menu.
+  await page.getByRole("button", { name: "Help", exact: true }).click();
   const link = page.getByTestId("download-skill");
   await expect(link).toBeVisible();
   const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
   expect(download.suggestedFilename()).toBe("pseudocode-skill.zip");
+});
+
+test("the editor right-click menu: Format always, symbol actions grey out off-target", async ({ page }) => {
+  const content = page.getByTestId("editor").locator(".cm-content");
+  const menu = page.locator(".cm-ctx");
+
+  // On a symbol (a class identifier) every action is enabled.
+  await content.locator('[data-sem="class"]').first().click({ button: "right" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Format document" })).toBeEnabled();
+  await expect(menu.getByRole("menuitem", { name: "Go to definition" })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+
+  // On a keyword the symbol actions grey out; Format stays enabled.
+  await content.locator('[data-sem="keyword"]').first().click({ button: "right" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Go to definition" })).toBeDisabled();
+  await expect(menu.getByRole("menuitem", { name: "Format document" })).toBeEnabled();
+});
+
+test("rename a symbol across the project via the LSP, with a selectable preview", async ({ page }) => {
+  const content = page.getByTestId("editor").locator(".cm-content");
+  // Right-click a type identifier and open the rename preview.
+  await content.locator('[data-sem="class"]').first().click({ button: "right" });
+  await page.locator(".cm-ctx").getByRole("menuitem", { name: /Rename symbol/ }).click();
+
+  const dialog = page.getByTestId("rename-dialog");
+  await expect(dialog).toBeVisible();
+  // The preview lists every occurrence (declaration included), each selectable.
+  await expect(dialog.locator(".occ").first()).toBeVisible();
+  const occCount = await dialog.locator(".occ").count();
+  expect(occCount).toBeGreaterThan(0);
+
+  await dialog.getByRole("textbox", { name: "New name" }).fill("RenamedThing");
+  await dialog.getByRole("button", { name: /^Rename \d+ occurrence/ }).click();
+
+  // Applying closes the dialog and edits the buffer (the open file goes dirty).
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".tab.active .tab-dirty")).toBeVisible();
 });

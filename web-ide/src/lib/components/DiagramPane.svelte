@@ -37,6 +37,7 @@
     oninfo?: ((fqn: string, event: MouseEvent) => void) | null;
     oninfoend?: (() => void) | null;
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
+    onsource?: ((fqn: string) => void) | null;
     typeFqn?: string | null;
   };
 
@@ -53,6 +54,7 @@
     oninfo = null,
     oninfoend = null,
     onusages = null,
+    onsource = null,
     typeFqn = null,
   }: Props = $props();
 
@@ -79,7 +81,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {oninfo} {oninfoend} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">
@@ -94,9 +96,7 @@
     position: relative;
     height: 100%;
     min-height: 0;
-    background:
-      radial-gradient(900px 520px at 60% -10%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
-      var(--bg);
+    background: var(--island-bg);
   }
   /* centre the placeholder notes; the flow components fill the stage themselves */
   .stage:not(.framed) {

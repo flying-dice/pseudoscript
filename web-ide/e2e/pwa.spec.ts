@@ -23,6 +23,12 @@ test("ships an installable web app manifest with icons", async ({ page }) => {
   expect(icon.ok()).toBe(true);
   expect(icon.headers()["content-type"]).toContain("image/png");
 
-  // The address-bar / splash theme colour is set.
+  // The address-bar / splash theme colour tracks the resolved theme's --bg, set
+  // pre-paint by the inline head script.
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#0a0b0e");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#e7eaef");
 });

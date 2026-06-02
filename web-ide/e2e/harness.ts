@@ -4,7 +4,7 @@ import { type Page, expect } from "@playwright/test";
 // System Access API. The native directory picker can't be driven headless, so we
 // stub only its *destination* to a fresh OPFS directory — the browser's real,
 // on-disk, per-origin filesystem. Everything downstream (scaffold writes, reads,
-// autosave, external-change reload) runs against real FileSystemDirectoryHandles;
+// manual save, external-change reload) runs against real FileSystemDirectoryHandles;
 // only where the picker points is stubbed, exactly as a native dialog chooses.
 //
 // The picked handle is stashed on `window.__lastPicked` so a test can reach the
@@ -34,6 +34,12 @@ export async function stubPicker(page: Page): Promise<void> {
 // highlighted — i.e. wasm is ready and the disk-backed workspace is mounted.
 export async function createProject(page: Page, templateId: string, openFqn?: string): Promise<void> {
   await page.goto("/");
+  // The launcher only offers Open/Recent/New; templates live in the New-project
+  // dialog and stay disabled until a name and a target folder are both set. The
+  // folder picker resolves to the stubbed OPFS dir; the project scaffolds inside it.
+  await page.getByTestId("new-project").click({ timeout: 30_000 });
+  await page.getByTestId("new-project-name").fill("my-architecture");
+  await page.getByTestId("choose-folder").click();
   await page.getByTestId(`template-${templateId}`).click({ timeout: 30_000 });
   if (openFqn) await page.getByTestId(`file-${openFqn}`).click();
   // Scaffolding the template to OPFS, mounting it, and producing the first wasm

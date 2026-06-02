@@ -20,10 +20,11 @@ data provenance are written as high-level pseudocode, infrastructure is declared
 the whole thing compiles to C4 diagrams, sequence diagrams, and a doc site (`pds doc`).
 
 This skill is the **method**, not the grammar. For any syntax question — keywords, `Result`
-handling, `from` composition, macros, modules, visibility, the EBNF — read **`references/LANG.md`**
-(the language specification) and follow it exactly. Do **not** invent syntax; if the spec doesn't
-support a form (e.g. comparison operators in conditions — see its Open Questions), model around it
-with a call that returns a `Result` or `bool` instead.
+handling, `from` composition, macros, modules, visibility, the EBNF — run **`pds lang`** to print
+the full language reference (spec + patterns + the conformance/grammar suite) and follow it exactly.
+Do **not** invent syntax; if the spec doesn't support a form (e.g. comparison operators in
+conditions — see its Open Questions), model around it with a call that returns a `Result` or `bool`
+instead.
 
 Two jobs only:
 - **Map** an existing application into a `.pds` model (reverse).
@@ -57,7 +58,7 @@ disclose it as a branch. *How the JWT is parsed* is plumbing → omit it.
 ## Concern → construct map
 
 Read it top-to-bottom when mapping an existing app; read it right-to-left when reconstituting code
-from a model. (Constructs and call syntax are defined in `references/LANG.md`.)
+from a model. (Constructs and call syntax are defined in the language reference — run `pds lang`.)
 
 | App concern | PseudoScript | Disclosed? |
 |---|---|---|
@@ -265,4 +266,4 @@ Before declaring a model done, confirm:
 - [ ] **Features cover the behaviour** — one `feature` per acceptance scenario, each `for` a real
   node, given/when/then in order, steps phrased as observable behaviour.
 - [ ] **Spec-faithful syntax** — names are fully qualified or aliased; visibility is correct; nothing
-  uses a form `references/LANG.md` doesn't define.
+  uses a form the language reference (`pds lang`) doesn't define.

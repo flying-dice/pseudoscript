@@ -44,12 +44,12 @@ use pseudoscript_emit::{
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
-    Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
+    Graph, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
     graph as build_graph, resolve::resolve_at,
 };
 // The shared LSP API: completion, hover, semantic tokens, and folding are served
 // here exactly as the stdio server serves them — same `lsp_types` results.
-use pseudoscript_lsp_core::{analysis, complete, convert, semantic, symbols};
+use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic, symbols};
 use pseudoscript_syntax::{
     Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
 };
@@ -261,6 +261,30 @@ pub fn references(modules_json: &str, module_fqn: &str, offset: u32) -> Result<S
     references_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
 }
 
+/// Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+/// applying only the occurrences in `selected_json` — a JSON array of
+/// `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+/// Returns JSON `[{ fqn, source }]`: the new full source of every module that
+/// changed. The host swaps these into its buffers. The substitution is done here
+/// (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+/// come from the shared [`pseudoscript_lsp_core::refs::rename`].
+///
+/// # Errors
+///
+/// Returns an error when `new_name` is not a valid identifier, or when either
+/// JSON argument is malformed.
+#[wasm_bindgen]
+pub fn rename_apply(
+    modules_json: &str,
+    module_fqn: &str,
+    offset: u32,
+    new_name: &str,
+    selected_json: &str,
+) -> Result<String, JsError> {
+    rename_apply_impl(modules_json, module_fqn, offset, new_name, selected_json)
+        .map_err(|e| JsError::new(&e))
+}
+
 /// Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
 /// as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
 /// `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
@@ -444,7 +468,7 @@ fn outline_nodes(
     graph: &Graph,
     mut line_col: impl FnMut(&str, u32) -> (u32, u32),
 ) -> Vec<OutlineNode> {
-    graph
+    let mut entries: Vec<OutlineNode> = graph
         .nodes()
         .iter()
         .map(|n| {
@@ -452,14 +476,30 @@ fn outline_nodes(
             OutlineNode {
                 fqn: n.fqn.clone(),
                 name: n.name.clone(),
-                kind: n.kind,
+                kind: n.kind.keyword().to_owned(),
                 triggered: !n.triggers.is_empty(),
                 line,
                 col,
                 parent: n.parent.clone(),
             }
         })
-        .collect()
+        .collect();
+    // Features are not graph nodes (§5.2); project each scenario as a `feature`
+    // entry nested under its target node, so the outline lists it as a selectable
+    // symbol — the host falls back to a single-lifeline scene on selection.
+    entries.extend(graph.scenarios().iter().map(|s| {
+        let (line, col) = line_col(&s.module, s.span.start);
+        OutlineNode {
+            fqn: format!("{}::{}", s.module, s.name),
+            name: s.name.clone(),
+            kind: "feature".to_owned(),
+            triggered: false,
+            line,
+            col,
+            parent: Some(s.target_fqn.clone()),
+        }
+    }));
+    entries
 }
 
 /// Parses the `[{fqn, source}]` workspace JSON into modules.
@@ -601,6 +641,79 @@ fn references_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<
         title: target.title,
         occurrences,
     }))
+}
+
+/// Whether `name` is a legal `PseudoScript` identifier (`[A-Za-z_]\w*`).
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn rename_apply_impl(
+    modules_json: &str,
+    module_fqn: &str,
+    offset: u32,
+    new_name: &str,
+    selected_json: &str,
+) -> Result<String, String> {
+    if !is_identifier(new_name) {
+        return Err(format!("`{new_name}` is not a valid identifier"));
+    }
+    let modules = modules_from_json(modules_json)?;
+    let selected: Vec<SelectedOccurrence> =
+        serde_json::from_str(selected_json).map_err(|e| e.to_string())?;
+    let chosen: std::collections::HashSet<(String, u32, u32)> = selected
+        .into_iter()
+        .map(|s| (s.fqn, s.line, s.col))
+        .collect();
+
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    let pairs: Vec<(String, String)> = modules
+        .iter()
+        .map(|m| (m.fqn.clone(), m.source.clone()))
+        .collect();
+
+    let mut out: Vec<FileSource> = Vec::new();
+    for file in refs::rename(&workspace, &pairs, module_fqn, src, offset) {
+        let Some(module) = modules.iter().find(|m| m.fqn == file.fqn) else {
+            continue;
+        };
+        let index = LineIndex::new(&module.source);
+        // Keep the selected occurrences, then apply them right-to-left so each
+        // splice leaves the earlier byte offsets valid.
+        let mut spans: Vec<_> = file
+            .spans
+            .into_iter()
+            .filter(|span| {
+                let (line, col) = index.line_col(span.start);
+                chosen.contains(&(file.fqn.clone(), line, col))
+            })
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        spans.sort_by_key(|span| std::cmp::Reverse(span.start));
+        let mut source = module.source.clone();
+        for span in spans {
+            source.replace_range(span.start as usize..span.end as usize, new_name);
+        }
+        out.push(FileSource {
+            fqn: file.fqn,
+            source,
+        });
+    }
+    Ok(to_json(&out))
 }
 
 fn completion_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
@@ -781,7 +894,9 @@ struct ModuleResult {
 struct OutlineNode {
     fqn: String,
     name: String,
-    kind: NodeKind,
+    /// A node's C4 keyword (`person`/`system`/…/`callable`) or `feature` for a
+    /// `feature` block — a string, since a feature is not a node kind.
+    kind: String,
     triggered: bool,
     line: u32,
     col: u32,
@@ -812,6 +927,22 @@ struct RefOccurrence {
     match_start: u32,
     match_end: u32,
     decl: bool,
+}
+
+/// One occurrence the host chose to rename, keyed by its module `fqn` and the
+/// 1-based `line`/`col` [`references`] reported. Input to [`rename_apply`].
+#[derive(Deserialize)]
+struct SelectedOccurrence {
+    fqn: String,
+    line: u32,
+    col: u32,
+}
+
+/// One module's rewritten source after a rename — output of [`rename_apply`].
+#[derive(Serialize)]
+struct FileSource {
+    fqn: String,
+    source: String,
 }
 
 /// A diagnostic enriched with 1-based line/column for both span ends, in
@@ -993,6 +1124,18 @@ mod tests {
         assert!(json.contains(r#""kind":"container""#), "{json}");
         // the triggered callable is flagged for the sequence picker
         assert!(json.contains(r#""triggered":true"#), "{json}");
+    }
+
+    #[test]
+    fn outline_lists_features_under_their_target() {
+        // A `feature` is not a graph node, but the outline lists it as a selectable
+        // `feature` symbol nested under its target node (`fqn` = `module::name`).
+        let json = outline(
+            "//! m\npublic system S;\nfeature F for S {\n  given \"a\"\n  when \"b\"\n  then \"c\"\n}",
+        );
+        assert!(json.contains(r#""kind":"feature""#), "{json}");
+        assert!(json.contains(r#""fqn":"m::F""#), "{json}");
+        assert!(json.contains(r#""parent":"m::S""#), "{json}");
     }
 
     #[test]

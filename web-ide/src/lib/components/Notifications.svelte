@@ -37,11 +37,11 @@
 <style>
   .notes {
     position: fixed;
-    top: calc(var(--topbar-h) + 0.7rem);
+    bottom: calc(var(--status-h, 26px) + 0.7rem);
     right: 0.9rem;
     z-index: 60;
     display: flex;
-    flex-direction: column;
+    flex-direction: column-reverse;
     gap: 0.6rem;
     width: min(360px, calc(100vw - 1.8rem));
     pointer-events: none;
@@ -106,7 +106,7 @@
   }
 
   @keyframes slide-in {
-    from { opacity: 0; transform: translateX(12px); }
-    to { opacity: 1; transform: translateX(0); }
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 </style>

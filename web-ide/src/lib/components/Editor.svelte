@@ -4,7 +4,10 @@
   import { copyLineDown, defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
   import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
   import type { Extension, StateEffectType, Text, TransactionSpec } from "@codemirror/state";
-  import { codeFolding, foldEffect, foldGutter, foldKeymap, foldService, unfoldEffect } from "@codemirror/language";
+  import { codeFolding, foldedRanges, foldEffect, foldGutter, foldKeymap, foldService, HighlightStyle, LanguageDescription, StreamLanguage, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
+  import { languages } from "@codemirror/language-data";
+  import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
+  import { tags as t } from "@lezer/highlight";
   import { lintGutter } from "@codemirror/lint";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import {
@@ -24,7 +27,6 @@
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
   import { completion as symbolCompletion, definition as symbolDefinition, foldRanges, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
-  import { reportError } from "$lib/errors.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
   import type { Module, Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
@@ -48,10 +50,18 @@
     onready?: (api: EditorApi) => void;
     modules?: Module[];
     moduleFqn?: string;
+    /**
+     * Stable per-file identity (fqn for modules, path for docs/manifest). Drives
+     * file-switch detection and the per-file view-state cache, so cursor / scroll
+     * / fold state is restored when returning to a tab. Unlike `moduleFqn` it is
+     * distinct for every doc and the manifest (which all share an empty `fqn`).
+     */
+    fileKey?: string;
     symbols?: SymbolEntry[];
     onopensymbol?: (fqn: string) => void;
     ongotodefinition?: (fqn: string) => void;
     onnavigate?: (occ: Occurrence) => void;
+    onrename?: (offset: number) => void;
     onformat?: () => void;
     onsave?: () => void;
     onopensettings?: () => void;
@@ -65,6 +75,14 @@
      * PseudoScript language. Implies plain (no PseudoScript features).
      */
     markdown?: boolean;
+    /** TOML mode: syntax-highlight the manifest (`pds.toml`). Implies plain. */
+    toml?: boolean;
+    /**
+     * The open file's name/path. In `plain` mode (companion files) it selects a
+     * syntax-highlighting language by extension (lazily loaded), so JSON/YAML/JS
+     * /CSS/… read as code rather than flat text.
+     */
+    filename?: string;
     /**
      * Markdown preview options: `{ resolveAsset(rel)->Promise<Blob|null>,
      * resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
@@ -78,17 +96,32 @@
     onready,
     modules = [],
     moduleFqn = "",
+    fileKey = "",
     symbols = [],
     onopensymbol,
     ongotodefinition,
     onnavigate,
+    onrename,
     onformat,
     onsave,
     onopensettings,
     plain = false,
     markdown = false,
+    toml = false,
+    filename = "",
     previewOpts = {},
   }: Props = $props();
+
+  // Highlight tags → the editor's --hl-* token colours, for the TOML manifest.
+  const tomlHighlight = HighlightStyle.define([
+    { tag: t.heading, color: "var(--hl-namespace)", fontWeight: "600" },
+    { tag: t.propertyName, color: "var(--hl-property)" },
+    { tag: t.keyword, color: "var(--hl-keyword)" },
+    { tag: t.atom, color: "var(--hl-enum)" },
+    { tag: t.string, color: "var(--hl-string)" },
+    { tag: t.number, color: "var(--hl-number)" },
+    { tag: t.comment, color: "var(--hl-comment)", fontStyle: "italic" },
+  ]);
 
   let host: HTMLDivElement | undefined;
   let editor: EditorView | undefined;
@@ -112,6 +145,22 @@
   // The find-usages dropdown, anchored under the symbol: { name, items, top,
   // left } in viewport coords, or null when closed.
   let usagesMenu = $state<UsagesMenu | null>(null);
+
+  // The right-click context menu, anchored at the pointer. `fqn` is the symbol
+  // under the click (null elsewhere — only Format shows); `pos` re-resolves the
+  // symbol for go-to-definition / find-usages. Menu element bound for focus.
+  type EditorMenu = { x: number; y: number; pos: number; fqn: string | null };
+  let editorMenu = $state<EditorMenu | null>(null);
+  let editorMenuEl = $state<HTMLDivElement | null>(null);
+  const closeEditorMenu = (): null => (editorMenu = null);
+  // Run a menu action and dismiss.
+  function runEditorAction(fn: () => void): void {
+    fn();
+    closeEditorMenu();
+  }
+  $effect(() => {
+    if (editorMenu) editorMenuEl?.focus();
+  });
 
   /** The live state mirror read by the once-built hover/click extensions. */
   type EditorCtx = {
@@ -333,7 +382,7 @@
       "&": { height: "100%", color: "var(--ink)", backgroundColor: "transparent", fontSize: "13.5px" },
       ".cm-content": { fontFamily: "var(--font-mono)", caretColor: "var(--accent)", padding: "0.6rem 0" },
       ".cm-gutters": {
-        backgroundColor: "transparent",
+        backgroundColor: "var(--island-bg)",
         color: "var(--ink-faint)",
         border: "none",
         paddingLeft: "0.4rem",
@@ -605,37 +654,8 @@
           dom.append(body);
         }
 
-        const fqnAt = (): string | null => {
-          try {
-            return symbolDefinition(ctx.modules, ctx.moduleFqn, offset);
-          } catch {
-            return null;
-          }
-        };
-        const actions = document.createElement("div");
-        actions.className = "ph-actions";
-        const button = (label: string, fn: () => void): void => {
-          const b = document.createElement("button");
-          b.type = "button";
-          b.textContent = label;
-          b.addEventListener("mousedown", (e: MouseEvent) => {
-            e.preventDefault();
-            fn();
-          });
-          actions.append(b);
-        };
-        button("Go to definition", () => {
-          const fqn = fqnAt();
-          if (fqn) ctx.ongotodefinition?.(fqn);
-          else reportError("GOTO_NO_SYMBOL", `${ctx.moduleFqn} @ byte ${offset}`);
-        });
-        button("Find usages", () => findUsages(view, pos));
-        button("Canvas", () => {
-          const fqn = fqnAt();
-          if (fqn) ctx.onopensymbol?.(fqn);
-        });
-        dom.append(actions);
-
+        // Actions (go to definition / find usages / reveal on canvas) live on the
+        // right-click menu now; the hover is documentation only.
         return { dom };
       },
     };
@@ -690,6 +710,7 @@
   const langCompartment = new Compartment();
   const languageBundle = (): Extension => {
     if (markdown) return markdownLivePreview(previewOpts);
+    if (toml) return [StreamLanguage.define(tomlMode), syntaxHighlighting(tomlHighlight)];
     if (plain) return [];
     return [
       pseudoscript(),
@@ -697,7 +718,7 @@
       pdsFoldService,
       lintGutter(),
       pseudoscriptLinter(),
-      hoverTooltip(symbolTooltip, { hoverTime: 250 }),
+      hoverTooltip(symbolTooltip, { hoverTime: 600 }),
     ];
   };
 
@@ -712,8 +733,35 @@
   $effect(() => {
     markdown;
     plain;
+    toml;
     previewOpts;
     editor?.dispatch({ effects: langCompartment.reconfigure(languageBundle()) });
+  });
+
+  // Extension-based highlighting for plain companion files (JSON/YAML/JS/CSS/…),
+  // layered in its own compartment so it never collides with `languageBundle`
+  // (which is `[]` in plain mode). The language pack loads lazily; an unknown
+  // extension (or a non-plain file) clears it back to flat text.
+  const fileLangCompartment = new Compartment();
+  $effect(() => {
+    const name = filename;
+    const isPlain = plain && !markdown && !toml;
+    if (!editor) return;
+    const desc = isPlain && name ? LanguageDescription.matchFilename(languages, name) : null;
+    if (!desc) {
+      editor.dispatch({ effects: fileLangCompartment.reconfigure([]) });
+      return;
+    }
+    let cancelled = false;
+    desc
+      .load()
+      .then((support) => {
+        if (!cancelled) editor?.dispatch({ effects: fileLangCompartment.reconfigure(support) });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   });
 
   onMount(() => {
@@ -741,6 +789,7 @@
           // The find/replace panel, docked at the top of the editor.
           search({ top: true }),
           langCompartment.of(languageBundle()),
+          fileLangCompartment.of([]),
           codeFolding(),
           foldGutter(),
           flashField,
@@ -757,9 +806,27 @@
               }
               return false;
             },
-            // The dropdown is anchored to a screen position; scrolling detaches it.
+            // Right-click opens the editor menu (the native menu is suppressed
+            // app-wide): Format always, plus the symbol actions when the click
+            // lands on a resolvable identifier.
+            contextmenu(e, view) {
+              const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+              let fqn: string | null = null;
+              if (pos != null) {
+                try {
+                  fqn = symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(view.state.doc.toString(), pos));
+                } catch {
+                  fqn = null;
+                }
+              }
+              editorMenu = { x: e.clientX, y: e.clientY, pos: pos ?? 0, fqn };
+              e.preventDefault();
+              return true;
+            },
+            // Both overlays are anchored to a screen position; scrolling detaches them.
             scroll() {
               closeUsagesMenu();
+              closeEditorMenu();
               return false;
             },
           }),
@@ -795,34 +862,77 @@
     return { destroy: () => node.remove() };
   }
 
+  // The cursor / scroll / fold state captured for a backgrounded file, so
+  // returning to its tab lands where it was left. Keyed by `fileKey`.
+  type ViewState = { selection: ReturnType<EditorSelection["toJSON"]>; scrollTop: number; folds: { from: number; to: number }[] };
+  const viewStates = new Map<string, ViewState>();
+
+  // Snapshot the live view's per-file state under `key`.
+  function captureViewState(view: EditorView, key: string): void {
+    const folds: { from: number; to: number }[] = [];
+    foldedRanges(view.state).between(0, view.state.doc.length, (from, to) => void folds.push({ from, to }));
+    viewStates.set(key, { selection: view.state.selection.toJSON(), scrollTop: view.scrollDOM.scrollTop, folds });
+  }
+
   // Reflect an external `value` change (file switch / Format) without re-firing
-  // onchange. A *file switch* (moduleFqn changed) also resets the undo history,
-  // so Ctrl+Z can't undo back across the boundary into the previous file; a
-  // same-file replace (Format) stays undoable.
-  let loadedFqn: string = moduleFqn;
+  // onchange. A *file switch* (fileKey changed) also resets the undo history, so
+  // Ctrl+Z can't undo back across the boundary into the previous file; a
+  // same-file replace (Format) stays undoable. On switch the outgoing file's
+  // view-state is saved and the incoming file's is restored (else collapsed).
+  let loadedFileKey: string = fileKey;
   $effect(() => {
     const next = value;
-    const fqn = moduleFqn;
+    const key = fileKey;
     if (!editor) return;
-    const switched = fqn !== loadedFqn;
+    const switched = key !== loadedFileKey;
     if (next === editor.state.doc.toString() && !switched) return;
+    if (switched) captureViewState(editor, loadedFileKey);
+    const restore = switched ? viewStates.get(key) : undefined;
     applyingExternal = true;
+    const len = next.length;
+    const clamp = (n: number) => Math.max(0, Math.min(n, len));
     const spec: TransactionSpec = { changes: { from: 0, to: editor.state.doc.length, insert: next } };
     if (switched) {
       // Clear history (fresh `history()`); the load itself isn't an undo step.
       spec.effects = historyCompartment.reconfigure(history());
       spec.annotations = Transaction.addToHistory.of(false);
     }
+    if (restore) {
+      try {
+        const sel = EditorSelection.fromJSON(restore.selection);
+        spec.selection = EditorSelection.create(
+          sel.ranges.map((r) => EditorSelection.range(clamp(r.anchor), clamp(r.head))),
+          sel.mainIndex,
+        );
+      } catch {
+        // Stale/invalid serialised selection — fall back to the default caret.
+      }
+    }
     editor.dispatch(spec);
     applyingExternal = false;
-    loadedFqn = fqn;
+    loadedFileKey = key;
     usagesMenu = null; // anchor is stale after a file switch / reformat
-    // Collapse the freshly-loaded file; a queued goto then reopens its target.
-    applyFold(editor, null);
+    if (restore) {
+      // Reopen the folds the file had; CodeMirror ignores spans outside the doc.
+      const effects = restore.folds.map((f) => foldEffect.of({ from: clamp(f.from), to: clamp(f.to) })).filter((e) => e.value.from < e.value.to);
+      if (effects.length) editor.dispatch({ effects });
+      // Restore scroll after fold-driven height changes have been measured.
+      const top = restore.scrollTop;
+      editor.requestMeasure({ read: () => {}, write: (_m, view) => void (view.scrollDOM.scrollTop = top) });
+    } else {
+      // Collapse the freshly-loaded file; a queued goto then reopens its target.
+      applyFold(editor, null);
+    }
   });
 </script>
 
-<svelte:window onkeydown={(e) => usagesMenu && e.key === "Escape" && closeUsagesMenu()} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key !== "Escape") return;
+    if (editorMenu) closeEditorMenu();
+    else if (usagesMenu) closeUsagesMenu();
+  }}
+/>
 
 <div
   class="editor"
@@ -831,6 +941,31 @@
   role="group"
   aria-label="PseudoScript source editor"
 ></div>
+
+{#if editorMenu}
+  {@const m = editorMenu}
+  <div use:portal>
+    <button
+      class="cm-ctx-scrim"
+      aria-label="Close menu"
+      onclick={closeEditorMenu}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        closeEditorMenu();
+      }}
+    ></button>
+    <div bind:this={editorMenuEl} class="cm-ctx" role="menu" tabindex="-1" aria-label="Editor actions" style="left:{m.x}px; top:{m.y}px">
+      <!-- One menu; symbol actions grey out when the click isn't on a resolvable
+           identifier (JetBrains-style), so the affordances stay discoverable. -->
+      <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && gotoDefinition(editor, m.pos))}>Go to definition</button>
+      <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && findUsages(editor, m.pos))}>Find usages</button>
+      <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => m.fqn && onopensymbol?.(m.fqn))}>Reveal on canvas</button>
+      <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && onrename?.(charToByte(editor.state.doc.toString(), m.pos)))}>Rename symbol…</button>
+      <div class="cm-ctx-sep"></div>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => onformat?.())}>Format document</button>
+    </div>
+  </div>
+{/if}
 
 {#if usagesMenu}
   <div use:portal>
@@ -867,6 +1002,56 @@
   .editor {
     height: 100%;
     overflow: hidden;
+  }
+
+  /* right-click context menu, anchored at the pointer */
+  .cm-ctx-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 42;
+    background: transparent;
+    border: none;
+    cursor: default;
+  }
+  .cm-ctx {
+    position: fixed;
+    z-index: 43;
+    min-width: 12rem;
+    padding: 0.3rem;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    outline: none;
+  }
+  .cm-ctx-item {
+    display: block;
+    width: 100%;
+    padding: 0.4rem 0.5rem;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    text-align: left;
+    font-family: var(--font-sans);
+    font-size: 0.8rem;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .cm-ctx-item:hover:not(:disabled),
+  .cm-ctx-item:focus-visible:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--ink);
+    outline: none;
+  }
+  .cm-ctx-item:disabled {
+    color: var(--ink-faint);
+    opacity: 0.45;
+    cursor: default;
+  }
+  .cm-ctx-sep {
+    height: 1px;
+    margin: 0.2rem 0.2rem;
+    background: var(--line);
   }
 
   /* find-usages dropdown, anchored under the declaration */

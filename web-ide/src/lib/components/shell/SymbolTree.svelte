@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Component as ComponentType } from "svelte";
 
-  import { Box, Component, Container, Database, SquareFunction, User } from "@lucide/svelte";
+  import { Box, Component, Container, Database, FlaskConical, SquareFunction, User } from "@lucide/svelte";
 
   import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
 
-  // A C4 node kind — one of the six structural levels.
-  type NodeKind = "person" | "system" | "container" | "component" | "data" | "callable";
+  // A C4 node kind — one of the six structural levels — or a `feature` block.
+  type NodeKind = "person" | "system" | "container" | "component" | "data" | "callable" | "feature";
 
   // A declared node, nested by structural `parent` into the symbol tree.
   type SymbolNode = {
@@ -37,6 +37,7 @@
     component: Component,
     data: Database,
     callable: SquareFunction,
+    feature: FlaskConical,
   };
 
   // Collapsed subtrees, by node FQN. Default expanded.
@@ -61,7 +62,7 @@
         roots.push(n);
       }
     }
-    const order: Record<NodeKind, number> = { person: 0, system: 1, container: 2, component: 3, data: 4, callable: 5 };
+    const order: Record<NodeKind, number> = { person: 0, system: 1, container: 2, component: 3, data: 4, callable: 5, feature: 6 };
     const sort = (list: SymbolNode[]): SymbolNode[] =>
       [...list].sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
     for (const [, list] of children) sort(list);
@@ -230,5 +231,8 @@
   }
   .kind-callable {
     color: var(--ink-faint);
+  }
+  .kind-feature {
+    color: #34d399;
   }
 </style>

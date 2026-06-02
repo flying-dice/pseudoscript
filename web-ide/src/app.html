@@ -26,6 +26,9 @@
           var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
           var resolved = p === "light" || p === "dark" ? p : dark ? "dark" : "light";
           document.documentElement.setAttribute("data-theme", resolved);
+          // Match the address-bar / PWA theme-color to --bg before first paint.
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (m) m.setAttribute("content", resolved === "light" ? "#e7eaef" : "#0a0b0e");
         } catch (e) {
           document.documentElement.setAttribute("data-theme", "dark");
         }

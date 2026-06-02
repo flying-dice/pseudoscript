@@ -12,6 +12,8 @@ class WorkspaceStore {
   workspace = $state<WorkspaceModel | null>(null);
   // The active file — a module, an authored doc page, or the manifest.
   openFile = $state<OpenFile | null>(null);
+  // The open editor tabs, in open order. The active one is `openFile`.
+  openTabs = $state<OpenFile[]>([]);
   // In-memory module buffers, by FQN.
   moduleSources = $state<Record<string, string>>({});
 
@@ -20,6 +22,10 @@ class WorkspaceStore {
   docGroups = $state<LiveDocGroup[]>([]);
   docSources = $state<Record<string, string>>({});
   docMeta = $state<{ name?: string; theme?: string }>({});
+
+  // Companion-file buffers (non-PDS files), by base-relative path. Lazily filled
+  // when a text file is opened, then edited and saved like any other buffer.
+  otherSources = $state<Record<string, string>>({});
 
   // The raw `pds.toml` text, editable as a first-class file.
   manifestSource = $state("");

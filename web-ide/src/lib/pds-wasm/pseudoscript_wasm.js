@@ -550,6 +550,53 @@ export function references(modules_json, module_fqn, offset) {
 }
 
 /**
+ * Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+ * applying only the occurrences in `selected_json` — a JSON array of
+ * `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+ * Returns JSON `[{ fqn, source }]`: the new full source of every module that
+ * changed. The host swaps these into its buffers. The substitution is done here
+ * (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+ * come from the shared [`pseudoscript_lsp_core::refs::rename`].
+ *
+ * # Errors
+ *
+ * Returns an error when `new_name` is not a valid identifier, or when either
+ * JSON argument is malformed.
+ * @param {string} modules_json
+ * @param {string} module_fqn
+ * @param {number} offset
+ * @param {string} new_name
+ * @param {string} selected_json
+ * @returns {string}
+ */
+export function rename_apply(modules_json, module_fqn, offset, new_name, selected_json) {
+    let deferred6_0;
+    let deferred6_1;
+    try {
+        const ptr0 = passStringToWasm0(modules_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(module_fqn, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(new_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(selected_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.rename_apply(ptr0, len0, ptr1, len1, offset, ptr2, len2, ptr3, len3);
+        var ptr5 = ret[0];
+        var len5 = ret[1];
+        if (ret[3]) {
+            ptr5 = 0; len5 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred6_0 = ptr5;
+        deferred6_1 = len5;
+        return getStringFromWasm0(ptr5, len5);
+    } finally {
+        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
+}
+
+/**
  * Renders the whole documentation site for a workspace, exactly as the CLI's
  * `pds doc` does, driving server-side rendering through the host's JavaScript
  * engine rather than an embedded one.

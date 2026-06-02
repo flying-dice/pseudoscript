@@ -14,6 +14,7 @@ path = "src/main.rs"
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-model = { path = "../pseudoscript-model" }
 pseudoscript-format = { path = "../pseudoscript-format" }
+pseudoscript-emit = { path = "../pseudoscript-emit" }
 pseudoscript-lsp = { path = "../pseudoscript-lsp" }
 pseudoscript-doc = { path = "../pseudoscript-doc" }
 clap = { version = "4", features = ["derive"] }

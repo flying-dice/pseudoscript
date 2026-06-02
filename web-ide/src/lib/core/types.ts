@@ -48,6 +48,11 @@ export type OpenFile = {
   title?: string;
   isDoc?: boolean;
   isManifest?: boolean;
+  // A non-PDS companion file (editable text). `binary` ones show an inert
+  // placeholder (with `bytes`, the on-disk size) instead of the editor.
+  isOther?: boolean;
+  binary?: boolean;
+  bytes?: number;
 };
 
 // The live workspace: a real on-disk workspace or an in-memory sample/share. The
@@ -55,11 +60,17 @@ export type OpenFile = {
 export type WorkspaceModel = {
   name: string;
   files: OpenFile[];
+  // Base-relative directories on disk (empty ones included). Absent for in-memory
+  // sample / share-link workspaces, where folders are implied by file paths.
+  dirs?: string[];
   manifestToml?: string | null;
   root?: FileSystemDirectoryHandle | null;
   base?: string;
   manifest?: { handle?: FileSystemFileHandle | null; path: string } | null;
   docs?: Record<string, string>;
+  // Non-PDS companion files surfaced in the tree (editable text / inert binary).
+  // Absent for in-memory sample / share-link workspaces.
+  others?: OpenFile[];
 };
 
 // A live doc sidebar item / group (handles optional for sample pages).

@@ -2,6 +2,9 @@
 //!
 //! Subcommands wrap the workspace libraries:
 //!
+//! - `pds lang` — print the bundled language reference (spec + patterns + the
+//!   conformance suite), embedded at compile time.
+//! - `pds skill` — print the bundled authoring skill.
 //! - `pds lsp` — start the language server over stdio ([`pseudoscript_lsp`]).
 //! - `pds check <FILE>` — report diagnostics; exit non-zero on any error.
 //! - `pds fmt <FILE> [--write]` — canonical formatting.
@@ -28,13 +31,35 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use pseudoscript_emit::{Theme, View, project, project_symbol, render_svg_themed};
 use pseudoscript_format::{FormatError, format};
-use pseudoscript_model::{Diagnostic, check, check_workspace_with_externals, graph};
+use pseudoscript_model::{
+    Diagnostic, WorkspaceModule, check, check_workspace_with_externals, graph,
+};
 use pseudoscript_syntax::{LineIndex, Severity, render_tokens};
+use serde::Serialize;
+
+/// The full authoring reference (spec + patterns + conformance suite), assembled
+/// by `build.rs` and embedded so `pds lang` always matches the installed binary.
+const LANG_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/lang-bundle.md"));
+
+/// The `PseudoScript` authoring-method skill, embedded verbatim so `pds skill`
+/// prints it like any other skill file.
+const PDS_SKILL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.claude/skills/pseudocode/SKILL.md"
+));
 
 /// The `PseudoScript` toolchain.
 #[derive(Debug, Parser)]
-#[command(name = "pds", version, about = "PseudoScript toolchain")]
+#[command(
+    name = "pds",
+    version,
+    about = "PseudoScript toolchain",
+    after_help = "Writing .pds files? Run `pds lang` for the full language \
+reference (spec + patterns + grammar suite), or `pds skill` for the authoring \
+method. New here? `pds init` scaffolds a workspace."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -53,6 +78,14 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Print the bundled language reference (spec, patterns, and the full
+    /// conformance/grammar suite) for this exact version. Feed it to an LLM to
+    /// author .pds.
+    #[command(alias = "spec")]
+    Lang,
+    /// Print the bundled authoring skill — the method for modelling with .pds.
+    /// Run `pds lang` for the full grammar.
+    Skill,
     /// Start the language server over stdio.
     Lsp,
     /// Check a file and report diagnostics (exit non-zero on any error).
@@ -78,6 +111,38 @@ enum Command {
     Tokens {
         /// The `.pds` file to tokenize.
         file: PathBuf,
+    },
+    /// Print the workspace's symbol outline as JSON — the structure tree an
+    /// editor draws (each node's `fqn`, `name`, `kind`, `parent`, whether it is
+    /// a `triggered` flow entry, and its declaration `module`/`line`/`col`).
+    Outline {
+        /// A file or directory inside the workspace; the project root is the
+        /// nearest enclosing `pds.toml`. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Render a single diagram to a self-contained SVG on stdout. With
+    /// `--symbol`, draws that symbol's fitting view (a system/container's C4
+    /// sub-view, or a triggered callable's sequence); otherwise draws `--view`
+    /// over the whole workspace.
+    Svg {
+        /// A file or directory inside the workspace; the project root is the
+        /// nearest enclosing `pds.toml`. Defaults to the current directory.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Render the fitting view for this symbol FQN (e.g. `acme::Billing`).
+        #[arg(long, conflicts_with = "view")]
+        symbol: Option<String>,
+        /// Render a whole-workspace view: `context`, or `container`/`component`/
+        /// `sequence` paired with `--target`. Defaults to `context`.
+        #[arg(long, conflicts_with = "symbol")]
+        view: Option<String>,
+        /// The target FQN a `container`/`component`/`sequence` view is `of`.
+        #[arg(long, requires = "view")]
+        target: Option<String>,
+        /// Colour theme: `light` (default) or `dark`.
+        #[arg(long, default_value = "light")]
+        theme: String,
     },
     /// Generate the documentation site for the workspace.
     Doc {
@@ -146,6 +211,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Init { path, name } => cmd_init(&path, name.as_deref()),
+        Command::Lang => cmd_lang(),
+        Command::Skill => cmd_skill(),
         Command::Lsp => run_lsp(),
         Command::Check { file, all } => {
             if all {
@@ -156,6 +223,20 @@ fn main() -> ExitCode {
         }
         Command::Fmt { file, write } => cmd_fmt(&file, write),
         Command::Tokens { file } => cmd_tokens(&file),
+        Command::Outline { path } => cmd_outline(&path),
+        Command::Svg {
+            path,
+            symbol,
+            view,
+            target,
+            theme,
+        } => cmd_svg(
+            &path,
+            symbol.as_deref(),
+            view.as_deref(),
+            target.as_deref(),
+            &theme,
+        ),
         Command::Doc {
             path,
             serve,
@@ -183,6 +264,20 @@ fn main() -> ExitCode {
         Command::Remove { name } => report(deps::remove(Path::new("."), &name)),
         Command::List { root } => cmd_list(&root),
     }
+}
+
+/// `pds lang`: print the embedded reference bundle verbatim to stdout. The blob
+/// already ends in a newline, so `print!` reproduces it byte-for-byte.
+fn cmd_lang() -> ExitCode {
+    print!("{LANG_BUNDLE}");
+    ExitCode::SUCCESS
+}
+
+/// `pds skill`: print the embedded authoring skill. The source has no trailing
+/// newline, so add one for a clean terminal.
+fn cmd_skill() -> ExitCode {
+    println!("{}", PDS_SKILL.trim_end_matches('\n'));
+    ExitCode::SUCCESS
 }
 
 /// `pds upgrade`: download and install a release over the running binary.
@@ -503,6 +598,164 @@ fn cmd_tokens(path: &Path) -> ExitCode {
     };
     print!("{}", render_tokens(&src));
     ExitCode::SUCCESS
+}
+
+/// One entry in `pds outline` — a declared node, for an editor's structure tree.
+/// Mirrors the workspace outline the web IDE builds, so the two agree on shape.
+#[derive(Serialize)]
+struct OutlineNode {
+    /// Fully-qualified name (the diagram/navigation key).
+    fqn: String,
+    /// The bare declared name shown in the tree.
+    name: String,
+    /// One of `person`/`system`/`container`/`component`/`data`/`callable`.
+    kind: &'static str,
+    /// The structural parent's FQN, if any (a node may nest under another
+    /// module's node, so the tree is workspace-wide).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+    /// True for a callable that triggers a flow — its fitting diagram is a
+    /// sequence rather than a C4 view.
+    triggered: bool,
+    /// The module that declares it, and the 1-based position of its name (so a
+    /// host can offer go-to-definition).
+    module: String,
+    line: u32,
+    col: u32,
+}
+
+/// Loads every module of the workspace enclosing `path` (the nearest `pds.toml`),
+/// reporting a clear error to stderr on failure.
+fn workspace_modules(path: &Path) -> Result<Vec<WorkspaceModule>, ExitCode> {
+    let fail = |err: anyhow::Error| {
+        eprintln!("error: {err:#}");
+        ExitCode::FAILURE
+    };
+    let root = workspace::find_root(path).map_err(fail)?;
+    workspace::load_modules(&root).map_err(fail)
+}
+
+/// `pds outline`: print the workspace's symbol outline as JSON.
+fn cmd_outline(path: &Path) -> ExitCode {
+    let modules = match workspace_modules(path) {
+        Ok(modules) => modules,
+        Err(code) => return code,
+    };
+    // One line index per module so a node's byte offset maps to its 1-based
+    // position in the module that declares it.
+    let indices: std::collections::HashMap<&str, LineIndex> = modules
+        .iter()
+        .map(|m| (m.fqn.as_str(), LineIndex::new(&m.source)))
+        .collect();
+    let line_col = |module: &str, offset| {
+        indices
+            .get(module)
+            .map_or((1, 1), |idx| idx.line_col(offset))
+    };
+    let graph = graph(&modules);
+    let nodes = graph.nodes().iter().map(|n| {
+        let (line, col) = line_col(n.module.as_str(), n.span.start);
+        OutlineNode {
+            fqn: n.fqn.clone(),
+            name: n.name.clone(),
+            kind: n.kind.keyword(),
+            parent: n.parent.clone(),
+            triggered: !n.triggers.is_empty(),
+            module: n.module.clone(),
+            line,
+            col,
+        }
+    });
+    // Features are not graph nodes (§5.2); list each as a `feature` entry nested
+    // under its target node, so `pds outline` agrees with the web IDE's outline.
+    let features = graph.scenarios().iter().map(|s| {
+        let (line, col) = line_col(s.module.as_str(), s.span.start);
+        OutlineNode {
+            fqn: format!("{}::{}", s.module, s.name),
+            name: s.name.clone(),
+            kind: "feature",
+            parent: Some(s.target_fqn.clone()),
+            triggered: false,
+            module: s.module.clone(),
+            line,
+            col,
+        }
+    });
+    let outline: Vec<OutlineNode> = nodes.chain(features).collect();
+    match serde_json::to_string_pretty(&outline) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `pds svg`: render one diagram to a self-contained SVG on stdout. `--symbol`
+/// draws that symbol's fitting view; otherwise `--view` (+ `--target`) draws a
+/// whole-workspace view.
+fn cmd_svg(
+    path: &Path,
+    symbol: Option<&str>,
+    view: Option<&str>,
+    target: Option<&str>,
+    theme: &str,
+) -> ExitCode {
+    let theme = match theme {
+        "light" => Theme::Light,
+        "dark" => Theme::Dark,
+        other => {
+            eprintln!("error: unknown theme `{other}` (expected `light` or `dark`)");
+            return ExitCode::FAILURE;
+        }
+    };
+    let modules = match workspace_modules(path) {
+        Ok(modules) => modules,
+        Err(code) => return code,
+    };
+    let g = graph(&modules);
+    let scene = if let Some(fqn) = symbol {
+        project_symbol(&g, fqn)
+    } else {
+        let view = match resolve_view(view.unwrap_or("context"), target.unwrap_or("")) {
+            Ok(view) => view,
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                return ExitCode::FAILURE;
+            }
+        };
+        project(&g, view)
+    };
+    match scene {
+        Ok(scene) => {
+            print!("{}", render_svg_themed(&scene, theme));
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Resolves a `--view`/`--target` pair into an emit [`View`].
+fn resolve_view(view: &str, target: &str) -> Result<View> {
+    Ok(match view {
+        "context" => View::Context,
+        "container" => View::Container {
+            of: target.to_owned(),
+        },
+        "component" => View::Component {
+            of: target.to_owned(),
+        },
+        "sequence" => View::Sequence {
+            entry: target.to_owned(),
+        },
+        other => bail!("unknown view `{other}` (expected context/container/component/sequence)"),
+    })
 }
 
 /// `pds doc`: generate the documentation site for the workspace rooted at the

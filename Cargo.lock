@@ -1335,6 +1335,7 @@ dependencies = [
  "futures",
  "notify",
  "pseudoscript-doc",
+ "pseudoscript-emit",
  "pseudoscript-format",
  "pseudoscript-lsp",
  "pseudoscript-model",

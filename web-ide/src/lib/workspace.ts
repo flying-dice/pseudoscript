@@ -41,6 +41,15 @@ export interface Workspace {
   manifestToml: string | null;
   manifest: WorkspaceManifest | null;
   files: WorkspaceFile[];
+  // Every non-`.pds` file under `base` other than the workspace manifest:
+  // companions (READMEs, images, `.json`, deeper `pds.toml`) the tree surfaces
+  // as editable text or inert binaries. `fqn` is empty — these never reach the
+  // compiler. Folder-backed workspaces populate this; samples leave it empty.
+  others: WorkspaceFile[];
+  // Every directory under `base`, base-relative (empty ones included). The file
+  // tree is the real on-disk shape, so a folder exists whether or not it holds
+  // files — it persists across reloads because `readWorkspace` rediscovers it.
+  dirs: string[];
 }
 
 /** One doc page loaded by {@link readDocPages}: a manifest item plus its content. */
@@ -75,12 +84,18 @@ export const fsSupported =
 
 const SKIP_DIRS = new Set(["node_modules", "target", ".git", ".svelte-kit"]);
 
+/** Prompts for a directory (read/write) and returns its handle. The single
+ *  picker entry point — opening a folder and choosing a new project's target
+ *  both go through here. */
+export function pickDirectory(): Promise<FileSystemDirectoryHandle> {
+  return window.showDirectoryPicker({ mode: "readwrite" });
+}
+
 /**
  * Prompts for a folder and loads it as a workspace.
  */
 export async function openWorkspace(): Promise<Workspace> {
-  const root = await window.showDirectoryPicker({ mode: "readwrite" });
-  return readWorkspace(root);
+  return readWorkspace(await pickDirectory());
 }
 
 /** A safe directory name: trims, lowercases spaces to hyphens, strips anything
@@ -138,26 +153,24 @@ export function emptySeed(name: string): SeedFile[] {
 }
 
 /**
- * Bootstraps a project on disk: prompts for a parent directory, creates a
- * `<name>` subdirectory, writes every seed file (creating nested dirs), and
- * reads it back as a {@link Workspace} so `mountWorkspace` just works. The name
- * is sanitized (falling back to the default if it sanitizes to empty). This is
- * the single entry point for every new project — empty or from a template.
+ * Bootstraps a project on disk inside `parent`: creates a `<name>` subdirectory,
+ * writes every seed file (creating nested dirs), and reads it back as a
+ * {@link Workspace} so `mountWorkspace` just works. The caller chooses `parent`
+ * (via {@link pickDirectory}); the name is sanitized (falling back to the default
+ * if it sanitizes to empty). The single entry point for every new project.
  */
-export async function scaffoldWorkspace(name: string, seed: SeedFile[]): Promise<Workspace> {
+export async function scaffoldWorkspace(
+  name: string,
+  seed: SeedFile[],
+  parent: FileSystemDirectoryHandle,
+): Promise<Workspace> {
   const safe = sanitizeProjectName(name) || DEFAULT_PROJECT_NAME;
-  const parent = await window.showDirectoryPicker({ mode: "readwrite" });
   const root = await parent.getDirectoryHandle(safe, { create: true });
   for (const file of seed) {
     const handle = await fileHandleAt(root, file.path);
     await writeFile(handle, file.content);
   }
   return readWorkspace(root);
-}
-
-/** Bootstraps an empty project — the one-file starter. */
-export function createWorkspace(name: string): Promise<Workspace> {
-  return scaffoldWorkspace(name, emptySeed(name));
 }
 
 /**
@@ -167,20 +180,39 @@ export function createWorkspace(name: string): Promise<Workspace> {
  */
 export async function readWorkspace(root: FileSystemDirectoryHandle): Promise<Workspace> {
   const found: Array<{ path: string; handle: FileSystemFileHandle }> = [];
+  const foundDirs: string[] = [];
   let manifestPrefix: string | null = null; // directory prefix of the shallowest pds.toml
   let manifestHandle: FileSystemFileHandle | null = null;
-  await walk(root, "", found, (prefix, handle) => {
+  await walk(root, "", found, foundDirs, (prefix, handle) => {
     if (manifestPrefix === null || depth(prefix) < depth(manifestPrefix)) {
       manifestPrefix = prefix;
       manifestHandle = handle;
     }
   });
 
-  const base = manifestPrefix ?? ""; // workspace root prefix ("" = picked dir)
+  const base: string = manifestPrefix ?? ""; // workspace root prefix ("" = picked dir)
   const files = found
     .filter((f) => f.path.endsWith(".pds") && underBase(f.path, base))
     .map((f): WorkspaceFile => ({ path: f.path, handle: f.handle, fqn: fqnOf(f.path, base) }))
     .sort((a, b) => a.fqn.localeCompare(b.fqn));
+
+  // Everything else under `base`: companion files the tree shows read-only. The
+  // workspace manifest is already surfaced on its own, so it's excluded here.
+  const manifestFullPath = base ? `${base}/pds.toml` : "pds.toml";
+  const others = found
+    .filter((f) => !f.path.endsWith(".pds") && f.path !== manifestFullPath && underBase(f.path, base))
+    .map((f): WorkspaceFile => ({ path: f.path, handle: f.handle, fqn: "" }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  // Directories under the manifest base, made base-relative (the base dir itself
+  // drops to "" and is excluded). These carry the empty folders the file tree
+  // would otherwise never see.
+  const rel = (p: string) => (base && p.startsWith(`${base}/`) ? p.slice(base.length + 1) : p);
+  const dirs = foundDirs
+    .filter((d) => underBase(d, base) && d !== base)
+    .map(rel)
+    .filter(Boolean)
+    .sort();
 
   // The raw `[doc]` manifest, so the doc build can read `[[doc.sidebar]]` pages.
   // The handle is retained so `pds.toml` can be opened and edited in the IDE.
@@ -190,8 +222,28 @@ export async function readWorkspace(root: FileSystemDirectoryHandle): Promise<Wo
   const manifest: WorkspaceManifest | null =
     handle && manifestPath ? { handle, path: manifestPath } : null;
 
-  return { name: root.name, root, base, manifestToml, manifest, files };
+  return { name: root.name, root, base, manifestToml, manifest, files, others, dirs };
 }
+
+// File extensions opened as inert binaries (no editor): images, fonts, archives,
+// and other non-text payloads. `.svg` is treated as text (editable XML), so it
+// is deliberately absent. Anything not listed opens as editable text.
+const BINARY_EXT = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tif", "tiff",
+  "pdf", "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "tar", "wasm",
+  "woff", "woff2", "ttf", "otf", "eot", "mp3", "wav", "ogg", "flac",
+  "mp4", "mov", "webm", "mkv", "avi", "exe", "dll", "so", "dylib", "bin",
+]);
+
+/** Whether `path` names a binary file (opened as an inert leaf, not in the editor). */
+export function isBinaryPath(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  if (dot === -1) return false;
+  return BINARY_EXT.has(path.slice(dot + 1).toLowerCase());
+}
+
+/** Largest text "other" file read into the editor; beyond this it stays inert. */
+export const MAX_OTHER_TEXT_BYTES = 1_000_000;
 
 /**
  * Reads the doc pages named by a `[[doc.sidebar]]` manifest, resolving each
@@ -361,6 +413,22 @@ export async function createFile(
 }
 
 /**
+ * Creates the directory at `path` under `root`, intermediate segments included.
+ * `readWorkspace` lists directories (empty ones too), so the folder persists and
+ * reappears on the next load.
+ */
+export async function createDir(root: FileSystemDirectoryHandle, path: string): Promise<void> {
+  let dir = root;
+  for (const part of path.split("/").filter(Boolean)) dir = await dir.getDirectoryHandle(part, { create: true });
+}
+
+/** Recursively deletes the directory at `path` (and everything under it) under `root`. */
+export async function deleteDir(root: FileSystemDirectoryHandle, path: string): Promise<void> {
+  const { dir, name } = await parentDirFor(root, path);
+  await dir.removeEntry(name, { recursive: true });
+}
+
+/**
  * Renames or moves the file at `oldPath` to `newPath` under `root`. The FS
  * Access API has no atomic rename/move, so this creates the destination, writes
  * the (provided or read) source, then removes the source. A failed write removes
@@ -412,13 +480,15 @@ async function walk(
   dir: FileSystemDirectoryHandle,
   prefix: string,
   found: Array<{ path: string; handle: FileSystemFileHandle }>,
+  dirs: string[],
   onManifest: (prefix: string, handle: FileSystemFileHandle) => void,
 ): Promise<void> {
   for await (const [name, handle] of dir.entries()) {
     const path = prefix ? `${prefix}/${name}` : name;
     if (handle.kind === "directory") {
       if (SKIP_DIRS.has(name) || name.startsWith(".")) continue;
-      await walk(handle, path, found, onManifest);
+      dirs.push(path);
+      await walk(handle, path, found, dirs, onManifest);
     } else {
       found.push({ path, handle });
       if (name === "pds.toml") onManifest(prefix, handle);

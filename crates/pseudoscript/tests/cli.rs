@@ -111,9 +111,32 @@ fn run(world: &mut CliWorld, args: &[&str]) {
     world.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 }
 
+/// Runs `pds` with `args` and no trailing path target, capturing the result.
+fn run_bare(world: &mut CliWorld, args: &[&str]) {
+    let output = pds().args(args).output().expect("run pds");
+    world.exit_code = output.status.code();
+    world.stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    world.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+}
+
 #[when("I run pds check")]
 fn run_check(world: &mut CliWorld) {
     run(world, &["check"]);
+}
+
+#[when("I run pds lang")]
+fn run_lang(world: &mut CliWorld) {
+    run_bare(world, &["lang"]);
+}
+
+#[when("I run pds spec")]
+fn run_spec(world: &mut CliWorld) {
+    run_bare(world, &["spec"]);
+}
+
+#[when("I run pds skill")]
+fn run_skill(world: &mut CliWorld) {
+    run_bare(world, &["skill"]);
 }
 
 #[when("I run pds tokens")]
@@ -135,6 +158,21 @@ fn run_fmt_write(world: &mut CliWorld) {
 fn run_doc(world: &mut CliWorld) {
     run(world, &["doc"]);
     world.out_dir = Some(world.target.join("target/doc"));
+}
+
+#[when("I run pds outline on the workspace")]
+fn run_outline(world: &mut CliWorld) {
+    run(world, &["outline"]);
+}
+
+#[when("I run pds svg for the context view")]
+fn run_svg_context(world: &mut CliWorld) {
+    run(world, &["svg", "--view", "context"]);
+}
+
+#[when("I run pds svg for an unknown symbol")]
+fn run_svg_unknown(world: &mut CliWorld) {
+    run(world, &["svg", "--symbol", "nope::Nope"]);
 }
 
 // --- then -------------------------------------------------------------------
@@ -166,6 +204,17 @@ fn stderr_contains(world: &mut CliWorld, needle: String) {
         world.stderr.contains(&needle),
         "stderr {:?} did not contain {needle:?}",
         world.stderr
+    );
+}
+
+#[then(regex = r#"^stdout contains "(.+)"$"#)]
+// cucumber parses each regex capture into an owned `String`; `&str` won't compile here.
+#[allow(clippy::needless_pass_by_value)]
+fn stdout_contains(world: &mut CliWorld, needle: String) {
+    assert!(
+        world.stdout.contains(&needle),
+        "stdout {:?} did not contain {needle:?}",
+        world.stdout
     );
 }
 

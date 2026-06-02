@@ -8,13 +8,15 @@ const buffers = (over: Partial<Buffers> = {}): Buffers => ({
   manifestSource: "",
   moduleSources: {},
   docSources: {},
+  otherSources: {},
   ...over,
 });
 
 describe("keyOf", () => {
-  it("uses path for manifest/doc, fqn for a module", () => {
+  it("uses path for manifest/doc/companion, fqn for a module", () => {
     expect(keyOf({ isManifest: true, path: "pds.toml" })).toBe("pds.toml");
     expect(keyOf({ isDoc: true, path: "docs/x.md" })).toBe("docs/x.md");
+    expect(keyOf({ isOther: true, path: "README.md" })).toBe("README.md");
     expect(keyOf({ fqn: "m", path: "m.pds" })).toBe("m");
     expect(keyOf(null)).toBeUndefined();
   });
@@ -29,6 +31,12 @@ describe("computeDirty", () => {
 
   it("ignores keys with no live buffer and samples with no baseline", () => {
     expect(computeDirty({}, buffers({ moduleSources: { m: "x" } })).size).toBe(0); // no baseline → never dirty
+  });
+
+  it("tracks companion (other) buffers against their baseline", () => {
+    const persisted = { "README.md": "old" };
+    expect(computeDirty(persisted, buffers({ otherSources: { "README.md": "edited" } })).size).toBe(1);
+    expect(computeDirty(persisted, buffers({ otherSources: { "README.md": "old" } })).size).toBe(0);
   });
 });
 

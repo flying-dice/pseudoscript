@@ -1,17 +1,26 @@
 <script lang="ts">
-  // Interactive C4 graph: structure at a glance. Node geometry comes from dagre
-  // auto-layout; Svelte Flow provides pan / zoom / minimap / fit-to-view. Nodes
-  // are immutable — not draggable or connectable — so the diagram stays a true
-  // projection of the model. A boundary view (container / component) draws its
-  // `of` node as an enclosing box rather than a peer card. Clicking a node opens
-  // an info popover; drilling in is an explicit button there, not the click.
+  // Interactive C4 graph: structure at a glance. Node geometry comes from the
+  // chosen layout algorithm (layered / grid / circular / radial); Svelte Flow
+  // provides pan / zoom / minimap / fit-to-view. Nodes are immutable — not
+  // draggable or connectable — so the diagram stays a true projection of the
+  // model. Edges float: they anchor at the nearest card borders (shortest path)
+  // rather than fixed handles. A boundary view (container / component) draws its
+  // `of` node as an enclosing box rather than a peer card. A floating "Customise"
+  // button opens the layout/edge modal; right-clicking a node opens its context
+  // menu (drill / flows / go-to-definition / find-usages).
   import { Background, Controls, MarkerType, MiniMap, SvelteFlow } from "@xyflow/svelte";
   import type { Edge, Node } from "@xyflow/svelte";
   import Dagre from "@dagrejs/dagre";
   import type { Graph } from "@dagrejs/dagre";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
+  import CanvasSettings from "./CanvasSettings.svelte";
+  import DiagramExport from "./DiagramExport.svelte";
+  import FitView from "./FitView.svelte";
+  import FloatingEdge from "./FloatingEdge.svelte";
   import { theme } from "$lib/theme.svelte.js";
+  import { canvasPrefs } from "$lib/stores/canvas-prefs.svelte.js";
+  import type { LayoutAlgo, LayoutDir } from "$lib/stores/canvas-prefs.svelte.js";
 
   // A node in the projected scene (one C4 element).
   type SceneNode = {
@@ -44,7 +53,7 @@
     boundary?: boolean;
     onclose?: () => void;
   };
-  // An entry-point flow offered in a node's popover.
+  // An entry-point flow offered in a node's context menu.
   type Flow = { fqn: string; name: string; triggered?: boolean };
 
   type Props = {
@@ -52,18 +61,23 @@
     onpick?: ((fqn: string) => void) | null;
     onup?: (() => void) | null;
     flows?: Map<string, Flow[]> | null;
-    oninfo?: ((fqn: string, event: PointerEvent) => void) | null;
-    oninfoend?: (() => void) | null;
-    onusages?: ((fqn: string, event: PointerEvent) => void) | null;
+    onsource?: ((fqn: string) => void) | null;
+    onusages?: ((fqn: string, event: MouseEvent) => void) | null;
   };
 
-  let { scene, onpick, onup, flows = null, oninfo = null, oninfoend = null, onusages = null }: Props = $props();
+  let { scene, onpick, onup, flows = null, onsource = null, onusages = null }: Props = $props();
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
   const colorMode = $derived(theme.resolved === "light" ? "light" : "dark");
 
+  // The canvas root, captured for diagram export.
+  let flowEl = $state<HTMLDivElement | null>(null);
+  // Download name: the boundary view's subject, else a generic fallback.
+  const exportName = $derived((scene.of ?? "").split("::").pop() || "diagram");
+
   const nodeTypes = { boundary: BoundaryNode, card: C4Node };
+  const edgeTypes = { floating: FloatingEdge };
 
   const NODE_W = 200;
   const NODE_H = 104;
@@ -74,9 +88,9 @@
   // structural view below them, so they get no drill button (info only).
   const DRILL: Record<string, string> = { system: "Open container diagram", container: "Open component diagram" };
 
-  function dagreGraph(): Graph {
+  function dagreGraph(rankdir: LayoutDir): Graph {
     const g = new Dagre.graphlib.Graph();
-    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 90, marginx: 28, marginy: 28 });
+    g.setGraph({ rankdir, nodesep: 60, ranksep: 90, marginx: 28, marginy: 28 });
     g.setDefaultEdgeLabel(() => ({}));
     return g;
   }
@@ -98,13 +112,13 @@
   // A boundary view: lay the `of` children inside a box, the external actors
   // around it. Two dagre passes — one inside the box, one placing the box and
   // its outside actors — keep the box from overlapping anything.
-  function grouped(s: Scene, boundaryFqn: string): Node[] {
+  function grouped(s: Scene, boundaryFqn: string, rankdir: LayoutDir): Node[] {
     const anchor = s.nodes.find((n) => n.fqn === boundaryFqn);
     const inside = s.nodes.filter((n) => n.boundary === boundaryFqn);
     const outside = s.nodes.filter((n) => n.fqn !== boundaryFqn && n.boundary !== boundaryFqn);
 
     // Inner pass: children, laid out by the edges among them.
-    const inner = dagreGraph();
+    const inner = dagreGraph(rankdir);
     for (const n of inside) inner.setNode(n.fqn, { width: NODE_W, height: NODE_H });
     const insideSet = new Set(inside.map((n) => n.fqn));
     for (const e of s.edges) if (insideSet.has(e.from) && insideSet.has(e.to)) inner.setEdge(e.from, e.to);
@@ -123,7 +137,7 @@
 
     // Outer pass: the box (as one node) plus the external actors, positioned by
     // the edges that cross the boundary.
-    const outer = dagreGraph();
+    const outer = dagreGraph(rankdir);
     outer.setNode(boundaryFqn, { width: boxW, height: boxH });
     for (const n of outside) outer.setNode(n.fqn, { width: NODE_W, height: NODE_H });
     const lift = (fqn: string): string => (insideSet.has(fqn) ? boundaryFqn : fqn);
@@ -164,9 +178,19 @@
     return [boundaryNode, ...childNodes, ...outsideNodes] as Node[];
   }
 
-  // A flat view (context, or a boundary with no children): every node a peer card.
-  function flat(s: Scene): Node[] {
-    const g = dagreGraph();
+  // Lay out positions over a single index, given a position function. Shared by
+  // the geometric algorithms (grid / circular / radial); origin is irrelevant —
+  // fitView re-centres — so they place cards in a tidy local frame.
+  const COL_GAP = 80;
+  const ROW_GAP = 64;
+
+  function placed(s: Scene, pos: (i: number, n: SceneNode) => { x: number; y: number }): Node[] {
+    return s.nodes.map((n, i) => ({ ...card(n), position: pos(i, n) })) as Node[];
+  }
+
+  // Hierarchical: dagre layered, honouring the flow direction.
+  function layered(s: Scene, rankdir: LayoutDir): Node[] {
+    const g = dagreGraph(rankdir);
     for (const n of s.nodes) g.setNode(n.fqn, { width: NODE_W, height: NODE_H });
     for (const e of s.edges) g.setEdge(e.from, e.to);
     Dagre.layout(g);
@@ -176,16 +200,121 @@
     }) as Node[];
   }
 
-  function layout(s: Scene): { nodes: Node[]; edges: Edge[] } {
+  // Top-left of the k-th of `count` cards spaced evenly on a circle of `radius`,
+  // centred on the origin.
+  function onCircle(radius: number, k: number, count: number): { x: number; y: number } {
+    const a = (2 * Math.PI * k) / count - Math.PI / 2;
+    return { x: radius * Math.cos(a) - NODE_W / 2, y: radius * Math.sin(a) - NODE_H / 2 };
+  }
+
+  // Radius that seats `count` cards around a ring without overlap.
+  function ringRadius(count: number): number {
+    return Math.max(NODE_W, ((NODE_W + COL_GAP) * count) / (2 * Math.PI));
+  }
+
+  // Grid: row-major into the squarest grid that holds every card.
+  function grid(s: Scene): Node[] {
+    const cols = Math.max(1, Math.ceil(Math.sqrt(s.nodes.length)));
+    return placed(s, (i) => ({
+      x: (i % cols) * (NODE_W + COL_GAP),
+      y: Math.floor(i / cols) * (NODE_H + ROW_GAP),
+    }));
+  }
+
+  // Circular: cards spaced evenly around one ring, sized so they don't overlap.
+  function circular(s: Scene): Node[] {
+    const count = s.nodes.length;
+    const r = ringRadius(count);
+    return placed(s, (i) => onCircle(r, i, count));
+  }
+
+  // Ring index (hop distance from `roots`) of every id; anything unreached lands
+  // one ring beyond the deepest reached.
+  function hopRings(ids: string[], out: Map<string, string[]>, roots: string[]): Map<string, number> {
+    const ring = new Map<string, number>();
+    let frontier = roots;
+    let depth = 0;
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        if (ring.has(id)) continue;
+        ring.set(id, depth);
+        for (const m of out.get(id) ?? []) if (!ring.has(m)) next.push(m);
+      }
+      frontier = next;
+      depth++;
+    }
+    const maxRing = ring.size ? Math.max(...ring.values()) : 0;
+    for (const id of ids) if (!ring.has(id)) ring.set(id, maxRing + 1);
+    return ring;
+  }
+
+  // Radial: concentric rings by hop distance from the roots (sources with no
+  // incoming edge), so an entry point sits at the centre and dependents fan out.
+  function radial(s: Scene): Node[] {
+    const ids = s.nodes.map((n) => n.fqn);
+    const out = new Map<string, string[]>(ids.map((id) => [id, []]));
+    const indeg = new Map<string, number>(ids.map((id) => [id, 0]));
+    for (const e of s.edges) {
+      if (out.has(e.from) && indeg.has(e.to)) {
+        out.get(e.from)!.push(e.to);
+        indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
+      }
+    }
+    let roots = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
+    if (roots.length === 0) roots = ids.slice(0, 1);
+
+    const ring = hopRings(ids, out, roots);
+
+    // Group ids by ring; give each ring a radius that seats its members and clears
+    // the ring inside it (a lone centre sits at 0), then place members around it.
+    const byRing = new Map<number, string[]>();
+    for (const id of ids) {
+      const d = ring.get(id) ?? 0;
+      if (!byRing.has(d)) byRing.set(d, []);
+      byRing.get(d)!.push(id);
+    }
+    const RING_STEP = NODE_W + ROW_GAP + 40;
+    const place = new Map<string, { x: number; y: number }>();
+    let prev = 0;
+    for (const d of [...byRing.keys()].sort((a, b) => a - b)) {
+      const members = byRing.get(d)!;
+      const radius = d === 0 && members.length === 1 ? 0 : Math.max(prev + RING_STEP, ringRadius(members.length));
+      prev = radius;
+      members.forEach((id, k) => place.set(id, onCircle(radius, k, members.length)));
+    }
+    return placed(s, (_i, n) => place.get(n.fqn) ?? { x: 0, y: 0 });
+  }
+
+  // A flat view (context, or a boundary with no children): every node a peer card,
+  // placed by the chosen algorithm. Direction applies to the layered algorithm only.
+  function flat(s: Scene, algo: LayoutAlgo, rankdir: LayoutDir): Node[] {
+    switch (algo) {
+      case "grid":
+        return grid(s);
+      case "circular":
+        return circular(s);
+      case "radial":
+        return radial(s);
+      default:
+        return layered(s, rankdir);
+    }
+  }
+
+  function layout(s: Scene, algo: LayoutAlgo, rankdir: LayoutDir, edgeType: string): { nodes: Node[]; edges: Edge[] } {
     const boundaryFqn = s.of ?? null;
     const hasChildren = boundaryFqn && s.nodes.some((n) => n.boundary === boundaryFqn);
-    const nodes = hasChildren ? grouped(s, boundaryFqn) : flat(s);
+    // A boundary view is a nested-box layout — always layered; the algorithm
+    // choice applies to the flat (peer) views.
+    const nodes = hasChildren ? grouped(s, boundaryFqn, rankdir) : flat(s, algo, rankdir);
     const edges = s.edges.map((e, i) => ({
       id: `e${i}`,
       source: e.from,
       target: e.to,
       label: e.label || undefined,
-      type: "smoothstep",
+      // Floating: anchored at the nearest borders, routed in the chosen style.
+      type: "floating",
+      data: { pathType: edgeType },
       animated: true,
       class: `c4-edge ${e.kind}`,
       selectable: false,
@@ -199,77 +328,125 @@
     return { nodes, edges };
   }
 
-  const initial = layout(scene);
+  // Re-project whenever the scene or the algorithm / direction / edge preferences
+  // change. The graph is a projection, so a wholesale re-layout is the right call.
+  const initial = layout(scene, canvasPrefs.algorithm, canvasPrefs.layout, canvasPrefs.edgeType);
   let nodes = $state<Node[]>(initial.nodes);
   let edges = $state<Edge[]>(initial.edges);
+  $effect(() => {
+    const l = layout(scene, canvasPrefs.algorithm, canvasPrefs.layout, canvasPrefs.edgeType);
+    nodes = l.nodes;
+    edges = l.edges;
+  });
 
-  // Clicking a node opens its info popover; drilling in (a deeper structural
-  // view, or a behavioural flow) is an explicit action there.
-  let picked = $state<NodeData | null>(null);
-  const pickedFlows = $derived<Flow[]>(picked && flows ? (flows.get(picked.fqn) ?? []) : []);
-  function onnodeclick({ node }: { node: Node }): void {
-    picked = node.data as NodeData;
+  // The node a right-click opened the context menu on, anchored at the pointer.
+  // `event` is kept so "Find usages" can position its popover where the click was.
+  type MenuState = { fqn: string; kind: string; label: string; isBoundary: boolean; x: number; y: number; event: MouseEvent };
+  let menu = $state<MenuState | null>(null);
+  const menuFlows = $derived<Flow[]>(menu && flows ? (flows.get(menu.fqn) ?? []) : []);
+  let menuEl = $state<HTMLDivElement | null>(null);
+
+  function onnodecontextmenu({ event, node }: { event: MouseEvent; node: Node }): void {
+    event.preventDefault();
+    const data = node.data as NodeData;
+    menu = { fqn: data.fqn, kind: data.kind, label: data.label, isBoundary: node.type === "boundary", x: event.clientX, y: event.clientY, event };
   }
-  // Hover a node → the shared info card, the same affordance as the sequence
-  // canvas and the code hover. The card is the passive popover in +page; the
-  // richer click popover (flows / drill-in) stays on click.
-  function onnodepointerenter({ event, node }: { event: PointerEvent; node: Node }): void {
-    const data = node?.data as NodeData | undefined;
-    if (data?.fqn) oninfo?.(data.fqn, event);
+  const closeMenu = () => (menu = null);
+  // Run a menu action and dismiss.
+  function act(run: () => void): void {
+    run();
+    closeMenu();
   }
-  function onnodepointerleave(): void {
-    oninfoend?.();
+
+  // Render the menu under <body> so its `position: fixed` resolves against the
+  // viewport. Inside the canvas islands a transformed/animated ancestor forms a
+  // containing block, which would otherwise offset `left: clientX` by the rail +
+  // explorer width.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
   }
-  function open(fqn: string): void {
-    onpick?.(fqn);
-    picked = null;
-  }
+
+  // Move keyboard focus to the menu when it opens so arrows / Enter / Escape work.
+  $effect(() => {
+    if (menu) menuEl?.focus();
+  });
 </script>
 
-<div class="flow">
+<svelte:window onkeydown={(e) => menu && e.key === "Escape" && closeMenu()} />
+
+<div class="flow" bind:this={flowEl}>
   <SvelteFlow
     bind:nodes
     bind:edges
     {nodeTypes}
+    {edgeTypes}
     fitView
     {colorMode}
     minZoom={0.2}
     maxZoom={2.5}
     nodesDraggable={false}
     nodesConnectable={false}
+    elementsSelectable={false}
     proOptions={{ hideAttribution: true }}
-    {onnodeclick}
-    {onnodepointerenter}
-    {onnodepointerleave}
+    {onnodecontextmenu}
   >
     <Background gap={24} />
     <MiniMap pannable zoomable />
     <Controls showLock={false} />
+    <!-- Re-frame the viewport when the algorithm / direction moves the nodes.
+         The flow stays mounted, so nodes keep their measured sizes and fitView
+         frames them correctly (a remount would refit before re-measuring). -->
+    <FitView sig={`${canvasPrefs.algorithm}|${canvasPrefs.layout}`} />
   </SvelteFlow>
 
-  {#if picked}
-    <button class="scrim" aria-label="Close" onclick={() => (picked = null)}></button>
-    <div class="popover" role="dialog" aria-modal="true">
-      <span class="kind {picked.kind}">{picked.kind}</span>
-      <h3>{picked.label}</h3>
-      <p class="fqn">{picked.fqn}</p>
-      {#if picked.summary}<p class="summary">{picked.summary}</p>{/if}
-      {#if pickedFlows.length}
-        <div class="flows">
-          <span class="flows-label">Flows</span>
-          {#each pickedFlows as f (f.fqn)}
-            <button class="flow" onclick={() => open(f.fqn)}>
-              <span class="play">▶</span>{f.name}{#if f.triggered}<span class="trig">triggered</span>{/if}
-            </button>
-          {/each}
-        </div>
-      {/if}
-      <div class="actions">
-        {#if DRILL[picked.kind]}
-          <button class="drill" onclick={() => open(picked!.fqn)}>{DRILL[picked.kind]} →</button>
-        {/if}
-        <button class="dismiss" onclick={() => (picked = null)}>Close</button>
+  <!-- Top-right toolbar: export the diagram, and the layout/edge modal. -->
+  <div class="customise">
+    <DiagramExport container={flowEl} {nodes} filename={exportName} />
+    <CanvasSettings />
+  </div>
+
+  {#if menu}
+    {@const m = menu}
+    <div use:portal>
+    <!-- A transparent layer that dismisses on any click or another right-click. -->
+    <button
+      class="menu-scrim"
+      aria-label="Close menu"
+      onclick={closeMenu}
+      oncontextmenu={(e) => {
+        e.preventDefault();
+        closeMenu();
+      }}
+    ></button>
+    <div bind:this={menuEl} class="ctx-menu" role="menu" tabindex="-1" aria-label="Node actions" style="left:{m.x}px; top:{m.y}px">
+      <div class="ctx-head">
+        <span class="kind {m.kind}">{m.kind}</span>
+        <span class="ctx-name">{m.label}</span>
       </div>
+      <div class="ctx-sep"></div>
+
+      {#if m.isBoundary}
+        {#if onup}
+          <button role="menuitem" class="ctx-item" onclick={() => act(() => onup?.())}>Go up a level</button>
+        {/if}
+      {:else if DRILL[m.kind]}
+        <button role="menuitem" class="ctx-item" onclick={() => act(() => onpick?.(m.fqn))}>{DRILL[m.kind]}</button>
+      {/if}
+
+      {#if menuFlows.length}
+        <div class="ctx-label">Flows</div>
+        {#each menuFlows as f (f.fqn)}
+          <button role="menuitem" class="ctx-item flow" onclick={() => act(() => onpick?.(f.fqn))}>
+            <span class="play">▶</span><span class="flow-name">{f.name}</span>{#if f.triggered}<span class="trig">triggered</span>{/if}
+          </button>
+        {/each}
+      {/if}
+
+      <div class="ctx-sep"></div>
+      <button role="menuitem" class="ctx-item" onclick={() => act(() => onsource?.(m.fqn))}>Go to definition</button>
+      <button role="menuitem" class="ctx-item" onclick={() => act(() => onusages?.(m.fqn, m.event))}>Find usages</button>
+    </div>
     </div>
   {/if}
 </div>
@@ -277,113 +454,123 @@
 <style>
   .flow { position: relative; width: 100%; height: 100%; }
 
-  .scrim {
+  /* Floating "Customise" button, top-right, clear of the minimap (bottom-right). */
+  .customise {
     position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    z-index: 5;
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .menu-scrim {
+    position: fixed;
     inset: 0;
-    z-index: 8;
+    z-index: 60;
     border: 0;
     padding: 0;
-    background: color-mix(in srgb, var(--bg) 35%, transparent);
+    background: transparent;
     cursor: default;
   }
-  .popover {
-    position: absolute;
-    z-index: 9;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: min(22rem, calc(100% - 2rem));
-    padding: 1.1rem 1.2rem 1rem;
-    background: var(--surface-2);
+  .ctx-menu {
+    position: fixed;
+    z-index: 61;
+    min-width: 13rem;
+    max-width: 18rem;
+    padding: 0.3rem;
+    background: var(--surface);
     border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius);
     box-shadow: var(--shadow-lg);
+    outline: none;
   }
-  .popover .kind {
-    display: inline-block;
+  .ctx-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.45rem 0.4rem;
+  }
+  .ctx-head .kind {
+    flex: none;
     font-family: var(--font-mono);
-    font-size: 0.56rem;
+    font-size: 0.52rem;
     font-weight: 600;
-    letter-spacing: 0.2em;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--ink-faint);
-    padding: 0.12rem 0.4rem;
+    padding: 0.1rem 0.35rem;
     border-radius: 4px;
     border-left: 2px solid var(--k, var(--ink-faint));
     background: var(--surface-3);
   }
-  .popover .kind.person { --k: var(--k-person); }
-  .popover .kind.system { --k: var(--k-system); }
-  .popover .kind.container { --k: var(--k-container); }
-  .popover .kind.component { --k: var(--k-component); }
-  .popover .kind.data { --k: var(--k-data); }
-  .popover .kind.callable { --k: var(--k-callable); }
-  .popover h3 {
-    margin: 0.55rem 0 0.2rem;
+  .ctx-head .kind.person { --k: var(--k-person); }
+  .ctx-head .kind.system { --k: var(--k-system); }
+  .ctx-head .kind.container { --k: var(--k-container); }
+  .ctx-head .kind.component { --k: var(--k-component); }
+  .ctx-head .kind.data { --k: var(--k-data); }
+  .ctx-head .kind.callable { --k: var(--k-callable); }
+  .ctx-name {
     font-family: var(--font-display);
-    font-size: 1.05rem;
-    color: var(--ink);
-  }
-  .popover .fqn { margin: 0; font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-faint); }
-  .popover .summary { margin: 0.7rem 0 0; font-size: 0.85rem; line-height: 1.6; color: var(--ink-soft); }
-  .popover .flows { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.9rem; }
-  .popover .flows-label {
-    font-family: var(--font-mono);
-    font-size: 0.56rem;
+    font-size: 0.86rem;
     font-weight: 600;
-    letter-spacing: 0.2em;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ctx-sep {
+    height: 1px;
+    margin: 0.2rem 0.2rem;
+    background: var(--line);
+  }
+  .ctx-label {
+    padding: 0.3rem 0.5rem 0.15rem;
+    font-family: var(--font-mono);
+    font-size: 0.52rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--ink-faint);
-    margin-bottom: 0.15rem;
   }
-  .popover .flow {
+  .ctx-item {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    padding: 0.4rem 0.6rem;
-    font-family: var(--font-mono);
+    padding: 0.4rem 0.5rem;
+    font-family: var(--font-sans);
     font-size: 0.8rem;
-    color: var(--ink);
-    background: var(--surface-3);
-    border: 1px solid var(--line);
-    border-left: 2px solid var(--k-callable);
-    border-radius: 6px;
+    color: var(--ink-soft);
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     text-align: left;
   }
-  .popover .flow:hover { border-color: var(--accent); }
-  .popover .flow .play { color: var(--k-callable); font-size: 0.6rem; }
-  .popover .flow .trig {
+  .ctx-item:hover,
+  .ctx-item:focus-visible {
+    background: var(--surface-2);
+    color: var(--ink);
+    outline: none;
+  }
+  .ctx-item .flow-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ctx-item .play {
+    flex: none;
+    color: var(--k-callable);
+    font-size: 0.58rem;
+  }
+  .ctx-item .trig {
     margin-left: auto;
-    font-size: 0.56rem;
-    letter-spacing: 0.12em;
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 0.52rem;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--accent);
   }
-  .popover .actions { display: flex; gap: 0.5rem; margin-top: 1.1rem; }
-  .popover .drill {
-    flex: 1;
-    padding: 0.5rem 0.8rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--accent-ink);
-    background: var(--accent);
-    border: 1px solid var(--accent);
-    border-radius: 6px;
-    cursor: pointer;
-  }
-  .popover .drill:hover { background: var(--accent-hi); }
-  .popover .dismiss {
-    padding: 0.5rem 0.8rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--ink-soft);
-    background: var(--surface-3);
-    border: 1px solid var(--line-strong);
-    border-radius: 6px;
-    cursor: pointer;
-  }
-  .popover .dismiss:hover { color: var(--ink); border-color: var(--accent); }
 </style>

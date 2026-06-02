@@ -19,9 +19,13 @@ function readDocWidth(): string {
 class UiStore {
   // The launcher / settings / markdown-help panels.
   projectOpen = $state(false);
+  // The New-project dialog (template picker), opened from the launcher.
+  newProjectOpen = $state(false);
   settingsOpen = $state(false);
   mdHelpOpen = $state(false);
-  // The right-hand Structure panel (open by default) and the Problems popover.
+  // Tool-window islands: the left-hand Explorer (file tree) and right-hand
+  // Structure panel are open by default; the bottom Problems dock starts closed.
+  explorerOpen = $state(true);
   structureOpen = $state(true);
   problemsOpen = $state(false);
   // The ⌘K command palette (go-to file / symbol).

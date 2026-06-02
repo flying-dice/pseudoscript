@@ -73,6 +73,42 @@ pub fn references(
     out
 }
 
+/// One file's rename edits: the module FQN and the spans of every occurrence of
+/// the symbol within it (the declaration included). The caller substitutes the
+/// new name at each span — this backs `textDocument/rename`.
+#[derive(Debug, Clone)]
+pub struct FileEdits {
+    /// FQN of the module the edits apply to.
+    pub fqn: String,
+    /// Spans to replace with the new name, in source order.
+    pub spans: Vec<Span>,
+}
+
+/// Group every occurrence of the symbol under `offset` (declaration included) by
+/// module, ready for a rename. Empty when the cursor is on no resolvable symbol.
+/// Module and span order follow the workspace scan, so it is deterministic.
+#[must_use]
+pub fn rename(
+    ws: &Workspace,
+    modules: &[(String, String)],
+    from_fqn: &str,
+    src: &str,
+    offset: u32,
+) -> Vec<FileEdits> {
+    let mut by: Vec<FileEdits> = Vec::new();
+    for occ in references(ws, modules, from_fqn, src, offset, true) {
+        if let Some(file) = by.iter_mut().find(|f| f.fqn == occ.fqn) {
+            file.spans.push(occ.span);
+        } else {
+            by.push(FileEdits {
+                fqn: occ.fqn,
+                spans: vec![occ.span],
+            });
+        }
+    }
+    by
+}
+
 /// The occurrences of the symbol under `offset` within the current file only
 /// (document highlight).
 #[must_use]
@@ -158,6 +194,34 @@ mod tests {
             refs.iter().any(|r| r.fqn == "b"),
             "call site in b: {refs:?}"
         );
+    }
+
+    #[test]
+    fn rename_groups_occurrences_by_file_including_declaration() {
+        let mods = [
+            ("a", "//! a\n\npublic system Svc;\n"),
+            ("b", "//! b\n\npublic container C for a::Svc;\n"),
+        ];
+        let workspace = ws(&mods);
+        let owned = owned(&mods);
+        let offset = mods[0].1.find("Svc").unwrap() as u32;
+
+        let edits = rename(&workspace, &owned, "a", mods[0].1, offset);
+        assert_eq!(edits.len(), 2, "both files carry an occurrence: {edits:?}");
+        let a = edits.iter().find(|e| e.fqn == "a").expect("module a");
+        let b = edits.iter().find(|e| e.fqn == "b").expect("module b");
+        assert_eq!(a.spans.len(), 1, "the declaration in a");
+        assert_eq!(b.spans.len(), 1, "the cross-file use in b");
+    }
+
+    #[test]
+    fn rename_on_no_symbol_is_empty() {
+        let mods = [("a", "//! a\n\npublic system Svc;\n")];
+        let workspace = ws(&mods);
+        let owned = owned(&mods);
+        // offset 0 is the leading `//!` comment — no resolvable symbol.
+        let edits = rename(&workspace, &owned, "a", mods[0].1, 0);
+        assert!(edits.is_empty(), "no symbol under the cursor: {edits:?}");
     }
 
     #[test]

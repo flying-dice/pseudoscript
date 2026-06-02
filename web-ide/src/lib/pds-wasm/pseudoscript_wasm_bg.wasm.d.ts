@@ -18,6 +18,7 @@ export const outline: (a: number, b: number) => [number, number];
 export const outline_modules: (a: number, b: number) => [number, number, number, number];
 export const parse: (a: number, b: number) => [number, number];
 export const references: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const rename_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
 export const render_doc_site: (a: number, b: number, c: number, d: number, e: any) => [number, number, number, number];
 export const semantic_tokens: (a: number, b: number) => [number, number];
 export const symbol_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];

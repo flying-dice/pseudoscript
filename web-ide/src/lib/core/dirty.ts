@@ -13,18 +13,21 @@ export type Buffers = {
   manifestSource: string;
   moduleSources: Record<string, string>;
   docSources: Record<string, string>;
+  otherSources: Record<string, string>;
 };
 
-/** A file's buffer key: its path for a doc or the manifest, its FQN for a module. */
+/** A file's buffer key: its path for a doc, manifest, or companion file; its FQN
+ *  for a module. */
 export function keyOf(file: OpenFile | null): string | undefined {
-  return file?.isManifest ? file.path : file?.isDoc ? file.path : file?.fqn;
+  return file?.isManifest || file?.isDoc || file?.isOther ? file.path : file?.fqn;
 }
 
-/** The live value for a baseline key, across the manifest / module / doc buffers. */
+/** The live value for a baseline key, across the manifest / module / doc / companion buffers. */
 function currentFor(key: string, b: Buffers): string | undefined {
   if (key === b.manifestKey) return b.manifestSource;
   if (key in b.moduleSources) return b.moduleSources[key];
-  return b.docSources[key];
+  if (key in b.docSources) return b.docSources[key];
+  return b.otherSources[key];
 }
 
 /** The set of dirty keys: every baseline whose live buffer diverged from it. */

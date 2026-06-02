@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   danglingImporters,
   docPathSet,
+  folderRenameClash,
+  normalizeDirPath,
   normalizePdsPath,
   pascalName,
   pdsSkeleton,
+  remapDirs,
   slugify,
   validateNewDoc,
   validateNewFile,
@@ -42,6 +45,34 @@ describe("names & paths", () => {
     expect(s).toContain("//! billing");
     expect(s).toContain("public system Billing;");
     expect(s).toContain("public container Api for Billing");
+  });
+});
+
+describe("folders", () => {
+  it("normalizeDirPath trims segments and drops empties / .pds", () => {
+    expect(normalizeDirPath("  banking//adapters/ ")).toBe("banking/adapters");
+    expect(normalizeDirPath("a\\b")).toBe("a/b");
+    expect(normalizeDirPath("core.pds")).toBe("core");
+    expect(normalizeDirPath("   ")).toBe("");
+  });
+
+  it("folderRenameClash rejects self and nested-in/around targets", () => {
+    expect(folderRenameClash("a", "a")).toBe(true); // self
+    expect(folderRenameClash("a", "a/b")).toBe(true); // into own subtree
+    expect(folderRenameClash("a/b", "a")).toBe(true); // onto own ancestor
+    expect(folderRenameClash("a", "b")).toBe(false); // sibling — allowed
+    expect(folderRenameClash("ab", "a")).toBe(false); // prefix-but-not-segment
+  });
+
+  it("remapDirs re-points the folder and its subtree, leaving siblings", () => {
+    const dirs = ["a", "a/b", "a/bc", "other"];
+    expect(remapDirs(dirs, "a", "x")).toEqual(["other", "x", "x/b", "x/bc"]);
+    // "a/bc" must not be mangled by the "a/b" prefix
+    expect(remapDirs(["a/b", "a/bc"], "a/b", "a/z")).toEqual(["a/bc", "a/z"]);
+  });
+
+  it("remapDirs always includes the new folder", () => {
+    expect(remapDirs([], "a", "x")).toEqual(["x"]);
   });
 });
 

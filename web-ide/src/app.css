@@ -47,7 +47,7 @@
 
 /* PseudoScript Web IDE — "Drafting Terminal".
  *
- * Ink-black canvas under a blueprint grid and a vermilion horizon glow.
+ * Ink-black canvas under a blueprint grid.
  * Hairline-framed panes, drafting corner ticks, one hot accent, mono-forward
  * uppercase micro-labels. Diagrams render on a dark interactive canvas. One
  * staggered reveal on load; everything else is restrained and precise.
@@ -84,7 +84,11 @@
 
   /* atmosphere */
   --grid: rgba(255, 255, 255, 0.022);
-  --glow: radial-gradient(1100px 560px at 88% -12%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%);
+
+  /* one opaque surface for every docked island (explorer / centre / structure /
+     problems dock). Solid, not translucent — the old low-opacity mix only existed
+     to let the (now removed) backdrop glow bleed through. */
+  --island-bg: var(--surface);
 
   /* kind palette (shared with the diagrams) */
   --k-person: #6e8bff;
@@ -106,8 +110,9 @@
   --topbar-h: 60px;
   --status-h: 24px;
   /* compact ("mira") chrome height for the island bars (top / content / panel heads) */
-  --bar-h: 34px;
+  --bar-h: 38px;
   --activity-w: 42px;
+  --right-rail-w: 42px;
   --radius: 10px;
   --radius-sm: 7px;
   /* the gutter between the Fleet-style islands */
@@ -154,19 +159,24 @@
   color-scheme: dark;
 }
 
-/* Light theme — the same token names re-pointed for a paper-pale drafting sheet.
-   The interactive diagram canvas keeps its own `--sheet`/`--bg` warmth so it
-   stays legible in both modes. */
+/* Light theme — the same token names re-pointed for a cool silver drafting sheet.
+   Neutrals are tinted blue (B ≥ G ≥ R) rather than cream so the surface reads
+   like brushed metal, not aged paper. */
 :root[data-theme="light"] {
-  --bg: #f3f1ec;
+  --bg: #e7eaef;
   --surface: #ffffff;
-  --surface-2: #f4f2ed;
-  --surface-3: #e8e5dd;
+  --surface-2: #f4f6f9;
+  --surface-3: #e3e7ee;
   --ink: #1a1b20;
   --ink-soft: #4c4e57;
-  --ink-faint: #8a8c95;
-  --line: #e3e0d8;
-  --line-strong: #cfccc2;
+  --ink-faint: #888c95;
+  --line: #dde0e7;
+  --line-strong: #c6cad3;
+
+  /* canvas sheet — silver in light mode (dark mode keeps its warm sheet) */
+  --sheet: #f1f3f6;
+  --sheet-ink: #3a3c42;
+  --sheet-grid: rgba(40, 44, 58, 0.07);
 
   --accent: #e8401c;
   --accent-hi: #ff5a36;
@@ -178,7 +188,6 @@
   --err: #d63a32;
 
   --grid: rgba(20, 20, 30, 0.04);
-  --glow: radial-gradient(1100px 560px at 88% -12%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%);
 
   --k-person: #3f5bd6;
   --k-system: #d6492f;
@@ -225,16 +234,19 @@ html, body { height: 100%; margin: 0; }
 body {
   color: var(--ink);
   background-color: var(--bg);
-  /* vermilion glow over a flat surface */
-  background-image: var(--glow);
-  background-size: 100% 100%;
-  background-attachment: fixed;
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.6;
   letter-spacing: -0.004em;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* while a gutter splitter is dragged: force the resize cursor everywhere and
+   stop text selection from fighting the drag. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 /* a whisper of grain over everything for tactile depth */
@@ -294,7 +306,11 @@ button { font: inherit; cursor: pointer; color: inherit; }
      (a `.svelte-flow.svelte-xxxx` rule, higher specificity than a bare class);
      the dark `.stage` then shows through. */
   background: transparent !important;
-  --xy-background-color-default: transparent;
+  /* Paint the pane with the island surface. Set the non-`-default` var: the pane
+     reads `var(--xy-background-color, var(--xy-background-color-default))`, so this
+     wins over Svelte Flow's `.svelte-flow.dark` default (#141414) without a
+     specificity fight. */
+  --xy-background-color: var(--island-bg);
   --xy-edge-stroke-default: var(--line-strong);
   --xy-edge-stroke-selected-default: var(--accent);
   --xy-edge-label-color-default: var(--ink-soft);
@@ -332,7 +348,7 @@ button { font: inherit; cursor: pointer; color: inherit; }
   border: 1px solid var(--line-strong);
   border-left: 3px solid var(--k, var(--ink-faint));
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.8);
+  box-shadow: var(--shadow-sm);
   text-align: left;
 }
 .svelte-flow__node.c4-node.person { --k: var(--k-person); }
@@ -441,29 +457,6 @@ button { font: inherit; cursor: pointer; color: inherit; }
   height: auto;
   max-height: 200px;
 }
-.pds-hover .ph-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.55rem;
-}
-.pds-hover .ph-actions button {
-  flex: none;
-  background: var(--surface-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  color: var(--ink-soft);
-  font-family: var(--font-mono);
-  font-size: 0.58rem;
-  letter-spacing: 0.03em;
-  padding: 0.18rem 0.4rem;
-  cursor: pointer;
-}
-.pds-hover .ph-actions button:hover {
-  border-color: var(--accent);
-  color: var(--ink);
-}
-
 /* Markdown live-preview (`.cm-md-live`): render prose in the readable grotesk
    sans rather than the `.pds` monospace, headings in the display grotesk, and
    keep only code in mono. The `.cm-editor.cm-md-live` selector outranks

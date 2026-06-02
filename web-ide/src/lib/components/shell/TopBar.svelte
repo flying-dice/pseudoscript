@@ -1,17 +1,19 @@
 <script lang="ts">
-  import { ArrowLeft, ArrowRight, Search, WandSparkles } from "@lucide/svelte";
+  import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
 
-  import { Button } from "$lib/components/ui/button/index.js";
-  import FileMenu from "./FileMenu.svelte";
+  import MenuBar from "./MenuBar.svelte";
 
   type Props = {
     workspaceName?: string | null;
     building?: boolean;
+    view?: "code" | "canvas";
+    structureOpen?: boolean;
     canBack?: boolean;
     canForward?: boolean;
     onback?: () => void;
     onforward?: () => void;
     onopenfolder?: () => void;
+    oncloseproject?: () => void;
     ongoto?: () => void;
     onnewfile?: () => void;
     onnewdoc?: () => void;
@@ -21,17 +23,20 @@
     onexport?: () => void;
     onimport?: () => void;
     onbuilddocs?: () => void;
-    onformat?: () => void;
+    onshortcuts?: () => void;
+    onview?: (view: "code" | "canvas") => void;
+    ontogglestructure?: () => void;
   };
 
   let {
     workspaceName = null,
     building = false,
+    view = "code",
+    structureOpen = true,
     canBack = false,
     canForward = false,
     onback,
     onforward,
-    onformat,
     ...menu
   }: Props = $props();
 
@@ -41,7 +46,7 @@
 <header class="topbar">
   <div class="left">
     <span class="brand">pds</span>
-    <FileMenu {workspaceName} {building} {...menu} />
+    <MenuBar {workspaceName} {building} {view} {structureOpen} {canBack} {canForward} {onback} {onforward} {...menu} />
     {#if workspaceName}
       <div class="nav">
         <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back">
@@ -54,19 +59,12 @@
     {/if}
   </div>
 
-  {#if workspaceName}
-    <button class="search" onclick={() => menu.ongoto?.()} title="Go to file or symbol">
-      <Search size={13} strokeWidth={2} aria-hidden="true" />
-      <span class="search-label">{workspaceName}</span>
-      <kbd>{mod}K</kbd>
-    </button>
-  {/if}
-
   <div class="right">
-    <Button variant="ghost" size="sm" onclick={onformat} title="Format the active file">
-      <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-      Format
-    </Button>
+    {#if workspaceName}
+      <button class="icon-btn" onclick={() => menu.ongoto?.()} title="Go to file or symbol ({mod}K)" aria-label="Go to file or symbol">
+        <Search size={15} strokeWidth={2} aria-hidden="true" />
+      </button>
+    {/if}
   </div>
 </header>
 
@@ -76,10 +74,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    height: var(--bar-h, 34px);
+    height: var(--bar-h, 38px);
     padding: 0 0.5rem 0 0.7rem;
-    border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface) 75%, transparent);
+    background: none;
   }
   .left,
   .right {
@@ -101,43 +98,6 @@
     letter-spacing: 0.02em;
     padding-right: 0.2rem;
   }
-  /* the VS-Code-style centre "go to" pill */
-  .search {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    min-width: 16rem;
-    max-width: 26rem;
-    height: 1.55rem;
-    padding: 0 0.5rem;
-    background: var(--surface-2);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    color: var(--ink-faint);
-    cursor: pointer;
-  }
-  .search:hover {
-    border-color: var(--accent);
-    color: var(--ink-soft);
-  }
-  .search-label {
-    flex: 1;
-    text-align: center;
-    font-family: var(--font-sans);
-    font-size: 0.76rem;
-    color: var(--ink-soft);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .search kbd {
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
-    padding: 0.05rem 0.3rem;
-    border-radius: 4px;
-    background: var(--surface-3);
-    color: var(--ink-faint);
-  }
   .icon-btn {
     width: 1.7rem;
     height: 1.7rem;
@@ -158,5 +118,27 @@
   .icon-btn:disabled {
     opacity: 0.35;
     cursor: default;
+  }
+
+  /* Installed PWA with Window Controls Overlay: the OS draws the window buttons
+     over the bar (traffic lights on the left on macOS), hiding "pds" and the
+     File menu. Inset the bar past the reserved titlebar area on both edges and
+     make its empty space drag the window; interactive elements opt back out of
+     dragging. The right inset reserves space for controls drawn on the right
+     edge (Windows/Linux place them there; Chrome also reserves a right region).
+     The env() vars are only non-default in this display mode, so the bar is
+     unchanged when run in a normal browser tab. */
+  @media (display-mode: window-controls-overlay) {
+    .topbar {
+      padding-left: calc(env(titlebar-area-x, 0px) + 0.7rem);
+      padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 0.5rem);
+      -webkit-app-region: drag;
+    }
+    .brand,
+    .nav,
+    .icon-btn,
+    :global(.topbar .menu-trigger) {
+      -webkit-app-region: no-drag;
+    }
   }
 </style>

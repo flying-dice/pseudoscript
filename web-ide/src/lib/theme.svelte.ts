@@ -40,7 +40,7 @@ function apply(resolved: ResolvedTheme): void {
   if (typeof document === "undefined") return;
   document.documentElement.setAttribute("data-theme", resolved);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", resolved === "light" ? "#f7f5f0" : "#0a0b0e");
+  if (meta) meta.setAttribute("content", resolved === "light" ? "#e7eaef" : "#0a0b0e");
 }
 
 let pref = $state<ThemePref>(loadPref());

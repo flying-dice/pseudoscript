@@ -10,6 +10,7 @@
   import SequenceLifeline from "./SequenceLifeline.svelte";
   import SequenceFragment from "./SequenceFragment.svelte";
   import SequenceMessages from "./SequenceMessages.svelte";
+  import DiagramExport from "./DiagramExport.svelte";
   import { theme } from "$lib/theme.svelte.js";
 
   // The triggered scene this flow projects; only `entry` is read here for the
@@ -124,6 +125,10 @@
   const built = $derived(build(layout));
   let nodes = $state<Node[]>([]);
   let edges = $state<Edge[]>([]);
+
+  // The canvas root, captured for diagram export; download name from the entry.
+  let flowEl = $state<HTMLDivElement | null>(null);
+  const exportName = $derived(leaf(scene?.entry) || "sequence");
   $effect(() => {
     nodes = built.nodes;
     edges = built.edges;
@@ -137,9 +142,10 @@
       <span class="name">{leaf(scene?.entry)}</span>
     </div>
     <span class="hint">sequence diagram — scroll to zoom · drag to pan</span>
+    <DiagramExport container={flowEl} {nodes} filename={exportName} />
   </header>
 
-  <div class="flow">
+  <div class="flow" bind:this={flowEl}>
     <SvelteFlow
       bind:nodes
       bind:edges

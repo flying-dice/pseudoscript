@@ -5,3 +5,10 @@ public person Customer;
 
 /// The banking system.
 public system Banking;
+
+/// A customer can open an account.
+feature OpenAccount for Banking {
+  given "a registered customer"
+  when "they request a new account"
+  then "the account is opened"
+}

@@ -190,13 +190,124 @@ fn kind_token(kind: NodeKind) -> &'static str {
 
 // --- SVG rendering ----------------------------------------------------------
 
-/// Renders a laid-out [`Scene`] to a self-contained SVG document.
+/// The colour theme a diagram renders in. `Light` reproduces the original
+/// ink-on-paper palette byte-for-byte; `Dark` swaps the structural colours
+/// (ink, hairlines, card/boundary fills, plates) for a dark surface while
+/// keeping the per-kind accent colours, mirroring the doc site's two modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    Light,
+    Dark,
+}
+
+/// Every colour the SVG emitters draw with, by role. Two instances exist
+/// ([`LIGHT`]/[`DARK`]); the active one is held in a thread-local for the
+/// duration of one render so the many emit helpers need no extra argument.
+pub(crate) struct Palette {
+    /// Primary ink: text, lines, the C4 arrowhead.
+    pub ink: &'static str,
+    /// Sequence-arrowhead ink (a slightly softer near-black in light mode).
+    pub arrow_seq: &'static str,
+    /// Hairlines: card borders and dashed lifelines.
+    pub hairline: &'static str,
+    /// Secondary text: descriptions, guards, return markers.
+    pub muted: &'static str,
+    /// Combined-fragment frame strokes/tabs.
+    pub frame: &'static str,
+    /// The entry/owner accent (activation, step badges).
+    pub accent: &'static str,
+    /// Success-return colour (`Ok`/`Some`).
+    pub ok: &'static str,
+    /// Error-return colour (`Err`/`None`).
+    pub err: &'static str,
+    /// A card's interior fill.
+    pub card_fill: &'static str,
+    /// A boundary frame's fill.
+    pub boundary_fill: &'static str,
+    /// The card drop-shadow colour.
+    pub shadow: &'static str,
+    /// A plain (non-owner) activation bar's fill.
+    pub act_fill: &'static str,
+    /// Text drawn on an accent fill (step numbers) — stays light in both themes.
+    pub on_accent: &'static str,
+    /// The faint backing pill behind a sequence label.
+    pub pill: &'static str,
+    /// The plate behind a C4 edge label (carries its own alpha).
+    pub edge_plate: &'static str,
+}
+
+/// The original ink-on-paper palette — light output is unchanged from before
+/// the theme split, so golden SVGs still match.
+pub(crate) static LIGHT: Palette = Palette {
+    ink: "#2a2f3a",
+    arrow_seq: "#333",
+    hairline: "#c3c8d2",
+    muted: "#6b7280",
+    frame: "#aab0bd",
+    accent: "#e8431f",
+    ok: "#0f9d8a",
+    err: "#d6432a",
+    card_fill: "#ffffff",
+    boundary_fill: "#f6f7fa",
+    shadow: "#1a1f2a",
+    act_fill: "#fff",
+    on_accent: "#fff",
+    pill: "#fff",
+    edge_plate: "#ffffffe6",
+};
+
+/// The dark surface palette: light ink, dark cards/plates, muted hairlines; the
+/// per-kind accents (set elsewhere) carry through unchanged.
+pub(crate) static DARK: Palette = Palette {
+    ink: "#d4d7dd",
+    arrow_seq: "#b7bbc3",
+    hairline: "#44474e",
+    muted: "#9a9ea8",
+    frame: "#565a62",
+    accent: "#ff5c38",
+    ok: "#23c2ab",
+    err: "#f0563b",
+    card_fill: "#2b2d31",
+    boundary_fill: "#26282d",
+    shadow: "#000000",
+    act_fill: "#3b3e45",
+    on_accent: "#fff",
+    pill: "#2b2d31",
+    edge_plate: "#2b2d31e6",
+};
+
+thread_local! {
+    /// The palette in effect for the current render (defaults to light).
+    static PALETTE: std::cell::Cell<&'static Palette> = const { std::cell::Cell::new(&LIGHT) };
+}
+
+/// The palette the emit helpers should draw with right now.
+pub(crate) fn pal() -> &'static Palette {
+    PALETTE.with(std::cell::Cell::get)
+}
+
+/// Renders a laid-out [`Scene`] to a self-contained SVG document (light theme).
 #[must_use]
 pub fn render_svg(scene: &Scene) -> String {
-    match scene {
+    render_svg_themed(scene, Theme::Light)
+}
+
+/// Renders a laid-out [`Scene`] to a self-contained SVG document in `theme`.
+/// Sets the thread-local palette for the duration of the render and restores
+/// light afterwards, so a default `render_svg` elsewhere is unaffected.
+#[must_use]
+pub fn render_svg_themed(scene: &Scene, theme: Theme) -> String {
+    let palette: &'static Palette = match theme {
+        Theme::Light => &LIGHT,
+        Theme::Dark => &DARK,
+    };
+    PALETTE.with(|p| p.set(palette));
+    let svg = match scene {
         Scene::C4(c4) => render_c4(c4),
         Scene::Sequence(seq) => render_sequence(seq),
-    }
+    };
+    PALETTE.with(|p| p.set(&LIGHT));
+    svg
 }
 
 /// SVG document header with a viewBox and an arrowhead marker.
@@ -210,22 +321,14 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
         w = w,
         h = h,
     );
-    out.push_str(
+    let _ = write!(
+        out,
         "<defs><marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" \
          orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,0 L9,3 L0,6 z\" \
-         fill=\"#333\"/></marker></defs>",
+         fill=\"{}\"/></marker></defs>",
+        pal().arrow_seq,
     );
 }
-
-// Sequence-diagram palette (ink-on-paper, readable on the doc site's light
-// plate in either theme).
-const SEQ_INK: &str = "#2a2f3a";
-const SEQ_LINE: &str = "#c3c8d2";
-const SEQ_MUTED: &str = "#6b7280";
-const SEQ_ACCENT: &str = "#e8431f";
-const SEQ_OK: &str = "#0f9d8a";
-const SEQ_ERR: &str = "#d6432a";
-const SEQ_FRAME: &str = "#aab0bd";
 
 /// Positions a sequence scene with the layout engine, returning absolute
 /// coordinates a renderer (the static SVG here, or the web-ide) draws verbatim.
@@ -235,6 +338,8 @@ pub fn layout_sequence_scene(scene: &SequenceScene) -> sequence::Layout {
 }
 
 fn render_sequence(scene: &SequenceScene) -> String {
+    #[allow(non_snake_case)]
+    let (SEQ_INK, SEQ_MUTED, SEQ_LINE) = (pal().ink, pal().muted, pal().hairline);
     let layout = layout_sequence_scene(scene);
     let mut out = String::new();
     svg_open(&mut out, layout.width, layout.height);
@@ -311,9 +416,9 @@ fn render_sequence(scene: &SequenceScene) -> String {
 /// plain.
 fn draw_activation(out: &mut String, act: &Activation) {
     let (fill, fill_op, stroke, stroke_op) = if act.owner {
-        (SEQ_ACCENT, "0.10", SEQ_ACCENT, "0.5")
+        (pal().accent, "0.10", pal().accent, "0.5")
     } else {
-        ("#fff", "1", SEQ_LINE, "1")
+        (pal().act_fill, "1", pal().hairline, "1")
     };
     let _ = write!(
         out,
@@ -329,6 +434,8 @@ fn draw_activation(out: &mut String, act: &Activation) {
 /// the target.
 /// A call: solid arrow source → target, numbered at its origin.
 fn draw_call(out: &mut String, msg: &PlacedMessage) {
+    #[allow(non_snake_case)]
+    let SEQ_INK = pal().ink;
     let _ = write!(
         out,
         "<line x1=\"{x1}\" y1=\"{y}\" x2=\"{x2}\" y2=\"{y}\" stroke=\"{SEQ_INK}\" \
@@ -351,6 +458,8 @@ fn draw_call(out: &mut String, msg: &PlacedMessage) {
 
 /// A self-message: a rounded loop on the owner's lifeline.
 fn draw_self(out: &mut String, msg: &PlacedMessage) {
+    #[allow(non_snake_case)]
+    let SEQ_INK = pal().ink;
     let lx = msg.from_x + ACT_W / 2;
     let _ = write!(
         out,
@@ -406,6 +515,8 @@ fn draw_return(out: &mut String, msg: &PlacedMessage) {
 /// A combined fragment (`alt`/`loop`): a framed box with a notched operator tab,
 /// its guard, and a dashed divider (with the `else` guard) per section split.
 fn draw_frame(out: &mut String, frag: &PlacedFragment) {
+    #[allow(non_snake_case)]
+    let (SEQ_INK, SEQ_FRAME, SEQ_MUTED) = (pal().ink, pal().frame, pal().muted);
     let r = frag.rect;
     let op = frag.kind.keyword();
     let tab_w = i32::try_from(op.len()).unwrap_or(3) * 8 + 18;
@@ -448,11 +559,14 @@ fn draw_frame(out: &mut String, frag: &PlacedFragment) {
 /// for calls and self-messages.
 fn step_badge(out: &mut String, lifeline_x: i32, y: i32, step: Option<u32>) {
     let Some(step) = step else { return };
+    #[allow(non_snake_case)]
+    let SEQ_ACCENT = pal().accent;
+    let on_accent = pal().on_accent;
     let _ = write!(
         out,
         "<circle cx=\"{cx}\" cy=\"{y}\" r=\"8\" fill=\"{SEQ_ACCENT}\"/>\
          <text x=\"{cx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"10\" font-weight=\"700\" \
-         fill=\"#fff\">{step}</text>",
+         fill=\"{on_accent}\">{step}</text>",
         cx = lifeline_x - ACT_W / 2 - 12,
         ty = y + 3,
     );
@@ -470,16 +584,19 @@ fn seq_label(
     colour: &str,
     pill: bool,
 ) {
+    #[allow(non_snake_case)]
+    let SEQ_MUTED = pal().muted;
     let label = escape_xml(text);
     let chars = text.chars().count() + detail.chars().count();
     if pill && chars > 0 {
         let w = i32::try_from(chars).unwrap_or(0) * 7 + 12;
         let _ = write!(
             out,
-            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"17\" rx=\"4\" fill=\"#fff\" \
+            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"17\" rx=\"4\" fill=\"{fill}\" \
              fill-opacity=\"0.92\"/>",
             rx = x - w / 2,
             ry = y - 12,
+            fill = pal().pill,
         );
     }
     let detail_span = if detail.is_empty() {
@@ -497,10 +614,10 @@ fn seq_label(
 /// The colour and display text for a return marker.
 fn return_style(marker: &str) -> (&'static str, String) {
     match marker {
-        "Ok" | "Some" => (SEQ_OK, format!("\u{21a9} {marker}")),
-        "Err" | "None" => (SEQ_ERR, format!("\u{21a9} {marker}")),
-        "" => (SEQ_MUTED, "\u{21a9} return".to_owned()),
-        other => (SEQ_MUTED, format!("\u{21a9} {other}")),
+        "Ok" | "Some" => (pal().ok, format!("\u{21a9} {marker}")),
+        "Err" | "None" => (pal().err, format!("\u{21a9} {marker}")),
+        "" => (pal().muted, "\u{21a9} return".to_owned()),
+        other => (pal().muted, format!("\u{21a9} {other}")),
     }
 }
 

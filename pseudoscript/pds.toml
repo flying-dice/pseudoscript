@@ -4,4 +4,4 @@
 name  = "PseudoScript"
 out   = "target/doc"
 logo  = "logo.svg"
-theme = "light"
+theme = "dark"

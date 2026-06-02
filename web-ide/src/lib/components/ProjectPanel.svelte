@@ -1,26 +1,20 @@
 <script lang="ts">
-  // The project launcher: opens on start and from the toolbar. Open a folder or
-  // re-open a recent on the left; start a New project from a template (Empty, or a
-  // worked example) on the right. Every project is a real folder on disk — a
-  // template's files are scaffolded into a chosen directory. Drafting styling.
+  // The project launcher: opens on start and from the toolbar. Open a folder,
+  // re-open a recent, or start a New project (which opens its own dialog). Every
+  // project is a real folder on disk. Drafting styling.
   import type { Recent } from "$lib/recents";
 
-  // A project template: the empty starter or a bundled example.
-  type Template = { id: string; name: string; description: string; moduleCount: number };
-
   type Props = {
-    templates?: Template[];
     recents?: Recent[];
     dismissible?: boolean;
     onpickrecent?: (recent: Recent) => void;
     onopenfolder?: () => void;
-    onnewproject?: (name: string, templateId: string) => void;
+    onnewproject?: () => void;
     onforget?: (recent: Recent) => void;
     onclose?: () => void;
   };
 
   let {
-    templates = [],
     recents = [],
     dismissible = false,
     onpickrecent,
@@ -30,15 +24,28 @@
     onclose,
   }: Props = $props();
 
-  // The name for the next New project. Picking a template hands the name + id to
-  // `onnewproject`, which then prompts for a parent folder (a native picker fired
-  // by this click) and scaffolds the template's files there. A blank name falls
-  // back to a default downstream.
-  let name = $state("");
-  const choose = (templateId: string) => onnewproject?.(name.trim(), templateId);
-
   // Only folder recents re-open (examples are templates now, not session mounts).
   const folderRecents = $derived(recents.filter((r) => r.kind !== "sample"));
+
+  // The recents filter (IntelliJ-style search-as-you-type over project names).
+  let query = $state("");
+  const filtered = $derived(
+    query.trim() ? folderRecents.filter((r) => r.name.toLowerCase().includes(query.trim().toLowerCase())) : folderRecents,
+  );
+
+  // The project avatar: up to two initials from the name's words (or its first
+  // two letters), on a colour derived from a stable hash of the name — so each
+  // project keeps the same avatar across sessions (IntelliJ-style).
+  function initials(name: string): string {
+    const parts = name.split(/[-_.\s]+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return (parts[0] ?? name).slice(0, 2).toUpperCase();
+  }
+  function hue(name: string): number {
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return h;
+  }
 
   function ago(ts: number): string {
     const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -57,7 +64,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div class="scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) close(); }}>
-  <section class="dossier" role="dialog" aria-modal="true" aria-label="Open a project">
+  <div class="dossier" role="dialog" aria-modal="true" aria-label="Open a project">
     <header class="head">
       <div class="brand">
         <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -66,85 +73,50 @@
           <circle cx="12" cy="12" r="2.3" fill="var(--accent)" />
         </svg>
         <span class="word">PseudoScript</span>
-        <span class="sep">/</span>
-        <span class="eyebrow">Project</span>
       </div>
       {#if dismissible}
         <button class="x" onclick={close} aria-label="Close">✕</button>
       {/if}
     </header>
 
-    <h1 class="title">Open a project</h1>
-    <p class="lede">Architecture as code, on disk. Open a folder of <code>.pds</code> modules, resume a recent project, or start a new one from a template.</p>
+    <div class="toolbar">
+      <label class="search">
+        <span class="search-glyph" aria-hidden="true">⌕</span>
+        <input
+          class="search-input"
+          data-testid="search-projects"
+          bind:value={query}
+          placeholder="Search projects"
+          aria-label="Search projects"
+        />
+      </label>
+      <button class="btn" data-testid="open-folder" onclick={() => onopenfolder?.()}>Open</button>
+      <button class="btn primary" data-testid="new-project" onclick={() => onnewproject?.()}>New Project</button>
+    </div>
 
-    <div class="grid">
-      <div class="col start">
-        <h2 class="kicker">Start</h2>
-        <ul class="rows">
-          <li>
-            <button class="row action" data-testid="open-folder" onclick={() => onopenfolder?.()}>
-              <span class="glyph folder" aria-hidden="true">▢</span>
-              <span class="meta">
-                <span class="name">Open a folder</span>
-                <span class="sub">an existing project of <code>.pds</code> modules</span>
-              </span>
-              <span class="chev" aria-hidden="true">→</span>
-            </button>
-          </li>
-        </ul>
-
-        <h2 class="kicker">Recent</h2>
-        {#if folderRecents.length}
-          <ul class="rows recents">
-            {#each folderRecents as r (r.key)}
-              <li>
-                <button class="row" data-testid="recent-{r.key}" onclick={() => onpickrecent?.(r)}>
-                  <span class="glyph folder" aria-hidden="true">▢</span>
-                  <span class="meta">
-                    <span class="name">{r.name}</span>
-                    <span class="sub">folder · {ago(r.at)}</span>
-                  </span>
-                </button>
-                <button class="forget" title="Remove from recent" aria-label="Remove {r.name} from recent" onclick={() => onforget?.(r)}>✕</button>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="empty">No recent projects yet — start one from a template.</p>
-        {/if}
-      </div>
-
-      <div class="col examples">
-        <h2 class="kicker">New project</h2>
-        <label class="namefield">
-          <span class="namelabel">Name</span>
-          <input
-            class="newname"
-            data-testid="new-project-name"
-            bind:value={name}
-            placeholder="my-architecture"
-            aria-label="New project name"
-          />
-        </label>
-        <p class="pick">Choose a template — you'll pick where to save it on disk next.</p>
-        <ul class="cards">
-          {#each templates as t (t.id)}
+    <div class="recent">
+      {#if filtered.length}
+        <ul class="rows recents">
+          {#each filtered as r (r.key)}
             <li>
-              <button class="card" data-testid="template-{t.id}" onclick={() => choose(t.id)}>
-                <span class="ct tl"></span><span class="ct br"></span>
-                <span class="card-top">
-                  <span class="card-name">{t.name}</span>
-                  <span class="count">{t.moduleCount} module{t.moduleCount === 1 ? "" : "s"}</span>
+              <button class="row" data-testid="recent-{r.key}" onclick={() => onpickrecent?.(r)}>
+                <span class="avatar" style="--h: {hue(r.name)}" aria-hidden="true">{initials(r.name)}</span>
+                <span class="meta">
+                  <span class="name">{r.name}</span>
+                  <span class="sub">folder · {ago(r.at)}</span>
                 </span>
-                <span class="desc">{t.description}</span>
-                <span class="go">Use template <span class="arr" aria-hidden="true">→</span></span>
               </button>
+              <button class="forget" title="Remove from recent" aria-label="Remove {r.name} from recent" onclick={() => onforget?.(r)}>✕</button>
             </li>
           {/each}
         </ul>
-      </div>
+      {:else if folderRecents.length}
+        <p class="empty">No projects match “{query.trim()}”.</p>
+      {:else}
+        <p class="empty">No recent projects yet — create one with New Project.</p>
+      {/if}
     </div>
-  </section>
+  </div>
 </div>
 
 <style>
@@ -163,11 +135,10 @@
 
   .dossier {
     position: relative;
-    width: min(64rem, 100%);
+    width: min(52rem, 100%);
     max-height: calc(100vh - 4rem);
-    /* hidden, not auto: hover nudges (.arr/.card transforms) and the staggered
-       rise entrance momentarily extend the box and would flash a scrollbar.
-       Content is bounded (≤8 recents + example cards) so nothing is clipped. */
+    /* hidden, not auto: the staggered rise entrance momentarily extends the box
+       and would flash a scrollbar; the recents list scrolls internally. */
     overflow: hidden;
     padding: 1.9rem 2rem 2rem;
     background:
@@ -184,20 +155,6 @@
     to { opacity: 1; transform: none; }
   }
 
-  /* drafting corner ticks */
-  .tick {
-    position: absolute;
-    width: 13px;
-    height: 13px;
-    border: 1.5px solid var(--accent);
-    opacity: 0.7;
-    pointer-events: none;
-  }
-  .tick.tl { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
-  .tick.tr { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
-  .tick.bl { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
-  .tick.br { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
-
   .head {
     display: flex;
     align-items: center;
@@ -210,76 +167,56 @@
     color: var(--ink-soft);
   }
   .brand .word { font-family: var(--font-display); font-weight: 700; font-size: 1.04rem; letter-spacing: -0.025em; }
-  .brand .sep { color: var(--ink-faint); }
-  .brand .eyebrow {
-    font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.22em;
-    text-transform: uppercase; color: var(--accent);
-  }
   .x {
-    width: 2rem; height: 2rem; display: grid; place-items: center;
-    background: var(--surface-2); border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm); color: var(--ink-soft); font-size: 0.85rem;
+    width: 1.75rem; height: 1.75rem; display: grid; place-items: center;
+    background: transparent; border: none;
+    border-radius: var(--radius-sm); color: var(--ink-faint); font-size: 0.9rem;
+    transition: background 0.12s, color 0.12s;
   }
-  .x:hover { border-color: var(--accent); color: var(--ink); }
+  .x:hover { background: var(--surface-2); color: var(--ink); }
 
-  .title {
-    margin: 1.2rem 0 0.4rem;
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: clamp(1.8rem, 3.4vw, 2.5rem);
-    letter-spacing: -0.035em;
-    line-height: 1.02;
+  /* The IntelliJ-style toolbar: a search field that filters recents, with the
+     Open and New Project actions to its right. */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1.4rem 0 1.1rem;
     animation: rise 0.4s 0.06s both;
   }
-  .lede {
-    margin: 0 0 1.7rem;
-    max-width: 44rem;
-    color: var(--ink-soft);
-    line-height: 1.55;
+  .search {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0 0.65rem;
+    height: 2.1rem;
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+  }
+  .search:focus-within { border-color: var(--accent); }
+  .search-glyph { flex: none; color: var(--ink-faint); font-size: 0.95rem; }
+  .search-input {
+    flex: 1; min-width: 0;
+    background: transparent; border: none; outline: none;
+    color: var(--ink); font-family: var(--font-sans); font-size: 0.9rem;
+  }
+  .search-input::placeholder { color: var(--ink-faint); }
+  .btn {
+    flex: none;
+    height: 2.1rem; padding: 0 0.95rem;
+    background: var(--surface-2); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--ink); font-family: var(--font-sans); font-size: 0.85rem; font-weight: 600;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .btn.primary:hover { filter: brightness(1.06); }
+
+  .recent {
     animation: rise 0.4s 0.1s both;
-  }
-  .lede code { font-family: var(--font-mono); font-size: 0.86em; color: var(--ink); }
-
-  .grid {
-    display: grid;
-    grid-template-columns: minmax(0, 13fr) minmax(0, 17fr);
-    gap: 1.6rem;
-  }
-  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
-
-  .kicker {
-    margin: 0 0 0.85rem;
-    font-family: var(--font-mono);
-    font-size: 0.66rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-    display: flex; align-items: center; gap: 0.6rem;
-  }
-  .kicker::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-
-  .col.start { animation: rise 0.4s 0.14s both; display: flex; flex-direction: column; }
-  .col.start .kicker:not(:first-child) { margin-top: 1.4rem; }
-  /* the catalogue can run long (the patterns handbook), so it scrolls inside the
-     dossier while the header and recent column stay put. */
-  .col.examples {
-    animation: rise 0.4s 0.18s both;
-    min-height: 0;
-    max-height: 64vh;
-    overflow-y: auto;
-    padding-right: 0.4rem;
+    min-height: 0; max-height: 64vh; overflow-y: auto;
   }
 
-  /* the New-project name field + the "choose a template" hint */
-  .namefield { display: block; margin-bottom: 0.7rem; }
-  .namelabel {
-    display: block; margin-bottom: 0.3rem;
-    font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.16em;
-    text-transform: uppercase; color: var(--ink-faint);
-  }
-  .pick { margin: 0 0 0.85rem; font-size: 0.8rem; color: var(--ink-soft); line-height: 1.5; }
-
-  /* one row language for both Start actions and Recent entries */
   .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
   .rows li { position: relative; display: flex; align-items: stretch; }
   .row {
@@ -292,78 +229,28 @@
     border-radius: var(--radius-sm);
   }
   .row:hover:not(:disabled) { background: var(--surface-2); border-color: var(--line-strong); }
-  .row.action { background: var(--surface-2); border-color: var(--line); }
-  .row.action:hover:not(:disabled) { border-color: var(--accent); }
-  .row.action:disabled { opacity: 0.45; cursor: not-allowed; }
-  .row .chev {
-    margin-left: auto; flex: none; color: var(--accent);
-    font-family: var(--font-mono); opacity: 0; transform: translateX(-3px);
-    transition: opacity 0.15s, transform 0.15s;
+  /* The project avatar: initials on a per-project hue (set via the --h var). */
+  .avatar {
+    flex: none; width: 2.1rem; height: 2.1rem; display: grid; place-items: center;
+    border-radius: 8px;
+    font-family: var(--font-display); font-weight: 700; font-size: 0.8rem; letter-spacing: 0.01em;
+    color: hsl(var(--h) 65% 88%);
+    background: linear-gradient(150deg, hsl(var(--h) 45% 38%), hsl(var(--h) 50% 28%));
+    box-shadow: inset 0 0 0 1px hsl(var(--h) 40% 50% / 0.5);
   }
-  .row.action:hover:not(:disabled) .chev { opacity: 1; transform: none; }
-  .glyph {
-    flex: none; width: 1.9rem; height: 1.9rem; display: grid; place-items: center;
-    font-family: var(--font-mono); font-size: 0.9rem;
-    border: 1px solid var(--line-strong); border-radius: 6px;
-    background: var(--surface);
-  }
-  .glyph.folder { color: var(--k-container); }
-
-  /* the New-project name field */
-  .newname {
-    width: 100%; min-width: 0;
-    padding: 0.4rem 0.6rem;
-    font-family: var(--font-mono); font-size: 0.88rem;
-    color: var(--ink);
-    background: var(--surface); border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-  }
-  .newname:focus { outline: none; border-color: var(--accent); }
   .meta { display: flex; flex-direction: column; min-width: 0; }
   .meta .name { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .meta .sub { font-family: var(--font-mono); font-size: 0.66rem; color: var(--ink-faint); }
-  .meta .sub code { font-size: 0.95em; color: var(--ink-soft); }
   .recents { margin-top: 0; }
   .forget {
     position: absolute; right: 0.35rem; top: 50%; transform: translateY(-50%);
     width: 1.5rem; height: 1.5rem; display: grid; place-items: center;
-    background: var(--surface-3); border: 1px solid var(--line-strong); border-radius: 5px;
-    color: var(--ink-faint); font-size: 0.66rem; opacity: 0;
+    background: transparent; border: none; border-radius: var(--radius-sm);
+    color: var(--ink-faint); font-size: 0.7rem; opacity: 0;
+    transition: background 0.12s, color 0.12s;
   }
   .recents li:hover .forget { opacity: 1; }
-  .forget:hover { color: var(--err); border-color: var(--err); }
+  .forget:hover { background: var(--surface-3); color: var(--err); }
 
   .empty { margin: 0.2rem 0 0; color: var(--ink-faint); font-size: 0.85rem; line-height: 1.5; }
-
-  .cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.7rem; }
-  .card {
-    position: relative; width: 100%; height: 100%;
-    display: flex; flex-direction: column; gap: 0.5rem;
-    text-align: left;
-    padding: 1rem 1.05rem 0.9rem;
-    background: var(--surface-2);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    transition: border-color 0.15s, transform 0.15s, background 0.15s;
-  }
-  .card:hover {
-    border-color: var(--accent);
-    transform: translateY(-2px);
-    background: color-mix(in srgb, var(--surface-2) 84%, var(--accent) 8%);
-  }
-  /* card corner ticks (top-left, bottom-right), revealed on hover */
-  .ct { position: absolute; width: 9px; height: 9px; border: 1.5px solid var(--accent); opacity: 0; transition: opacity 0.15s; }
-  .ct.tl { top: 5px; left: 5px; border-right: 0; border-bottom: 0; }
-  .ct.br { bottom: 5px; right: 5px; border-left: 0; border-top: 0; }
-  .card:hover .ct { opacity: 0.75; }
-  .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; }
-  .card-name { font-family: var(--font-display); font-weight: 700; font-size: 1.08rem; letter-spacing: -0.02em; }
-  .count { flex: none; font-family: var(--font-mono); font-size: 0.64rem; color: var(--ink-faint); }
-  .desc { color: var(--ink-soft); font-size: 0.84rem; line-height: 1.5; }
-  .go {
-    margin-top: 0.15rem; font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--accent); display: inline-flex; align-items: center; gap: 0.4rem;
-  }
-  .arr { transition: transform 0.15s; }
-  .card:hover .arr { transform: translateX(3px); }
 </style>

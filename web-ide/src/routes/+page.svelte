@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import type { Component as ComponentType } from "svelte";
+  import { Box, Component, Container, Database, File, FlaskConical, SquareFunction, User } from "@lucide/svelte";
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renderDocSite, symbolScene } from "$lib/pds.js";
-  import type { Module, Occurrence } from "$lib/pds.js";
-  import { fsSupported, scaffoldWorkspace, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, movePath, deletePath, serializeManifest } from "$lib/workspace.js";
+  import { docManifest, emitSceneModules, format as formatSource, hover, layoutScene, outlineModules, references, renameApply, renderDocSite, symbolScene } from "$lib/pds.js";
+  import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
+  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
@@ -17,7 +19,7 @@
   import { theme } from "$lib/theme.svelte.js";
   import * as nav from "$lib/core/navigation.js";
   import * as ops from "$lib/core/workspace-ops.js";
-  import { keyOf, computeDirty, dirtyPaths as dirtyPathsOf, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
+  import { keyOf, computeDirty, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
   import * as share from "$lib/core/share.js";
   import * as docs from "$lib/core/docs.js";
   import * as model from "$lib/core/model.js";
@@ -31,19 +33,28 @@
   import { diagnostics } from "$lib/stores/diagnostics.svelte.js";
   import { ui } from "$lib/stores/ui.svelte.js";
   import { shareStore } from "$lib/stores/share.svelte.js";
+  import { panelSizes, PANEL_MIN, PANEL_MAX, PROBLEMS_MIN, PROBLEMS_MAX } from "$lib/stores/panel-sizes.svelte.js";
   import Editor from "$lib/components/Editor.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import TopBar from "$lib/components/shell/TopBar.svelte";
   import ActivityBar from "$lib/components/shell/ActivityBar.svelte";
+  import RightRail from "$lib/components/shell/RightRail.svelte";
   import StructurePanel from "$lib/components/shell/StructurePanel.svelte";
+  import BottomDock from "$lib/components/shell/BottomDock.svelte";
+  import Splitter from "$lib/components/shell/Splitter.svelte";
   import StatusBar from "$lib/components/shell/StatusBar.svelte";
   import CommandPalette from "$lib/components/shell/CommandPalette.svelte";
+  import TabBar from "$lib/components/shell/TabBar.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
   import ProblemsPane from "$lib/components/ProblemsPane.svelte";
   import Notifications from "$lib/components/Notifications.svelte";
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
+  import NewProjectDialog from "$lib/components/NewProjectDialog.svelte";
   import Settings from "$lib/components/Settings.svelte";
   import PromptDialog from "$lib/components/PromptDialog.svelte";
+  import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
+  import BuildNoticeDialog from "$lib/components/BuildNoticeDialog.svelte";
+  import RenameDialog from "$lib/components/RenameDialog.svelte";
 
   // ── Page-local types ──────────────────────────────────────────────────────
   // Shared shapes live in the framework-agnostic core (`$lib/core/types`); the
@@ -62,9 +73,7 @@
     CanvasInfo,
     CanvasUsages,
     Dialog,
-    ConfirmDialog,
     NoteKind,
-    PendingWrite,
   } from "$lib/core/types.js";
 
   // The in-memory mount payload `mountWorkspace` consumes (sample / decoded).
@@ -74,8 +83,9 @@
   // reads them through these derived aliases (keeping every call site unchanged).
   const ready = $derived(wasm.ready);
   const wasmError = $derived(wasm.error);
-  const ver = $derived(wasm.version);
   let editorApi = $state<EditorApi | null>(null);
+  // Timestamp of the last bare Shift keydown, for double-Shift "Search Everywhere".
+  let lastShift = 0;
 
   // The selected item's view: its source ("code"), its interactive diagram
   // ("canvas"), or the workspace problem list ("problems"). The nav stays put;
@@ -107,10 +117,7 @@
   function applyLocation(loc: Loc) {
     const file = workspace?.files.find((f) => f.fqn === loc.fileFqn);
     if (!file) return;
-    if (openFile?.fqn !== file.fqn) {
-      flushSave();
-      wsStore.openFile = file;
-    }
+    if (openFile?.fqn !== file.fqn) wsStore.openFile = file;
     if (loc.fqn) selection.selected = { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
     selection.view = "code";
     selection.pendingGoto = { line: loc.line, col: loc.col, fileFqn: loc.fileFqn };
@@ -142,6 +149,7 @@
   const docGroups = $derived(wsStore.docGroups);
   const docSources = $derived(wsStore.docSources);
   const docMeta = $derived(wsStore.docMeta);
+  const otherSources = $derived(wsStore.otherSources);
   const manifestSource = $derived(wsStore.manifestSource);
   const manifestError = $derived(wsStore.manifestError);
   // Whether the live manifest declares a `[dependencies]` table — drives the
@@ -192,11 +200,8 @@
   // Only files with a recorded baseline (i.e. backed by a handle) can be dirty;
   // sample buffers have no baseline and are reported as session-only instead.
   const manifestKey = $derived(workspace?.manifest?.path ?? null);
-  const dirty = $derived(computeDirty(persisted, { manifestKey, manifestSource, moduleSources, docSources }));
+  const dirty = $derived(computeDirty(persisted, { manifestKey, manifestSource, moduleSources, docSources, otherSources }));
   const dirtyCount = $derived(dirty.size);
-
-  // Dirty keys mapped to their tree paths, for the FileTree row dot.
-  const dirtyPaths = $derived(workspace ? dirtyPathsOf(dirty, workspace.files) : new Set<string>());
 
   // The Markdown reading width — owned (and persisted) by the ui store.
   const docWidth = $derived(ui.docWidth);
@@ -225,7 +230,13 @@
   // The project panel (recent projects + examples + open folder): opens on start
   // and from the toolbar's project button. Never autoloads an architecture.
   const projectOpen = $derived(ui.projectOpen);
+  // The New-project dialog (template picker), opened from the launcher.
+  const newProjectOpen = $derived(ui.newProjectOpen);
   const structureOpen = $derived(ui.structureOpen);
+  // The left Explorer (file tree) and the bottom Problems dock — tool-window
+  // islands toggled from the nav rails.
+  const explorerOpen = $derived(ui.explorerOpen);
+  const problemsOpen = $derived(ui.problemsOpen);
   // Whether the keyboard-shortcuts settings modal is open (toolbar gear or the
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
   const settingsOpen = $derived(ui.settingsOpen);
@@ -242,9 +253,11 @@
       ? manifestSource
       : openFile?.isDoc
         ? (docSources[openFile.path ?? ""] ?? "")
-        : openFile
-          ? (moduleSources[openFile.fqn ?? ""] ?? "")
-          : "",
+        : openFile?.isOther
+          ? (otherSources[openFile.path ?? ""] ?? "")
+          : openFile
+            ? (moduleSources[openFile.fqn ?? ""] ?? "")
+            : "",
   );
 
   // Every module as {fqn, source}, and the workspace diagnostics — both owned by
@@ -252,7 +265,35 @@
   const allModules = $derived(wsStore.allModules);
   const problems = $derived(diagnostics.problems);
   const errorCount = $derived(diagnostics.errorCount);
-  const errorPaths = $derived(diagnostics.errorPaths);
+
+  // Every workspace file — modules, authored docs, and the manifest — as a single
+  // list for one unified file tree (path-based, no per-type sections). `relPath`
+  // is workspace-root-relative; `key` is the dirty/active key (FQN or path).
+  type FileEntry = { key: string; kind: "module" | "doc" | "manifest" | "other"; relPath: string; label: string; fqn?: string; binary?: boolean };
+  const fileEntries = $derived.by<FileEntry[]>(() => {
+    if (!workspace) return [];
+    const out: FileEntry[] = [];
+    for (const f of workspace.files) {
+      if (!f.fqn) continue;
+      out.push({ key: f.fqn, kind: "module", relPath: rel(f.path ?? `${f.fqn}.pds`), label: f.fqn, fqn: f.fqn });
+    }
+    for (const g of docGroups) for (const it of g.items) out.push({ key: it.path, kind: "doc", relPath: rel(it.path), label: it.title });
+    if (workspace.manifest) out.push({ key: workspace.manifest.path, kind: "manifest", relPath: rel(workspace.manifest.path), label: "pds.toml" });
+    // Companion files: everything walked that isn't already shown as a module,
+    // sidebar doc, or the manifest. De-dup by base-relative path so a
+    // sidebar-listed `.md` stays a `doc` and isn't duplicated here.
+    const shown = new Set(out.map((e) => e.relPath));
+    for (const o of workspace.others ?? []) {
+      const relPath = rel(o.path ?? "");
+      if (!relPath || shown.has(relPath)) continue;
+      shown.add(relPath);
+      out.push({ key: relPath, kind: "other", relPath, label: relPath.split("/").at(-1) ?? relPath, binary: isBinaryPath(relPath) });
+    }
+    return out;
+  });
+  // The keys (FQN/path) of files that currently have an error, for the tree dot.
+  const errorKeys = $derived(new Set(problems.filter((p) => p.severity === "error" && p.file).map((p) => p.file!)));
+  const openKey = $derived(openFile ? (keyOf(openFile) ?? "") : "");
 
   const nodes = $derived.by<StructureNode[]>(() => {
     if (!ready || !workspace) return [];
@@ -270,6 +311,16 @@
   const structureByFile = $derived(index.structureByFile);
   const nodeIndex = $derived(index.nodeIndex);
   const symbols = $derived(index.symbols);
+  // One icon per C4 level, for the breadcrumb (mirrors the structure tree).
+  const KIND_ICON: Record<string, ComponentType> = {
+    person: User,
+    system: Box,
+    container: Container,
+    component: Component,
+    data: Database,
+    callable: SquareFunction,
+    feature: FlaskConical,
+  };
   const flowsByNode = $derived(index.flowsByNode);
   const nodeInfo = $derived(index.nodeInfo);
   const typeFqnByName = $derived(index.typeFqnByName);
@@ -397,10 +448,7 @@
     const fileFqn = file.fqn;
     // Record the pre-jump caret before the file/scope changes, so Back returns.
     if (goto && view !== "canvas") recordOrigin();
-    if (openFile?.fqn !== fileFqn) {
-      flushSave();
-      wsStore.openFile = file;
-    }
+    if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
     // isn't showing; on the canvas the new scope is the navigation, so stay put.
@@ -414,6 +462,13 @@
   // Clicking a node in the canvas drills the selection into it (staying on the
   // canvas); synthetic initiators (client, scheduler, …) aren't declared nodes.
   const pickNode = (fqn: string) => selectNode(fqn);
+  // "Go to definition" from the canvas context menu: leave the canvas for the
+  // editor and jump to the node's declaration (selectNode's goto path stays put
+  // while the canvas is showing, so switch the view first).
+  function openNodeInEditor(fqn: string) {
+    selection.view = "code";
+    selectNode(fqn, { goto: true });
+  }
   // Reset the canvas scope to the whole-model context.
   const resetScope = () => (selection.selected = null);
   // Close the expanded boundary: pop up to the structural parent (the `for`
@@ -483,12 +538,12 @@
 
   // Swap in a freshly-loaded workspace, resetting navigation to `landing`.
   async function mountWorkspace(ws: PageWorkspace, landing?: string | null) {
-    flushSave();
     wsStore.workspace = ws;
     // An explicit landing FQN (meta.json) resolves to its module immediately;
     // otherwise tentatively open the first module and revisit once docs load.
     const explicit = landing ? ws.files.find((f) => f.fqn === landing) : null;
     wsStore.openFile = explicit ?? ws.files[0] ?? null;
+    wsStore.openTabs = wsStore.openFile ? [wsStore.openFile] : [];
     selection.selected = null;
     selection.pendingGoto = null;
     selection.view = "code";
@@ -515,7 +570,7 @@
     // With no explicit landing, prefer the first authored doc page (manifest
     // sidebar order); fall back to the first module already opened above. Don't
     // override a doc/manifest the user navigated to while docs loaded.
-    if (!explicit && !openFile?.isDoc && !openFile?.isManifest) {
+    if (!explicit && !openFile?.isDoc && !openFile?.isManifest && !openFile?.isOther) {
       const firstDoc = groups.flatMap((g) => g.items).find((it) => it?.path);
       if (firstDoc) openDoc(firstDoc);
     }
@@ -623,6 +678,29 @@
   const dialog = $derived(ui.dialog);
   const confirmDialog = $derived(ui.confirmDialog);
 
+  // IDE commands surfaced in the palette's "Actions" tab. `keywords` widens the
+  // fuzzy match beyond the visible label; the palette closes before each runs.
+  type PaletteAction = { id: string; label: string; hint?: string; keywords?: string; run: () => void };
+  const paletteActions = $derived.by<PaletteAction[]>(() => {
+    const list: PaletteAction[] = [
+      { id: "new-file", label: "New .pds file", keywords: "module create add", run: () => startNewFile() },
+      { id: "new-folder", label: "New folder", keywords: "directory create", run: () => startNewFolder() },
+      { id: "new-doc", label: "New doc page", keywords: "markdown md create", run: () => startNewDoc() },
+      { id: "open-manifest", label: "Open pds.toml", keywords: "manifest config dependencies", run: openManifest },
+      { id: "save", label: "Save file", hint: "⌘S", keywords: "write disk", run: () => saveActiveFile() },
+      { id: "save-all", label: "Save all", hint: "⇧⌘S", keywords: "write disk", run: () => saveAll() },
+      { id: "toggle-explorer", label: "Toggle Explorer", keywords: "files tree sidebar panel", run: () => (ui.explorerOpen = !ui.explorerOpen) },
+      { id: "toggle-structure", label: "Toggle Structure", keywords: "outline symbols panel", run: () => (ui.structureOpen = !ui.structureOpen) },
+      { id: "toggle-problems", label: "Toggle Problems", keywords: "diagnostics errors dock panel", run: () => (ui.problemsOpen = !ui.problemsOpen) },
+      { id: "theme", label: theme.resolved === "dark" ? "Switch to light theme" : "Switch to dark theme", keywords: "appearance colour dark light", run: () => theme.set(theme.resolved === "dark" ? "light" : "dark") },
+      { id: "settings", label: "Keyboard shortcuts", keywords: "settings keybindings preferences", run: () => (ui.settingsOpen = true) },
+      { id: "switch-project", label: "Switch project…", keywords: "open recent examples launcher", run: () => (ui.projectOpen = true) },
+      { id: "new-project", label: "New project…", keywords: "create template scaffold", run: () => (ui.newProjectOpen = true) },
+    ];
+    if (fsSupported) list.push({ id: "open-folder", label: "Open folder…", keywords: "disk filesystem import", run: () => openFolder() });
+    return list;
+  });
+
   // A minimal valid `.pds` module: a system shell with one container and one
   // behaviour, mirroring the new-workspace starter so it resolves clean.
   // ---- T9: new .pds file ---------------------------------------------------
@@ -633,18 +711,216 @@
   const withBase = (rel: string) => ops.withBase(workspace?.base, rel);
   const validateNewFile = (name: string) => ops.validateNewFile(name, workspace?.files ?? [], workspace?.base);
 
-  function startNewFile() {
+  function startNewFile(dir?: string) {
     if (!workspace) return;
     ui.dialog = {
       title: "New .pds file",
       label: "Module path",
       placeholder: "banking/core",
-      value: "",
+      value: dir ? `${dir}/` : "",
       confirmLabel: "Create",
       hint: "A .pds extension is added automatically. Use / for subfolders.",
       validate: validateNewFile,
       run: createNewFile,
     };
+  }
+
+  // ---- new folder (a real directory on disk) -------------------------------
+  const normalizeDirPath = (name: string) => ops.normalizeDirPath(name);
+
+  function validateNewFolder(name: string): string | null {
+    const rel = normalizeDirPath(name);
+    if (!rel) return "Enter a folder name.";
+    if ((workspace?.dirs ?? []).includes(rel)) return "That folder already exists.";
+    return null;
+  }
+
+  function startNewFolder(dir?: string) {
+    if (!workspace) return;
+    ui.dialog = {
+      title: "New folder",
+      label: "Folder path",
+      placeholder: "banking/adapters",
+      value: dir ? `${dir}/` : "",
+      confirmLabel: "Create",
+      hint: "Use / for nested folders.",
+      validate: validateNewFolder,
+      run: createNewFolder,
+    };
+  }
+
+  async function createNewFolder(name: string) {
+    const ws = workspace;
+    if (!ws) return;
+    const rel = normalizeDirPath(name);
+    if (!rel) return;
+    if (ws.root) {
+      try {
+        await createDir(ws.root, withBase(rel));
+      } catch (e) {
+        notify("error", "Couldn't create folder", String((e as Error)?.message ?? e));
+        return;
+      }
+    }
+    const dirs = Array.from(new Set([...(ws.dirs ?? []), rel])).sort();
+    wsStore.workspace = { ...ws, dirs };
+    notify("success", `Created ${rel}/`);
+  }
+
+  // Base-relative path of a module file ("" base → path as-is).
+  const relPathOf = (p: string) =>
+    workspace?.base && p.startsWith(`${workspace.base}/`) ? p.slice(workspace.base.length + 1) : p;
+
+  // The modules and doc pages that live under a base-relative folder. Folder
+  // rename/delete handle modules + the directory tree; doc pages (manifest-
+  // registered) aren't individually movable here, so a folder holding them is
+  // refused rather than half-rewritten.
+  function folderContents(rel: string) {
+    const prefix = `${rel}/`;
+    const modules = (workspace?.files ?? []).filter((f) => f.path && relPathOf(f.path).startsWith(prefix));
+    const docs = docGroups.flatMap((g) => g.items).filter((it) => it.path.startsWith(prefix));
+    return { modules, docs };
+  }
+
+  // Consolidated reactive update for a folder edit: rekey moduleSources/baseline
+  // for each rename, drop deleted modules, then publish files + dirs in one shot.
+  // Mirrors applyFileSet but for the many renames/drops a folder op emits at once.
+  function applyFolderEdit(
+    files: OpenFile[],
+    dirs: string[],
+    renames: Array<{ from: string; to: string }>,
+    drop: string[],
+  ) {
+    const sources = { ...moduleSources };
+    const base = { ...persisted };
+    for (const { from, to } of renames) {
+      if (from === to) continue;
+      if (from in sources) {
+        sources[to] = sources[from];
+        delete sources[from];
+      }
+      if (from in base) {
+        base[to] = base[from];
+        delete base[from];
+      }
+    }
+    for (const fqn of drop) {
+      delete sources[fqn];
+      delete base[fqn];
+    }
+    wsStore.moduleSources = sources;
+    saveStore.persisted = base;
+    wsStore.workspace = { ...workspace!, files, dirs };
+  }
+
+  const remapDirs = (dirs: string[], oldRel: string, newRel: string) => ops.remapDirs(dirs, oldRel, newRel);
+  const folderRenameClash = (oldRel: string, newRel: string) => ops.folderRenameClash(oldRel, newRel);
+
+  function validateRenameFolder(oldRel: string, name: string): string | null {
+    const newRel = normalizeDirPath(name);
+    if (!newRel) return "Enter a folder name.";
+    if (newRel === oldRel) return null;
+    if (folderRenameClash(oldRel, newRel)) return "Choose a folder outside the one being renamed.";
+    if ((workspace?.dirs ?? []).includes(newRel)) return "That folder already exists.";
+    if ((workspace?.files ?? []).some((f) => f.path && relPathOf(f.path).startsWith(`${newRel}/`)))
+      return "That folder already exists.";
+    if (folderContents(oldRel).docs.length) return "Folder contains doc pages — move those from the manifest first.";
+    return null;
+  }
+
+  function startRenameFolder(rel: string) {
+    if (!workspace) return;
+    ui.dialog = {
+      title: "Rename folder",
+      label: "Folder path",
+      placeholder: "banking/adapters",
+      value: rel,
+      confirmLabel: "Rename",
+      hint: "Moves every module inside; importers of the old FQNs may dangle.",
+      validate: (name: string) => validateRenameFolder(rel, name),
+      run: (name: string) => renameFolder(rel, name),
+    };
+  }
+
+  async function renameFolder(oldRel: string, name: string) {
+    const ws = workspace;
+    if (!ws) return;
+    const newRel = normalizeDirPath(name);
+    if (!newRel || folderRenameClash(oldRel, newRel)) return;
+    const { modules, docs } = folderContents(oldRel);
+    if (docs.length) {
+      notify("error", "Can't rename folder", "It contains doc pages — move those from the manifest first.");
+      return;
+    }
+    // Each module's destination, preserving its sub-path under the folder.
+    const moves = modules.map((f) => {
+      const newPath = withBase(`${newRel}${relPathOf(f.path!).slice(oldRel.length)}`);
+      return { file: f, oldPath: f.path!, newPath, oldFqn: f.fqn!, newFqn: fqnOf(newPath, ws.base ?? "") };
+    });
+    if (ws.root) {
+      try {
+        for (const m of moves) await movePath(ws.root, m.oldPath, m.newPath, moduleSources[m.oldFqn] ?? "");
+        // preserve empty subfolders: recreate the mapped tree, then drop the old
+        for (const d of ws.dirs ?? [])
+          if (d === oldRel || d.startsWith(`${oldRel}/`)) await createDir(ws.root, withBase(`${newRel}${d.slice(oldRel.length)}`));
+        await deleteDir(ws.root, withBase(oldRel));
+      } catch (e) {
+        notify("error", "Couldn't rename folder", String((e as Error)?.message ?? e));
+        return;
+      }
+    }
+    const moved = new Map(moves.map((m) => [m.file, m] as const));
+    const files = ws.files
+      .map((f) => {
+        const m = moved.get(f);
+        return m ? { path: m.newPath, fqn: m.newFqn, handle: f.handle } : f;
+      })
+      .sort((a, b) => (a.fqn ?? "").localeCompare(b.fqn ?? ""));
+    applyFolderEdit(files, remapDirs(ws.dirs ?? [], oldRel, newRel), moves.map((m) => ({ from: m.oldFqn, to: m.newFqn })), []);
+    if (openFile && !openFile.isDoc && !openFile.isManifest) {
+      const m = moves.find((x) => x.oldFqn === openFile!.fqn);
+      if (m) wsStore.openFile = { path: m.newPath, fqn: m.newFqn, handle: openFile.handle };
+    }
+    notify(
+      "success",
+      `Renamed to ${newRel}/`,
+      modules.length ? `${modules.length} module(s) moved; importers of the old FQNs may dangle.` : undefined,
+    );
+  }
+
+  function deleteFolder(rel: string) {
+    if (!workspace) return;
+    const { modules, docs } = folderContents(rel);
+    if (docs.length) {
+      notify("error", "Can't delete folder", "It contains doc pages — move those from the manifest first.");
+      return;
+    }
+    const msg = modules.length
+      ? `Delete ${rel}/ and ${modules.length} module${modules.length === 1 ? "" : "s"}? This removes them from disk and the model. Importers will dangle.`
+      : `Delete the empty folder ${rel}/?`;
+    ui.confirmDialog = { title: "Delete folder", message: msg, confirmLabel: "Delete", run: () => performDeleteFolder(rel, modules) };
+  }
+
+  async function performDeleteFolder(rel: string, modules: OpenFile[]) {
+    const ws = workspace;
+    if (!ws) return;
+    if (ws.root) {
+      try {
+        await deleteDir(ws.root, withBase(rel));
+      } catch (e) {
+        notify("error", "Couldn't delete folder", String((e as Error)?.message ?? e));
+        return;
+      }
+    }
+    const gone = new Set(modules);
+    const files = ws.files.filter((f) => !gone.has(f));
+    const dirs = (ws.dirs ?? []).filter((d) => d !== rel && !d.startsWith(`${rel}/`));
+    applyFolderEdit(files, dirs, [], modules.map((m) => m.fqn).filter((f): f is string => !!f));
+    if (openFile && !openFile.isDoc && !openFile.isManifest && modules.some((m) => m.fqn === openFile!.fqn)) {
+      if (files[0]) selectFile(files[0]);
+      else wsStore.openFile = null;
+    }
+    notify("success", `Deleted ${rel}/`, modules.length ? `${modules.length} module(s) removed.` : undefined);
   }
 
   async function createNewFile(name: string) {
@@ -856,7 +1132,7 @@
     try {
       const ws = await readWorkspace(handle);
       await adoptWorkspace(ws);
-      flash(`Opened ${ws.name} · ${ws.files.length} modules`);
+      notify("success", `Opened ${ws.name} · ${ws.files.length} modules`);
     } catch {
       openFolder();
     }
@@ -866,12 +1142,6 @@
     forget(entry.key);
     refreshRecents();
   }
-
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  // The pending debounced write, captured so a file switch (or Cmd/Ctrl-S) can
-  // flush it instead of dropping it — the old silent-data-loss path.
-  let pendingWrite: PendingWrite | null = null; // { handle, text, key }
-  const flash = (message: string) => notifications.flash(message);
 
   // Briefly show a "saved" cue after a successful write, then settle to idle.
   function markSaved() {
@@ -912,12 +1182,14 @@
   // window focus and a modest visible-only timer; comparing content (not mtime)
   // means our own saves never look external.
   async function reloadExternalChanges() {
-    if (!workspace?.root || pendingWrite || saveState === "saving") return;
-    const targets: { key: string; handle: FileSystemFileHandle; kind: "module" | "doc" | "manifest" }[] = [];
+    if (!workspace?.root || saveState === "saving") return;
+    const targets: { key: string; handle: FileSystemFileHandle; kind: "module" | "doc" | "manifest" | "other" }[] = [];
     for (const f of workspace.files) if (f.handle && f.fqn) targets.push({ key: f.fqn, handle: f.handle, kind: "module" });
     if (workspace.manifest?.handle && manifestKey)
       targets.push({ key: manifestKey, handle: workspace.manifest.handle, kind: "manifest" });
     for (const g of docGroups) for (const it of g.items) if (it.handle) targets.push({ key: it.path, handle: it.handle, kind: "doc" });
+    // Only opened companions carry a baseline; the rest skip below (`base === undefined`).
+    for (const o of workspace.others ?? []) if (o.handle) targets.push({ key: rel(o.path ?? ""), handle: o.handle, kind: "other" });
 
     let conflicts = 0;
     for (const { key, handle, kind } of targets) {
@@ -929,7 +1201,7 @@
       } catch {
         continue; // file removed or unreadable this tick — skip
       }
-      const buffer = kind === "module" ? moduleSources[key] : kind === "doc" ? docSources[key] : manifestSource;
+      const buffer = kind === "module" ? moduleSources[key] : kind === "doc" ? docSources[key] : kind === "other" ? otherSources[key] : manifestSource;
       const action = classifyReload(disk, base, buffer);
       if (action === "skip") continue;
       if (action === "conflict") {
@@ -938,14 +1210,15 @@
       }
       applyExternalReload(key, disk, kind);
     }
-    if (conflicts > 0) flash(`${conflicts} file(s) changed on disk — your unsaved edits are kept`);
+    if (conflicts > 0) notify("info", `${conflicts} file(s) changed on disk — your unsaved edits are kept`);
   }
 
   // Apply one externally-changed file: update its live buffer (which flows to the
   // editor and re-derives the model) and advance its baseline so it reads clean.
-  function applyExternalReload(key: string, disk: string, kind: "module" | "doc" | "manifest") {
+  function applyExternalReload(key: string, disk: string, kind: "module" | "doc" | "manifest" | "other") {
     if (kind === "module") wsStore.moduleSources = { ...moduleSources, [key]: disk };
     else if (kind === "doc") wsStore.docSources = { ...docSources, [key]: disk };
+    else if (kind === "other") wsStore.otherSources = { ...otherSources, [key]: disk };
     else {
       wsStore.manifestSource = disk;
       resolveManifest(disk);
@@ -957,34 +1230,45 @@
   const notify = (kind: NoteKind, title: string, body = "") => notifications.notify(kind, title, body);
   const dismissNote = (id: string | number) => notifications.dismiss(id);
 
-  // Debounce a disk write for the active file. The pending write is captured so a
-  // file switch or Cmd/Ctrl-S can flush it (rather than the old clearTimeout that
-  // silently dropped a sub-400 ms edit).
-  function scheduleSave(handle: FileSystemFileHandle | null | undefined, key: string | undefined, text: string) {
-    if (!handle || !key) return; // in-memory sample: session-only
-    clearTimeout(saveTimer);
-    pendingWrite = { handle, key, text };
-    saveTimer = setTimeout(() => {
-      const w = pendingWrite;
-      pendingWrite = null;
-      if (w) persistFile(w.handle, w.key, w.text).catch(() => {});
-    }, 400);
+  // LSP symbol rename. The editor's right-click hands us the byte offset of the
+  // symbol; we resolve every occurrence (find-references) and open the preview
+  // dialog. Applying rewrites the chosen modules' buffers (dirty until saved).
+  let renamePrompt = $state<{ symbol: string; offset: number; occurrences: Occurrence[] } | null>(null);
+  function requestRename(offset: number) {
+    if (!openFile?.fqn) return;
+    let refs: References | null = null;
+    try {
+      refs = references(allModules, openFile.fqn, offset);
+    } catch {
+      refs = null;
+    }
+    if (!refs || refs.occurrences.length === 0) {
+      notify("info", "Cannot rename", "The cursor is not on a renameable symbol.");
+      return;
+    }
+    renamePrompt = { symbol: refs.fqn.split("::").at(-1) ?? refs.fqn, offset, occurrences: refs.occurrences };
+  }
+  function applyRename(newName: string, selected: RenameSelection[]) {
+    const prompt = renamePrompt;
+    renamePrompt = null;
+    if (!prompt || !openFile?.fqn) return;
+    let edited: { fqn: string; source: string }[];
+    try {
+      edited = renameApply(allModules, openFile.fqn, prompt.offset, newName, selected);
+    } catch (e) {
+      notify("error", "Rename failed", String((e as Error)?.message ?? e));
+      return;
+    }
+    if (edited.length === 0) return;
+    const next = { ...moduleSources };
+    for (const e of edited) next[e.fqn] = e.source;
+    wsStore.moduleSources = next;
+    notify("success", `Renamed ${selected.length} occurrence${selected.length === 1 ? "" : "s"} to ${newName}`);
   }
 
-  // Flush any debounced write immediately and await it — called before switching
-  // files (so the outgoing edit lands) and from manual save.
-  async function flushSave() {
-    if (!pendingWrite) return;
-    clearTimeout(saveTimer);
-    const w = pendingWrite;
-    pendingWrite = null;
-    await persistFile(w.handle, w.key, w.text).catch(() => {});
-  }
-
-  // Save every dirty buffer to disk (File ▸ Save all). Flushes any pending
-  // debounce, then persists each dirty module / doc / manifest by its handle.
+  // Save every dirty buffer to disk (File ▸ Save all): persist each dirty module
+  // / doc / manifest by its handle.
   async function saveAll() {
-    await flushSave();
     for (const key of [...dirty]) {
       let handle: FileSystemFileHandle | null | undefined;
       let text: string | undefined;
@@ -1002,13 +1286,9 @@
     }
   }
 
-  // Manual save (Cmd/Ctrl-S): flush a pending debounce, else write the active
-  // file's current buffer straight away. A clean file is a no-op cue.
+  // Manual save (Cmd/Ctrl-S): write the active file's current buffer to disk. A
+  // clean file is a no-op cue.
   async function saveActiveFile() {
-    if (pendingWrite) {
-      await flushSave();
-      return;
-    }
     if (!openFile?.handle) return;
     const key = keyOf(openFile);
     if (!key || !dirty.has(key)) {
@@ -1022,16 +1302,19 @@
     if (!openFile) return;
     if (openFile.isManifest) {
       wsStore.manifestSource = value;
-      // A folder manifest re-resolves on save (debounced write); a session-only
-      // sample has no save, so re-resolve live instead.
+      // A saved folder manifest re-resolves the doc nav; until then show only the
+      // live parse cue. A session-only sample has no save, so re-resolve live.
       if (openFile.handle) validateManifest(value);
       else resolveManifest(value);
+    } else if (openFile.isOther) {
+      wsStore.otherSources = { ...otherSources, [openFile.path ?? ""]: value };
     } else if (openFile.isDoc) {
       wsStore.docSources = { ...docSources, [openFile.path ?? ""]: value };
     } else {
       wsStore.moduleSources = { ...moduleSources, [openFile.fqn ?? ""]: value };
     }
-    scheduleSave(openFile.handle, keyOf(openFile), value);
+    // No autosave: edits stay in the in-memory buffer (and show as dirty on the
+    // tab) until an explicit save — Cmd/Ctrl-S or File ▸ Save / Save all.
   }
 
   // Live parse check for the inline error cue; doesn't touch the doc nav.
@@ -1062,7 +1345,6 @@
   // manifest persists to its handle; a sample's is session-only (no handle).
   function openManifest() {
     if (!workspace?.manifest) return;
-    flushSave();
     wsStore.openFile = {
       isManifest: true,
       path: workspace.manifest.path,
@@ -1076,7 +1358,6 @@
   // Opening a file from the nav clears any node scope; it shows the source,
   // unless the canvas is up — then it stays on the canvas (whole-model context).
   function selectFile(file: OpenFile) {
-    flushSave();
     wsStore.openFile = file;
     selection.selected = null;
     if (view !== "canvas") selection.view = "code";
@@ -1086,10 +1367,125 @@
   // Marked `isDoc` so the editor drops PseudoScript language features and edits
   // route to `docSources` (and save to the page's handle on a real folder).
   function openDoc(item: LiveDocItem) {
-    flushSave();
     wsStore.openFile = { isDoc: true, path: item.path, title: item.title, handle: item.handle ?? null };
     selection.selected = null;
     selection.view = "code";
+  }
+
+  // Open a companion file (any non-PDS file in the tree). Text files load their
+  // content into `otherSources` lazily and open editable in the editor; binaries
+  // show an inert placeholder, so they skip the read.
+  async function openOther(key: string) {
+    const o = (workspace?.others ?? []).find((x) => rel(x.path ?? "") === key);
+    if (!o) return;
+    const binary = isBinaryPath(key);
+    const base = { isOther: true as const, binary, path: key, title: key.split("/").at(-1) ?? key, handle: o.handle ?? null };
+    wsStore.openFile = base;
+    selection.selected = null;
+    selection.view = "code";
+    if (!o.handle) return; // in-memory: nothing to read
+    try {
+      const file = await o.handle.getFile();
+      // Stale-guard: a fast tab switch may have moved on before this resolved.
+      if (keyOf(wsStore.openFile) === key) wsStore.openFile = { ...base, bytes: file.size };
+      if (!binary && otherSources[key] === undefined) {
+        const text = file.size > MAX_OTHER_TEXT_BYTES ? "" : await file.text();
+        wsStore.otherSources = { ...wsStore.otherSources, [key]: text };
+        // Baseline it so edits show dirty and Cmd-S persists to the handle.
+        seedBaseline([{ key, text }]);
+      }
+    } catch {
+      if (!binary) wsStore.otherSources = { ...wsStore.otherSources, [key]: "" };
+    }
+  }
+
+  // The workspace-base-relative form of a base-prefixed path (the file tree's key
+  // space): drops the manifest-base prefix so keys match `fileEntries` relPaths.
+  function rel(p: string): string {
+    const b = workspace?.base ?? "";
+    return b && p.startsWith(`${b}/`) ? p.slice(b.length + 1) : p;
+  }
+
+  // A human-readable byte count for the binary-file placeholder.
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    const units = ["KB", "MB", "GB"];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+  }
+
+  // Open a unified file-tree entry by its kind.
+  function openEntry(e: { key: string; kind: "module" | "doc" | "manifest" | "other"; fqn?: string }) {
+    if (e.kind === "manifest") return openManifest();
+    if (e.kind === "other") return void openOther(e.key);
+    if (e.kind === "doc") {
+      const it = docGroups.flatMap((g) => g.items).find((x) => x.path === e.key);
+      if (it) openDoc(it);
+      return;
+    }
+    const f = workspace?.files.find((x) => x.fqn === e.fqn);
+    if (f) selectFile(f);
+  }
+  const moduleByFqn = (fqn: string) => workspace?.files.find((f) => f.fqn === fqn) ?? null;
+
+  // Open a module and jump the editor to a 1-based line (text-search result).
+  function openAtLine(fqn: string, line: number) {
+    const f = moduleByFqn(fqn);
+    if (!f) return;
+    selectFile(f);
+    selection.pendingGoto = { line, col: 1, fileFqn: fqn };
+  }
+
+  // ── Editor tabs ────────────────────────────────────────────────────────────
+  const openTabs = $derived(wsStore.openTabs);
+  // The active file is always an open tab.
+  $effect(() => {
+    const f = openFile;
+    if (!f) return;
+    const k = keyOf(f);
+    if (k && !wsStore.openTabs.some((t) => keyOf(t) === k)) wsStore.openTabs = [...wsStore.openTabs, f];
+  });
+  // Drop tabs whose file no longer exists (delete / rename / manifest change).
+  $effect(() => {
+    if (!workspace) return;
+    const valid = new Set<string>();
+    for (const x of workspace.files) {
+      const k = keyOf(x);
+      if (k) valid.add(k);
+    }
+    for (const g of docGroups) for (const it of g.items) valid.add(it.path);
+    if (manifestKey) valid.add(manifestKey);
+    for (const o of workspace.others ?? []) valid.add(rel(o.path ?? ""));
+    const pruned = wsStore.openTabs.filter((t) => valid.has(keyOf(t) ?? ""));
+    if (pruned.length !== wsStore.openTabs.length) wsStore.openTabs = pruned;
+  });
+  const tabList = $derived(
+    openTabs.map((f) => ({
+      key: keyOf(f) ?? "",
+      label: f.isManifest ? "pds.toml" : f.isDoc || f.isOther ? (f.title ?? f.path ?? "") : (f.fqn ?? ""),
+      kind: (f.isManifest ? "manifest" : f.isDoc ? "doc" : f.isOther ? "other" : "module") as "module" | "doc" | "manifest" | "other",
+      active: keyOf(f) === keyOf(openFile),
+      dirty: dirty.has(keyOf(f) ?? ""),
+    })),
+  );
+  function selectTab(key: string) {
+    const f = openTabs.find((t) => keyOf(t) === key);
+    if (f) selectFile(f);
+  }
+  function closeTab(key: string) {
+    const remaining = openTabs.filter((t) => keyOf(t) !== key);
+    const wasActive = keyOf(openFile) === key;
+    wsStore.openTabs = remaining;
+    if (wasActive) {
+      const next = remaining.at(-1) ?? null;
+      if (next) selectFile(next);
+      else wsStore.openFile = null;
+    }
   }
 
   async function onProblemPick(d: Problem) {
@@ -1101,6 +1497,17 @@
     await tick();
     editorApi?.goto(d.start_line, d.start_col);
     if (d.file) recordLocation({ fileFqn: d.file, line: d.start_line, col: d.start_col, label: d.message });
+  }
+
+  // Copy one or all problems as plain text (the pane formats; this owns the
+  // clipboard edge + flash, mirroring onshare).
+  async function onProblemsCopy(text: string, count: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify("success", `Copied ${count} problem${count === 1 ? "" : "s"} to clipboard`);
+    } catch {
+      notify("error", "Couldn't copy to clipboard");
+    }
   }
 
   // Read every module into the live buffer, seed a clean on-disk baseline, mount,
@@ -1120,18 +1527,28 @@
   }
 
   // Bootstrap a project from a template — the empty one-module starter, or an
-  // example scaffolded onto disk. Prompts for a parent directory, writes the
-  // files, then opens it like any folder. Cancelling the picker is a no-op.
-  async function newProject(name: string, templateId: string) {
+  // example scaffolded onto disk. Writes the files into the caller-chosen `parent`
+  // folder, then opens it like any folder. A failed write is a no-op.
+  async function newProject(name: string, templateId: string, parent: FileSystemDirectoryHandle) {
     const tpl =
       templateId === "empty" ? { seed: emptySeed(name), landing: null as string | null } : sampleSeed(templateId);
     if (!tpl) return;
     try {
-      const ws = await scaffoldWorkspace(name, tpl.seed);
+      const ws = await scaffoldWorkspace(name, tpl.seed, parent);
       await adoptWorkspace(ws, tpl.landing);
-      flash(`Created ${ws.name}`);
+      notify("success", `Created ${ws.name}`);
     } catch {
-      // picker cancelled or permission denied — keep the current workspace
+      // write or permission failure — keep the current workspace
+    }
+  }
+
+  // Prompt for the New-project target folder (the dialog stores the handle).
+  // Returns null if the picker is cancelled, so the dialog keeps its prior choice.
+  async function chooseProjectFolder(): Promise<FileSystemDirectoryHandle | null> {
+    try {
+      return await pickDirectory();
+    } catch {
+      return null;
     }
   }
 
@@ -1139,9 +1556,44 @@
     try {
       const ws = await openWorkspace();
       await adoptWorkspace(ws);
-      flash(`Opened ${ws.name} · ${ws.files.length} modules`);
+      notify("success", `Opened ${ws.name} · ${ws.files.length} modules`);
     } catch {
       // picker cancelled or permission denied — keep the current workspace
+    }
+  }
+
+  // Tear down the current workspace and return to the launcher. Mirrors the reset
+  // half of `mountWorkspace`, then clears the on-disk buffers/baselines so no stale
+  // state leaks into the next project. Dirty buffers confirm before discarding.
+  function closeProject() {
+    const teardown = () => {
+      wsStore.workspace = null;
+      wsStore.openFile = null;
+      wsStore.openTabs = [];
+      wsStore.moduleSources = {};
+      wsStore.docGroups = [];
+      wsStore.docSources = {};
+      wsStore.docMeta = {};
+      wsStore.manifestSource = "";
+      wsStore.manifestError = null;
+      selection.selected = null;
+      selection.pendingGoto = null;
+      selection.view = "code";
+      navigation.reset();
+      saveStore.persisted = {};
+      saveStore.saveState = "idle";
+      clearTimeout(saveStateTimer);
+      ui.projectOpen = true;
+    };
+    if (dirtyCount > 0) {
+      ui.confirmDialog = {
+        title: "Close project",
+        message: "Discard unsaved changes?",
+        confirmLabel: "Discard",
+        run: teardown,
+      };
+    } else {
+      teardown();
     }
   }
 
@@ -1154,7 +1606,7 @@
   ];
 
   async function onformat() {
-    if (!openFile) return;
+    if (!openFile || openFile.isOther) return; // companion files have no formatter
     // Markdown docs reflow via Prettier (lazy-loaded); `.pds` modules use the
     // wasm formatter. The manifest (raw TOML) has no formatter — leave it.
     if (openFile.isManifest) return;
@@ -1170,14 +1622,14 @@
         });
         onEditorChange(formatted);
       } catch {
-        flash("Cannot format Markdown — check the document");
+        notify("info", "Cannot format Markdown — check the document");
       }
       return;
     }
     try {
       onEditorChange(formatSource(source));
     } catch {
-      flash("Cannot format — fix syntax errors first");
+      notify("info", "Cannot format — fix syntax errors first");
     }
   }
 
@@ -1333,9 +1785,9 @@ show('index.html');
       window.history.replaceState(null, "", `#w=${payload}`);
       try {
         await navigator.clipboard.writeText(url);
-        flash("Share link copied to clipboard");
+        notify("success", "Share link copied to clipboard");
       } catch {
-        flash("Share link is in the address bar");
+        notify("info", "Share link is in the address bar");
       }
     } catch (e) {
       notify("error", "Could not create share link", String((e as Error)?.message ?? e));
@@ -1355,7 +1807,7 @@ show('index.html');
       a.download = `${workspace.name || "workspace"}.pdsx`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      flash(`Exported ${a.download}`);
+      notify("success", `Exported ${a.download}`);
     } catch (e) {
       notify("error", "Could not export workspace", String((e as Error)?.message ?? e));
     }
@@ -1372,7 +1824,7 @@ show('index.html');
       try {
         const bytes = new Uint8Array(await file.arrayBuffer());
         mountDecoded(await decodeWorkspace(bytes));
-        flash(`Imported ${file.name}`);
+        notify("success", `Imported ${file.name}`);
       } catch (e) {
         notify("error", "Could not import workspace", String((e as Error)?.message ?? e));
       }
@@ -1389,7 +1841,7 @@ show('index.html');
       const bytes = base64UrlToBytes(payload) as Uint8Array<ArrayBuffer>;
       mountDecoded(await decodeWorkspace(bytes));
       window.history.replaceState(null, "", location.pathname + location.search);
-      flash("Restored shared workspace");
+      notify("success", "Restored shared workspace");
       return true;
     } catch (e) {
       notify("error", "Could not open shared link", String((e as Error)?.message ?? e));
@@ -1404,30 +1856,55 @@ show('index.html');
 
 <svelte:window
   onkeydown={(e) => {
+    // Double-Shift opens Search Everywhere (IntelliJ): two bare Shift presses in
+    // quick succession, with no other key between them. Any other key cancels the
+    // pending first press, so Shift-as-a-modifier never triggers it.
+    if (e.key === "Shift") {
+      if (!e.repeat) {
+        const now = Date.now();
+        if (workspace && now - lastShift < 400) {
+          ui.commandOpen = true;
+          lastShift = 0;
+        } else {
+          lastShift = now;
+        }
+      }
+      return;
+    }
+    lastShift = 0;
     if (e.key === "Escape") {
       if (buildNotice) ui.buildNotice = false;
+      if (settingsOpen) ui.settingsOpen = false;
       if (projectOpen && workspace) ui.projectOpen = false;
       ui.canvasInfo = null;
       ui.canvasUsages = null;
     }
-    // Cmd/Ctrl-S saves the active file even when the editor isn't focused (e.g.
-    // on the canvas or problems view). The editor's own keymap handles the
-    // focused case; this prevents the browser's "save page" dialog regardless.
+    // Cmd/Ctrl-S saves the active file (Cmd/Ctrl-Shift-S saves all) even when the
+    // editor isn't focused (e.g. on the canvas). The editor's own keymap handles
+    // the focused case; this prevents the browser's "save page" dialog regardless.
     if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
-      saveActiveFile();
+      if (e.shiftKey) saveAll();
+      else saveActiveFile();
     }
-    // Cmd/Ctrl-K opens the go-to file/symbol palette.
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
+    // Cmd/Ctrl-K (legacy) and Cmd/Ctrl-P (VSCode-style Quick Open) both open the
+    // search palette; P also suppresses the browser's print dialog.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K" || e.key === "p" || e.key === "P")) {
       e.preventDefault();
       if (workspace) ui.commandOpen = true;
     }
   }}
+  oncontextmenu={(e) => {
+    // App-wide: the browser's native context menu never shows. The IDE's own
+    // menus (file tree, structure, canvas nodes) open from their own handlers,
+    // which run on the target before this window-level fallback; everywhere else
+    // right-click is simply suppressed so nothing breaks the app's surface.
+    e.preventDefault();
+  }}
   onfocus={reloadExternalChanges}
   onbeforeunload={(e) => {
-    // Warn before closing with unsaved work that can be persisted, or with a
-    // write still in flight.
-    if (canPersist && (dirtyCount > 0 || pendingWrite)) {
+    // Warn before closing with unsaved work that can be persisted to disk.
+    if (canPersist && dirtyCount > 0) {
       e.preventDefault();
       e.returnValue = "";
     }
@@ -1453,32 +1930,17 @@ show('index.html');
 {/if}
 
 {#if confirmDialog}
-  <div
-    class="confirm-backdrop"
-    role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) ui.confirmDialog = null;
+  <ConfirmDialog
+    title={confirmDialog.title}
+    message={confirmDialog.message}
+    confirmLabel={confirmDialog.confirmLabel ?? "Delete"}
+    onconfirm={() => {
+      const run = confirmDialog?.run;
+      ui.confirmDialog = null;
+      run?.();
     }}
-  >
-    <div class="confirm" role="alertdialog" aria-modal="true" aria-label={confirmDialog.title}>
-      <h2>{confirmDialog.title}</h2>
-      <p>{confirmDialog.message}</p>
-      <div class="confirm-actions">
-        <button class="ghost" type="button" onclick={() => (ui.confirmDialog = null)}>Cancel</button>
-        <button
-          class="danger"
-          type="button"
-          onclick={() => {
-            const run = confirmDialog?.run;
-            ui.confirmDialog = null;
-            run?.();
-          }}
-        >
-          {confirmDialog.confirmLabel ?? "Delete"}
-        </button>
-      </div>
-    </div>
-  </div>
+    oncancel={() => (ui.confirmDialog = null)}
+  />
 {/if}
 
 <Notifications notes={notifications.notes} ondismiss={dismissNote} />
@@ -1488,24 +1950,35 @@ show('index.html');
     bind:open={ui.commandOpen}
     files={workspace.files.filter((f) => f.fqn).map((f) => ({ fqn: f.fqn!, path: f.path ?? "" }))}
     symbols={symbols as never}
+    modules={allModules}
+    actions={paletteActions}
     onopenfile={(f) => {
       const real = workspace?.files.find((x) => x.fqn === f.fqn);
       if (real) selectFile(real);
     }}
     onpicksymbol={(fqn) => selectNode(fqn, { goto: true })}
+    onopentext={openAtLine}
   />
 {/if}
 
 {#if ready && projectOpen}
   <ProjectPanel
-    {templates}
     {recents}
     dismissible={!!workspace}
     onpickrecent={openRecent}
     onopenfolder={openFolder}
-    onnewproject={newProject}
+    onnewproject={() => (ui.newProjectOpen = true)}
     onforget={forgetRecent}
     onclose={() => (ui.projectOpen = false)}
+  />
+{/if}
+
+{#if ready && newProjectOpen}
+  <NewProjectDialog
+    {templates}
+    onchoosefolder={chooseProjectFolder}
+    onpick={(name, id, parent) => { ui.newProjectOpen = false; newProject(name, id, parent); }}
+    onclose={() => (ui.newProjectOpen = false)}
   />
 {/if}
 
@@ -1538,47 +2011,43 @@ show('index.html');
 {/if}
 
 {#if buildNotice}
-  <!-- Backdrop-click is a mouse convenience; Escape and the Cancel button give
-       full keyboard access, so the static-element interaction lint is waived. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="scrim" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) ui.buildNotice = false; }}>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="build-notice-title">
-      <h2 id="build-notice-title">Build the example as a preview?</h2>
-      <p>
-        You're working in the bundled <b>example</b>, which lives in memory — there's no folder to write to.
-        Building it opens a <b>read-only preview</b> in a new tab, and the interactive diagrams don't load there.
-      </p>
-      <p>
-        To build a real, on-disk site like the <code>pds doc</code> CLI — written under <code>target/doc/</code>,
-        with the diagrams hydrated — open a folder as your workspace first.
-      </p>
-      <div class="modal-actions">
-        <button class="ghost" onclick={() => (ui.buildNotice = false)}>Cancel</button>
-        {#if fsSupported}
-          <button class="ghost" onclick={openFolderFromNotice}>Open a folder…</button>
-        {/if}
-        <button class="primary" onclick={confirmPreviewBuild}>Build preview</button>
-      </div>
-    </div>
-  </div>
+  <BuildNoticeDialog
+    onopenfolder={fsSupported ? openFolderFromNotice : undefined}
+    onbuild={confirmPreviewBuild}
+    oncancel={() => (ui.buildNotice = false)}
+  />
 {/if}
 
-{#snippet symbolLabel(title: string)}
-  {#each title.split("`") as part, i}{#if i % 2}<code>{part}</code>{:else}<span>{part}</span>{/if}{/each}
+{#if renamePrompt}
+  <RenameDialog
+    symbol={renamePrompt.symbol}
+    occurrences={renamePrompt.occurrences}
+    onconfirm={applyRename}
+    oncancel={() => (renamePrompt = null)}
+  />
+{/if}
+
+<!-- One breadcrumb hop: the node's C4-kind icon + its simple name. -->
+{#snippet crumbNode(fqn: string)}
+  {@const node = nodeIndex.get(fqn)?.node}
+  {@const Icon = node ? (KIND_ICON[node.kind] ?? Box) : Box}
+  <span class="cn kind-{node?.kind ?? 'callable'}">
+    <Icon size={13} strokeWidth={1.9} aria-hidden="true" />
+    <span class="cn-name">{node?.name ?? fqn.split("::").at(-1)}</span>
+  </span>
 {/snippet}
 
-<!-- The selected item's path: context / system / container / … — each ancestor a
-     hop, the leaf the current scope. -->
+<!-- The selected item's path: ▸node / ▸node / … — each ancestor a hop, the leaf
+     the current scope. Empty when nothing is selected. -->
 {#snippet breadcrumb()}
   {@const chain = selected ? ancestry(selected.fqn) : []}
   <div class="crumb">
-    <button class="reset" class:active={!selected} onclick={resetScope} title="Whole-model context">context</button>
     {#each chain as fqn, i (fqn)}
-      <span class="sep">/</span>
+      {#if i > 0}<span class="sep">/</span>{/if}
       {#if i < chain.length - 1}
-        <button class="hop" onclick={() => selectNode(fqn)}>{@render symbolLabel(nodeTitle(fqn))}</button>
+        <button class="hop" onclick={() => selectNode(fqn)}>{@render crumbNode(fqn)}</button>
       {:else}
-        {@render symbolLabel(nodeTitle(fqn))}
+        <span class="hop leaf">{@render crumbNode(fqn)}</span>
       {/if}
     {/each}
   </div>
@@ -1625,11 +2094,14 @@ show('index.html');
   <TopBar
     workspaceName={workspace?.name ?? null}
     {building}
+    {view}
+    {structureOpen}
     {canBack}
     {canForward}
     onback={goBack}
     onforward={goForward}
     onopenfolder={() => (ui.projectOpen = true)}
+    oncloseproject={closeProject}
     ongoto={() => (ui.commandOpen = true)}
     onnewfile={startNewFile}
     onnewdoc={startNewDoc}
@@ -1639,16 +2111,30 @@ show('index.html');
     {onexport}
     {onimport}
     {onbuilddocs}
-    {onformat}
+    onshortcuts={() => (ui.settingsOpen = true)}
+    onview={(v) => (selection.view = v)}
+    ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)}
   />
 
-  <div class="body" class:loaded={ready && !!workspace && !wasmError && fsSupported} class:no-structure={!structureOpen}>
+  <div
+    class="body"
+    class:loaded={ready && !!workspace && !wasmError && fsSupported}
+    style="--explorer-w:{panelSizes.explorerW}px; --structure-w:{panelSizes.structureW}px; --problems-h:{panelSizes.problemsH}px; --explorer-track:{view !== 'canvas' && explorerOpen ? panelSizes.explorerW + 'px' : '0px'}; --structure-track:{structureOpen ? panelSizes.structureW + 'px' : '0px'}; --problems-track:{problemsOpen ? panelSizes.problemsH + 'px' : '0px'}"
+  >
     <ActivityBar
       active={view === "canvas" ? "canvas" : "explorer"}
-      {structureOpen}
-      onselect={(a) => (selection.view = a === "canvas" ? "canvas" : "code")}
-      ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)}
-      onsettings={() => (ui.settingsOpen = true)}
+      {explorerOpen}
+      {problemsOpen}
+      problemCount={problems.length}
+      {errorCount}
+      onexplorer={() => {
+        if (view !== "code") {
+          selection.view = "code";
+          ui.explorerOpen = true;
+        } else ui.explorerOpen = !ui.explorerOpen;
+      }}
+      oncanvas={() => (selection.view = "canvas")}
+      ontoggleproblems={() => (ui.problemsOpen = !ui.problemsOpen)}
     />
 
     {#if wasmError}
@@ -1667,36 +2153,56 @@ show('index.html');
         </p>
       </div>
     {:else if ready && workspace}
+      {#if view !== "canvas" && explorerOpen}
       <section class="explorer island reveal r1">
         <FileTree
-          workspaceName={workspace.name}
-          files={workspace.files as { fqn: string; path: string }[]}
-          openPath={openFile?.path ?? null}
-          {docGroups}
-          ondocopen={openDoc}
-          {errorPaths}
-          {dirtyPaths}
-          manifestPath={workspace?.manifest?.path ?? null}
-          base={workspace?.base ?? ""}
-          onmanifestopen={openManifest}
-          onopen={selectFile}
+          entries={fileEntries}
+          dirs={workspace.dirs ?? []}
+          {openKey}
+          {errorKeys}
+          dirtyKeys={dirty}
+          onopen={openEntry}
           oncreatefile={startNewFile}
           oncreatedoc={startNewDoc}
-          onrenamefile={startRenameFile}
-          onmovefile={moveFile}
-          ondeletefile={requestDeleteFile}
+          oncreatefolder={startNewFolder}
+          onrenamefolder={startRenameFolder}
+          ondeletefolder={deleteFolder}
+          onrenamefile={(fqn) => {
+            const f = moduleByFqn(fqn);
+            if (f) startRenameFile(f);
+          }}
+          onmovefile={({ fqn, destDir }) => {
+            const f = moduleByFqn(fqn);
+            if (f) moveFile({ file: f, destDir });
+          }}
+          ondeletefile={(fqn) => {
+            const f = moduleByFqn(fqn);
+            if (f) requestDeleteFile(f);
+          }}
         />
       </section>
+      <Splitter
+        side="left"
+        width={panelSizes.explorerW}
+        min={PANEL_MIN}
+        max={PANEL_MAX}
+        label="Resize explorer"
+        onresize={(px) => panelSizes.setExplorerW(px)}
+        onreset={() => panelSizes.resetExplorer()}
+      />
+      {/if}
 
       <section class="center island reveal r2">
-        <header class="content-bar">
-          {@render breadcrumb()}
-          {#if openFile?.isDoc}
+        {#if openFile?.isDoc}
+          <header class="content-bar">
             <div class="bar-actions">{@render mdHelp()}{@render docWidthToggle()}</div>
-          {/if}
-        </header>
+          </header>
+        {/if}
         <div class="content-body">
           <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
+            {#if tabList.length}
+              <TabBar tabs={tabList} onselect={selectTab} onclose={closeTab} />
+            {/if}
             {#if openFile?.isManifest && manifestError}
               <div class="manifest-error" role="status">
                 <span class="me-kicker">manifest error</span>
@@ -1708,39 +2214,79 @@ show('index.html');
                 <code>[dependencies]</code> are resolved by <code>pds install</code> (CLI) — editing them here won't fetch or update them.
               </div>
             {/if}
-            <Editor
-              value={source}
-              onchange={onEditorChange}
-              onready={(api) => (editorApi = api)}
-              modules={allModules}
-              moduleFqn={openFile?.fqn ?? ""}
-              plain={(openFile?.isDoc || openFile?.isManifest) ?? false}
-              markdown={openFile?.isDoc ?? false}
-              {previewOpts}
-              {symbols}
-              onopensymbol={revealSymbol}
-              ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
-              onnavigate={openUsage}
-              {onformat}
-              onsave={saveActiveFile}
-              onopensettings={() => (ui.settingsOpen = true)}
-            />
+            {#if openFile?.isOther && openFile.binary}
+              <div class="binary-pane" role="note">
+                <File size={28} strokeWidth={1.6} aria-hidden="true" />
+                <p class="bp-name">{openFile.title}</p>
+                <p class="bp-meta">Binary file{openFile.bytes != null ? ` · ${formatBytes(openFile.bytes)}` : ""} — not shown in the editor.</p>
+              </div>
+            {:else}
+              <Editor
+                value={source}
+                onchange={onEditorChange}
+                onready={(api) => (editorApi = api)}
+                modules={allModules}
+                moduleFqn={openFile?.fqn ?? ""}
+                fileKey={openKey}
+                plain={(openFile?.isDoc || openFile?.isManifest || openFile?.isOther) ?? false}
+                markdown={openFile?.isDoc ?? false}
+                toml={openFile?.isManifest ?? false}
+                filename={openFile?.isOther ? (openFile?.path ?? "") : ""}
+                {previewOpts}
+                {symbols}
+                onopensymbol={revealSymbol}
+                ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
+                onnavigate={openUsage}
+                onrename={requestRename}
+                {onformat}
+                onsave={saveActiveFile}
+                onopensettings={() => (ui.settingsOpen = true)}
+              />
+            {/if}
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} typeFqn={typeFqnByName as never} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} oninfo={showCanvasInfo} oninfoend={hideCanvasInfo} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} />
             </div>
           {/if}
         </div>
       </section>
 
       {#if structureOpen}
+        <Splitter
+          side="right"
+          width={panelSizes.structureW}
+          min={PANEL_MIN}
+          max={PANEL_MAX}
+          label="Resize structure panel"
+          onresize={(px) => panelSizes.setStructureW(px)}
+          onreset={() => panelSizes.resetStructure()}
+        />
         <StructurePanel
           symbols={symbols as never}
           selectedFqn={selected?.fqn ?? null}
           onpicknode={(fqn) => selectNode(fqn, { goto: true })}
           onreveal={revealSymbol}
-          oncollapse={() => (ui.structureOpen = false)}
+        />
+      {/if}
+
+      <RightRail {structureOpen} ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)} />
+
+      {#if problemsOpen}
+        <Splitter
+          side="bottom"
+          width={panelSizes.problemsH}
+          min={PROBLEMS_MIN}
+          max={PROBLEMS_MAX}
+          label="Resize problems"
+          onresize={(px) => panelSizes.setProblemsH(px)}
+          onreset={() => panelSizes.resetProblems()}
+        />
+        <BottomDock
+          {problems}
+          onpick={onProblemPick}
+          oncopy={onProblemsCopy}
+          oncollapse={() => (ui.problemsOpen = false)}
         />
       {/if}
     {:else if ready}
@@ -1753,78 +2299,12 @@ show('index.html');
     {/if}
   </div>
 
-  <StatusBar
-    {ver}
-    hasWorkspace={!!workspace}
-    fileLabel={openFile?.fqn ?? openFile?.title ?? "—"}
-    fileDirty={!!(openFile && dirty.has(keyOf(openFile) ?? ""))}
-    moduleCount={workspace?.files.length ?? 0}
-    toast={notifications.toast}
-    mode={view}
-    {saveState}
-    {dirtyCount}
-    {problems}
-    {errorCount}
-    onproblempick={onProblemPick}
-  />
+  <StatusBar>
+    {#if ready && workspace}{@render breadcrumb()}{/if}
+  </StatusBar>
 </div>
 
 <style>
-  /* destructive-action confirm modal (file delete) */
-  .confirm-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: grid;
-    place-items: center;
-    background: color-mix(in srgb, var(--bg, #000) 62%, transparent);
-    backdrop-filter: blur(2px);
-  }
-  .confirm {
-    width: min(26rem, calc(100vw - 2rem));
-    background: var(--surface, #fff);
-    border: 1px solid var(--line);
-    border-radius: var(--radius, 10px);
-    padding: 1.1rem 1.2rem 1.2rem;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
-  }
-  .confirm h2 {
-    margin: 0 0 0.5rem;
-    font-size: 0.95rem;
-    color: var(--ink);
-  }
-  .confirm p {
-    margin: 0;
-    font-size: 0.82rem;
-    color: var(--ink-soft);
-  }
-  .confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    margin-top: 1.1rem;
-  }
-  .confirm-actions button {
-    padding: 0.45rem 0.85rem;
-    font-size: 0.8rem;
-    border-radius: var(--radius-sm, 6px);
-    cursor: pointer;
-    border: 1px solid var(--line);
-  }
-  .confirm-actions .ghost {
-    background: transparent;
-    color: var(--ink-soft);
-  }
-  .confirm-actions .ghost:hover {
-    background: var(--surface-2);
-    color: var(--ink);
-  }
-  .confirm-actions .danger {
-    background: var(--err);
-    border-color: var(--err);
-    color: #fff;
-  }
-
   /* The island shell: top bar / body / status, with a fixed activity rail and
      collapsible explorer + structure islands flanking the centre. */
   .ide {
@@ -1833,18 +2313,50 @@ show('index.html');
     height: 100vh;
   }
   .body {
+    position: relative;
     display: grid;
     grid-template-columns: var(--activity-w) minmax(0, 1fr);
     gap: var(--island-gap);
-    padding: var(--island-gap);
+    /* Only flank the islands left/right. The header and footer centre their text,
+       which already supplies the vertical breathing room; a top/bottom gap here
+       would stack on top of that and read as too much space. */
+    padding: 0 var(--island-gap);
     min-height: 0;
     background: var(--bg);
   }
+  /* Tool-window grid: left rail | explorer | centre | structure | right rail,
+     over a content row and a bottom problems-dock row. Each collapsible track
+     (--explorer-track / --structure-track / --problems-track) is set inline on
+     .body and falls to 0 when its island is closed, so one rule covers every
+     open/closed combination. The two rails carry no chrome (see ActivityBar /
+     RightRail) and span both rows. */
   .body.loaded {
-    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr) 268px;
+    grid-template-columns: var(--activity-w) var(--explorer-track) minmax(0, 1fr) var(--structure-track) var(--right-rail-w);
+    grid-template-rows: minmax(0, 1fr) var(--problems-track);
   }
-  .body.loaded.no-structure {
-    grid-template-columns: var(--activity-w) 248px minmax(0, 1fr);
+  .body.loaded :global(.activity) {
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+  .body.loaded .explorer {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .body.loaded .center {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .body.loaded :global(.structure) {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .body.loaded :global(.rail) {
+    grid-column: 5;
+    grid-row: 1 / -1;
+  }
+  .body.loaded :global(.dock) {
+    grid-column: 2 / 5;
+    grid-row: 2;
   }
   /* a curtain / empty stage spans everything right of the activity rail */
   .span {
@@ -1861,17 +2373,18 @@ show('index.html');
   .explorer {
     min-width: 0;
     min-height: 0;
-    background: color-mix(in srgb, var(--surface) 70%, transparent);
+    background: var(--island-bg);
   }
   /* the centre: a slim content-bar over the editor / canvas */
   .center {
     display: grid;
-    grid-template-rows: var(--bar-h) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
-    background: color-mix(in srgb, var(--surface) 55%, transparent);
+    background: var(--island-bg);
   }
   .content-bar {
+    grid-row: 1;
     display: flex;
     align-items: center;
     gap: 0.6rem;
@@ -1896,6 +2409,7 @@ show('index.html');
   .nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
   .content-body {
+    grid-row: 2;
     display: grid;
     min-height: 0;
   }
@@ -1911,6 +2425,29 @@ show('index.html');
      to fill the rest. */
   .code-layer { display: flex; flex-direction: column; }
   .code-layer :global(.editor) { flex: 1; min-height: 0; }
+
+  .binary-pane {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    color: var(--ink-faint);
+    text-align: center;
+    padding: 1.5rem;
+  }
+  .binary-pane .bp-name {
+    margin: 0.2rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    color: var(--ink-soft);
+  }
+  .binary-pane .bp-meta {
+    margin: 0;
+    font-size: 0.76rem;
+  }
 
   .manifest-error,
   .manifest-note {
@@ -1945,9 +2482,7 @@ show('index.html');
     border-radius: var(--radius-sm);
   }
   .canvas-layer {
-    background:
-      radial-gradient(900px 520px at 60% -10%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
-      var(--bg);
+    background: var(--island-bg);
   }
 
   /* CODE | CANVAS | Problems toggle */
@@ -2046,6 +2581,9 @@ show('index.html');
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    /* Indent so the leading kind-icon centres under the activity rail's icon
+       column (rail is --activity-w wide; the status bar spans full width). */
+    padding-left: 0.7rem;
     min-width: 0;
     font-family: var(--font-mono);
     font-size: 0.72rem;
@@ -2054,25 +2592,7 @@ show('index.html');
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .crumb :global(code) {
-    color: var(--ink);
-    background: var(--surface-2);
-    padding: 0.05rem 0.35rem;
-    border-radius: var(--radius-sm);
-  }
   .crumb .sep { color: var(--ink-faint); }
-  .crumb .reset {
-    background: transparent;
-    border: none;
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    cursor: pointer;
-    padding: 0;
-  }
-  .crumb .reset:hover { text-decoration: underline; }
-  .crumb .reset.active { color: var(--ink-faint); cursor: default; }
-  .crumb .reset.active:hover { text-decoration: none; }
   .crumb .hop {
     background: transparent;
     border: none;
@@ -2081,83 +2601,22 @@ show('index.html');
     color: var(--ink-soft);
     cursor: pointer;
   }
-  .crumb .hop:hover { color: var(--ink); }
-  .crumb .hop:hover :global(code) { color: var(--ink); }
-
-  /* blocking build-notice modal */
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 70;
-    display: grid;
-    place-items: center;
-    padding: 1.5rem;
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(2px);
-    animation: fade-in 0.16s ease both;
+  /* a hop: kind icon (coloured by C4 level) + name; the leaf isn't a button */
+  .crumb :global(.cn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
   }
-  .modal {
-    width: min(460px, 100%);
-    background: var(--surface);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-lg);
-    padding: 1.3rem 1.4rem;
-    animation: rise 0.22s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-  }
-  .modal h2 {
-    margin: 0 0 0.7rem;
-    font-family: var(--font-display);
-    font-size: 1.12rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--ink);
-  }
-  .modal p {
-    margin: 0 0 0.7rem;
-    font-size: 0.86rem;
-    line-height: 1.65;
-    color: var(--ink-soft);
-  }
-  .modal code {
-    font-family: var(--font-mono);
-    font-size: 0.82em;
-    background: var(--surface-2);
-    color: var(--ink);
-    padding: 0.05rem 0.35rem;
-    border-radius: var(--radius-sm);
-  }
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    margin-top: 1.1rem;
-  }
-  .modal-actions button {
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    padding: 0.5rem 0.95rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-  }
-  .modal-actions .ghost {
-    background: var(--surface-2);
-    border: 1px solid var(--line-strong);
-    color: var(--ink-soft);
-  }
-  .modal-actions .ghost:hover { border-color: var(--accent); color: var(--ink); }
-  .modal-actions .primary {
-    background: var(--accent);
-    border: 1px solid var(--accent);
-    color: var(--accent-ink);
-    font-weight: 700;
-  }
-  .modal-actions .primary:hover { background: var(--accent-hi); }
-
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
+  .crumb .cn-name { color: var(--ink-soft); }
+  .crumb .hop.leaf .cn-name { color: var(--ink); }
+  .crumb .hop:hover .cn-name { color: var(--ink); }
+  .crumb :global(.cn.kind-person) { color: #6e8bff; }
+  .crumb :global(.cn.kind-system) { color: var(--accent-hi); }
+  .crumb :global(.cn.kind-container) { color: #2dd4bf; }
+  .crumb :global(.cn.kind-component) { color: #b87bf5; }
+  .crumb :global(.cn.kind-data) { color: var(--warn); }
+  .crumb :global(.cn.kind-callable) { color: var(--ink-faint); }
+  .crumb :global(.cn.kind-feature) { color: #34d399; }
 
   /* one orchestrated staggered reveal on load */
   .reveal { animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }

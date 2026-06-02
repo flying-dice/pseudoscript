@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PanelRightClose, Search, X } from "@lucide/svelte";
+  import { Search, X } from "@lucide/svelte";
 
   import SymbolTree from "./SymbolTree.svelte";
 
@@ -10,10 +10,9 @@
     selectedFqn?: string | null;
     onpicknode?: (fqn: string) => void;
     onreveal?: (fqn: string) => void;
-    oncollapse?: () => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, onreveal, oncollapse }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, onreveal }: Props = $props();
 
   let query = $state("");
 
@@ -38,13 +37,6 @@
 </script>
 
 <aside class="structure island">
-  <header class="panel-head">
-    <span class="title">Structure</span>
-    <span class="count">{filtered.length}</span>
-    <button class="collapse" onclick={oncollapse} aria-label="Collapse structure" title="Collapse structure">
-      <PanelRightClose size={15} strokeWidth={1.75} aria-hidden="true" />
-    </button>
-  </header>
   <div class="search">
     <Search size={13} strokeWidth={2} aria-hidden="true" />
     <input type="text" placeholder="Filter symbols…" bind:value={query} aria-label="Filter symbols" spellcheck="false" autocomplete="off" />
@@ -66,46 +58,9 @@
 <style>
   .structure {
     display: grid;
-    grid-template-rows: var(--bar-h, 34px) auto 1fr;
+    grid-template-rows: auto 1fr;
     min-height: 0;
-    background: color-mix(in srgb, var(--surface) 70%, transparent);
-  }
-  .panel-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    height: var(--bar-h, 34px);
-    padding: 0 0.4rem 0 0.7rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .title {
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-  }
-  .count {
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
-    color: var(--ink-faint);
-  }
-  .collapse {
-    margin-left: auto;
-    width: 1.5rem;
-    height: 1.5rem;
-    display: grid;
-    place-items: center;
-    background: transparent;
-    border: none;
-    border-radius: var(--radius-sm);
-    color: var(--ink-faint);
-    cursor: pointer;
-  }
-  .collapse:hover {
-    background: var(--surface-2);
-    color: var(--ink);
+    background: var(--island-bg);
   }
   .search {
     display: flex;

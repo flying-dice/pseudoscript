@@ -44,6 +44,34 @@ export function normalizePdsPath(name: string): string {
   return p;
 }
 
+/** Normalise a typed folder path: trim each segment, drop empties and a stray
+ *  `.pds`, and join with `/`. `"  banking//adapters/ "` → `"banking/adapters"`. */
+export function normalizeDirPath(name: string): string {
+  return name
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\.pds$/i, "")
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+/** True when renaming folder `oldRel` to `newRel` is illegal because the target
+ *  is the folder itself or nested in/around it — a move into your own subtree
+ *  would delete what you just moved. */
+export function folderRenameClash(oldRel: string, newRel: string): boolean {
+  return newRel === oldRel || newRel.startsWith(`${oldRel}/`) || oldRel.startsWith(`${newRel}/`);
+}
+
+/** Re-point a directory list when folder `oldRel` is renamed to `newRel`: the
+ *  folder and everything under it move; the new path is guaranteed present. */
+export function remapDirs(dirs: string[], oldRel: string, newRel: string): string[] {
+  const prefix = `${oldRel}/`;
+  const mapped = dirs.map((d) => (d === oldRel ? newRel : d.startsWith(prefix) ? `${newRel}${d.slice(oldRel.length)}` : d));
+  return Array.from(new Set([...mapped, newRel])).sort();
+}
+
 /** A doc title as a URL slug. */
 export function slugify(title: string): string {
   return title

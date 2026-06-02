@@ -193,6 +193,22 @@ export function parse(source: string): string;
 export function references(modules_json: string, module_fqn: string, offset: number): string;
 
 /**
+ * Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+ * applying only the occurrences in `selected_json` — a JSON array of
+ * `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+ * Returns JSON `[{ fqn, source }]`: the new full source of every module that
+ * changed. The host swaps these into its buffers. The substitution is done here
+ * (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+ * come from the shared [`pseudoscript_lsp_core::refs::rename`].
+ *
+ * # Errors
+ *
+ * Returns an error when `new_name` is not a valid identifier, or when either
+ * JSON argument is malformed.
+ */
+export function rename_apply(modules_json: string, module_fqn: string, offset: number, new_name: string, selected_json: string): string;
+
+/**
  * Renders the whole documentation site for a workspace, exactly as the CLI's
  * `pds doc` does, driving server-side rendering through the host's JavaScript
  * engine rather than an embedded one.
@@ -276,6 +292,7 @@ export interface InitOutput {
     readonly outline_modules: (a: number, b: number) => [number, number, number, number];
     readonly parse: (a: number, b: number) => [number, number];
     readonly references: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly rename_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly render_doc_site: (a: number, b: number, c: number, d: number, e: any) => [number, number, number, number];
     readonly semantic_tokens: (a: number, b: number) => [number, number];
     readonly symbol_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];

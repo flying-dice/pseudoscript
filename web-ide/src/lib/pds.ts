@@ -15,6 +15,7 @@ import init, {
   hover as wasmHover,
   definition as wasmDefinition,
   references as wasmReferences,
+  rename_apply as wasmRenameApply,
   completion as wasmCompletion,
   semantic_tokens as wasmSemanticTokens,
   folding_ranges as wasmFoldingRanges,
@@ -99,6 +100,9 @@ export interface Occurrence {
   end_line: number;
   end_col: number;
   text: string;
+  /** Char offsets into `text` bounding the symbol token, for highlighting. */
+  match_start: number;
+  match_end: number;
   decl: boolean;
 }
 
@@ -282,6 +286,37 @@ export function definition(modules: Module[], moduleFqn: string, offset: number)
  */
 export function references(modules: Module[], moduleFqn: string, offset: number): References | null {
   return callWasm("references", () => JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset)));
+}
+
+/** An occurrence the user chose to rename, keyed as {@link references} reports it. */
+export interface RenameSelection {
+  fqn: string;
+  line: number;
+  col: number;
+}
+
+/** One module's rewritten source after a rename ({@link renameApply}). */
+export interface RenamedSource {
+  fqn: string;
+  source: string;
+}
+
+/**
+ * Renames the symbol under `offset` in `moduleFqn` to `newName`, applying only
+ * the `selected` occurrences (as {@link references} reports them). Returns the
+ * new full source of every module that changed — the host swaps these into its
+ * buffers. Throws when `newName` is not a valid identifier.
+ */
+export function renameApply(
+  modules: Module[],
+  moduleFqn: string,
+  offset: number,
+  newName: string,
+  selected: RenameSelection[],
+): RenamedSource[] {
+  return callWasm("rename_apply", () =>
+    JSON.parse(wasmRenameApply(JSON.stringify(modules), moduleFqn, offset, newName, JSON.stringify(selected))),
+  );
 }
 
 /**

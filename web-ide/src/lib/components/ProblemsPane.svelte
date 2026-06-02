@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Copy } from "@lucide/svelte";
+
   type Problem = {
     severity: string;
     message: string;
@@ -11,9 +13,17 @@
   type Props = {
     diagnostics?: Problem[];
     onpick?: (diagnostic: Problem) => void;
+    // Impure edge (clipboard write + toast) stays in the parent — see onshare.
+    oncopy?: (text: string, count: number) => void;
   };
 
-  let { diagnostics = [], onpick }: Props = $props();
+  let { diagnostics = [], onpick, oncopy }: Props = $props();
+
+  // One problem as a plain-text line, ready to paste into an LLM.
+  function format(d: Problem): string {
+    const loc = d.file ? `${d.file}:${d.start_line}:${d.start_col}` : `${d.start_line}:${d.start_col}`;
+    return `${d.severity} ${loc} ${d.message}${d.code ? ` [${d.code}]` : ""}`;
+  }
 </script>
 
 <div class="problems">
@@ -22,21 +32,43 @@
       <span class="ok-dot"></span> No problems — the model is well-formed.
     </div>
   {:else}
+    <div class="bar">
+      <span class="count">{diagnostics.length} problem{diagnostics.length === 1 ? "" : "s"}</span>
+      <button
+        type="button"
+        class="copy-all"
+        onclick={() => oncopy?.(diagnostics.map(format).join("\n"), diagnostics.length)}
+        title="Copy all problems to the clipboard"
+      >
+        <Copy size={12} strokeWidth={2} aria-hidden="true" /> Copy all
+      </button>
+    </div>
     <ul>
       {#each diagnostics as d}
         <li class={d.severity}>
-          <button
-            type="button"
-            class="row"
-            onclick={() => onpick?.(d)}
-            aria-label="{d.severity}{d.file ? ` in ${d.file}` : ''} at line {d.start_line} column {d.start_col}: {d.message}"
-          >
-            <span class="badge">{d.severity}</span>
-            {#if d.file}<span class="file">{d.file}</span>{/if}
-            <span class="loc">{d.start_line}:{d.start_col}</span>
-            <span class="msg">{d.message}</span>
-            {#if d.code}<span class="code">{d.code}</span>{/if}
-          </button>
+          <div class="row">
+            <button
+              type="button"
+              class="nav"
+              onclick={() => onpick?.(d)}
+              aria-label="{d.severity}{d.file ? ` in ${d.file}` : ''} at line {d.start_line} column {d.start_col}: {d.message}"
+            >
+              <span class="badge">{d.severity}</span>
+              {#if d.file}<span class="file">{d.file}</span>{/if}
+              <span class="loc">{d.start_line}:{d.start_col}</span>
+              <span class="msg">{d.message}</span>
+              {#if d.code}<span class="code">{d.code}</span>{/if}
+            </button>
+            <button
+              type="button"
+              class="copy-one"
+              onclick={() => oncopy?.(format(d), 1)}
+              title="Copy this problem to the clipboard"
+              aria-label="Copy problem to clipboard"
+            >
+              <Copy size={13} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
         </li>
       {/each}
     </ul>
@@ -65,27 +97,71 @@
     background: var(--ok);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
   }
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.4rem 1.1rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .count {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--ink-soft);
+  }
+  .copy-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.18rem 0.5rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--ink-soft);
+    font: inherit;
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+  .copy-all:hover { color: var(--ink); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   ul { list-style: none; margin: 0; padding: 0; }
   li { border-bottom: 1px solid var(--line); }
   li.error { border-left: 2px solid var(--err); }
   li.warning { border-left: 2px solid var(--warn); }
   li.info { border-left: 2px solid var(--line-strong); }
-  .row {
+  .row { display: flex; align-items: stretch; }
+  .row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  li.error .row:hover { background: color-mix(in srgb, var(--err) 8%, transparent); }
+  .nav {
     display: flex;
     align-items: baseline;
     gap: 0.6rem;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     text-align: left;
     background: transparent;
     border: none;
-    padding: 0.45rem 1.1rem;
+    padding: 0.45rem 0.6rem 0.45rem 1.1rem;
     color: inherit;
     font: inherit;
     font-size: 0.82rem;
     cursor: pointer;
   }
-  .row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
-  li.error .row:hover { background: color-mix(in srgb, var(--err) 8%, transparent); }
+  .copy-one {
+    flex: none;
+    display: flex;
+    align-items: center;
+    padding: 0 0.7rem;
+    background: transparent;
+    border: none;
+    color: var(--ink-faint);
+    cursor: pointer;
+    opacity: 0;
+  }
+  .row:hover .copy-one,
+  .copy-one:focus-visible { opacity: 1; }
+  .copy-one:hover { color: var(--accent); }
   .badge {
     flex: none;
     font-family: var(--font-mono);
