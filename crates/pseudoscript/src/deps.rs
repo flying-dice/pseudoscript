@@ -934,9 +934,13 @@ fn resolve_local(root: &Path, name: &str, path: &str) -> Result<PathBuf> {
 /// A dependency name MUST be a valid FQN root segment (it roots cross-workspace
 /// names, §8.4): non-empty, no `::` or path separators.
 fn validate_dep_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.contains("::") || name.contains(['/', '\\', ' ']) {
+    // The name is an FQN root (LANG.md §8.4) used verbatim as `name::module::Node`,
+    // so it must be a bare identifier. A `-` is the common trap: a repo slug like
+    // `pseudoscript-jetbrains` would default to a name that can never be addressed.
+    if name.is_empty() || name.contains("::") || name.contains(['/', '\\', ' ', '-']) {
         bail!(
-            "invalid dependency name `{name}`: must be a bare identifier (no `::`, `/`, or spaces)"
+            "invalid dependency name `{name}`: an FQN root must be a bare identifier \
+             (no `-`, `::`, `/`, or spaces). Pass `--name <identifier>`."
         );
     }
     Ok(())
@@ -1111,6 +1115,17 @@ path = "../../etc""#,
             normalize_source("https://github.com/acme/banking.git/"),
             "https://github.com/acme/banking"
         );
+    }
+
+    #[test]
+    fn dependency_name_must_be_a_bare_identifier() {
+        assert!(validate_dep_name("pseudoscript").is_ok());
+        assert!(validate_dep_name("std_money").is_ok());
+        // A hyphen makes an invalid FQN root — the repo-slug default trap.
+        assert!(validate_dep_name("pseudoscript-jetbrains").is_err());
+        assert!(validate_dep_name("").is_err());
+        assert!(validate_dep_name("acme::core").is_err());
+        assert!(validate_dep_name("a/b").is_err());
     }
 
     #[test]

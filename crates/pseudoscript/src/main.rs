@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use pseudoscript_emit::{Theme, View, project, project_symbol, render_svg_themed};
 use pseudoscript_format::{FormatError, format};
 use pseudoscript_model::{
@@ -65,6 +65,15 @@ method. New here? `pds init` scaffolds a workspace."
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+/// The output format for `pds doc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DocFormat {
+    /// The interactive Svelte HTML site (default).
+    Html,
+    /// Static Markdown files with the diagrams inlined as self-contained SVG.
+    Md,
 }
 
 /// The `pds` subcommands.
@@ -170,6 +179,11 @@ enum Command {
         /// path. Incompatible with `--serve`/`--watch`.
         #[arg(long, conflicts_with_all = ["serve", "watch"])]
         all: bool,
+        /// Output format: the interactive HTML site (`html`), or static Markdown
+        /// files with the diagrams inlined as SVG (`md`). Markdown is generate-
+        /// only — `--serve`/`--watch` apply to `html`.
+        #[arg(long, value_enum, default_value_t = DocFormat::Html)]
+        format: DocFormat,
     },
     /// Download and install a release over the running binary.
     Upgrade {
@@ -250,11 +264,12 @@ fn main() -> ExitCode {
             watch,
             port,
             all,
+            format,
         } => {
             if all {
-                cmd_doc_all(&path)
+                cmd_doc_all(&path, format)
             } else {
-                cmd_doc(&path, serve, watch, port)
+                cmd_doc(&path, serve, watch, port, format)
             }
         }
         Command::Upgrade { version } => cmd_upgrade(version),
@@ -386,7 +401,7 @@ fn check_one_workspace(root: &Path) -> bool {
 
 /// `pds doc --all`: generate docs for every discovered workspace under `root`.
 /// Exits non-zero if any workspace fails to build.
-fn cmd_doc_all(root: &Path) -> ExitCode {
+fn cmd_doc_all(root: &Path, format: DocFormat) -> ExitCode {
     let roots = match monorepo::discover(root) {
         Ok(roots) if roots.is_empty() => {
             eprintln!("no `pds.toml` workspace found under {}", root.display());
@@ -401,7 +416,7 @@ fn cmd_doc_all(root: &Path) -> ExitCode {
 
     let mut failed = false;
     for ws in &roots {
-        if let Err(err) = build_site(ws, true) {
+        if let Err(err) = build_site(ws, true, format) {
             eprintln!("error: {}: {err:#}", ws.display());
             failed = true;
         }
@@ -789,10 +804,10 @@ fn resolve_view(view: &str, target: &str) -> Result<View> {
 /// Model diagnostics are reported to stderr but, like `cargo doc`, never abort
 /// generation — a model with warnings still documents. Only I/O and load errors
 /// fail the command.
-fn cmd_doc(path: &Path, serve: bool, watch: bool, port: u16) -> ExitCode {
+fn cmd_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) -> ExitCode {
     // Watching only makes sense while serving (regenerate, then live-reload).
     let serve = serve || watch;
-    match run_doc(path, serve, watch, port) {
+    match run_doc(path, serve, watch, port, format) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -803,8 +818,11 @@ fn cmd_doc(path: &Path, serve: bool, watch: bool, port: u16) -> ExitCode {
 
 /// Generates the site once, then optionally serves it — with a workspace
 /// watcher and browser live-reload when `watch` is set.
-fn run_doc(path: &Path, serve: bool, watch: bool, port: u16) -> Result<()> {
-    let out_dir = build_site(path, true)?;
+fn run_doc(path: &Path, serve: bool, watch: bool, port: u16, format: DocFormat) -> Result<()> {
+    if format == DocFormat::Md && (serve || watch) {
+        bail!("`pds doc --format md` writes Markdown files; --serve/--watch are not supported");
+    }
+    let out_dir = build_site(path, true, format)?;
     if !serve {
         return Ok(());
     }
@@ -818,7 +836,7 @@ fn run_doc(path: &Path, serve: bool, watch: bool, port: u16) -> Result<()> {
 /// Loads the workspace, renders the site, and writes it to the output dir,
 /// returning that dir. `announce` prints the file count (quieted on rebuilds,
 /// which print their own line).
-fn build_site(path: &Path, announce: bool) -> Result<PathBuf> {
+fn build_site(path: &Path, announce: bool, format: DocFormat) -> Result<PathBuf> {
     let root = workspace::find_root(path)?;
     let project = workspace::load(&root)?;
 
@@ -827,8 +845,12 @@ fn build_site(path: &Path, announce: bool) -> Result<PathBuf> {
         &project.dependencies,
     ));
 
-    let site = pseudoscript_doc::try_render_site(&graph(&project.modules), &project.config)
-        .context("rendering the documentation site")?;
+    let model = graph(&project.modules);
+    let site = match format {
+        DocFormat::Html => pseudoscript_doc::try_render_site(&model, &project.config)
+            .context("rendering the documentation site")?,
+        DocFormat::Md => pseudoscript_doc::render_markdown_site(&model, &project.config),
+    };
     for file in &site.files {
         let dest = project.out_dir.join(&file.path);
         if let Some(parent) = dest.parent() {
@@ -839,7 +861,10 @@ fn build_site(path: &Path, announce: bool) -> Result<PathBuf> {
             .with_context(|| format!("writing `{}`", dest.display()))?;
     }
 
-    copy_logo(&root, &project);
+    // The Markdown output inlines its SVG; only the HTML site references a logo.
+    if format == DocFormat::Html {
+        copy_logo(&root, &project);
+    }
 
     if announce {
         println!(
@@ -895,7 +920,7 @@ fn watch_loop(path: &Path, out_dir: &Path, version: &AtomicU64) -> Result<()> {
         if !relevant {
             continue;
         }
-        match build_site(path, false) {
+        match build_site(path, false, DocFormat::Html) {
             Ok(_) => {
                 version.fetch_add(1, Ordering::SeqCst);
                 println!("↻ regenerated");

@@ -26,6 +26,7 @@ mod escape;
 mod nav;
 mod props;
 mod render;
+mod render_md;
 mod renderer;
 mod shell;
 mod site;
@@ -107,4 +108,15 @@ pub fn render_site(graph: &Graph, config: &DocConfig) -> Site {
 pub fn try_render_site(graph: &Graph, config: &DocConfig) -> Result<Site, RenderError> {
     let engine = QuickJsEngine::new()?;
     try_render_site_with(graph, config, &engine)
+}
+
+/// Renders the documentation as Markdown files with the diagrams inlined as
+/// self-contained SVG — a static, engine-free alternative to the Svelte site
+/// ([`render_site`]). One `.md` per module plus an `index.md`, mirroring the
+/// HTML site's paths. Needs no SSR engine, so it is available on every target.
+#[must_use]
+pub fn render_markdown_site(graph: &Graph, config: &DocConfig) -> Site {
+    Site {
+        files: render_md::pages_to_markdown(&render::build_pages(graph, config)),
+    }
 }
