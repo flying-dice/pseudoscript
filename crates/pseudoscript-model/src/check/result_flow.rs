@@ -66,7 +66,7 @@ fn check_block(block: &Block, env: &mut Bindings, out: &mut Vec<Diagnostic>) -> 
 
 fn check_stmt(stmt: &Stmt, env: &mut Bindings, out: &mut Vec<Diagnostic>) -> bool {
     match &stmt.kind {
-        StmtKind::Assign { name, value } => {
+        StmtKind::Assign { name, value, .. } => {
             check_expr(value, env, out);
             // A fresh binding starts Unknown; we only learn its branch through a
             // subsequent `if` guard.

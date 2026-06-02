@@ -1,32 +1,24 @@
-<script>
-  import { ArrowRight, Download } from '@lucide/svelte';
+<script lang="ts">
+  import { ArrowRight } from '@lucide/svelte';
 </script>
 
 <section class="hero" data-screen-label="Hero">
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <div class="eyebrow-row reveal">
-        <span class="lbl accent" style="white-space:nowrap">Specification language</span>
-        <span class="lbl" style="white-space:nowrap">for the agentic era</span>
+        <span class="lbl accent" style="white-space:nowrap">Model-driven development</span>
+        <span class="lbl" style="white-space:nowrap">pseudo-programming</span>
       </div>
-      <h1 class="statement reveal d1">The spec is the source of truth. <span class="dim">Everything else is generated.</span></h1>
-      <p class="lede reveal d2">Describe your program in PseudoScript. The Analyzer compiles it into design artefacts, C4 models, and sequence diagrams your agents can read and build against.</p>
+      <h1 class="statement reveal d1">Model the intent. <span class="dim">Implement the detail.</span></h1>
+      <p class="lede reveal d2">PseudoScript powers <a href="https://en.wikipedia.org/wiki/Model-driven_engineering" target="_blank" rel="noreferrer">model-driven development</a> and <a href="https://en.wikipedia.org/wiki/Pseudocode" target="_blank" rel="noreferrer">pseudo-programming</a> for the agentic era. Model your system in plain pseudocode. Your team and your agents read one always-current map, not diagrams that rot.</p>
       <div class="hero-cta reveal d3">
-        <a class="btn btn-primary" href="http://ide.pdscript.dev/">Start with the IDE <span class="btn-arrow ico"><ArrowRight strokeWidth={1.75} /></span></a>
-        <a class="btn btn-ghost" href="#start"><span class="ico"><Download strokeWidth={1.75} /></span> Download the CLI</a>
+        <a class="btn btn-primary btn-lg" href="http://ide.pdscript.dev/">Open the Web IDE <span class="btn-arrow ico"><ArrowRight strokeWidth={1.75} /></span></a>
       </div>
-      <div class="hero-hint reveal d4">
-        <span class="chip"><b>Analyzer</b></span>
-        <span class="chip"><b>Formatter</b></span>
-        <span class="chip"><b>Linter</b></span>
-        <span class="chip"><b>LSP</b></span>
-        <span class="lbl">all WASM · client-side</span>
-      </div>
+      <p class="hero-alt reveal d4">Runs in your browser. Or <a href="#install">install the CLI</a> or the <a href="https://plugins.jetbrains.com/plugin/32021-pseudoscript" target="_blank" rel="noreferrer">JetBrains plugin</a>.</p>
     </div>
 
     <!-- drafting terminal: live code -> diagram -->
-    <div class="terminal ticked reveal d2" id="hero-terminal">
-      <span class="tick tl"></span><span class="tick tr"></span><span class="tick bl"></span><span class="tick br"></span>
+    <div class="terminal reveal d2" id="hero-terminal">
       <div class="terminal-head">
         <div class="dots"><i></i><i></i><i></i></div>
         <span class="fname"><b>context</b>.pds</span>
@@ -40,7 +32,7 @@
             <div class="code" id="hero-code"></div>
           </div>
         </div>
-        <div class="sheet-pane">
+        <div class="sheet-pane" aria-hidden="true">
           <div class="grid-dots"></div>
           <span class="lbl depth-label">System context</span>
           <div class="c4-stage" id="hero-stage">

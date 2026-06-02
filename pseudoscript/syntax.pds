@@ -280,7 +280,7 @@ public container Syntax for context::Pseudoscript;
 public component Lexer for Syntax {
   /// The conformance token stream (LANG.md §2).
   tokenize(text: string): Token[] {
-    lexed = self.lex(text)
+    lexed: Lexed = self.lex(text)
     return lexed.tokens
   }
 
@@ -311,7 +311,7 @@ public component Lexer for Syntax {
   /// The conformance rendering: one `KIND@line:col "lexeme"` line per token,
   /// line/col resolved via `LineIndex`, interior `\` and `"` escaped.
   public renderTokens(text: string): string {
-    tokens = self.tokenize(text)
+    tokens: Token[] = self.tokenize(text)
     Syntax::LineIndex.build(text)
     return self.renderStream(tokens)
   }
@@ -340,8 +340,8 @@ public component LineIndex for Syntax {
 public component Parser for Syntax {
   /// Lex, then build the module; bundle the tree with collected diagnostics.
   public parse(text: string): Parsed {
-    tokens = Syntax::Lexer.tokenize(text)
-    ast = self.parseModule(tokens)
+    tokens: Token[] = Syntax::Lexer.tokenize(text)
+    ast: Module = self.parseModule(tokens)
     return Parsed from { ast, tokens }
   }
 

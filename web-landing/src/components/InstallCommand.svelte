@@ -1,24 +1,27 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import { Apple, MonitorDown, Copy, Check } from '@lucide/svelte';
 
+  type Os = 'unix' | 'windows';
+
   // One-liners pull the install script straight from the latest release's
   // assets; the script then resolves the matching `pds-<target>` archive.
-  const CMDS = {
+  const CMDS: Record<Os, string> = {
     unix: 'curl -fsSL https://github.com/flying-dice/pseudoscript/releases/latest/download/install.sh | bash',
     windows: 'irm https://github.com/flying-dice/pseudoscript/releases/latest/download/install.ps1 | iex',
   };
 
-  let os = $state('unix'); // 'unix' = macOS/Linux, 'windows'
+  let os = $state<Os>('unix'); // 'unix' = macOS/Linux, 'windows'
   let copied = $state(false);
 
   onMount(() => {
     // Default the toggle to the visitor's platform.
-    const p = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    const p = (nav.userAgentData?.platform || nav.platform || '').toLowerCase();
     if (p.includes('win')) os = 'windows';
   });
 
-  async function copy() {
+  async function copy(): Promise<void> {
     try {
       await navigator.clipboard.writeText(CMDS[os]);
       copied = true;
@@ -29,8 +32,7 @@
   }
 </script>
 
-<div class="install ticked reveal">
-  <span class="tick tl"></span><span class="tick br"></span>
+<div class="install reveal">
 
   <div class="install-head">
     <span class="lbl accent">Install the CLI</span>
@@ -67,11 +69,6 @@
   .install {
     margin: 2.6rem auto 0;
     max-width: 760px;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius);
-    background: var(--surface);
-    box-shadow: var(--shadow-md);
-    padding: 1rem 1.1rem 1.1rem;
   }
   .install-head {
     display: flex;
@@ -111,9 +108,10 @@
     align-items: center;
     gap: .8rem;
     padding: .8rem .9rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
-    background: var(--bg);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   .install-cmd code {
     flex: 1;

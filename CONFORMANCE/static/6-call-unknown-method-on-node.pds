@@ -1,0 +1,16 @@
+// LANG.md §6: a `.name(args)` call's member MUST exist on the receiver's type.
+// `Store` resolves to a component node; `nope` is not one of its callables.
+
+//! example
+
+public system S;
+
+public container Db for S;
+
+public component Store for Db {
+  get(): void;
+}
+
+public container C for S {
+  run(): void { Store.nope() }
+}

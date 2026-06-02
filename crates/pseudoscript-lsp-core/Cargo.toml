@@ -1,0 +1,22 @@
+[package]
+name = "pseudoscript-lsp-core"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pseudoscript_lsp_core"
+path = "src/lib.rs"
+
+# The transport-neutral LSP API: `text + position -> lsp_types value`. Depends on
+# the standalone `lsp-types` (pure serde, WASM-safe) — NOT tower-lsp — so both
+# the stdio server (pseudoscript-lsp) and the WASM bridge (pseudoscript-wasm)
+# share one implementation. lsp-types is pinned to the version tower-lsp 0.20
+# re-exports, so the server passes these types through without conversion.
+[dependencies]
+pseudoscript-syntax = { path = "../pseudoscript-syntax" }
+pseudoscript-model = { path = "../pseudoscript-model" }
+pseudoscript-format = { path = "../pseudoscript-format" }
+lsp-types = "=0.94.1"

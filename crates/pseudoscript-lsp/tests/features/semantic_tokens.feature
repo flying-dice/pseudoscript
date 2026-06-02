@@ -40,14 +40,14 @@ Feature: LSP semantic tokens
     And the "self" token has type "keyword"
     And the "alloc" token has type "method"
 
-  Scenario: a macro name is a decorator
+  Scenario: a macro invocation is one decorator span
     Given the inline source:
       """
       #[diagram]
       system S;
       """
     When I compute semantic tokens
-    Then the "diagram" token has type "decorator"
+    Then the "#[diagram]" token has type "decorator"
 
   Scenario: keywords and string literals
     Given the inline source:

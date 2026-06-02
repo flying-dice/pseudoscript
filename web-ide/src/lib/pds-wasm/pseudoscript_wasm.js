@@ -57,6 +57,46 @@ export function check_modules(modules_json) {
 }
 
 /**
+ * Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
+ * as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
+ * `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
+ * caret (`.`/`::`/`#[`/type-position/general); the client filters against the
+ * typed prefix. Served by the shared [`pseudoscript_lsp_core::complete`] —
+ * identical to the stdio server's `textDocument/completion`. `modules_json` is
+ * the `[{fqn, source}]` workspace shape.
+ *
+ * # Errors
+ *
+ * Returns an error when `modules_json` is not valid JSON of the expected shape.
+ * @param {string} modules_json
+ * @param {string} module_fqn
+ * @param {number} offset
+ * @returns {string}
+ */
+export function completion(modules_json, module_fqn, offset) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(modules_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(module_fqn, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.completion(ptr0, len0, ptr1, len1, offset);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` to
  * the FQN of its declaration, for go-to-definition. Returns the FQN as a JSON
  * string, or `null` when the cursor rests on no resolvable symbol. Unlike
@@ -266,6 +306,30 @@ export function emit_svg(source, view, target) {
 }
 
 /**
+ * Foldable regions of `source` as the JSON of an LSP `FoldingRange` array
+ * (`{ startLine, endLine, kind }`, 0-based lines) — every multi-line
+ * declaration and statement block. Identical to the stdio server's
+ * `textDocument/foldingRange` response; the editor folds these instead of
+ * brace-matching in JS.
+ * @param {string} source
+ * @returns {string}
+ */
+export function folding_ranges(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.folding_ranges(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
  * Formats `source` into its canonical form.
  *
  * # Errors
@@ -297,15 +361,13 @@ export function format(source) {
 }
 
 /**
- * Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
- * and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
- * the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
- * diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
- * trace for a callable, a structural view for a node. `modules_json` is the
+ * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` and
+ * returns it as an LSP `Hover` (`{ contents: { kind, value }, range }`,
+ * Markdown), or `null` when the cursor rests on no resolvable symbol. Served by
+ * the shared [`pseudoscript_lsp_core::analysis::hover`] — identical to the
+ * stdio server's `textDocument/hover`, no diagram. The interactive diagram is a
+ * separate concern: [`symbol_scene`] / [`symbol_svg`]. `modules_json` is the
  * `[{fqn, source}]` workspace shape.
- *
- * The host (an editor hover) shows the info and diagram together; it never
- * decides which diagram a symbol gets — the compiler does.
  *
  * # Errors
  *
@@ -488,6 +550,53 @@ export function references(modules_json, module_fqn, offset) {
 }
 
 /**
+ * Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+ * applying only the occurrences in `selected_json` — a JSON array of
+ * `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+ * Returns JSON `[{ fqn, source }]`: the new full source of every module that
+ * changed. The host swaps these into its buffers. The substitution is done here
+ * (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+ * come from the shared [`pseudoscript_lsp_core::refs::rename`].
+ *
+ * # Errors
+ *
+ * Returns an error when `new_name` is not a valid identifier, or when either
+ * JSON argument is malformed.
+ * @param {string} modules_json
+ * @param {string} module_fqn
+ * @param {number} offset
+ * @param {string} new_name
+ * @param {string} selected_json
+ * @returns {string}
+ */
+export function rename_apply(modules_json, module_fqn, offset, new_name, selected_json) {
+    let deferred6_0;
+    let deferred6_1;
+    try {
+        const ptr0 = passStringToWasm0(modules_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(module_fqn, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(new_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(selected_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.rename_apply(ptr0, len0, ptr1, len1, offset, ptr2, len2, ptr3, len3);
+        var ptr5 = ret[0];
+        var len5 = ret[1];
+        if (ret[3]) {
+            ptr5 = 0; len5 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred6_0 = ptr5;
+        deferred6_1 = len5;
+        return getStringFromWasm0(ptr5, len5);
+    } finally {
+        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
+}
+
+/**
  * Renders the whole documentation site for a workspace, exactly as the CLI's
  * `pds doc` does, driving server-side rendering through the host's JavaScript
  * engine rather than an embedded one.
@@ -526,6 +635,30 @@ export function render_doc_site(modules_json, config_json, render) {
         return getStringFromWasm0(ptr3, len3);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * AST-aware semantic tokens for `source`, as the JSON of an LSP
+ * `SemanticTokens` (the delta-encoded `data` array over UTF-16 positions; the
+ * `token_type` field indexes the [`pseudoscript_lsp_core::semantic`] legend).
+ * Identical to the stdio server's `textDocument/semanticTokens/full` response —
+ * the editor decodes and decorates it, replacing any hand-written tokenizer.
+ * @param {string} source
+ * @returns {string}
+ */
+export function semantic_tokens(source) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.semantic_tokens(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

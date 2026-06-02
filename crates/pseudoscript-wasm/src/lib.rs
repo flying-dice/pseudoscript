@@ -23,10 +23,15 @@
 //! Each `#[wasm_bindgen]` function is a thin wrapper over a `*_impl` that
 //! returns `Result<_, String>`; the wrapper maps the error to a `JsError`. The
 //! `*_impl`s carry the logic and are unit-tested on the host (a `JsError`
-//! cannot be constructed off-wasm). Diagnostics are the foundation an
-//! LSP-over-wasm server is built on; hover/completion/definition slot in here
-//! and reuse [`pseudoscript_model`] without the native `tower-lsp`/`tokio`
-//! transport.
+//! cannot be constructed off-wasm).
+//!
+//! The language-intelligence functions — [`hover`], [`completion`],
+//! [`semantic_tokens`], [`folding_ranges`] — are an **LSP-over-wasm** bridge:
+//! they call [`pseudoscript_lsp_core`] (the same handlers the stdio server uses)
+//! and serialise its `lsp_types` results to JSON, so the WASM API is byte-for-
+//! byte the LSP API minus the `tower-lsp`/`tokio` transport. The diagram and doc
+//! exports ([`emit_scene`], [`symbol_scene`], …) have no LSP equivalent and are
+//! WASM-only.
 
 use std::collections::HashMap;
 
@@ -39,9 +44,12 @@ use pseudoscript_emit::{
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
-    Graph, NodeKind, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
+    Graph, Workspace, WorkspaceModule, check as check_source, check_workspace_modules,
     graph as build_graph, resolve::resolve_at,
 };
+// The shared LSP API: completion, hover, semantic tokens, and folding are served
+// here exactly as the stdio server serves them — same `lsp_types` results.
+use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic, symbols};
 use pseudoscript_syntax::{
     Diagnostic, LineIndex, Severity, TokenKind, parse as parse_source, tokenize,
 };
@@ -136,6 +144,28 @@ pub fn emit_svg(source: &str, view: &str, target: &str) -> Result<String, JsErro
         .map_err(|e| JsError::new(&e))
 }
 
+/// AST-aware semantic tokens for `source`, as the JSON of an LSP
+/// `SemanticTokens` (the delta-encoded `data` array over UTF-16 positions; the
+/// `token_type` field indexes the [`pseudoscript_lsp_core::semantic`] legend).
+/// Identical to the stdio server's `textDocument/semanticTokens/full` response —
+/// the editor decodes and decorates it, replacing any hand-written tokenizer.
+#[wasm_bindgen]
+#[must_use]
+pub fn semantic_tokens(source: &str) -> String {
+    to_json(&semantic::semantic_tokens(source))
+}
+
+/// Foldable regions of `source` as the JSON of an LSP `FoldingRange` array
+/// (`{ startLine, endLine, kind }`, 0-based lines) — every multi-line
+/// declaration and statement block. Identical to the stdio server's
+/// `textDocument/foldingRange` response; the editor folds these instead of
+/// brace-matching in JS.
+#[wasm_bindgen]
+#[must_use]
+pub fn folding_ranges(source: &str) -> String {
+    to_json(&symbols::folding_ranges(source))
+}
+
 /// Lists the nodes declared in `source` as a JSON array of
 /// `{ fqn, name, kind, triggered }`. A host uses this to populate a diagram's
 /// target picker: `container` views target a `system`, `component` views a
@@ -186,15 +216,13 @@ pub fn emit_scene_modules(modules_json: &str, view: &str, target: &str) -> Resul
     emit_scene_modules_impl(modules_json, view, target).map_err(|e| JsError::new(&e))
 }
 
-/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
-/// and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
-/// the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
-/// diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
-/// trace for a callable, a structural view for a node. `modules_json` is the
+/// Resolves the symbol under `offset` (a byte offset) in module `module_fqn` and
+/// returns it as an LSP `Hover` (`{ contents: { kind, value }, range }`,
+/// Markdown), or `null` when the cursor rests on no resolvable symbol. Served by
+/// the shared [`pseudoscript_lsp_core::analysis::hover`] — identical to the
+/// stdio server's `textDocument/hover`, no diagram. The interactive diagram is a
+/// separate concern: [`symbol_scene`] / [`symbol_svg`]. `modules_json` is the
 /// `[{fqn, source}]` workspace shape.
-///
-/// The host (an editor hover) shows the info and diagram together; it never
-/// decides which diagram a symbol gets — the compiler does.
 ///
 /// # Errors
 ///
@@ -231,6 +259,46 @@ pub fn definition(modules_json: &str, module_fqn: &str, offset: u32) -> Result<S
 #[wasm_bindgen]
 pub fn references(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
     references_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
+}
+
+/// Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+/// applying only the occurrences in `selected_json` — a JSON array of
+/// `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+/// Returns JSON `[{ fqn, source }]`: the new full source of every module that
+/// changed. The host swaps these into its buffers. The substitution is done here
+/// (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+/// come from the shared [`pseudoscript_lsp_core::refs::rename`].
+///
+/// # Errors
+///
+/// Returns an error when `new_name` is not a valid identifier, or when either
+/// JSON argument is malformed.
+#[wasm_bindgen]
+pub fn rename_apply(
+    modules_json: &str,
+    module_fqn: &str,
+    offset: u32,
+    new_name: &str,
+    selected_json: &str,
+) -> Result<String, JsError> {
+    rename_apply_impl(modules_json, module_fqn, offset, new_name, selected_json)
+        .map_err(|e| JsError::new(&e))
+}
+
+/// Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
+/// as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
+/// `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
+/// caret (`.`/`::`/`#[`/type-position/general); the client filters against the
+/// typed prefix. Served by the shared [`pseudoscript_lsp_core::complete`] —
+/// identical to the stdio server's `textDocument/completion`. `modules_json` is
+/// the `[{fqn, source}]` workspace shape.
+///
+/// # Errors
+///
+/// Returns an error when `modules_json` is not valid JSON of the expected shape.
+#[wasm_bindgen]
+pub fn completion(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, JsError> {
+    completion_impl(modules_json, module_fqn, offset).map_err(|e| JsError::new(&e))
 }
 
 /// Projects the fitting diagram for the symbol `fqn` over the whole workspace
@@ -400,7 +468,7 @@ fn outline_nodes(
     graph: &Graph,
     mut line_col: impl FnMut(&str, u32) -> (u32, u32),
 ) -> Vec<OutlineNode> {
-    graph
+    let mut entries: Vec<OutlineNode> = graph
         .nodes()
         .iter()
         .map(|n| {
@@ -408,14 +476,30 @@ fn outline_nodes(
             OutlineNode {
                 fqn: n.fqn.clone(),
                 name: n.name.clone(),
-                kind: n.kind,
+                kind: n.kind.keyword().to_owned(),
                 triggered: !n.triggers.is_empty(),
                 line,
                 col,
                 parent: n.parent.clone(),
             }
         })
-        .collect()
+        .collect();
+    // Features are not graph nodes (§5.2); project each scenario as a `feature`
+    // entry nested under its target node, so the outline lists it as a selectable
+    // symbol — the host falls back to a single-lifeline scene on selection.
+    entries.extend(graph.scenarios().iter().map(|s| {
+        let (line, col) = line_col(&s.module, s.span.start);
+        OutlineNode {
+            fqn: format!("{}::{}", s.module, s.name),
+            name: s.name.clone(),
+            kind: "feature".to_owned(),
+            triggered: false,
+            line,
+            col,
+            parent: Some(s.target_fqn.clone()),
+        }
+    }));
+    entries
 }
 
 /// Parses the `[{fqn, source}]` workspace JSON into modules.
@@ -461,22 +545,11 @@ fn hover_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<Strin
             .iter()
             .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
     );
-    let Some(hit) = resolve_at(&workspace, module_fqn, src, offset) else {
-        return Ok("null".to_owned()); // cursor on no resolvable symbol
-    };
-    // A symbol may have no diagram (a `data` shape, an unresolved owner); the
-    // hover still shows its info, with an empty `svg`.
-    let svg = project_symbol(&Graph::build(&workspace), &hit.target_fqn)
-        .map(|scene| render_svg(&scene))
-        .unwrap_or_default();
-    Ok(to_json(&HoverResult {
-        info: SymbolInfo {
-            fqn: hit.target_fqn,
-            title: hit.title,
-            body: hit.body,
-        },
-        svg,
-    }))
+    let index = LineIndex::new(src);
+    let position = convert::offset_to_position(src, &index, offset);
+    Ok(to_json(&analysis::hover(
+        &workspace, module_fqn, src, position,
+    )))
 }
 
 fn definition_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
@@ -568,6 +641,97 @@ fn references_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<
         title: target.title,
         occurrences,
     }))
+}
+
+/// Whether `name` is a legal `PseudoScript` identifier (`[A-Za-z_]\w*`).
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn rename_apply_impl(
+    modules_json: &str,
+    module_fqn: &str,
+    offset: u32,
+    new_name: &str,
+    selected_json: &str,
+) -> Result<String, String> {
+    if !is_identifier(new_name) {
+        return Err(format!("`{new_name}` is not a valid identifier"));
+    }
+    let modules = modules_from_json(modules_json)?;
+    let selected: Vec<SelectedOccurrence> =
+        serde_json::from_str(selected_json).map_err(|e| e.to_string())?;
+    let chosen: std::collections::HashSet<(String, u32, u32)> = selected
+        .into_iter()
+        .map(|s| (s.fqn, s.line, s.col))
+        .collect();
+
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    let pairs: Vec<(String, String)> = modules
+        .iter()
+        .map(|m| (m.fqn.clone(), m.source.clone()))
+        .collect();
+
+    let mut out: Vec<FileSource> = Vec::new();
+    for file in refs::rename(&workspace, &pairs, module_fqn, src, offset) {
+        let Some(module) = modules.iter().find(|m| m.fqn == file.fqn) else {
+            continue;
+        };
+        let index = LineIndex::new(&module.source);
+        // Keep the selected occurrences, then apply them right-to-left so each
+        // splice leaves the earlier byte offsets valid.
+        let mut spans: Vec<_> = file
+            .spans
+            .into_iter()
+            .filter(|span| {
+                let (line, col) = index.line_col(span.start);
+                chosen.contains(&(file.fqn.clone(), line, col))
+            })
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        spans.sort_by_key(|span| std::cmp::Reverse(span.start));
+        let mut source = module.source.clone();
+        for span in spans {
+            source.replace_range(span.start as usize..span.end as usize, new_name);
+        }
+        out.push(FileSource {
+            fqn: file.fqn,
+            source,
+        });
+    }
+    Ok(to_json(&out))
+}
+
+fn completion_impl(modules_json: &str, module_fqn: &str, offset: u32) -> Result<String, String> {
+    let modules = modules_from_json(modules_json)?;
+    let src = modules
+        .iter()
+        .find(|m| m.fqn == module_fqn)
+        .map_or("", |m| m.source.as_str());
+    let workspace = Workspace::build(
+        modules
+            .iter()
+            .map(|m| (m.fqn.clone(), parse_source(&m.source).ast)),
+    );
+    let index = LineIndex::new(src);
+    let position = convert::offset_to_position(src, &index, offset);
+    Ok(to_json(&complete::completion(
+        &workspace, module_fqn, src, position,
+    )))
 }
 
 fn symbol_scene_impl(modules_json: &str, fqn: &str) -> Result<String, String> {
@@ -719,23 +883,6 @@ struct ModuleResult {
     diagnostics: Vec<WasmDiagnostic>,
 }
 
-/// The symbol a [`hover`] resolves to, with its diagram. `info` describes the
-/// symbol (its graph `fqn`, a Markdown title, an optional doc/signature body);
-/// `svg` is its fitting diagram rendered to a self-contained string.
-#[derive(Serialize)]
-struct HoverResult {
-    info: SymbolInfo,
-    svg: String,
-}
-
-/// A resolved symbol's identity and description, for an editor hover.
-#[derive(Serialize)]
-struct SymbolInfo {
-    fqn: String,
-    title: String,
-    body: Option<String>,
-}
-
 /// One declared node, for the [`outline`] target picker. `kind` serialises
 /// lowercase (`person`/`system`/`container`/`component`/`data`/`callable`);
 /// `triggered` marks a callable that carries a trigger macro (a sequence entry).
@@ -747,7 +894,9 @@ struct SymbolInfo {
 struct OutlineNode {
     fqn: String,
     name: String,
-    kind: NodeKind,
+    /// A node's C4 keyword (`person`/`system`/…/`callable`) or `feature` for a
+    /// `feature` block — a string, since a feature is not a node kind.
+    kind: String,
     triggered: bool,
     line: u32,
     col: u32,
@@ -778,6 +927,22 @@ struct RefOccurrence {
     match_start: u32,
     match_end: u32,
     decl: bool,
+}
+
+/// One occurrence the host chose to rename, keyed by its module `fqn` and the
+/// 1-based `line`/`col` [`references`] reported. Input to [`rename_apply`].
+#[derive(Deserialize)]
+struct SelectedOccurrence {
+    fqn: String,
+    line: u32,
+    col: u32,
+}
+
+/// One module's rewritten source after a rename — output of [`rename_apply`].
+#[derive(Serialize)]
+struct FileSource {
+    fqn: String,
+    source: String,
 }
 
 /// A diagnostic enriched with 1-based line/column for both span ends, in
@@ -836,9 +1001,9 @@ fn to_json<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        check, check_modules_impl, doc_config, doc_manifest_impl, emit_scene_modules_impl,
-        format_impl, hover_impl, outline, parse, project_view, references_impl, symbol_scene_impl,
-        symbol_svg_impl, to_json,
+        check, check_modules_impl, completion_impl, definition_impl, doc_config, doc_manifest_impl,
+        emit_scene_modules_impl, format_impl, hover_impl, layout_scene_impl, outline, parse,
+        project_view, references_impl, symbol_scene_impl, symbol_svg_impl, to_json,
     };
 
     #[test]
@@ -962,6 +1127,18 @@ mod tests {
     }
 
     #[test]
+    fn outline_lists_features_under_their_target() {
+        // A `feature` is not a graph node, but the outline lists it as a selectable
+        // `feature` symbol nested under its target node (`fqn` = `module::name`).
+        let json = outline(
+            "//! m\npublic system S;\nfeature F for S {\n  given \"a\"\n  when \"b\"\n  then \"c\"\n}",
+        );
+        assert!(json.contains(r#""kind":"feature""#), "{json}");
+        assert!(json.contains(r#""fqn":"m::F""#), "{json}");
+        assert!(json.contains(r#""parent":"m::S""#), "{json}");
+    }
+
+    #[test]
     fn emit_scene_modules_spans_modules() {
         // A container in one module, its components (with a call between them) in
         // another — the workspace component view shows both and their edge.
@@ -975,23 +1152,24 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_a_node_reference_returns_info_and_a_diagram() {
-        // Cursor on `Web` in `sys::Web.View()` — resolves to the container.
+    fn hover_on_a_node_reference_returns_lsp_hover() {
+        // Cursor on `Web` in `sys::Web.View()` — resolves to the container. The
+        // result is an `lsp_types::Hover` (markup), no diagram SVG.
         let offset = (CTX_SRC.find("Web").expect("Web present") + 1) as u32;
         let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
-        assert!(json.contains(r#""fqn":"sys::Web""#), "{json}");
         assert!(json.contains("container `sys::Web`"), "{json}");
-        // A container resolves to its (structural) component view as an SVG.
-        assert!(json.contains("<svg"), "{json}");
+        assert!(json.contains(r#""contents""#), "{json}");
+        assert!(
+            !json.contains("<svg"),
+            "hover must not carry a diagram: {json}"
+        );
     }
 
     #[test]
-    fn hover_on_a_member_call_traces_a_sequence() {
-        // Cursor on `View` in `sys::Web.View()` — resolves to the callable; a
-        // bodied callable's fitting diagram is a sequence trace.
+    fn hover_on_a_member_call_describes_the_callable() {
+        // Cursor on `View` in `sys::Web.View()` — resolves to the callable.
         let offset = (CTX_SRC.find("View").expect("View present") + 1) as u32;
         let json = hover_impl(&workspace_json(), "ctx", offset).expect("hovers");
-        assert!(json.contains(r#""fqn":"sys::Web::View""#), "{json}");
         assert!(json.contains("callable `Web.View`"), "{json}");
     }
 
@@ -999,6 +1177,23 @@ mod tests {
     fn hover_on_blank_space_is_null() {
         let json = hover_impl(&workspace_json(), "ctx", 0).expect("hovers");
         assert_eq!(json, "null");
+    }
+
+    #[test]
+    fn completion_after_module_path_is_scoped() {
+        // Caret right after `sys::` (before `Web`) — offers only module sys's
+        // public symbols (lsp_types::CompletionItem), no general keyword leak.
+        let offset = (CTX_SRC.find("sys::").expect("sys:: present") + "sys::".len()) as u32;
+        let json = completion_impl(&workspace_json(), "ctx", offset).expect("completes");
+        assert!(json.contains(r#""label":"Web""#), "{json}");
+        assert!(json.contains(r#""label":"Shop""#), "{json}");
+        // MODULE kind (9) in the LSP CompletionItemKind enum
+        assert!(json.contains(r#""kind":9"#), "{json}");
+        // general scope must not leak into a `::` context
+        assert!(
+            !json.contains(r#""label":"person""#),
+            "general scope leaked: {json}"
+        );
     }
 
     #[test]
@@ -1026,6 +1221,71 @@ mod tests {
         let svg = symbol_svg_impl(&workspace_json(), "sys::Shop").expect("renders");
         assert!(svg.contains("<svg"), "{svg}");
         assert!(svg.contains("Web"), "{svg}");
+    }
+
+    #[test]
+    fn definition_resolves_a_data_field_to_its_owner_qualified_fqn() {
+        // A field resolves to `Owner::field` — not a graph node. The IDE relies on
+        // this shape to fall back to the owning node (open the data type) rather
+        // than no-op a field go-to-definition (PDS-GOTO-002).
+        let src = "//! m\npublic data Conv { id: uuid }\n";
+        let input = format!(r#"[{{"fqn":"m","source":{}}}]"#, to_json(&src));
+        let offset = (src.find("id:").expect("`id` field present")) as u32;
+        let fqn = definition_impl(&input, "m", offset).expect("resolves");
+        assert_eq!(fqn, r#""m::Conv::id""#, "{fqn}");
+    }
+
+    #[test]
+    fn definition_qualifies_by_the_workspace_module_fqn_not_the_header() {
+        // `definition` qualifies a target by the module's *path* FQN (the
+        // `module_fqn` the IDE passes), not the `//!` header — even when they
+        // differ. The IDE keys its node index the same way (via `outline_modules`),
+        // so go-to-definition lands. (Regression: keying the index by single-file
+        // `outline`, which uses the header, made GOTO miss — PDS-GOTO-003.)
+        let src = "//! header-name\npublic data Thing { id: uuid }\npublic system S;\npublic container C for S {\n  run(t: Thing): void {}\n}";
+        let input = format!(r#"[{{"fqn":"realmod","source":{}}}]"#, to_json(&src));
+        let offset = (src.find("t: Thing").expect("param present") + "t: ".len()) as u32;
+        let fqn = definition_impl(&input, "realmod", offset).expect("resolves");
+        assert_eq!(fqn, r#""realmod::Thing""#, "{fqn}");
+    }
+
+    #[test]
+    fn symbol_scene_errors_on_a_non_node_symbol() {
+        // The outline lists `feature` blocks as selectable symbols, but a feature
+        // is not a graph node — projecting one errors rather than panics. The IDE
+        // catches this and falls back to a single-lifeline scene, so the contract
+        // is: a clean `Err`, never a panic. (Regression: selecting a feature.)
+        let input = r#"[
+            {"fqn":"m","source":"//! m\npublic system S;\nfeature F for S {\n  given \"a\"\n  when \"b\"\n  then \"c\"\n}"}
+        ]"#;
+        let err = symbol_scene_impl(input, "m::F").expect_err("a feature is not projectable");
+        assert!(err.contains("m::F"), "{err}");
+    }
+
+    #[test]
+    fn layout_scene_accepts_the_single_lifeline_fallback_shape() {
+        // The exact JSON the IDE builds when a selected symbol has nothing to draw
+        // (`singleLifelineScene`): one lifeline, no items. `layout_scene` must
+        // accept it. (Regression: a fallback scene that omitted the `view` tag /
+        // `entry` / used `messages`+`fragments` failed deserialization with
+        // "missing field `view`".)
+        let fallback = r#"{
+            "view":"sequence",
+            "entry":"m::F",
+            "participants":[{"fqn":"m::F","kind":"callable"}],
+            "items":[]
+        }"#;
+        let out = layout_scene_impl(fallback).expect("fallback scene lays out");
+        assert!(out.contains("m::F"), "{out}");
+    }
+
+    #[test]
+    fn layout_scene_rejects_a_scene_missing_the_view_tag() {
+        // A scene object without the `view` discriminant cannot deserialize into
+        // the tagged `Scene` enum — the failure mode the broken fallback hit.
+        let untagged = r#"{"participants":[{"fqn":"m::F","kind":"callable"}],"items":[]}"#;
+        let err = layout_scene_impl(untagged).expect_err("no `view` tag");
+        assert!(err.contains("view"), "{err}");
     }
 
     #[test]

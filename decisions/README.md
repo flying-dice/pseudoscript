@@ -157,3 +157,9 @@ Read in full for the SSR seam, the embedded-bundle stance, and the rejected two-
 A `[dependencies]` entry with `path` and no `git` is a local sibling workspace, resolved relative to `pds.toml`. `path` is overloaded — repo subdir under a git source, local dir without. A local dependency is read live, not version-pinned, and has no `pds.lock` entry; it MUST NOT be a git dependency's resolved source. Extends ADR-024.
 
 Read in full for the source-selection rule, the no-lock rationale, and the rejected distinct-key / lock-local alternatives.
+
+## [027 — Bindings state their type](027-explicit-binding-types.md)
+
+A binding is `x: Type = Expr`; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable (literal, `from`, marker, bare reference) it MUST match the annotation; a call/field/`self`/`::` path is not inferred, so the annotation stands. The rule is uniform — a composition repeats its type in the annotation. The binding's type now reads from the source, not an inlay. Amends ADR-002 and ADR-022.
+
+Read in full for the uniform-annotation choice and the rejected self-typed-exemption / inlay-hint alternatives.

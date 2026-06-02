@@ -932,12 +932,33 @@ impl Parser {
             TokenKind::KwIf => self.parse_if(),
             TokenKind::KwFor => self.parse_for(),
             TokenKind::KwWhile => self.parse_while(),
-            // `Ident =` is an assignment; otherwise an expression statement.
+            // `name: Type = Expr` is the sole assignment form (§7.1): a binding
+            // states its type. `name = Expr` (no annotation) is still parsed —
+            // tolerantly, with a placeholder type — so the error is one precise
+            // diagnostic rather than a confusing expression-parse failure.
+            TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Colon) => {
+                let name = self.expect_ident("binding name");
+                self.bump(); // `:`
+                let ty = self.parse_type();
+                if self.eat(TokenKind::Eq).is_none() {
+                    self.error(self.cur_span(), "expected `=` after the binding type");
+                }
+                let value = self.parse_expr();
+                StmtKind::Assign { name, ty, value }
+            }
             TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Eq) => {
                 let name = self.expect_ident("binding name");
+                self.error(
+                    name.span,
+                    "assignment requires a type annotation: write `name: Type = …`",
+                );
                 self.bump(); // `=`
                 let value = self.parse_expr();
-                StmtKind::Assign { name, value }
+                StmtKind::Assign {
+                    ty: Type::placeholder(name.span),
+                    name,
+                    value,
+                }
             }
             _ => StmtKind::Expr(self.parse_expr()),
         };
@@ -1151,9 +1172,41 @@ impl Parser {
         let mut sources = Vec::new();
         while !self.is_eof() && !self.at(TokenKind::RBrace) {
             sources.push(self.parse_expr());
-            if self.eat(TokenKind::Comma).is_none() {
-                break;
+            if self.eat(TokenKind::Comma).is_some() {
+                continue;
             }
+            if !self.at(TokenKind::RBrace) {
+                // A source set separates entries with `,` and closes with `}`
+                // (§7.2). A `key: value` colon is the common mistake: `from`
+                // takes bare references, not labelled fields (ADR-003), so the
+                // value is bound to a name and the name listed. Point at the fix
+                // and drop the mis-parsed label so it isn't later reported as an
+                // unresolved reference. Either way, skip to the closing `}` to
+                // keep the error local instead of derailing the body.
+                if self.at(TokenKind::Colon) {
+                    sources.pop();
+                    self.error(
+                        self.cur_span(),
+                        "`from` takes bare references, not `field: value` — \
+                         bind the value to a name and list the name (§7.2)",
+                    );
+                } else {
+                    self.error(self.cur_span(), "expected `,` or `}` in `from` source set");
+                }
+                // Skip to this source set's own `}`, counting nested braces so a
+                // labelled *inner* `from { … }` doesn't swallow the outer close.
+                let mut depth: u32 = 0;
+                while !self.is_eof() {
+                    match self.peek_kind() {
+                        Some(TokenKind::LBrace) => depth += 1,
+                        Some(TokenKind::RBrace) if depth == 0 => break,
+                        Some(TokenKind::RBrace) => depth -= 1,
+                        _ => {}
+                    }
+                    self.bump();
+                }
+            }
+            break;
         }
         let end = self
             .eat(TokenKind::RBrace)
@@ -1411,5 +1464,58 @@ mod tests {
     fn stray_token_in_body_terminates() {
         let parsed = parse("public system S { = }");
         assert!(parsed.diagnostics.iter().any(Diagnostic::is_error));
+    }
+
+    /// Regression: a labelled `from` source set (`{ name: "x" }` — invalid, since
+    /// `from` takes bare references, ADR-003) reports one fix-oriented error and
+    /// recovers at its `}`. Before the fix, the stray `:` derailed the body into a
+    /// cascade of spurious "unexpected token at top level" errors, and the
+    /// callable after it was lost. The mis-parsed label is dropped, so it is not
+    /// also flagged as an unresolved reference.
+    #[test]
+    fn labelled_from_source_does_not_cascade() {
+        let parsed = parse(
+            "public system S { f(): T { return T from { name: \"x\" } } g(): T { return Ok } }",
+        );
+        let errors: Vec<&str> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("`from` takes bare references")),
+            "the source set error names the fix: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|m| m.contains("top level")),
+            "no top-level cascade: {errors:?}"
+        );
+        // The label `name` is dropped, not re-reported as a parse error.
+        assert_eq!(errors.len(), 1, "exactly one error: {errors:?}");
+        // Both callables survive recovery — the container parses as one item.
+        assert_eq!(parsed.ast.items.len(), 1);
+    }
+
+    /// A labelled *inner* `from` must not let recovery swallow the outer `}`:
+    /// brace-aware skipping stops at the source set's own close, so the trailing
+    /// statements still parse.
+    #[test]
+    fn labelled_nested_from_recovers_to_matching_brace() {
+        let parsed =
+            parse("public system S { f(a: T): T { x = T from { m: a from { n } } return Ok } }");
+        let errors: Vec<&str> = parsed
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            !errors.iter().any(|m| m.contains("top level")),
+            "no top-level cascade from a nested labelled from: {errors:?}"
+        );
+        assert_eq!(parsed.ast.items.len(), 1);
     }
 }

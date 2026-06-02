@@ -24,5 +24,5 @@ Feature: Syntax conformance (LANG.md §3–§10)
     Then parsing produces no error diagnostic
 
   Scenario: A from-composition with one source parses
-    Given the source "public system S { f(): void { x = T from { a } } }"
+    Given the source "public system S { f(): void { x: T = T from { a } } }"
     Then parsing produces no error diagnostic

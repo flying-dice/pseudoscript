@@ -30,10 +30,16 @@
 //! ```
 
 mod check;
+pub mod complete;
+pub mod fold;
 mod graph;
+pub mod infer;
 mod model;
 pub mod resolve;
+pub mod semantic;
 
+pub use complete::{CompletionItem, CompletionKind, completion};
+pub use fold::{FoldRange, folding_ranges};
 pub use graph::{
     Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
     Visibility,
@@ -43,6 +49,7 @@ pub use model::{
 };
 pub use pseudoscript_syntax::ast;
 pub use pseudoscript_syntax::{Diagnostic, Severity};
+pub use semantic::{SemKind, SemToken, semantic_tokens};
 
 use pseudoscript_syntax::ast::Module;
 

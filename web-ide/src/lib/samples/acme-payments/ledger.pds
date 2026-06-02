@@ -55,14 +55,14 @@ public component Balance for Ledger {
   /// time alone.
   #[onevent(intents::PaymentSucceeded)]
   public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
-    entry = self.creditFor(event)
+    entry: BalanceTransaction = self.creditFor(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
   /// A successful refund debits available, immediately.
   #[onevent(refunds::RefundSucceeded)]
   public onRefund(event: refunds::RefundSucceeded): void {
-    entry = self.refundDebit(event)
+    entry: BalanceTransaction = self.refundDebit(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
@@ -70,14 +70,14 @@ public component Balance for Ledger {
   /// available, held until the dispute resolves.
   #[onevent(disputes::DisputeOpened)]
   public onDisputeOpened(event: disputes::DisputeOpened): void {
-    entry = self.disputeDebit(event)
+    entry: BalanceTransaction = self.disputeDebit(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
   /// A won dispute reverses the hold, returning the disputed amount to available.
   #[onevent(disputes::DisputeWon)]
   public onDisputeWon(event: disputes::DisputeWon): void {
-    entry = self.disputeReversal(event)
+    entry: BalanceTransaction = self.disputeReversal(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
@@ -92,7 +92,7 @@ public component Balance for Ledger {
   /// so two concurrent payouts cannot both draw the same funds, and the balance
   /// can never go negative from a payout.
   public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<BalanceTransaction, LedgerError> {
-    debit = self.payoutDebit(merchant, payout, amount)
+    debit: BalanceTransaction = self.payoutDebit(merchant, payout, amount)
     return Ledger::EntryLog.appendIfAvailable(merchant, debit, amount)
   }
 

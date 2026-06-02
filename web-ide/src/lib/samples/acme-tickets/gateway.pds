@@ -23,7 +23,7 @@ public component EventApi for Gateway {
   /// Find one event's storefront listing by id.
   #[http("GET /events/{eventId}")]
   public getEvent(eventId: shared::EventId): Result<catalog::EventListing, AccessError> {
-    found = catalog::Listings.listing(eventId)
+    found: Option<EventListing> = catalog::Listings.listing(eventId)
     if (found.isNone) {
       return Err(NotFound)
     }
@@ -42,11 +42,11 @@ public component QueueApi for Gateway {
   /// Join the queue for an event.
   #[http("POST /events/{eventId}/queue")]
   public join(eventId: shared::EventId, token: identity::SessionToken): Result<waitingroom::QueueTicket, QueueDenied> {
-    user = identity::Sessions.authenticate(token)
+    user: Result<User, AuthError> = identity::Sessions.authenticate(token)
     if (user.isErr) {
       return Err(NotAuthenticated)
     }
-    joined = waitingroom::Queue.join(eventId, user.value.id)
+    joined: Result<QueueTicket, WaitingError> = waitingroom::Queue.join(eventId, user.value.id)
     if (joined.isErr) {
       return Err(Closed)
     }
@@ -84,11 +84,11 @@ public component AccountApi for Gateway {
   /// order — ownership is checked, not assumed from the id.
   #[http("GET /orders/{orderId}")]
   public getOrder(token: identity::SessionToken, orderId: shared::OrderId): Result<orders::Order, AccessError> {
-    user = identity::Sessions.authenticate(token)
+    user: Result<User, AuthError> = identity::Sessions.authenticate(token)
     if (user.isErr) {
       return Err(NotAuthenticated)
     }
-    found = orders::OrderService.getFor(user.value.id, orderId)
+    found: Result<Order, CheckoutError> = orders::OrderService.getFor(user.value.id, orderId)
     if (found.isErr) {
       return Err(NotFound)
     }
@@ -99,7 +99,7 @@ public component AccountApi for Gateway {
   /// from a caller-supplied id.
   #[http("GET /tickets")]
   public tickets(token: identity::SessionToken): Result<tickets::Ticket[], identity::AuthError> {
-    user = identity::Sessions.authenticate(token)
+    user: Result<User, AuthError> = identity::Sessions.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }

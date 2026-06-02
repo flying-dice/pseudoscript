@@ -35,12 +35,12 @@ public container Identity for context::AcmeTickets;
 public component Users for Identity {
   /// Register a new attendee account; the email must not already be in use.
   public register(form: Registration): Result<User, SignupError> {
-    existing = Identity::UserStore.find(form.email)
+    existing: Option<User> = Identity::UserStore.find(form.email)
     if (existing.isSome) {
       return Err(EmailTaken from { form.email })
     }
-    id = Identity::UserStore.nextId()
-    user = User from { id, form, Attendee }
+    id: shared::UserId = Identity::UserStore.nextId()
+    user: User = User from { id, form, Attendee }
     Identity::UserStore.save(user)
     return Ok(user)
   }
@@ -50,11 +50,11 @@ public component Users for Identity {
 public component Sessions for Identity {
   /// Sign in with credentials, issuing a session token.
   public login(creds: Credentials): Result<SessionToken, AuthError> {
-    user = Identity::UserStore.find(creds.email)
+    user: Option<User> = Identity::UserStore.find(creds.email)
     if (user.isNone) {
       return Err(BadCredentials)
     }
-    ok = self.verify(creds, user.value)
+    ok: Result<void, AuthError> = self.verify(creds, user.value)
     if (ok.isErr) {
       return Err(BadCredentials)
     }
@@ -68,7 +68,7 @@ public component Sessions for Identity {
 
   /// Resolve a session token to its user, or `Err(NoSession)`.
   public authenticate(token: SessionToken): Result<User, AuthError> {
-    user = Identity::SessionStore.resolve(token)
+    user: Option<User> = Identity::SessionStore.resolve(token)
     if (user.isNone) {
       return Err(NoSession)
     }
@@ -77,11 +77,11 @@ public component Sessions for Identity {
 
   /// Authenticate, then require the `Organizer` role.
   public requireOrganizer(token: SessionToken): Result<User, AuthError> {
-    user = self.authenticate(token)
+    user: Result<User, AuthError> = self.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }
-    allowed = self.ensureOrganizer(user.value)
+    allowed: Result<void, AuthError> = self.ensureOrganizer(user.value)
     if (allowed.isErr) {
       return Err(allowed.error)
     }
@@ -90,11 +90,11 @@ public component Sessions for Identity {
 
   /// Authenticate, then require the `Support` role.
   public requireSupport(token: SessionToken): Result<User, AuthError> {
-    user = self.authenticate(token)
+    user: Result<User, AuthError> = self.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }
-    allowed = self.ensureSupport(user.value)
+    allowed: Result<void, AuthError> = self.ensureSupport(user.value)
     if (allowed.isErr) {
       return Err(allowed.error)
     }

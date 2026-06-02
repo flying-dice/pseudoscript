@@ -275,6 +275,10 @@ pub struct Scenario {
     pub name: String,
     /// The target node's FQN (canonicalised; as written if it does not resolve).
     pub target_fqn: String,
+    /// The FQN of the module that declares the feature.
+    pub module: String,
+    /// Source span of the feature's name (a host's go-to-definition target).
+    pub span: Span,
     /// Documentation lifted from the feature's `///` block.
     pub doc: NodeDoc,
     /// The ordered given/when/then steps.
@@ -405,6 +409,8 @@ impl Builder<'_> {
         self.graph.scenarios.push(Scenario {
             name: feature.name.name.clone(),
             target_fqn,
+            module: module.to_owned(),
+            span: feature.name.span,
             doc: node_doc(&feature.doc),
             steps,
         });

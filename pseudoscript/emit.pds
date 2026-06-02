@@ -122,8 +122,8 @@ public component Projector for Emit {
   /// The context view: every person and system, with inter-system edges and
   /// triggers. A cross-container call bubbles to a single system → system edge.
   projectContext(graph: model::Graph): Scene {
-    nodes = self.collectKinds(graph, "person", "system")
-    edges = Emit::Edges.collect(graph, nodes)
+    nodes: PlacedNode[] = self.collectKinds(graph, "person", "system")
+    edges: RoutedEdge[] = Emit::Edges.collect(graph, nodes)
     return Emit::Layout.solveC4(C4Scene from { nodes, edges })
   }
 
@@ -131,12 +131,12 @@ public component Projector for Emit {
   /// with edges among them lifted to the contained child. Errors when `of` is
   /// missing or not of `boundary` kind.
   projectBoundary(graph: model::Graph, of: string, boundary: string, child: string): Result<Scene, EmitError> {
-    anchor = self.requireKind(graph, of, boundary)
+    anchor: Result<string, EmitError> = self.requireKind(graph, of, boundary)
     if (anchor.isErr) {
       return Err(anchor.error)
     }
-    nodes = self.childrenOf(graph, of, child)
-    edges = Emit::Edges.collect(graph, nodes)
+    nodes: PlacedNode[] = self.childrenOf(graph, of, child)
+    edges: RoutedEdge[] = Emit::Edges.collect(graph, nodes)
     return Ok(Emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
   }
 
@@ -144,22 +144,22 @@ public component Projector for Emit {
   /// frames (LANG.md §9.2). Errors when the entry is not a callable, or has no
   /// disclosed body to trace.
   projectSequence(graph: model::Graph, entry: string): Result<Scene, EmitError> {
-    node = self.requireKind(graph, entry, "callable")
+    node: Result<string, EmitError> = self.requireKind(graph, entry, "callable")
     if (node.isErr) {
       return Err(node.error)
     }
-    body = self.bodyOf(graph, entry)
+    body: Result<model::Step[], EmitError> = self.bodyOf(graph, entry)
     if (body.isErr) {
       return Err(NoBody from { entry })
     }
-    scene = Emit::Trace.walk(graph, entry, body.value)
+    scene: Scene = Emit::Trace.walk(graph, entry, body.value)
     return Ok(Emit::Layout.solveSequence(scene))
   }
 
   /// Looks a node up and asserts its C4 kind, mapping a miss to `UnknownNode`
   /// and a mismatch to `WrongKind`. Reads the kind off the graph's nodes.
   requireKind(graph: model::Graph, fqn: string, expected: string): Result<string, EmitError> {
-    found = self.kindOf(graph, fqn)
+    found: Result<string, EmitError> = self.kindOf(graph, fqn)
     if (found.isErr) {
       return Err(UnknownNode from { fqn })
     }
@@ -195,7 +195,7 @@ public component Projector for Emit {
 component Edges for Emit {
   /// Collect the in-view routed edges for the nodes already placed in a scene.
   collect(graph: model::Graph, inView: PlacedNode[]): RoutedEdge[] {
-    routed = self.route(graph, inView)
+    routed: RoutedEdge[] = self.route(graph, inView)
     return self.sortDedup(routed)
   }
 
@@ -224,9 +224,9 @@ component Trace for Emit {
   /// first lifeline; the body trace registers every other participant on first
   /// appearance.
   walk(graph: model::Graph, entry: string, body: model::Step[]): Scene {
-    owner = self.ownerOf(graph, entry)
-    items = self.traceItems(body, owner)
-    participants = self.participantsOf(graph, owner, items)
+    owner: string = self.ownerOf(graph, entry)
+    items: SeqItem[] = self.traceItems(body, owner)
+    participants: Lifeline[] = self.participantsOf(graph, owner, items)
     return SequenceScene from { entry, participants, items }
   }
 
@@ -250,7 +250,7 @@ component Layout for Emit {
   /// boundary box. The renderer's Sugiyama pass refines this; this assigns the
   /// fallback rects.
   solveC4(scene: Scene): Scene {
-    acyclic = self.breakCycles(scene)
+    acyclic: RoutedEdge[] = self.breakCycles(scene)
     return self.placeC4(scene, acyclic)
   }
 

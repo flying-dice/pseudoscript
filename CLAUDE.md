@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-This is the specification for **PseudoScript** (file extension `.pds`), an architecture-modeling language where the model *is* the source: it reads like high-level pseudocode, expresses C4-style structure (system / container / component / person), and compiles to SVG diagrams. The deliverable right now is the **spec and its conformance suite**, not an implementation — the Rust crate is a stub (`crates/pseudoscript/src/main.rs` prints "Hello, world!"). Most work here is writing and refining spec prose, conformance cases, and decision records.
+This is the specification for **PseudoScript** (file extension `.pds`), an architecture-modeling language where the model *is* the source: it reads like high-level pseudocode, expresses C4-style structure (system / container / component / person), and compiles to SVG diagrams. The **spec and its conformance suite lead**: `LANG.md` and the cases under `CONFORMANCE/` are the source of truth, and expected outputs are hand-written, never copied from the implementation. The toolchain is now implemented — a Cargo workspace under `crates/` (lexer/parser, model/checker, formatter, diagram emitter, doc-site generator, LSP) driven by the `pds` binary — but it follows the spec, not the other way round. Much of the work here is still writing and refining spec prose, conformance cases, and decision records.
 
 ## Source of truth and its layers
 
@@ -36,4 +36,13 @@ A `PreToolUse` hook in `.claude/settings.json` **denies any `git commit`** until
 
 ## Rust crate
 
-A Cargo workspace (`resolver = "3"`, edition 2024) with one member, `crates/pseudoscript`, whose binary is named `pds`. Standard commands: `cargo build`, `cargo test`, `cargo run -p pseudoscript`, `cargo test <name>` for a single test. The implementation is not started; when writing Rust, the `idiomatic-rust` skill is required.
+A Cargo workspace (`resolver = "3"`, edition 2024) with several members under `crates/` — `pseudoscript-syntax` (lexer/parser), `pseudoscript-model` (resolution + checks), `pseudoscript-format`, `pseudoscript-emit` (diagrams), `pseudoscript-doc`, `pseudoscript-lsp` / `pseudoscript-lsp-core`, `pseudoscript-wasm` — plus `crates/pseudoscript`, whose binary is `pds`. Standard commands: `cargo build`, `cargo test`, `cargo test -p pseudoscript <name>` for a single test. The `pds` binary wraps the libraries: `check`/`eval` (diagnostics — `eval` reads stdin so an agent can check a snippet without a file), `fmt`, `tokens`, `doc`, `outline`, `svg`, `lsp`, `lang`/`skill`, and the `add`/`install`/`update` dependency commands. When writing Rust, the `idiomatic-rust` skill is required.
+
+## One LSP API, two transports — do not fork it
+
+Language intelligence has a single source of truth: **`crates/pseudoscript-lsp-core`** — transport-neutral `text + position -> lsp_types value` handlers (completion, hover, definition, references, semantic tokens, folding, symbols, diagnostics, formatting). It depends on `pseudoscript-model` + the standalone `lsp-types` (pinned to tower-lsp 0.20's `=0.94.1`, WASM-safe), **not** `tower-lsp`. Two thin edges share it:
+
+- **`crates/pseudoscript-lsp`** — the stdio server (`server.rs` + `workspace.rs`): tower-lsp transport over `lsp-core`. What native editors (e.g. `pseudoscript-jetbrains`) get.
+- **`crates/pseudoscript-wasm`** — the browser bridge: each language export calls the same `lsp-core` handler and serialises its `lsp_types` result to JSON, so the WASM API is byte-for-byte the LSP API. The web IDE (`web-ide/src/lib/pds.js` + `pseudoscript-language.js`) is an LSP client — it decodes delta-encoded semantic tokens, integer `CompletionItemKind`, line-based `FoldingRange`, Markdown `Hover`. `definition`/`references` stay WASM-ergonomic (fqn-based, with previews) because LSP `Location` is URL-centric and the browser has no file URLs; they still route through `model::resolve`, so no logic forks. Diagram/doc exports (`emit_scene`, `symbol_scene`, …) are WASM-only — no LSP equivalent.
+
+To change a language feature, edit it once in `lsp-core` (or its `model` primitive). After a *wasm-exported* surface changes, rebuild: `npm run build:wasm` in `web-ide`, then commit the regenerated `pds-wasm/` artifacts. Highlight **colours** and pure editor UX stay client-side.

@@ -136,7 +136,7 @@ Feature: Return-type and `from` type checking (LANG.md §5.1, §6, §7.2)
       public system S;
       public container C for S {
         one(): number {
-          x = ""
+          x: string = ""
           return x
         }
       }

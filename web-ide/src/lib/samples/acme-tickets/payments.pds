@@ -81,24 +81,24 @@ public component PaymentService for Payments {
   /// calling the provider again.
   /// #headline
   public charge(order: shared::OrderId, amount: shared::Money, method: PaymentMethod): Result<Receipt, PaymentError> {
-    existing = self.receiptFor(order)
+    existing: Option<Receipt> = self.receiptFor(order)
     if (existing.isSome) {
       return Ok(existing.value)
     }
-    key = self.keyFor(order, "charge")
-    payment = Payment from { order, amount, Charging }
+    key: IdempotencyKey = self.keyFor(order, "charge")
+    payment: Payment = Payment from { order, amount, Charging }
     Payments::PaymentStore.save(payment)
-    held = Payments::Gateway.authorize(amount, method, key)
+    held: Result<context::ProviderAuth, PaymentError> = Payments::Gateway.authorize(amount, method, key)
     if (held.isErr) {
       self.onChargeError(payment, held.error)
       return Err(held.error)
     }
-    taken = Payments::Gateway.capture(held.value.ref, amount, key)
+    taken: Result<context::ProviderCapture, PaymentError> = Payments::Gateway.capture(held.value.ref, amount, key)
     if (taken.isErr) {
       self.onCaptureError(payment, held.value.ref, key, taken.error)
       return Err(taken.error)
     }
-    charged = self.markCharged(payment, held.value, taken.value)
+    charged: Payment = self.markCharged(payment, held.value, taken.value)
     Payments::PaymentStore.save(charged)
     return Ok(Receipt from { charged.id, taken.value.ref })
   }
@@ -110,16 +110,16 @@ public component PaymentService for Payments {
   /// is a deliberate scope cut, not an oversight — refunds are off the surge hot
   /// path and rarely contended.
   public refund(order: shared::OrderId): Result<Payment, PaymentError> {
-    loaded = self.loadCharged(order)
+    loaded: Result<ChargedPayment, PaymentError> = self.loadCharged(order)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    key = self.keyFor(order, "refund")
-    back = Payments::Gateway.refund(loaded.value.capture, loaded.value.amount, key)
+    key: IdempotencyKey = self.keyFor(order, "refund")
+    back: Result<context::ProviderRefund, PaymentError> = Payments::Gateway.refund(loaded.value.capture, loaded.value.amount, key)
     if (back.isErr) {
       return Err(back.error)
     }
-    refunded = self.recordRefund(order)
+    refunded: Payment = self.recordRefund(order)
     Payments::PaymentStore.save(refunded)
     return Ok(refunded)
   }
@@ -129,9 +129,9 @@ public component PaymentService for Payments {
   /// already settled, refunded, or failed) is left untouched, so a late webhook
   /// can never resurrect a reversed payment.
   public settle(order: shared::OrderId, ref: context::ProviderCaptureRef): void {
-    payment = Payments::PaymentStore.byOrder(order)
+    payment: Option<Payment> = Payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
-      awaiting = self.awaitingSettlement(payment.value)
+      awaiting: Result<void, PaymentError> = self.awaitingSettlement(payment.value)
       if (awaiting.isOk) {
         Payments::PaymentStore.save(self.applySettlement(payment.value, ref))
       }
@@ -143,11 +143,11 @@ public component PaymentService for Payments {
   /// and settle it. Complements the push webhook so a lost callback still
   /// converges the ledger.
   public reconcile(order: shared::OrderId): void {
-    payment = Payments::PaymentStore.byOrder(order)
+    payment: Option<Payment> = Payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
-      awaiting = self.awaitingSettlement(payment.value)
+      awaiting: Result<void, PaymentError> = self.awaitingSettlement(payment.value)
       if (awaiting.isOk) {
-        truth = Payments::Gateway.lookup(order)
+        truth: Option<context::ProviderCaptureRef> = Payments::Gateway.lookup(order)
         if (truth.isSome) {
           Payments::PaymentStore.save(self.applySettlement(payment.value, truth.value))
         }
@@ -162,13 +162,13 @@ public component PaymentService for Payments {
   /// outcome still unknown is left for a later sweep. This is what lets the order
   /// saga recover a timed-out checkout instead of guessing.
   public reconcileCharge(order: shared::OrderId): void {
-    done = self.receiptFor(order)
+    done: Option<Receipt> = self.receiptFor(order)
     if (done.isNone) {
-      truth = Payments::Gateway.lookupCharge(order)
+      truth: Option<Receipt> = Payments::Gateway.lookupCharge(order)
       if (truth.isSome) {
         Payments::PaymentStore.save(self.recordCharge(order, truth.value))
       } else {
-        gone = Payments::Gateway.chargeDefinitelyMissing(order)
+        gone: Result<void, PaymentError> = Payments::Gateway.chargeDefinitelyMissing(order)
         if (gone.isOk) {
           Payments::PaymentStore.save(self.recordChargeFailed(order))
         }
@@ -187,7 +187,7 @@ public component PaymentService for Payments {
   /// On an authorise failure: a DEFINITE decline marks the payment `Failed`; an
   /// INDETERMINATE outcome leaves it `Charging` for `reconcileCharge` to resolve.
   onChargeError(payment: Payment, e: PaymentError): void {
-    sure = self.isDefinite(e)
+    sure: Result<void, PaymentError> = self.isDefinite(e)
     if (sure.isOk) {
       Payments::PaymentStore.save(self.markFailed(payment, e))
     }
@@ -197,7 +197,7 @@ public component PaymentService for Payments {
   /// the payment `Failed`; an INDETERMINATE outcome leaves both intact and the
   /// payment `Charging`, because the capture may actually have settled.
   onCaptureError(payment: Payment, auth: context::ProviderAuthRef, key: IdempotencyKey, e: PaymentError): void {
-    sure = self.isDefinite(e)
+    sure: Result<void, PaymentError> = self.isDefinite(e)
     if (sure.isOk) {
       Payments::Gateway.cancelAuth(auth, key)
       Payments::PaymentStore.save(self.markFailed(payment, e))
@@ -235,7 +235,7 @@ public component PaymentService for Payments {
 public component Gateway for Payments {
   /// Place a hold via the provider.
   public authorize(amount: shared::Money, method: PaymentMethod, key: IdempotencyKey): Result<context::ProviderAuth, PaymentError> {
-    held = context::PaymentProvider.authorize(amount, method, key)
+    held: Result<ProviderAuth, ProviderError> = context::PaymentProvider.authorize(amount, method, key)
     if (held.isErr) {
       return Err(self.translate(held.error))
     }
@@ -244,7 +244,7 @@ public component Gateway for Payments {
 
   /// Capture a hold via the provider.
   public capture(auth: context::ProviderAuthRef, amount: shared::Money, key: IdempotencyKey): Result<context::ProviderCapture, PaymentError> {
-    taken = context::PaymentProvider.capture(auth, amount, key)
+    taken: Result<ProviderCapture, ProviderError> = context::PaymentProvider.capture(auth, amount, key)
     if (taken.isErr) {
       return Err(self.translate(taken.error))
     }
@@ -253,7 +253,7 @@ public component Gateway for Payments {
 
   /// Refund a capture via the provider.
   public refund(capture: context::ProviderCaptureRef, amount: shared::Money, key: IdempotencyKey): Result<context::ProviderRefund, PaymentError> {
-    back = context::PaymentProvider.refund(capture, amount, key)
+    back: Result<ProviderRefund, ProviderError> = context::PaymentProvider.refund(capture, amount, key)
     if (back.isErr) {
       return Err(self.translate(back.error))
     }
@@ -290,11 +290,11 @@ public component WebhookHandler for Payments {
   /// replayed webhook is acknowledged but changes nothing.
   #[http("POST /webhooks/payments")]
   public handle(event: SettlementEvent): Result<Acknowledged, WebhookError> {
-    verified = self.verify(event)
+    verified: Result<void, WebhookError> = self.verify(event)
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen = Payments::EventLog.seen(event.eventId)
+    seen: Result<void, WebhookError> = Payments::EventLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }

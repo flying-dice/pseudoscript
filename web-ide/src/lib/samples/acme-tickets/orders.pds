@@ -84,27 +84,27 @@ public component Reservation for Orders {
   /// Hold seats: verify waiting-room admission and the session, then take an
   /// inventory hold with a time-to-live.
   public hold(req: ReserveRequest): Result<inventory::Hold, ReserveError> {
-    admitted = waitingroom::Admission.verify(req.admission)
+    admitted: Result<void, WaitingError> = waitingroom::Admission.verify(req.admission)
     if (admitted.isErr) {
       return Err(NotAdmitted)
     }
-    buyer = identity::Sessions.authenticate(req.session)
+    buyer: Result<User, AuthError> = identity::Sessions.authenticate(req.session)
     if (buyer.isErr) {
       return Err(NotAuthenticated)
     }
-    sellable = catalog::Events.onSaleNow(req.event)
+    sellable: Result<void, NotSellable> = catalog::Events.onSaleNow(req.event)
     if (sellable.isErr) {
       return Err(NotOnSale)
     }
-    within = self.withinLimit(req.quantity)
+    within: Result<void, ReserveError> = self.withinLimit(req.quantity)
     if (within.isErr) {
       return Err(ExceedsLimit)
     }
-    held = inventory::Holds.reserve(req.event, req.tier, req.quantity, buyer.value.id)
+    held: Result<Hold, InventoryError> = inventory::Holds.reserve(req.event, req.tier, req.quantity, buyer.value.id)
     if (held.isErr) {
       return Err(self.unavailable(held.error))
     }
-    quote = pricing::Quotes.quote(req.event, req.tier, req.quantity)
+    quote: Result<Quote, PricingError> = pricing::Quotes.quote(req.event, req.tier, req.quantity)
     if (quote.isErr) {
       inventory::Holds.release(held.value.id)
       return Err(Unpriced)
@@ -129,45 +129,45 @@ public component OrderService for Orders {
   /// allocation fails after charging, the charge is refunded.
   /// #headline
   public checkout(req: CheckoutRequest): Result<Order, CheckoutError> {
-    admitted = waitingroom::Admission.verify(req.admission)
+    admitted: Result<void, WaitingError> = waitingroom::Admission.verify(req.admission)
     if (admitted.isErr) {
       return Err(NotAdmitted)
     }
-    buyer = identity::Sessions.authenticate(req.session)
+    buyer: Result<User, AuthError> = identity::Sessions.authenticate(req.session)
     if (buyer.isErr) {
       return Err(NotAuthenticated)
     }
-    prior = Orders::OrderStore.byHold(req.hold)
+    prior: Option<Order> = Orders::OrderStore.byHold(req.hold)
     if (prior.isSome) {
       return Ok(prior.value)
     }
     // ^ Idempotent replay: a hold has at most one order. The returned order
     //   carries its own status (Confirmed / Pending-in-flight / Failed), which
     //   the caller inspects — a retry never creates a second order or charge.
-    hold = inventory::Holds.validate(req.hold, buyer.value.id)
+    hold: Result<Hold, InventoryError> = inventory::Holds.validate(req.hold, buyer.value.id)
     if (hold.isErr) {
       return Err(HoldInvalid)
     }
-    locked = pricing::Locks.priceFor(req.hold)
+    locked: Option<Quote> = pricing::Locks.priceFor(req.hold)
     if (locked.isNone) {
       return Err(PriceUnavailable)
     }
-    committed = inventory::Holds.commit(req.hold)
+    committed: Result<Hold, InventoryError> = inventory::Holds.commit(req.hold)
     if (committed.isErr) {
       return Err(HoldInvalid)
     }
-    id = Orders::OrderStore.idFor(req.hold)
-    order = Order from { id, hold.value, buyer.value.id, locked.value.total, Pending }
+    id: shared::OrderId = Orders::OrderStore.idFor(req.hold)
+    order: Order = Order from { id, hold.value, buyer.value.id, locked.value.total, Pending }
     Orders::OrderStore.save(order)
-    charged = payments::PaymentService.charge(id, locked.value.total, req.method)
+    charged: Result<Receipt, PaymentError> = payments::PaymentService.charge(id, locked.value.total, req.method)
     if (charged.isErr) {
       return Err(self.afterChargeFailure(order, charged.error))
     }
-    paid = self.mark(order, Charged)
+    paid: Order = self.mark(order, Charged)
     Orders::OrderStore.save(paid)
-    allocated = inventory::Holds.confirm(req.hold)
+    allocated: Result<Allocation, InventoryError> = inventory::Holds.confirm(req.hold)
     if (allocated.isErr) {
-      reversal = payments::PaymentService.refund(id)
+      reversal: Result<Payment, PaymentError> = payments::PaymentService.refund(id)
       if (reversal.isErr) {
         return Err(RefundFailed from { id })
       }
@@ -175,9 +175,9 @@ public component OrderService for Orders {
       Orders::OrderStore.save(self.mark(order, Refunded))
       return Err(AllocationFailed)
     }
-    confirmed = self.mark(paid, Confirmed)
+    confirmed: Order = self.mark(paid, Confirmed)
     Orders::OrderStore.save(confirmed)
-    done = OrderConfirmed from { confirmed, buyer.value.id, allocated.value }
+    done: OrderConfirmed = OrderConfirmed from { confirmed, buyer.value.id, allocated.value }
     Orders::Events.confirmed(done)
     return Ok(confirmed)
   }
@@ -189,7 +189,7 @@ public component OrderService for Orders {
   /// real outcome against the provider rather than guessing. Treating a timeout as
   /// a decline is how a charged buyer loses their seat with no record.
   afterChargeFailure(order: Order, e: payments::PaymentError): CheckoutError {
-    sure = self.definite(e)
+    sure: Result<void, CheckoutError> = self.definite(e)
     if (sure.isErr) {
       return PaymentUncertain
     }
@@ -203,22 +203,22 @@ public component OrderService for Orders {
   /// order is not marked refunded and the seats are not freed until the money
   /// is actually returned.
   public refund(id: shared::OrderId): Result<Order, CheckoutError> {
-    order = self.get(id)
+    order: Result<Order, CheckoutError> = self.get(id)
     if (order.isErr) {
       return Err(order.error)
     }
-    ready = self.refundable(order.value)
+    ready: Result<void, CheckoutError> = self.refundable(order.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
-    reversal = payments::PaymentService.refund(id)
+    reversal: Result<Payment, PaymentError> = payments::PaymentService.refund(id)
     if (reversal.isErr) {
       return Err(RefundFailed from { id })
     }
     inventory::Holds.releaseSold(order.value.hold)
-    refunded = self.mark(order.value, Refunded)
+    refunded: Order = self.mark(order.value, Refunded)
     Orders::OrderStore.save(refunded)
-    event = OrderRefunded from { refunded }
+    event: OrderRefunded = OrderRefunded from { refunded }
     Orders::Events.refunded(event)
     return Ok(refunded)
   }
@@ -228,7 +228,7 @@ public component OrderService for Orders {
   /// precondition), so a partial run resumes cleanly on the next delivery.
   #[onevent(catalog::EventCancelled)]
   public onEventCancelled(event: catalog::EventCancelled): void {
-    affected = Orders::OrderStore.confirmedFor(event.event)
+    affected: Order[] = Orders::OrderStore.confirmedFor(event.event)
     for (order in affected) {
       self.refund(order.id)
     }
@@ -243,14 +243,14 @@ public component OrderService for Orders {
   /// charge might be real, so a buyer is never failed after being charged. Every
   /// branch is idempotent.
   public resume(id: shared::OrderId): void {
-    order = self.get(id)
+    order: Result<Order, CheckoutError> = self.get(id)
     if (order.isOk) {
       payments::PaymentService.reconcileCharge(id)
-      receipt = payments::PaymentService.receiptFor(id)
+      receipt: Option<Receipt> = payments::PaymentService.receiptFor(id)
       if (receipt.isSome) {
         self.complete(order.value)
       } else {
-        failed = payments::PaymentService.definitelyFailed(id)
+        failed: Result<void, PaymentError> = payments::PaymentService.definitelyFailed(id)
         if (failed.isOk) {
           self.abandon(order.value)
         }
@@ -266,11 +266,11 @@ public component OrderService for Orders {
   /// Drive a charged order to `Confirmed`: idempotently confirm its hold and
   /// re-publish the confirmation (consumers de-duplicate on the order id).
   complete(order: Order): void {
-    allocated = inventory::Holds.confirm(order.hold)
+    allocated: Result<Allocation, InventoryError> = inventory::Holds.confirm(order.hold)
     if (allocated.isOk) {
-      confirmed = self.mark(order, Confirmed)
+      confirmed: Order = self.mark(order, Confirmed)
       Orders::OrderStore.save(confirmed)
-      done = OrderConfirmed from { confirmed, confirmed.buyer, allocated.value }
+      done: OrderConfirmed = OrderConfirmed from { confirmed, confirmed.buyer, allocated.value }
       Orders::Events.confirmed(done)
     }
   }
@@ -283,7 +283,7 @@ public component OrderService for Orders {
 
   /// Read an order, or `OrderNotFound`.
   public get(id: shared::OrderId): Result<Order, CheckoutError> {
-    found = Orders::OrderStore.fetch(id)
+    found: Option<Order> = Orders::OrderStore.fetch(id)
     if (found.isNone) {
       return Err(OrderNotFound from { id })
     }
@@ -293,11 +293,11 @@ public component OrderService for Orders {
   /// Read an order on behalf of `owner`, refusing one that belongs to another
   /// user. A non-owner is told `OrderNotFound`, never that the order exists.
   public getFor(owner: shared::UserId, id: shared::OrderId): Result<Order, CheckoutError> {
-    order = self.get(id)
+    order: Result<Order, CheckoutError> = self.get(id)
     if (order.isErr) {
       return Err(order.error)
     }
-    owns = self.ownedBy(order.value, owner)
+    owns: Result<void, CheckoutError> = self.ownedBy(order.value, owner)
     if (owns.isErr) {
       return Err(owns.error)
     }

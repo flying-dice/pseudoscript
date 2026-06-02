@@ -7,7 +7,7 @@ data Info { owner: string }
 
 public container Mainframe for Banking {
   Run(): void {
-    a = Store::Repo.fetch(1).value.owner
-    b = self.Pick().first().tag
+    a: string = Store::Repo.fetch(1).value.owner
+    b: string = self.Pick().first().tag
   }
 }

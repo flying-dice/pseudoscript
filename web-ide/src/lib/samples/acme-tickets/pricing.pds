@@ -32,13 +32,13 @@ public component Quotes for Pricing {
   /// factor for the event, and total it for the quantity.
   /// #headline
   public quote(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<Quote, PricingError> {
-    base = catalog::Tiers.priceOf(tier)
+    base: Result<shared::Money, TierNotFound> = catalog::Tiers.priceOf(tier)
     if (base.isErr) {
       return Err(TierUnavailable from { tier })
     }
-    surge = self.surgeFor(event, tier)
-    unit = self.apply(base.value, surge)
-    total = self.lineTotal(unit, quantity)
+    surge: SurgeFactor = self.surgeFor(event, tier)
+    unit: shared::Money = self.apply(base.value, surge)
+    total: shared::Money = self.lineTotal(unit, quantity)
     return Ok(Quote from { event, tier, unit, surge, total })
   }
 
@@ -47,7 +47,7 @@ public component Quotes for Pricing {
   /// quote falls back to a neutral (no-surge) factor and checkout proceeds,
   /// rather than blocking a sale on a non-critical signal.
   surgeFor(event: shared::EventId, tier: shared::TierId): SurgeFactor {
-    snap = Pricing::Demand.snapshot(event, tier)
+    snap: Option<DemandSnapshot> = Pricing::Demand.snapshot(event, tier)
     if (snap.isNone) {
       return self.neutral()
     }
@@ -91,7 +91,7 @@ public component Demand for Pricing {
   /// consumer owns its own idempotency rather than trusting the producer.
   #[onevent(orders::OrderConfirmed)]
   public onConfirmed(event: orders::OrderConfirmed): void {
-    fresh = Pricing::DemandLog.seen(event.order.id)
+    fresh: Option<shared::OrderId> = Pricing::DemandLog.seen(event.order.id)
     if (fresh.isNone) {
       self.record(event.order.event, event.order.tier, event.order.quantity)
       Pricing::DemandLog.mark(event.order.id)

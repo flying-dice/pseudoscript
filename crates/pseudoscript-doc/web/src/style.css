@@ -974,3 +974,18 @@ code,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Sequence diagram (ported from the web IDE): the lifeline/message timeline.
+   `--seq-ok`/`--seq-err` colour return arrows; the seq-shell nodes are
+   transparent projection shells whose SVG paints itself. */
+:root {
+  --seq-ok: #2ec5ad;
+  --seq-err: #ff6a5e;
+}
+.svelte-flow__node.seq-shell {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  pointer-events: none;
+}

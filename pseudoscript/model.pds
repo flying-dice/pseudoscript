@@ -198,7 +198,7 @@ public component Resolver for Model {
   /// hoisted inline union variants); an alias records a binding; a feature adds
   /// nothing to this table — its name lives in a separate namespace.
   public build(ast: syntax::Module): SymbolTable {
-    path = self.modulePath(ast)
+    path: string = self.modulePath(ast)
     return self.buildWithPath(ast, path)
   }
 
@@ -233,7 +233,7 @@ public component Workspace for Model {
   /// the global index keys on the correct cross-module names.
   public build(modules: WorkspaceModule[]): ModuleEntry[] {
     for (m in modules) {
-      parsed = syntax::Parser.parse(m.text)
+      parsed: Parsed = syntax::Parser.parse(m.text)
       Model::Resolver.buildWithPath(parsed.ast, m.fqn)
     }
     return self.collect(modules)
@@ -249,7 +249,7 @@ public component Workspace for Model {
   /// §8.2 visibility rule: a same-module target resolves regardless of
   /// visibility; a cross-module target resolves only if it is `public`.
   public resolveQualified(fromModule: string, fqn: string): Resolution {
-    sym = self.symbol(fqn)
+    sym: Symbol = self.symbol(fqn)
     if (self.sameModule(fromModule, fqn)) {
       return Public from { sym }
     }
@@ -272,8 +272,8 @@ public component Checks for Model {
   /// Parse and statically analyze one module's source: parse errors followed by
   /// the static-analysis errors. The CLI's `pds check` driver.
   public check(text: string): syntax::Diagnostic[] {
-    parsed = syntax::Parser.parse(text)
-    static = self.analyze(parsed.ast)
+    parsed: Parsed = syntax::Parser.parse(text)
+    static: syntax::Diagnostic[] = self.analyze(parsed.ast)
     return syntax::Diagnostic[] from { parsed.diagnostics, static }
   }
 
@@ -281,7 +281,7 @@ public component Checks for Model {
   /// parse across diagnostics, hover, and definition. Returns only static
   /// diagnostics; the caller supplies the parse diagnostics.
   public analyze(ast: syntax::Module): syntax::Diagnostic[] {
-    model = Model::Resolver.build(ast)
+    model: SymbolTable = Model::Resolver.build(ast)
     return self.run(ast, model)
   }
 
@@ -289,7 +289,7 @@ public component Checks for Model {
   /// static errors, then the cross-module visibility pass. Parses each module
   /// before resolving the workspace.
   public checkWorkspace(modules: WorkspaceModule[]): syntax::Diagnostic[] {
-    entries = Model::Workspace.build(modules)
+    entries: ModuleEntry[] = Model::Workspace.build(modules)
     return self.runWorkspace(entries)
   }
 
@@ -301,8 +301,8 @@ public component Checks for Model {
   /// Runs every per-module check against a parsed module and its resolved model:
   /// variant collisions, feature collisions, then each item's checks.
   run(ast: syntax::Module, model: SymbolTable): syntax::Diagnostic[] {
-    variants = Model::VariantCollision.check(ast)
-    features = Model::FeatureCheck.check(ast, model)
+    variants: syntax::Diagnostic[] = Model::VariantCollision.check(ast)
+    features: syntax::Diagnostic[] = Model::FeatureCheck.check(ast, model)
     return syntax::Diagnostic[] from { variants, features }
   }
 
@@ -408,7 +408,7 @@ public component Builder for Model {
   /// Builds the resolved graph: collect every node, derive its edges, and trace
   /// each disclosed callable body into an ordered step list.
   public graph(modules: WorkspaceModule[]): Graph {
-    entries = Model::Workspace.build(modules)
+    entries: ModuleEntry[] = Model::Workspace.build(modules)
     for (e in entries) {
       self.collectModule(e)
     }

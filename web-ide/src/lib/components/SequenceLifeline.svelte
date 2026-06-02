@@ -1,9 +1,43 @@
-<script>
+<script lang="ts">
   // A sequence participant, drawn from the engine's placed coordinates: the
   // kind-coloured C4 head card, the dashed lifeline, and the execution-activation
   // bar spanning its involvement. The node fills the canvas, so every coordinate
   // here is absolute (no geometry is computed in the component).
-  let { data } = $props();
+
+  import type { MenuRequest } from "$lib/core/types.js";
+
+  // A placed participant lifeline from the layout engine (PlacedParticipant).
+  type Placed = {
+    id: string;
+    label: string;
+    kind: string;
+    card: { x: number; y: number; w: number; h: number };
+    lifeline_x: number;
+    top: number;
+    bottom: number;
+  };
+  // A placed activation bar from the layout engine (Activation).
+  type Activation = {
+    participant: string;
+    x: number;
+    top: number;
+    bottom: number;
+    owner: boolean;
+  };
+  // The synthesised initiator head: a trigger kind + its title.
+  type Initiator = { kind: string; title: string };
+
+  type LifelineData = {
+    placed: Placed;
+    act?: Activation | null;
+    onmenu?: MenuRequest | null;
+  };
+
+  type Props = {
+    data: LifelineData;
+  };
+
+  let { data }: Props = $props();
 
   const p = data.placed;
   const act = data.act;
@@ -13,7 +47,7 @@
   // (#[schedule]), or a generic `caller` (a direct/untriggered call). The
   // projector tags these as `person` for layout, but they aren't people — show
   // the trigger kind as the eyebrow and a neutral card, not a person card.
-  function initiatorHead(id) {
+  function initiatorHead(id: string | null | undefined): Initiator | null {
     if (!id) return null;
     if (id.startsWith("event:")) return { kind: "onevent", title: id.slice(6) };
     if (id === "client") return { kind: "http", title: "client" };
@@ -28,15 +62,14 @@
   const nameLabel = initiator ? initiator.title : p.label;
   const cardKind = initiator ? "initiator" : p.kind;
 
-  // Canvas interaction mirrors the editor: hover shows info, Cmd/Ctrl-click shows
-  // usages. Every lifeline participates — declared nodes resolve to their doc and
-  // usages; synthesised trigger actors (client/scheduler/event) get a blurb.
-  const interactive = !!p.id;
-  const onclick = (e) => {
-    if (interactive && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      data.onusages?.(p.id, e);
-    }
+  // Canvas interaction mirrors the C4 graph: right-click opens the actions menu
+  // (go-to-definition / find-usages). Only declared nodes participate; synthesised
+  // trigger actors (client/scheduler/event) have no resolvable symbol.
+  const interactive = !!p.id && !initiator;
+  const oncontextmenu = (e: MouseEvent) => {
+    if (!interactive) return;
+    e.preventDefault();
+    data.onmenu?.({ fqn: p.id, kind: cardKind, label: nameLabel }, e);
   };
 </script>
 
@@ -45,11 +78,9 @@
     class="seq-card c4-node {cardKind}"
     class:interactive
     style="left:{p.card.x}px; top:{p.card.y}px; width:{p.card.w}px; height:{p.card.h}px"
-    role={interactive ? "button" : undefined}
-    tabindex={interactive ? 0 : undefined}
-    onmouseenter={(e) => interactive && data.oninfo?.(p.id, e)}
-    onmouseleave={() => interactive && data.oninfoend?.()}
-    {onclick}
+    role="button"
+    tabindex="-1"
+    {oncontextmenu}
   >
     <span class="seq-kind">{kindLabel}</span>
     <span class="seq-name">{nameLabel}</span>

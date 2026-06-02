@@ -1,10 +1,19 @@
-<script>
+<script lang="ts">
   // The enclosing box of a drilled-in container/component view. Renders the
   // boundary's title and a close button that pops up one level to the parent
   // scope. Hidden handles let cross-boundary edges still attach.
   import { Handle, Position } from "@xyflow/svelte";
 
-  let { data } = $props();
+  type BoundaryData = {
+    label: string;
+    onclose?: () => void;
+  };
+
+  type Props = {
+    data: BoundaryData;
+  };
+
+  let { data }: Props = $props();
 </script>
 
 <Handle type="target" position={Position.Top} class="boundary-handle" />

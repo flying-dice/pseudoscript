@@ -1,7 +1,7 @@
 //! The tower-lsp server: a workspace-aware document store plus protocol
 //! plumbing.
 //!
-//! All language logic lives in [`crate::analysis`]; this layer owns the
+//! All language logic lives in [`pseudoscript_lsp_core::analysis`]; this layer owns the
 //! [`Project`] (the loaded `.pds` modules, with open buffers overlaying disk)
 //! and translates LSP notifications/requests into calls against it. Diagnostics
 //! are published for every module so cross-file issues surface in the file that
@@ -27,8 +27,8 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer};
 
-use crate::analysis;
 use crate::workspace::Project;
+use pseudoscript_lsp_core::analysis;
 
 /// The `PseudoScript` language server.
 pub struct Backend {
@@ -78,7 +78,7 @@ impl Backend {
                 let index = LineIndex::new(source);
                 Some(Location {
                     uri,
-                    range: crate::convert::span_to_range(source, &index, occ.span),
+                    range: pseudoscript_lsp_core::convert::span_to_range(source, &index, occ.span),
                 })
             })
             .collect()
@@ -227,7 +227,7 @@ impl LanguageServer for Backend {
         let index = LineIndex::new(target_src);
         let location = Location {
             uri: target_uri,
-            range: crate::convert::span_to_range(target_src, &index, target.span),
+            range: pseudoscript_lsp_core::convert::span_to_range(target_src, &index, target.span),
         };
         Ok(Some(GotoDefinitionResponse::Scalar(location)))
     }
@@ -309,7 +309,7 @@ impl LanguageServer for Backend {
         let occurrences = {
             let mut project = self.project();
             let modules = project.module_pairs();
-            let offset = crate::convert::position_to_offset(&text, pos.position);
+            let offset = pseudoscript_lsp_core::convert::position_to_offset(&text, pos.position);
             analysis::references(
                 project.workspace(),
                 &modules,
@@ -330,7 +330,7 @@ impl LanguageServer for Backend {
         let Some((text, fqn)) = self.active(&pos.text_document.uri) else {
             return Ok(None);
         };
-        let offset = crate::convert::position_to_offset(&text, pos.position);
+        let offset = pseudoscript_lsp_core::convert::position_to_offset(&text, pos.position);
         let spans = {
             let mut project = self.project();
             analysis::highlights(project.workspace(), &fqn, &text, offset)
@@ -339,7 +339,7 @@ impl LanguageServer for Backend {
         let highlights = spans
             .into_iter()
             .map(|span| DocumentHighlight {
-                range: crate::convert::span_to_range(&text, &index, span),
+                range: pseudoscript_lsp_core::convert::span_to_range(&text, &index, span),
                 kind: Some(DocumentHighlightKind::TEXT),
             })
             .collect();
@@ -368,7 +368,7 @@ impl LanguageServer for Backend {
         let occurrences = {
             let mut project = self.project();
             let modules = project.module_pairs();
-            let offset = crate::convert::position_to_offset(&text, pos.position);
+            let offset = pseudoscript_lsp_core::convert::position_to_offset(&text, pos.position);
             analysis::references(project.workspace(), &modules, &fqn, &text, offset, true)
         };
         if occurrences.is_empty() {
@@ -384,7 +384,7 @@ impl LanguageServer for Backend {
             };
             let index = LineIndex::new(source);
             changes.entry(uri).or_default().push(TextEdit {
-                range: crate::convert::span_to_range(source, &index, occ.span),
+                range: pseudoscript_lsp_core::convert::span_to_range(source, &index, occ.span),
                 new_text: params.new_name.clone(),
             });
         }

@@ -1,8 +1,26 @@
-<script>
+<script lang="ts">
   // A small modal text prompt shared by the FileTree create/rename flows. The
-  // parent passes a `title`, an input `label`/`placeholder`, an initial `value`,
-  // and a `validate(value)` returning an error string (or null when valid). On
-  // confirm it calls `onconfirm(trimmedValue)`; Escape or the backdrop cancels.
+  // parent mounts it (via `{#if dialog}`) with a `title`, an input `label`/
+  // `placeholder`, an initial `value`, and a `validate(value)` returning an error
+  // string (or null when valid). On confirm it calls `onconfirm(trimmedValue)`;
+  // Escape, the overlay, or the close button cancels. Built on the shadcn Dialog
+  // so it gets focus-trap, scroll-lock, and Escape handling for free.
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+
+  type Props = {
+    title?: string;
+    label?: string;
+    placeholder?: string;
+    value?: string;
+    confirmLabel?: string;
+    hint?: string;
+    validate?: (value: string) => string | null;
+    onconfirm?: (value: string) => void;
+    oncancel?: () => void;
+  };
+
   let {
     title = "",
     label = "Name",
@@ -13,11 +31,10 @@
     validate = () => null,
     onconfirm,
     oncancel,
-  } = $props();
+  }: Props = $props();
 
-  let draft = $state(value);
-  let touched = $state(false);
-  let inputEl = $state(null);
+  let draft = $state<string>(value);
+  let touched = $state<boolean>(false);
 
   const error = $derived(touched ? validate(draft.trim()) : null);
   const canSubmit = $derived(draft.trim().length > 0 && !validate(draft.trim()));
@@ -28,83 +45,55 @@
     onconfirm?.(draft.trim());
   }
 
-  function onKey(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      oncancel?.();
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      submit();
-    }
+  // The component is mounted only while open, so any close intent cancels.
+  function onOpenChange(open: boolean) {
+    if (!open) oncancel?.();
   }
-
-  $effect(() => {
-    inputEl?.focus();
-    inputEl?.select();
-  });
 </script>
 
-<div
-  class="backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) oncancel?.();
-  }}
->
-  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" onkeydown={onKey}>
-    <h2>{title}</h2>
-    <label class="field">
+<Dialog.Root open onOpenChange={onOpenChange}>
+  <Dialog.Content class="sm:max-w-md" data-testid="prompt-dialog">
+    <Dialog.Header>
+      <Dialog.Title>{title}</Dialog.Title>
+    </Dialog.Header>
+    <form
+      class="field"
+      onsubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
       <span class="lbl">{label}</span>
-      <input
-        bind:this={inputEl}
+      <!-- svelte-ignore a11y_autofocus -->
+      <Input
         bind:value={draft}
         {placeholder}
-        oninput={() => (touched = true)}
+        autofocus
+        aria-label={label}
         spellcheck="false"
         autocomplete="off"
+        oninput={() => (touched = true)}
+        aria-invalid={error ? "true" : undefined}
+        class="font-mono"
       />
-    </label>
-    {#if error}
-      <p class="err">{error}</p>
-    {:else if hint}
-      <p class="hint">{hint}</p>
-    {/if}
-    <div class="actions">
-      <button class="ghost" type="button" onclick={() => oncancel?.()}>Cancel</button>
-      <button class="primary" type="button" disabled={!canSubmit} onclick={submit}>
-        {confirmLabel}
-      </button>
-    </div>
-  </div>
-</div>
+      {#if error}
+        <p class="err">{error}</p>
+      {:else if hint}
+        <p class="hint">{hint}</p>
+      {/if}
+      <Dialog.Footer>
+        <Button type="button" variant="ghost" size="sm" onclick={() => oncancel?.()}>Cancel</Button>
+        <Button type="submit" size="sm" disabled={!canSubmit}>{confirmLabel}</Button>
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: grid;
-    place-items: center;
-    background: color-mix(in srgb, var(--bg, #000) 62%, transparent);
-    backdrop-filter: blur(2px);
-  }
-  .dialog {
-    width: min(28rem, calc(100vw - 2rem));
-    background: var(--surface, #fff);
-    border: 1px solid var(--line);
-    border-radius: var(--radius, 10px);
-    padding: 1.1rem 1.2rem 1.2rem;
-    box-shadow: var(--shadow-lg);
-  }
-  h2 {
-    margin: 0 0 0.85rem;
-    font-size: 0.95rem;
-    color: var(--ink);
-  }
   .field {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.4rem;
   }
   .lbl {
     font-family: var(--font-mono);
@@ -114,59 +103,14 @@
     text-transform: uppercase;
     color: var(--ink-faint);
   }
-  input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.5rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    color: var(--ink);
-    background: var(--surface-2, #f4f4f5);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm, 6px);
-  }
-  input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
   .err {
-    margin: 0.5rem 0 0;
+    margin: 0.1rem 0 0;
     font-size: 0.76rem;
     color: var(--err);
   }
   .hint {
-    margin: 0.5rem 0 0;
+    margin: 0.1rem 0 0;
     font-size: 0.76rem;
     color: var(--ink-faint);
-  }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    margin-top: 1.1rem;
-  }
-  button {
-    padding: 0.45rem 0.85rem;
-    font-size: 0.8rem;
-    border-radius: var(--radius-sm, 6px);
-    cursor: pointer;
-    border: 1px solid var(--line);
-  }
-  .ghost {
-    background: transparent;
-    color: var(--ink-soft);
-  }
-  .ghost:hover {
-    background: var(--surface-2);
-    color: var(--ink);
-  }
-  .primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-ink, #fff);
-  }
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 </style>

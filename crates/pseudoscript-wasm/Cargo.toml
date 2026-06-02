@@ -18,6 +18,7 @@ path = "src/lib.rs"
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-format = { path = "../pseudoscript-format" }
 pseudoscript-model = { path = "../pseudoscript-model" }
+pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core" }
 pseudoscript-emit = { path = "../pseudoscript-emit" }
 pseudoscript-doc = { path = "../pseudoscript-doc" }
 serde = { version = "1", features = ["derive"] }

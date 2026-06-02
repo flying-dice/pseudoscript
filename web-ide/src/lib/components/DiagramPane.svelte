@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   // The system, shown live. A node scene renders an interactive C4 graph; a
   // sequence scene renders the animated timeline. The scene comes from the
   // compiler (emit_scene / symbol_scene), so the diagram type is read off the
@@ -6,12 +6,57 @@
   import C4Flow from "./C4Flow.svelte";
   import FlowTimeline from "./FlowTimeline.svelte";
   import { DEPTHS } from "$lib/sequence.js";
+  import type { Depth } from "$lib/sequence.js";
+  import type { ComponentProps } from "svelte";
 
-  let { scene = null, layout = null, error = "", hint = "Nothing to draw.", onpick, onup, flows = null, depth = "component", ondepth = null, oninfo = null, oninfoend = null, onusages = null, typeFqn = null } = $props();
+  // The pane reads only the discriminating arrays off the scene (`participants`
+  // for a sequence scene, `nodes` for a C4 scene) and passes the whole object
+  // through to whichever child renders it. The index signature keeps it a
+  // structural superset of both child scene types.
+  type Scene = {
+    participants?: unknown[];
+    nodes?: unknown[];
+    [key: string]: unknown;
+  };
+  // The positioned sequence layout (opaque here — produced by the layout crate
+  // and consumed only by FlowTimeline); the pane just forwards and signs it.
+  type Layout = unknown;
+  // An entry-point flow offered in a C4 node's popover.
+  type Flow = { fqn: string; name: string; triggered?: boolean };
+
+  type Props = {
+    scene?: Scene | null;
+    layout?: Layout | null;
+    error?: string;
+    hint?: string;
+    onpick?: ((fqn: string) => void) | null;
+    onup?: (() => void) | null;
+    flows?: Map<string, Flow[]> | null;
+    depth?: Depth;
+    ondepth?: ((id: Depth) => void) | null;
+    onusages?: ((fqn: string, event: MouseEvent) => void) | null;
+    onsource?: ((fqn: string) => void) | null;
+    typeFqn?: string | null;
+  };
+
+  let {
+    scene = null,
+    layout = null,
+    error = "",
+    hint = "Nothing to draw.",
+    onpick,
+    onup,
+    flows = null,
+    depth = "component",
+    ondepth = null,
+    onusages = null,
+    onsource = null,
+    typeFqn = null,
+  }: Props = $props();
 
   const isFlow = $derived(!!scene && Array.isArray(scene.participants));
   const hasC4 = $derived(!!scene && Array.isArray(scene.nodes) && scene.nodes.length > 0);
-  const hasFlow = $derived(isFlow && scene.participants.length > 0);
+  const hasFlow = $derived(isFlow && (scene?.participants?.length ?? 0) > 0);
   const ready = $derived(isFlow ? hasFlow : hasC4);
   // Remount the flow when the rendered content changes so the view resets.
   const sig = $derived(isFlow ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
@@ -32,7 +77,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline {scene} {layout} {oninfo} {oninfoend} {onusages} {typeFqn} />{:else}<C4Flow {scene} {onpick} {onup} {flows} {oninfo} {oninfoend} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">
@@ -47,9 +92,7 @@
     position: relative;
     height: 100%;
     min-height: 0;
-    background:
-      radial-gradient(900px 520px at 60% -10%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
-      var(--bg);
+    background: var(--island-bg);
   }
   /* centre the placeholder notes; the flow components fill the stage themselves */
   .stage:not(.framed) {

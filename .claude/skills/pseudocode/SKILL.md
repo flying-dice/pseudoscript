@@ -20,10 +20,11 @@ data provenance are written as high-level pseudocode, infrastructure is declared
 the whole thing compiles to C4 diagrams, sequence diagrams, and a doc site (`pds doc`).
 
 This skill is the **method**, not the grammar. For any syntax question — keywords, `Result`
-handling, `from` composition, macros, modules, visibility, the EBNF — read **`references/LANG.md`**
-(the language specification) and follow it exactly. Do **not** invent syntax; if the spec doesn't
-support a form (e.g. comparison operators in conditions — see its Open Questions), model around it
-with a call that returns a `Result` or `bool` instead.
+handling, `from` composition, macros, modules, visibility, the EBNF — run **`pds lang`** to print
+the full language reference (spec + patterns + the conformance/grammar suite) and follow it exactly.
+Do **not** invent syntax; if the spec doesn't support a form (e.g. comparison operators in
+conditions — see its Open Questions), model around it with a call that returns a `Result` or `bool`
+instead.
 
 Two jobs only:
 - **Map** an existing application into a `.pds` model (reverse).
@@ -57,14 +58,14 @@ disclose it as a branch. *How the JWT is parsed* is plumbing → omit it.
 ## Concern → construct map
 
 Read it top-to-bottom when mapping an existing app; read it right-to-left when reconstituting code
-from a model. (Constructs and call syntax are defined in `references/LANG.md`.)
+from a model. (Constructs and call syntax are defined in the language reference — run `pds lang`.)
 
 | App concern | PseudoScript | Disclosed? |
 |---|---|---|
 | HTTP route / controller / RPC handler | callable with `#[http("VERB /path")]` | body disclosed only for the orchestration that carries meaning; routing/serialization is the macro, not the body |
 | Use case / application service / interactor | disclosed callable | **disclose** |
 | Domain rule, validation, **authorization** decision | `if (r.isErr) { return Err(...) }` branches | **disclose** |
-| Calculation / assembling a result from parts | `x = T from { a, b }` + the calls feeding it | **disclose** (provenance) |
+| Calculation / assembling a result from parts | `x: T = T from { a, b }` + the calls feeding it | **disclose** (provenance) |
 | Repository / DAO / ORM mapper | black-box `component` (or `container`) with `fetch`/`save`/… signatures | black box |
 | Database / cache / queue infrastructure | black-box `container`, often tagged `#critical` | black box |
 | DTO / entity / domain event / message | `data` record; events as a discriminated union | fields disclosed when they matter; `data X;` otherwise |
@@ -90,7 +91,8 @@ from a model. (Constructs and call syntax are defined in `references/LANG.md`.)
 5. **Disclose the use cases.** Translate each service/interactor method into a disclosed callable,
    tracing the **business logic line for line**: every guard becomes an `if (…isErr) { return Err }`,
    every assembled value becomes `from { … }`, every dependency call becomes a `Target.method(args)`.
-   Keep bodies at flow-and-provenance level — never field-level arithmetic.
+   Every binding states its type (`x: T = …`). Keep bodies at flow-and-provenance level — never
+   field-level arithmetic.
 6. **Mark the entry points.** Attach the trigger macro that matches how each callable is actually
    initiated: `#[http]`, `#[onevent]`, `#[schedule]`, `#[manual]`. These become inbound edges and
    sequence-diagram entry points.
@@ -188,18 +190,18 @@ public container Checkout for Shop {
   /// Reserve stock, price it, charge, persist, announce.
   #[http("POST /orders")]
   public PlaceOrder(cmd: PlaceOrder): Result<Order, OrderError> {
-    reserved = Inventory::Reservations.reserve(cmd.sku, cmd.qty)
+    reserved: Result<void, OutOfStock> = Inventory::Reservations.reserve(cmd.sku, cmd.qty)
     if (reserved.isErr) {
       return Err(reserved.error)
     }
-    quote = self.Quote(cmd.sku, cmd.qty)
-    order = Order from { cmd, quote }
-    paid = Payments.charge(order)
+    quote: number = self.Quote(cmd.sku, cmd.qty)
+    order: Order = Order from { cmd, quote }
+    paid: Result<void, Declined> = Payments.charge(order)
     if (paid.isErr) {
       return Err(paid.error)
     }
     OrderStore::Orders.save(order)
-    evt = OrderPlaced from { order }
+    evt: OrderPlaced = OrderPlaced from { order }
     Bus.publish(evt)
     return Ok(order)
   }
@@ -264,4 +266,4 @@ Before declaring a model done, confirm:
 - [ ] **Features cover the behaviour** — one `feature` per acceptance scenario, each `for` a real
   node, given/when/then in order, steps phrased as observable behaviour.
 - [ ] **Spec-faithful syntax** — names are fully qualified or aliased; visibility is correct; nothing
-  uses a form `references/LANG.md` doesn't define.
+  uses a form the language reference (`pds lang`) doesn't define.

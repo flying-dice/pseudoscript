@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   // A peer card in the C4 graph: kind tag, title, and the `///` summary as a
   // dimmed description. Replaces Svelte Flow's default node (which renders only
   // the label) so the card carries the same context the info popover does.
@@ -6,7 +6,17 @@
   // clicks bubble to the flow's node-click handler that opens the popover.
   import { Handle, Position } from "@xyflow/svelte";
 
-  let { data } = $props();
+  type C4Data = {
+    label: string;
+    kind: string;
+    summary?: string;
+  };
+
+  type Props = {
+    data: C4Data;
+  };
+
+  let { data }: Props = $props();
 </script>
 
 <Handle type="target" position={Position.Top} class="c4-handle" />

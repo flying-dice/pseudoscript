@@ -1,0 +1,15 @@
+// LANG.md §6.1: `void` is a type, not a value. A void-returning callable returns
+// with a bare `Ok`; `Ok(void)` reads `void` as a value, which resolves to no
+// parameter, binding, node, alias, or variant.
+
+//! example
+
+public data Failure { reason: string }
+
+public system S;
+
+public container C for S {
+  run(): Result<void, Failure> {
+    return Ok(void)
+  }
+}

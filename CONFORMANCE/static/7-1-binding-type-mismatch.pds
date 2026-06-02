@@ -1,0 +1,12 @@
+// LANG.md §7.1 (ADR-027): a binding's annotation must match a determinable
+// initialiser. A `number`-annotated binding initialised with a string literal
+// is rejected.
+
+//! example
+
+public system S;
+public container C for S {
+  run(): void {
+    n: number = ""
+  }
+}

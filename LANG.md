@@ -302,9 +302,9 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 
 | Construct | Syntax | Sequence mapping |
 |-----------|--------|------------------|
-| Assignment | `x = Expr` | — (binds the name; single-assignment) |
+| Assignment | `x: Type = Expr` | — (binds the name; single-assignment) |
 | Call | `Target.method(args)` | solid request → return arrow |
-| Composition | `x = Type from { a, b }` | — (local; provenance edge in data-flow view) |
+| Composition | `x: Type = Type from { a, b }` | — (local; provenance edge in data-flow view) |
 | Return | `return Expr` | return arrow (`Err` labeled with `E`) |
 | If | `if (C) { } else { }` | `alt` frame |
 | For | `for (x in Expr) { }` | `loop` frame |
@@ -313,14 +313,14 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 An `if`/`while` condition `C` MUST be `bool` where its type is inferable (ADR-023).
 
 ### 7.1 Assignment
-`x = Expr` binds `x` once. Type is inferred from the right-hand side. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
+`x: Type = Expr` binds `x` once. The binding MUST state its type; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable — a literal, a `from`, an `Ok`/`Err`/`Some`/`None` marker, or a bare reference — it MUST match the annotation; a call, field access, `self`, or `::` path is not inferred (ADR-022), so there the annotation stands. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
 
 ### 7.2 Composition with `from`
 `x` of type `Type` is composed *from* a set of sources. The braces enclose a **source set** (bindings, field accesses, or calls).
 ```pds
-a = Foo.getThing()
-b = Bar.getOther()
-c = BankingInfo from { a, b }
+a: Thing = Foo.getThing()
+b: Other = Bar.getOther()
+c: BankingInfo = BankingInfo from { a, b }
 ```
 - `from` composes a `data` record or union variant. The built-in constructors `Ok` / `Err` / `Some` / `None` produce `Result` / `Option` values (§6). No other construction exists.
 - The `from` target MUST resolve to a `data` record or union variant; a primitive, `Result`, `Option`, or node target MUST be rejected.
@@ -494,7 +494,7 @@ Primitive   = "number" | "string" | "bool" | "datetime" | "uuid" | "void" ;
 
 Block       = "{" { Stmt } "}" ;
 Stmt        = Assign | Return | If | For | While | Postfix ;
-Assign      = Ident "=" Expr ;                      // binds once (single-assignment)
+Assign      = Ident ":" Type "=" Expr ;            // binds once (single-assignment), type stated
 Return      = "return" [ Expr ] ;
 If          = "if" "(" Expr ")" Block [ "else" Block ] ;
 For         = "for" "(" Ident "in" Expr ")" Block ; // Expr MUST be an array type

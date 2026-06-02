@@ -1,0 +1,1 @@
+no field `isSome` on `Ref`; `.isSome` is an `Option` accessor (§6.2) — type the value `Option<Ref>` to use it

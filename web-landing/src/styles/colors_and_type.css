@@ -69,15 +69,17 @@
 
 /* ---- LIGHT ---------------------------------------------------------------- */
 :root[data-theme="light"] {
-  --bg: #f3f1ec;
+  /* matched to the web-ide light theme (web-ide/src/app.css): tinted blue
+     (B ≥ G ≥ R) so the surface reads like brushed metal, not aged paper. */
+  --bg: #e7eaef;
   --surface: #ffffff;
-  --surface-2: #f4f2ed;
-  --surface-3: #e8e5dd;
+  --surface-2: #f4f6f9;
+  --surface-3: #e3e7ee;
   --ink: #1a1b20;
   --ink-soft: #4c4e57;
-  --ink-faint: #8a8c95;
-  --line: #e3e0d8;
-  --line-strong: #cfccc2;
+  --ink-faint: #888c95;
+  --line: #dde0e7;
+  --line-strong: #c6cad3;
 
   --accent: #e8401c;
   --accent-hi: #ff5a36;

@@ -1,0 +1,13 @@
+// LANG.md §6: a `.name(args)` call's member MUST exist on the receiver's type.
+// `c` is a `Conv` record (fields only); a `data` value has no callables, so any
+// method call on one is rejected.
+
+//! example
+
+public data Conv { id: uuid }
+
+public system S;
+
+public container C for S {
+  run(c: Conv): void { c.doThing() }
+}

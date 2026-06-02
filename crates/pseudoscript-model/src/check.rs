@@ -479,8 +479,46 @@ impl Checker<'_> {
         // arity.
         self.check_call_arity(body, owner, &vars);
 
+        // §6: a `.method(args)` call names a callable of its receiver's type.
+        let recv_types = build_receiver_types(callable, body);
+        self.check_call_members(body, &recv_types);
+
         // §7 (ADR-023): an `if`/`while` condition is boolean.
         self.check_conditions(body, &vars);
+
+        // §7.1: a binding's annotation must match a determinable initialiser.
+        self.check_binding_types(body, &vars);
+    }
+
+    /// §7.1: a binding states its type (`x: T = expr`). Where the initialiser's
+    /// type is determinable — a literal, marker, `from`, or bare reference — it
+    /// must match the annotation. Calls, field accesses, `self`, and `::` paths
+    /// infer to `Unknown` (ADR-022), so the annotation is authoritative there and
+    /// nothing is flagged. A generic annotation (`Result<…>`/`Option<…>`) is
+    /// compared only by its constructor, not its inner types.
+    fn check_binding_types(&mut self, block: &Block, vars: &FxHashMap<String, Ty>) {
+        for_each_stmt(block, &mut |stmt| {
+            let StmtKind::Assign { name, ty, value } = &stmt.kind else {
+                return;
+            };
+            // The placeholder type of an untyped-assignment parse error names no
+            // type; the missing-annotation diagnostic already stands.
+            if !ty.generics.is_empty() || type_leaf(ty).is_empty() {
+                return;
+            }
+            let found = infer(value, vars);
+            if !arg_matches(&found, type_leaf(ty), ty.is_array, &self.unions) {
+                self.error(
+                    value.span,
+                    format!(
+                        "binding `{}` is annotated `{}` but its value is `{}`",
+                        name.name,
+                        type_display(ty),
+                        ty_display(&found)
+                    ),
+                );
+            }
+        });
     }
 
     /// §7: an `if`/`while` condition whose type is inferable must be `bool`.
@@ -590,6 +628,89 @@ impl Checker<'_> {
         }
     }
 
+    /// §6: every `.name(args)` call in a body whose receiver's type is statically
+    /// known names a callable of that type.
+    fn check_call_members(&mut self, block: &Block, recv_types: &FxHashMap<String, Ty>) {
+        for_each_expr(block, &mut |expr| {
+            self.check_call_member_at(expr, recv_types);
+        });
+    }
+
+    /// Checks the call segments of one postfix chain. Walks from a typed root —
+    /// the node a bare path names, or the record a parameter/binding is typed as
+    /// — resolving each field segment to continue. A call segment MUST name a
+    /// callable of the running receiver; a record (fields only) rejects every
+    /// call. Walking stops at a call result, a non-record field, or an unknown
+    /// receiver — those are not inferred (ADR-022). `self.` calls and `::` paths
+    /// are owned by `check_self_call_at` / cross-module resolution.
+    fn check_call_member_at(&mut self, expr: &Expr, recv_types: &FxHashMap<String, Ty>) {
+        let ExprKind::Postfix { base, segments } = &expr.kind else {
+            return;
+        };
+        // Each chain is processed once, from its `Ref` root; a sub-chain (base is
+        // itself a `Postfix`) is visited separately by `for_each_expr`.
+        let Some(mut recv) = self.chain_root_owner(base, recv_types) else {
+            return;
+        };
+        for seg in segments {
+            let member = self
+                .model
+                .members(&recv)
+                .iter()
+                .find(|m| m.name == seg.name.name);
+            if seg.call_args.is_some() {
+                if !member.is_some_and(|m| m.kind == MemberKind::Callable) {
+                    let cands: Vec<&str> = self
+                        .model
+                        .members(&recv)
+                        .iter()
+                        .filter(|m| m.kind == MemberKind::Callable)
+                        .map(|m| m.name.as_str())
+                        .collect();
+                    let hint = suggest(&seg.name.name, &cands);
+                    self.error(
+                        seg.span,
+                        format!("no method `{}` on `{recv}`{hint}", seg.name.name),
+                    );
+                }
+                return; // a call result's type is not inferred (ADR-022)
+            }
+            // A field read: continue only while the field's type names a same-module record.
+            match member.and_then(|m| param_shape(&m.ty)) {
+                Some((leaf, false)) if self.is_record(leaf) => recv = leaf.to_owned(),
+                _ => return,
+            }
+        }
+    }
+
+    /// The receiver type a postfix chain starts from: the node a bare path names
+    /// (a `data` type is a value form, resolved via its binding instead), or the
+    /// same-module record a parameter/binding is typed as. `self`-rooted chains
+    /// and `::` paths return `None` — not checked here.
+    fn chain_root_owner(&self, base: &Expr, recv_types: &FxHashMap<String, Ty>) -> Option<String> {
+        let ExprKind::Ref(Ref::Path(path)) = &base.kind else {
+            return None;
+        };
+        if !path.is_simple() {
+            return None;
+        }
+        let name = &path.segments[0].name;
+        if self
+            .model
+            .symbol(name)
+            .is_some_and(|s| s.kind != SymbolKind::Data)
+        {
+            return Some(name.clone());
+        }
+        match recv_types.get(name) {
+            Some(Ty::Named {
+                name: ty,
+                array: false,
+            }) if self.is_record(ty) => Some(ty.clone()),
+            _ => None,
+        }
+    }
+
     /// §2.2/§3.4: a `.field` read whose receiver is a known same-module `data`
     /// record (with disclosed fields) must name one of its fields. Black-box
     /// data, unions, cross-module types, and call/accessor results are not
@@ -611,14 +732,19 @@ impl Checker<'_> {
             && self.is_record(&name)
             && !self.has_field(&name, &seg.name.name)
         {
-            let hint = {
-                let cands: Vec<&str> = self
-                    .model
-                    .members(&name)
-                    .iter()
-                    .map(|m| m.name.as_str())
-                    .collect();
-                suggest(&seg.name.name, &cands)
+            // A close real field wins (`.values` typo'd as `.value`); only when
+            // none is near do we explain a `Result`/`Option` accessor misuse.
+            let cands: Vec<&str> = self
+                .model
+                .members(&name)
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            let suggestion = suggest(&seg.name.name, &cands);
+            let hint = if suggestion.is_empty() {
+                accessor_hint(&seg.name.name, &name)
+            } else {
+                suggestion
             };
             self.error(
                 seg.span,
@@ -668,7 +794,12 @@ impl Checker<'_> {
             && self.model.alias(name).is_none()
             && !self.variant_names.contains(name.as_str())
         {
-            let hint = {
+            let hint = if name == "void" {
+                // `void` is a type, not a value: a void callable returns with a
+                // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
+                "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)"
+                    .to_owned()
+            } else {
                 let candidates: Vec<&str> = scope
                     .iter()
                     .copied()
@@ -977,9 +1108,32 @@ fn build_vars(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
     vars
 }
 
+/// Each parameter and annotated binding mapped to its *declared* type — the
+/// receiver type a later `.method()` chain resolves against. Unlike [`build_vars`],
+/// a call-initialised binding keeps its annotation rather than `Unknown`: calls
+/// are not inferred (ADR-022), but the declared type names the receiver whose
+/// members must exist (§6). Used only by the call-member check.
+fn build_receiver_types(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
+    let mut types: FxHashMap<String, Ty> = callable
+        .params
+        .iter()
+        .map(|p| (p.name.name.clone(), ty_from_ast(&p.ty)))
+        .collect();
+    for_each_stmt(body, &mut |stmt| {
+        if let StmtKind::Assign { name, ty, .. } = &stmt.kind
+            && !type_leaf(ty).is_empty()
+        {
+            types.insert(name.name.clone(), ty_from_ast(ty));
+        }
+    });
+    types
+}
+
 fn collect_binding_types(block: &Block, vars: &mut FxHashMap<String, Ty>) {
     for_each_stmt(block, &mut |stmt| match &stmt.kind {
-        StmtKind::Assign { name, value } => {
+        StmtKind::Assign { name, value, .. } => {
+            // The result-flow lattice keeps inferring from the RHS (calls stay
+            // Unknown, ADR-022); the annotation is validated separately.
             let ty = infer(value, vars);
             vars.insert(name.name.clone(), ty);
         }
@@ -1139,6 +1293,26 @@ fn suggest(typed: &str, candidates: &[&str]) -> String {
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| format!("; did you mean `{c}`?"))
         .unwrap_or_default()
+}
+
+/// A hint when `name` is a `Result`/`Option` accessor (§6) read off a value that
+/// is neither — the common cause is a field declared as a plain type that should
+/// be `Option<T>`. Empty when `name` is an ordinary (mistyped) field.
+fn accessor_hint(name: &str, receiver: &str) -> String {
+    match name {
+        "isOk" | "isErr" | "error" => {
+            format!("; `.{name}` is a `Result` accessor (§6.1) — `{receiver}` is not a `Result`")
+        }
+        "isSome" | "isNone" => {
+            format!(
+                "; `.{name}` is an `Option` accessor (§6.2) — type the value `Option<{receiver}>` to use it"
+            )
+        }
+        "value" => {
+            format!("; `.value` reads a `Result`/`Option` payload (§6) — `{receiver}` is neither")
+        }
+        _ => String::new(),
+    }
 }
 
 /// Visits every statement in `block`, descending into nested `if`/`for`/`while`

@@ -506,7 +506,7 @@ fn callable_detail(callable: &Callable) -> String {
 }
 
 /// Renders a type to its source form: `Result<uuid, string>`, `Account[]`.
-fn render_type(ty: &Type) -> String {
+pub(crate) fn render_type(ty: &Type) -> String {
     let mut out = path_str(&ty.name);
     if !ty.generics.is_empty() {
         let args = ty

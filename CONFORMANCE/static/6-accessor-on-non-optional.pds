@@ -1,0 +1,18 @@
+// LANG.md §6.2: `.isSome` is an `Option` accessor. `mv` is a plain record, not
+// an `Option`, so the read names no field — the diagnostic points at typing the
+// value `Option<...>`.
+
+//! example
+
+public data Ref { id: number }
+
+public system S;
+
+public container C for S {
+  pick(mv: Ref): number {
+    if (mv.isSome) {
+      return 1
+    }
+    return 0
+  }
+}

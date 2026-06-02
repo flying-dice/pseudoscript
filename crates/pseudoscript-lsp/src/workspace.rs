@@ -207,7 +207,7 @@ impl Project {
                 diagnostics.extend(static_diagnostics(workspace, &entry.fqn));
                 (
                     uri.clone(),
-                    crate::analysis::lsp_diagnostics(&entry.source, &diagnostics),
+                    pseudoscript_lsp_core::analysis::lsp_diagnostics(&entry.source, &diagnostics),
                 )
             })
             .collect()

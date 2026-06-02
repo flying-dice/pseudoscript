@@ -22,6 +22,21 @@ export function check(source: string): string;
 export function check_modules(modules_json: string): string;
 
 /**
+ * Context-aware completion at `offset` (a byte offset) in module `module_fqn`,
+ * as a JSON array of LSP `CompletionItem`s (`{label, kind, detail}`, where
+ * `kind` is the integer `CompletionItemKind`). Scoped to the trigger before the
+ * caret (`.`/`::`/`#[`/type-position/general); the client filters against the
+ * typed prefix. Served by the shared [`pseudoscript_lsp_core::complete`] —
+ * identical to the stdio server's `textDocument/completion`. `modules_json` is
+ * the `[{fqn, source}]` workspace shape.
+ *
+ * # Errors
+ *
+ * Returns an error when `modules_json` is not valid JSON of the expected shape.
+ */
+export function completion(modules_json: string, module_fqn: string, offset: number): string;
+
+/**
  * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` to
  * the FQN of its declaration, for go-to-definition. Returns the FQN as a JSON
  * string, or `null` when the cursor rests on no resolvable symbol. Unlike
@@ -92,6 +107,15 @@ export function emit_scene_modules(modules_json: string, view: string, target: s
 export function emit_svg(source: string, view: string, target: string): string;
 
 /**
+ * Foldable regions of `source` as the JSON of an LSP `FoldingRange` array
+ * (`{ startLine, endLine, kind }`, 0-based lines) — every multi-line
+ * declaration and statement block. Identical to the stdio server's
+ * `textDocument/foldingRange` response; the editor folds these instead of
+ * brace-matching in JS.
+ */
+export function folding_ranges(source: string): string;
+
+/**
  * Formats `source` into its canonical form.
  *
  * # Errors
@@ -102,15 +126,13 @@ export function emit_svg(source: string, view: string, target: string): string;
 export function format(source: string): string;
 
 /**
- * Resolves the symbol under `offset` (a byte offset) in module `module_fqn`
- * and returns it as JSON `{ info: { fqn, title, body }, svg }`, or `null` when
- * the cursor rests on no resolvable symbol. `svg` is the symbol's fitting
- * diagram ([`project_symbol`]) rendered to a self-contained string — a sequence
- * trace for a callable, a structural view for a node. `modules_json` is the
+ * Resolves the symbol under `offset` (a byte offset) in module `module_fqn` and
+ * returns it as an LSP `Hover` (`{ contents: { kind, value }, range }`,
+ * Markdown), or `null` when the cursor rests on no resolvable symbol. Served by
+ * the shared [`pseudoscript_lsp_core::analysis::hover`] — identical to the
+ * stdio server's `textDocument/hover`, no diagram. The interactive diagram is a
+ * separate concern: [`symbol_scene`] / [`symbol_svg`]. `modules_json` is the
  * `[{fqn, source}]` workspace shape.
- *
- * The host (an editor hover) shows the info and diagram together; it never
- * decides which diagram a symbol gets — the compiler does.
  *
  * # Errors
  *
@@ -171,6 +193,22 @@ export function parse(source: string): string;
 export function references(modules_json: string, module_fqn: string, offset: number): string;
 
 /**
+ * Renames the symbol under `offset` in module `module_fqn` to `new_name`,
+ * applying only the occurrences in `selected_json` — a JSON array of
+ * `{fqn, line, col}` (1-based, matching [`references`]'s occurrence positions).
+ * Returns JSON `[{ fqn, source }]`: the new full source of every module that
+ * changed. The host swaps these into its buffers. The substitution is done here
+ * (over UTF-8 byte spans) so the host never does offset math. Occurrence spans
+ * come from the shared [`pseudoscript_lsp_core::refs::rename`].
+ *
+ * # Errors
+ *
+ * Returns an error when `new_name` is not a valid identifier, or when either
+ * JSON argument is malformed.
+ */
+export function rename_apply(modules_json: string, module_fqn: string, offset: number, new_name: string, selected_json: string): string;
+
+/**
  * Renders the whole documentation site for a workspace, exactly as the CLI's
  * `pds doc` does, driving server-side rendering through the host's JavaScript
  * engine rather than an embedded one.
@@ -186,6 +224,15 @@ export function references(modules_json: string, module_fqn: string, offset: num
  * fails to render (a bundle/engine defect — not user model data).
  */
 export function render_doc_site(modules_json: string, config_json: string, render: Function): string;
+
+/**
+ * AST-aware semantic tokens for `source`, as the JSON of an LSP
+ * `SemanticTokens` (the delta-encoded `data` array over UTF-16 positions; the
+ * `token_type` field indexes the [`pseudoscript_lsp_core::semantic`] legend).
+ * Identical to the stdio server's `textDocument/semanticTokens/full` response —
+ * the editor decodes and decorates it, replacing any hand-written tokenizer.
+ */
+export function semantic_tokens(source: string): string;
 
 /**
  * Routes Rust panics to the browser console with a readable stack. Runs once
@@ -230,12 +277,14 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly check: (a: number, b: number) => [number, number];
     readonly check_modules: (a: number, b: number) => [number, number, number, number];
+    readonly completion: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly definition: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly doc_manifest: (a: number, b: number) => [number, number, number, number];
     readonly doc_ssr_bundle: () => [number, number];
     readonly emit_scene: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly emit_scene_modules: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly emit_svg: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly folding_ranges: (a: number, b: number) => [number, number];
     readonly format: (a: number, b: number) => [number, number, number, number];
     readonly hover: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly layout_scene: (a: number, b: number) => [number, number, number, number];
@@ -243,7 +292,9 @@ export interface InitOutput {
     readonly outline_modules: (a: number, b: number) => [number, number, number, number];
     readonly parse: (a: number, b: number) => [number, number];
     readonly references: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly rename_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly render_doc_site: (a: number, b: number, c: number, d: number, e: any) => [number, number, number, number];
+    readonly semantic_tokens: (a: number, b: number) => [number, number];
     readonly symbol_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly symbol_svg: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly version: () => [number, number];
