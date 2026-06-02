@@ -477,7 +477,8 @@ fn project_sequence(graph: &Graph, entry: &str) -> Result<SequenceScene, EmitErr
     let participants = order
         .into_iter()
         .map(|fqn| {
-            let kind = graph.node(&fqn).map_or_else(
+            let node = graph.node(&fqn);
+            let kind = node.map_or_else(
                 || {
                     if is_initiator(&fqn) {
                         NodeKind::Person
@@ -487,7 +488,14 @@ fn project_sequence(graph: &Graph, entry: &str) -> Result<SequenceScene, EmitErr
                 },
                 |n| n.kind,
             );
-            Lifeline { fqn, kind }
+            let summary = node.and_then(|n| n.doc.summary.clone());
+            let parent_path = node.and_then(|n| ancestry_path(graph, n));
+            Lifeline {
+                fqn,
+                kind,
+                summary,
+                parent_path,
+            }
         })
         .collect();
 
@@ -541,10 +549,14 @@ fn project_black_box(graph: &Graph, node: &GraphNode, entry: &str) -> SequenceSc
             Lifeline {
                 fqn: actor,
                 kind: NodeKind::Person,
+                summary: None,
+                parent_path: None,
             },
             Lifeline {
                 fqn: owner.clone(),
                 kind: graph.node(&owner).map_or(NodeKind::Container, |n| n.kind),
+                summary: graph.node(&owner).and_then(|n| n.doc.summary.clone()),
+                parent_path: graph.node(&owner).and_then(|n| ancestry_path(graph, n)),
             },
         ],
         items,
@@ -699,6 +711,33 @@ fn register(participants: &mut Vec<String>, fqn: &str) {
 /// declared node (`event:<FQN>`, `scheduler`, `client`, `caller`).
 fn is_initiator(token: &str) -> bool {
     token.starts_with("event:") || matches!(token, "scheduler" | "client" | "caller")
+}
+
+/// The structural ancestry shown dimmed under a container/component lifeline:
+/// the enclosing node names, outermost first, joined with `::`. Derived by
+/// walking the graph's `parent` chain (the FQN is module-flat and does not carry
+/// the C4 nesting). `None` for other kinds and for a top-level node.
+fn ancestry_path(graph: &Graph, node: &GraphNode) -> Option<String> {
+    if node.kind != NodeKind::Container && node.kind != NodeKind::Component {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut cur = node.parent.as_deref();
+    // `seen` guards against a malformed `for` cycle so a bad graph can't hang the
+    // renderer.
+    while let Some(parent) = cur
+        .filter(|fqn| seen.insert(*fqn))
+        .and_then(|fqn| graph.node(fqn))
+    {
+        names.push(parent.name.clone());
+        cur = parent.parent.as_deref();
+    }
+    if names.is_empty() {
+        return None;
+    }
+    names.reverse();
+    Some(names.join("::"))
 }
 
 /// A call's type detail: `(name: ty, …): Ret`, the return type omitted when
@@ -896,5 +935,34 @@ mod tests {
             let node = scene.nodes.iter().find(|n| n.fqn == ext).unwrap();
             assert_eq!(node.boundary, None);
         }
+    }
+
+    #[test]
+    fn sequence_lifeline_carries_for_ancestry_and_summary() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system Shop;\npublic container Api for Shop;\n\
+             /// Validates orders.\npublic component Validator for m::Api {\n  \
+             #[http]\n  public Check(): void { self.Help() }\n  Help(): void;\n}"
+                .to_owned(),
+        );
+        let Scene::Sequence(seq) = project(
+            &graph(&[m]),
+            View::Sequence {
+                entry: "m::Validator::Check".to_owned(),
+            },
+        )
+        .expect("projects") else {
+            panic!("expected a sequence scene");
+        };
+        let v = seq
+            .participants
+            .iter()
+            .find(|p| p.fqn == "m::Validator")
+            .expect("validator lifeline present");
+        // The `for` ancestry (system::container), outermost first — not the
+        // module-flat FQN.
+        assert_eq!(v.parent_path.as_deref(), Some("Shop::Api"));
+        assert_eq!(v.summary.as_deref(), Some("Validates orders."));
     }
 }

@@ -24,6 +24,10 @@ const NODE_H: i32 = 60;
 const NODE_GAP: i32 = 30;
 const BOUNDARY_PAD: i32 = 30;
 const ACT_W: i32 = 10; // execution-activation bar width (matches sequence::Metrics::act_w)
+// Lifeline-card text inset: left rule + text pad, matching `draw_card`'s `tx` and
+// the layout's `head::TEXT_INSET` so the parent path / summary align with the
+// name above them.
+const CARD_TEXT_X: i32 = 19;
 
 // --- C4 layout --------------------------------------------------------------
 
@@ -105,6 +109,8 @@ fn to_diagram(scene: &SequenceScene) -> sequence::Diagram {
                 id: l.fqn.clone(),
                 label: simple_name(&l.fqn).to_owned(),
                 kind: kind_token(l.kind).to_owned(),
+                summary: l.summary.clone(),
+                parent_path: l.parent_path.clone(),
             })
             .collect(),
         items: to_items(&scene.items),
@@ -402,6 +408,34 @@ fn render_sequence(scene: &SequenceScene) -> String {
             &placed.label,
             None,
         );
+        // Dimmed parent path (container/component) then the wrapped summary,
+        // under the name. Baselines come from `sequence::head` so they line up
+        // with the card height the engine computed.
+        let tx = placed.card.x + CARD_TEXT_X;
+        if let Some(parent) = &placed.parent_path {
+            let _ = write!(
+                &mut out,
+                "<text x=\"{tx}\" y=\"{y}\" font-size=\"11\" fill=\"{SEQ_MUTED}\">{parent}</text>",
+                y = placed.card.y + sequence::head::PARENT_Y,
+                parent = escape_xml(parent),
+            );
+        }
+        let desc_top = sequence::head::DESC_TOP_Y
+            + if placed.parent_path.is_some() {
+                sequence::head::DESC_SHIFT_Y
+            } else {
+                0
+            };
+        for (i, line) in placed.summary_lines.iter().enumerate() {
+            let _ = write!(
+                &mut out,
+                "<text x=\"{tx}\" y=\"{y}\" font-size=\"11.5\" fill=\"{SEQ_MUTED}\">{line}</text>",
+                y = placed.card.y
+                    + desc_top
+                    + i32::try_from(i).unwrap_or(0) * sequence::head::DESC_LINE_H,
+                line = escape_xml(line),
+            );
+        }
         let _ = write!(
             &mut out,
             "<line x1=\"{x}\" y1=\"{top}\" x2=\"{x}\" y2=\"{bot}\" stroke=\"{SEQ_LINE}\" \
@@ -682,5 +716,23 @@ mod tests {
     fn simple_name_takes_leaf() {
         assert_eq!(simple_name("a::b::C"), "C");
         assert_eq!(simple_name("event:a::B"), "event:a::B");
+    }
+
+    #[test]
+    fn sequence_head_card_draws_parent_path_and_summary() {
+        use crate::scene::{Lifeline, SequenceScene};
+        let scene = SequenceScene {
+            entry: "m::Comp::run".to_owned(),
+            participants: vec![Lifeline {
+                fqn: "m::Comp".to_owned(),
+                kind: NodeKind::Component,
+                summary: Some("Validates the order before queueing.".to_owned()),
+                parent_path: Some("Shop::Api".to_owned()),
+            }],
+            items: Vec::new(),
+        };
+        let svg = render_sequence(&scene);
+        assert!(svg.contains("Shop::Api"), "parent path drawn");
+        assert!(svg.contains("Validates the order"), "summary drawn");
     }
 }

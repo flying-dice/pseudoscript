@@ -7,10 +7,12 @@
 // The C4 depth levels, widest first.
 export type Depth = "system" | "container" | "component";
 
-// One structural node: its C4 kind and the fqn of its parent (null at the root).
+// One structural node: its C4 kind, the fqn of its parent (null at the root),
+// and its `///` summary (shown dimmed on a lifeline head).
 export interface NodeInfo {
   kind: string;
   parent: string | null;
+  summary?: string | null;
 }
 
 // fqn -> structural node, the ancestry the collapse walks.
@@ -20,6 +22,8 @@ export type Info = Record<string, NodeInfo | undefined>;
 export interface Participant {
   fqn: string;
   kind: string;
+  summary?: string | null;
+  parent_path?: string | null;
   [key: string]: unknown;
 }
 
@@ -74,6 +78,30 @@ export const DEPTHS: { id: Depth; label: string }[] = [
 // otherwise its nearest ancestor whose kind is. Synthesised initiators (a
 // `caller`/`client`/`event:` token absent from `info`) are external actors and
 // always show as-is.
+// The simple (final-segment) name of an fqn.
+function simpleName(fqn: string): string {
+  return fqn.split("::").at(-1) ?? fqn;
+}
+
+// The structural ancestry shown dimmed under a container/component name:
+// enclosing node names, outermost first, joined with `::`. Walks the `info`
+// parent chain (the fqn is module-flat and does not carry the C4 nesting).
+// `null` for other kinds and for a node with no enclosing parent. Mirrors the
+// Rust projection's `ancestry_path` so collapsed and uncollapsed views agree.
+function ancestryPath(fqn: string, info: Info): string | null {
+  const kind = info[fqn]?.kind;
+  if (kind !== "container" && kind !== "component") return null;
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let cur = info[fqn]?.parent ?? null;
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    names.push(simpleName(cur));
+    cur = info[cur]?.parent ?? null;
+  }
+  return names.length ? names.reverse().join("::") : null;
+}
+
 function displayFqn(fqn: string, depth: string, info: Info): string {
   const allowed = ALLOWED[depth as Depth] ?? ALLOWED.component;
   let cur = fqn;
@@ -136,7 +164,15 @@ export function collapseSequence(scene: Scene | null | undefined, depth: string,
     const fqn = map(p.fqn);
     if (seen.has(fqn)) continue;
     seen.add(fqn);
-    participants.push({ ...p, fqn, kind: info[fqn]?.kind ?? p.kind });
+    // The collapsed lifeline shows the ancestor node's own summary and ancestry,
+    // not the pre-collapse leaf's.
+    participants.push({
+      ...p,
+      fqn,
+      kind: info[fqn]?.kind ?? p.kind,
+      summary: info[fqn]?.summary ?? null,
+      parent_path: ancestryPath(fqn, info),
+    });
   }
 
   return { ...scene, participants, items: remapItems(scene.items, map) };

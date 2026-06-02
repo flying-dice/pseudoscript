@@ -134,6 +134,16 @@ pub struct Lifeline {
     pub fqn: String,
     /// The participant node's C4 kind, for the lifeline-head card styling.
     pub kind: NodeKind,
+    /// The node's `///` summary, shown dimmed under the name (like a C4 card).
+    /// `None` for synthesised initiators and unresolved targets.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The structural ancestry shown dimmed under a container/component name
+    /// (enclosing node names, outermost first, joined with `::`). The FQN is
+    /// module-flat, so this is derived from the graph, not the FQN. `None` for
+    /// other kinds and top-level nodes.
+    #[serde(default)]
+    pub parent_path: Option<String>,
 }
 
 /// One ordered item in a sequence trace: a message or a frame.

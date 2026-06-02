@@ -481,6 +481,7 @@ fn outline_nodes(
                 line,
                 col,
                 parent: n.parent.clone(),
+                summary: n.doc.summary.clone(),
             }
         })
         .collect();
@@ -497,6 +498,7 @@ fn outline_nodes(
             line,
             col,
             parent: Some(s.target_fqn.clone()),
+            summary: None,
         }
     }));
     entries
@@ -901,6 +903,8 @@ struct OutlineNode {
     line: u32,
     col: u32,
     parent: Option<String>,
+    /// The node's `///` summary, so the host can show it on a sequence lifeline.
+    summary: Option<String>,
 }
 
 /// The result of [`references`]: the resolved symbol's `fqn`/`title` plus every

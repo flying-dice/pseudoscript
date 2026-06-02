@@ -11,6 +11,8 @@
     id: string;
     label: string;
     kind: string;
+    parent_path?: string | null;
+    summary_lines?: string[];
     card: { x: number; y: number; w: number; h: number };
     lifeline_x: number;
     top: number;
@@ -84,6 +86,10 @@
   >
     <span class="seq-kind">{kindLabel}</span>
     <span class="seq-name">{nameLabel}</span>
+    {#if !initiator && p.parent_path}<span class="seq-fqn">{p.parent_path}</span>{/if}
+    {#if !initiator && p.summary_lines?.length}
+      <span class="seq-summary">{p.summary_lines.join(" ")}</span>
+    {/if}
   </div>
 
   <svg class="seq-overlay" width="100%" height="100%">
@@ -155,6 +161,31 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  /* the structural ancestry (container/component), so a lifeline's place is
+     legible; dimmed and mono to echo the FQN */
+  .seq-fqn {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 400;
+    color: var(--ink-faint);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* the node's `///` summary, dimmed and clamped like a C4 card's description */
+  .seq-summary {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 0.15rem;
+    font-family: var(--font-sans, inherit);
+    font-size: 0.66rem;
+    font-weight: 400;
+    line-height: 1.4;
+    color: var(--ink-soft);
   }
   .seq-overlay {
     position: absolute;
