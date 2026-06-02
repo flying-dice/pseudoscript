@@ -75,7 +75,7 @@
     justify-content: space-between;
     gap: 0.75rem;
     height: var(--bar-h, 38px);
-    padding: 0 0.5rem 0 0.7rem;
+    padding: 0 var(--island-gap) 0 0.7rem;
     background: none;
   }
   .left,
@@ -83,6 +83,12 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+  /* Sit the search button over the right rail below it: occupy a rail-width zone
+     ending the same island-gap from the edge as the rail column, icon centred. */
+  .right {
+    width: var(--right-rail-w);
+    justify-content: center;
   }
   .nav {
     display: flex;
@@ -131,7 +137,7 @@
   @media (display-mode: window-controls-overlay) {
     .topbar {
       padding-left: calc(env(titlebar-area-x, 0px) + 0.7rem);
-      padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 0.5rem);
+      padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + var(--island-gap));
       -webkit-app-region: drag;
     }
     .brand,
