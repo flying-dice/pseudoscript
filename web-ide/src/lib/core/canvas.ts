@@ -28,10 +28,10 @@ export type ProjectCanvasArgs = {
 
 /**
  * Project the canvas scene + layout. A selected symbol projects its fitting view;
- * no selection projects the context overview. A sequence is collapsed to `seqDepth`
- * and positioned by the layout engine; C4 stays as-is. An empty or unprojectable
- * selected symbol falls back to its single lifeline; an unprojectable context is an
- * error. Both error paths report via `onError`.
+ * no selection projects the context overview. A sequence is collapsed to `seqDepth`;
+ * both kinds are then positioned by the Rust layout engine. An empty or
+ * unprojectable selected symbol falls back to its single lifeline; an
+ * unprojectable context is an error. Both error paths report via `onError`.
  */
 export function projectCanvas(args: ProjectCanvasArgs): Canvas {
   const { selected, seqDepth, modules, index, wasm, onError } = args;
@@ -47,7 +47,10 @@ export function projectCanvas(args: ProjectCanvasArgs): Canvas {
       ? !(shown?.participants as unknown[] | undefined)?.length
       : !(shown?.nodes as unknown[] | undefined)?.length;
     if (isEmpty && selected) return lifelineFallback();
-    const layout = isSeq && shown ? wasm.layoutScene(shown) : null;
+    // Both kinds are positioned by the Rust layout engine: a sequence yields a
+    // positioned timeline, a C4 scene yields placed cards + routed edges (the
+    // same geometry the static SVG draws).
+    const layout = shown ? wasm.layoutScene(shown) : null;
     return { scene: shown, layout, error: "" };
   } catch (e) {
     const detail = String((e as Error)?.message ?? e);

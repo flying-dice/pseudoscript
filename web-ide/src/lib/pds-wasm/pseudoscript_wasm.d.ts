@@ -141,14 +141,16 @@ export function format(source: string): string;
 export function hover(modules_json: string, module_fqn: string, offset: number): string;
 
 /**
- * Positions a sequence [`Scene`] (as JSON) into absolute coordinates, returning
- * the layout as JSON. The host collapses the scene to a chosen depth first,
- * then hands it here; the layout engine owns all geometry. A non-sequence scene
- * is an error.
+ * Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
+ * layout as JSON. The layout engine owns all geometry: a sequence scene yields
+ * a positioned sequence layout (the host collapses it to a chosen depth first);
+ * a C4 scene yields a [`pseudoscript_emit::C4Layout`] (placed cards + routed
+ * edges + boundary frame), the same geometry the SVG draws. The two layout
+ * shapes are distinguishable by their fields (`participants` vs `nodes`).
  *
  * # Errors
  *
- * Returns an error for invalid JSON or a non-sequence scene.
+ * Returns an error for invalid JSON.
  */
 export function layout_scene(scene_json: string): string;
 
