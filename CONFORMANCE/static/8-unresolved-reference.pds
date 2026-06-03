@@ -1,5 +1,5 @@
 // LANG.md §7/§8 (ADR-022): a bare reference must resolve to a param, binding,
-// node, alias, or variant. `ghost` is undeclared.
+// node, or variant. `ghost` is undeclared.
 
 //! example
 

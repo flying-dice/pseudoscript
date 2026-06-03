@@ -337,9 +337,14 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .svelte-flow__edge-text { fill: var(--ink-soft); font-family: var(--font-mono); font-size: 10px; }
 .svelte-flow__edge-textbg { fill: var(--surface); }
 
-/* kind-coloured card nodes (shared by C4 graph + timeline) */
+/* kind-coloured card nodes (shared by C4 graph + timeline). The C4 graph sizes
+   each card to the layout engine's rect (width/height set on the node), so the
+   box honours those dimensions and clips overflow; the timeline's lifeline head
+   cards (width unset) size to content. */
 .svelte-flow__node.c4-node {
   width: auto;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 0.55rem 0.9rem;
   font-family: var(--font-mono);
   font-size: 0.8rem;

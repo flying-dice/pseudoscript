@@ -1,5 +1,5 @@
-// LANG.md §11: a complete, well-formed model. Every reference resolves, the
-// alias targets a public node, and the Result branch reads the correct accessor.
+// LANG.md §11: a complete, well-formed model. Every reference resolves, and the
+// Result branch reads the correct accessor.
 
 //! banking::core
 

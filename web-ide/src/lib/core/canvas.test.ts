@@ -14,29 +14,29 @@ const c4Scene = (nodes: unknown[]): Scene => ({ view: "context", nodes, edges: [
 
 const wasm = (over: Partial<CanvasWasm> = {}): CanvasWasm => ({
   symbolScene: () => seqScene([{ fqn: "m::C" }, { fqn: "x" }]),
-  emitSceneModules: () => c4Scene([{ fqn: "m::C" }]),
+  emitScene: () => c4Scene([{ fqn: "m::C" }]),
   layoutScene: (s) => ({ ...s, laid: true }),
   ...over,
 });
 
 describe("projectCanvas", () => {
   it("lays out a sequence scene for a selected symbol", () => {
-    const r = projectCanvas({ selected: { fqn: "m::C" }, seqDepth: "component", modules: [], index: idx, wasm: wasm(), onError: () => {} });
+    const r = projectCanvas({ selected: { fqn: "m::C" }, seqDepth: "component", index: idx, wasm: wasm(), onError: () => {} });
     expect(r.error).toBe("");
     expect((r.layout as { laid?: boolean })?.laid).toBe(true);
   });
 
-  it("projects the context overview with no selection (no layout)", () => {
-    const r = projectCanvas({ selected: null, seqDepth: "component", modules: [], index: idx, wasm: wasm(), onError: () => {} });
+  it("projects and lays out the context overview with no selection", () => {
+    const r = projectCanvas({ selected: null, seqDepth: "component", index: idx, wasm: wasm(), onError: () => {} });
     expect((r.scene as { nodes: unknown[] }).nodes).toHaveLength(1);
-    expect(r.layout).toBeNull();
+    // The C4 context is positioned by the layout engine too (not just sequences).
+    expect((r.layout as { laid?: boolean })?.laid).toBe(true);
   });
 
   it("falls back to a lifeline when a selected sequence is empty", () => {
     const r = projectCanvas({
       selected: { fqn: "m::C" },
       seqDepth: "component",
-      modules: [],
       index: idx,
       wasm: wasm({ symbolScene: () => seqScene([]) }),
       onError: () => {},
@@ -49,7 +49,6 @@ describe("projectCanvas", () => {
     const r = projectCanvas({
       selected: { fqn: "m::C" },
       seqDepth: "component",
-      modules: [],
       index: idx,
       wasm: wasm({ symbolScene: () => { throw new Error("nope"); } }),
       onError,
@@ -63,9 +62,8 @@ describe("projectCanvas", () => {
     const r = projectCanvas({
       selected: null,
       seqDepth: "component",
-      modules: [],
       index: idx,
-      wasm: wasm({ emitSceneModules: () => { throw new Error("boom"); } }),
+      wasm: wasm({ emitScene: () => { throw new Error("boom"); } }),
       onError,
     });
     expect(onError).toHaveBeenCalledWith("DIAGRAM_RENDER_FAILED", "boom");

@@ -1,39 +1,73 @@
-// Loader + typed wrappers around the PseudoScript compiler wasm module.
+// The PseudoScript IDE wasm facade — one module over one wasm.
 //
-// The vendored `pds-wasm/` package is wasm-bindgen's `--target web` output:
-// the default export initialises the module (fetching the `.wasm`), after which
-// the named functions are synchronous. Call `initWasm()` once before using them.
-import init, {
-  check as wasmCheck,
-  check_modules as wasmCheckModules,
-  parse as wasmParse,
-  format as wasmFormat,
-  emit_scene as wasmEmitScene,
-  emit_scene_modules as wasmEmitSceneModules,
-  layout_scene as wasmLayoutScene,
-  emit_svg as wasmEmitSvg,
-  hover as wasmHover,
-  definition as wasmDefinition,
-  references as wasmReferences,
-  rename_apply as wasmRenameApply,
-  completion as wasmCompletion,
-  semantic_tokens as wasmSemanticTokens,
-  folding_ranges as wasmFoldingRanges,
-  doc_ssr_bundle as wasmDocSsrBundle,
-  doc_manifest as wasmDocManifest,
-  outline as wasmOutline,
-  outline_modules as wasmOutlineModules,
-  render_doc_site as wasmRenderDocSite,
-  symbol_scene as wasmSymbolScene,
-  symbol_svg as wasmSymbolSvg,
-  version as wasmVersion,
-} from "./pds-wasm/pseudoscript_wasm.js";
-import type { InitOutput } from "./pds-wasm/pseudoscript_wasm.js";
+// `crates/pseudoscript-ide` compiles to a single `--target web` artifact whose
+// whole API is the stateful `IdeSession`: it holds the workspace (the consumer's
+// modules + the resolved dependency externals, LANG.md §8.3) and answers every
+// query — language intelligence, diagrams, docs — over that held state. The
+// boundary is typed by `tsify`, so values cross as objects (no `JSON.parse`); the
+// one exception is the render IR `Scene`, an opaque JSON string the canvas reads
+// structurally, which this module parses on the way out.
+//
+// JavaScript drives it through two ports: the file system pushes modules in
+// (`mountIde`/`setIdeSource`), the editor pulls answers out (the `ide*` queries).
+// Call `initWasm()` once before anything else.
+
+import init, { IdeSession, version as wasmVersion } from "./pds-ide-wasm/pseudoscript_ide.js";
+import type {
+  Completion,
+  Diagnostic,
+  DocConfigInput,
+  DocManifestGroup,
+  FoldingRange,
+  Hover,
+  InitOutput,
+  LocalInput,
+  Module,
+  ModuleResult,
+  Occurrence,
+  OutlineNode,
+  References,
+  RenamedSource,
+  RenameSelection,
+  RenderedFile,
+  SemanticTokens,
+  VendoredInput,
+  DocManifest as WasmDocManifest,
+} from "./pds-ide-wasm/pseudoscript_ide.js";
 import { reportError } from "./errors.js";
 
-// Run a wasm bridge call, tagging any throw with its origin (PDS-WASM-001) so a
+// Re-export the generated DTOs so the rest of the app types against one source of
+// truth — the Rust shapes — instead of hand-written interfaces that drift.
+export type {
+  Completion,
+  Diagnostic,
+  FoldingRange,
+  Hover,
+  Module,
+  ModuleResult,
+  Occurrence,
+  OutlineNode,
+  References,
+  RenamedSource,
+  RenameSelection,
+  RenderedFile,
+  SemanticTokens,
+};
+// Names the existing call sites use; aliased onto the generated types.
+export type CompletionItem = Completion;
+export type ModuleDiagnostics = ModuleResult;
+export type DocManifest = WasmDocManifest;
+export type DocConfig = DocConfigInput;
+export type VendoredDepFile = VendoredInput;
+export type LocalDepFile = LocalInput;
+export type ManifestSection = DocManifestGroup;
+
+/** A laid-out diagram scene or layout; structure is owned by the renderer. */
+export type Scene = Record<string, unknown>;
+
+// Run a wasm call, tagging any throw with its origin (PDS-WASM-001) so a
 // language-server failure is never silent. Rethrows — callers that recover (the
-// editor's go-to-definition, the diagram canvas) still see the original error.
+// diagram canvas, formatting) still see the original error.
 function callWasm<T>(name: string, fn: () => T): T {
   try {
     return fn();
@@ -43,334 +77,24 @@ function callWasm<T>(name: string, fn: () => T): T {
   }
 }
 
-// ---- Workspace + payload shapes ------------------------------------------
-
-/** One workspace module: its fully-qualified name and source text. */
-export interface Module {
-  fqn: string;
-  source: string;
-}
-
-/** A single diagnostic from the compiler (parse or static error). */
-export interface Diagnostic {
-  message: string;
-  line: number;
-  col: number;
-  end_line: number;
-  end_col: number;
-  severity: string;
-}
-
-/** A module's diagnostics, attributed by {@link checkModules}. */
-export interface ModuleDiagnostics {
-  fqn: string;
-  diagnostics: Diagnostic[];
-}
-
-/** One node declared in a module, as listed by {@link outline}. */
-export interface OutlineNode {
-  fqn: string;
-  name: string;
-  kind: string;
-  triggered: boolean;
-}
-
-/** A laid-out diagram scene or layout; structure is owned by the renderer. */
-export type Scene = Record<string, unknown>;
-
-/** The symbol documentation carried on a {@link hover} result's `info`. */
-export interface HoverInfo {
-  title: string;
-  body: string;
-  svg?: string;
-}
-
-/** An LSP `Hover`, with the editor's `info` documentation payload. */
-export interface Hover {
-  contents: { kind: string; value: string };
-  range?: unknown;
-  info?: HoverInfo;
-}
-
-/** One occurrence of a symbol from {@link references} (1-based positions). */
-export interface Occurrence {
-  fqn: string;
-  line: number;
-  col: number;
-  end_line: number;
-  end_col: number;
-  text: string;
-  /** Char offsets into `text` bounding the symbol token, for highlighting. */
-  match_start: number;
-  match_end: number;
-  decl: boolean;
-}
-
-/** The find-usages result from {@link references}. */
-export interface References {
-  fqn: string;
-  title: string;
-  occurrences: Occurrence[];
-}
-
-/** An LSP `CompletionItem` (`kind` is the integer `CompletionItemKind`). */
-export interface CompletionItem {
-  label: string;
-  kind: number;
-  detail?: string;
-}
-
-/** An LSP `SemanticTokens` payload (delta-encoded over UTF-16 positions). */
-export interface SemanticTokens {
-  data: number[];
-  resultId?: string;
-}
-
-/** An LSP `FoldingRange` (0-based lines). */
-export interface FoldingRange {
-  startLine: number;
-  endLine: number;
-  kind?: string;
-}
-
-/** One page reference in a {@link docManifest} sidebar section. */
-export interface ManifestItem {
-  title: string;
-  path: string;
-}
-
-/** One sidebar section of a {@link docManifest}. */
-export interface ManifestSection {
-  title: string;
-  items: ManifestItem[];
-}
-
-/** The doc manifest parsed from a `pds.toml` by {@link docManifest}. */
-export interface DocManifest {
-  name?: string;
-  theme?: string;
-  logo?: string;
-  lang?: string;
-  sidebar: ManifestSection[];
-}
-
-/** One authored page handed to {@link renderDocSite}, with its Markdown content. */
-export interface DocPageItem {
-  title: string;
-  path: string;
-  content: string;
-}
-
-/** One sidebar section of a {@link renderDocSite} config. */
-export interface DocConfigSection {
-  title: string;
-  items: DocPageItem[];
-}
-
-/** The site config handed to {@link renderDocSite}. */
-export interface DocConfig {
-  name: string;
-  theme?: string;
-  logo?: string;
-  docs?: DocConfigSection[];
-}
-
-/** One rendered output file from {@link renderDocSite}. */
-export interface RenderedFile {
-  path: string;
-  contents: string;
-}
-
-/** The `globalThis.SSR` the embedded Svelte bundle defines. */
-interface SsrGlobal {
-  renderPage: (propsJson: string) => string;
-}
-
+let session: IdeSession | null = null;
 let readyPromise: Promise<InitOutput> | undefined;
 
-/** Initialise the wasm module once; subsequent calls reuse the same promise. */
+/** Initialise the wasm and create the session once; later calls reuse it. */
 export function initWasm(): Promise<InitOutput> {
-  if (!readyPromise) readyPromise = init();
+  if (!readyPromise) {
+    readyPromise = init().then((out) => {
+      session = new IdeSession();
+      return out;
+    });
+  }
   return readyPromise;
 }
 
-/** Parse + static-check one module; returns the diagnostics array. */
-export function check(source: string): Diagnostic[] {
-  return JSON.parse(wasmCheck(source));
-}
-
-/** Parse-only diagnostics (syntax errors), for fast per-keystroke feedback. */
-export function parse(source: string): Diagnostic[] {
-  return JSON.parse(wasmParse(source));
-}
-
-/**
- * Check a whole workspace. `modules` is `[{ fqn, source }]`; returns
- * `[{ fqn, diagnostics }]` with cross-module errors attributed per module.
- */
-export function checkModules(modules: Module[]): ModuleDiagnostics[] {
-  return JSON.parse(wasmCheckModules(JSON.stringify(modules)));
-}
-
-/** Format source to canonical form; throws on a parse error. */
-export function format(source: string): string {
-  return wasmFormat(source);
-}
-
-/** Project a diagram view to its laid-out scene object. */
-export function emitScene(source: string, view: string, target = ""): Scene {
-  return callWasm("emitScene", () => JSON.parse(wasmEmitScene(source, view, target)));
-}
-
-/**
- * List the nodes declared in `source`: `[{ fqn, name, kind, triggered }]`.
- * Used to derive a diagram view's target options from the model itself.
- */
-export function outline(source: string): OutlineNode[] {
-  return JSON.parse(wasmOutline(source));
-}
-
-/** Like {@link outline}, but over a whole workspace (`[{ fqn, source }]`). */
-export function outlineModules(modules: Module[]): OutlineNode[] {
-  return JSON.parse(wasmOutlineModules(JSON.stringify(modules)));
-}
-
-/**
- * Project a diagram view over the whole workspace, so it shows nodes and edges
- * across modules (a container's components, cross-system calls).
- */
-export function emitSceneModules(modules: Module[], view: string, target = ""): Scene {
-  return callWasm("emitSceneModules", () => JSON.parse(wasmEmitSceneModules(JSON.stringify(modules), view, target)));
-}
-
-/**
- * Position a (sequence) scene into absolute coordinates with the layout engine.
- * `scene` is a sequence Scene object (optionally depth-collapsed first); returns
- * the positioned `Layout` the renderer draws verbatim.
- */
-export function layoutScene(scene: Scene): Scene {
-  return callWasm("layoutScene", () => JSON.parse(wasmLayoutScene(JSON.stringify(scene))));
-}
-
-/** Project a diagram view to an SVG string. */
-export function emitSvg(source: string, view: string, target = ""): string {
-  return callWasm("emitSvg", () => wasmEmitSvg(source, view, target));
-}
-
-/**
- * Resolve the symbol under a byte `offset` in module `moduleFqn` as a standard
- * LSP `Hover` (`{ contents: { kind, value }, range }`, Markdown), or `null` when
- * the cursor rests on no symbol. Served exactly as the stdio LSP serves it — no
- * diagram. `modules` is `[{ fqn, source }]`.
- */
-export function hover(modules: Module[], moduleFqn: string, offset: number): Hover | null {
-  return callWasm("hover", () => JSON.parse(wasmHover(JSON.stringify(modules), moduleFqn, offset)));
-}
-
-/**
- * Resolve the symbol under a byte `offset` in module `moduleFqn` to the FQN of
- * its declaration (go-to-definition), or `null` when the cursor rests on no
- * resolvable symbol. Cheaper than {@link hover} — no diagram. `modules` is
- * `[{ fqn, source }]`.
- */
-export function definition(modules: Module[], moduleFqn: string, offset: number): string | null {
-  return callWasm("definition", () => JSON.parse(wasmDefinition(JSON.stringify(modules), moduleFqn, offset)));
-}
-
-/**
- * Find every usage of the symbol under a byte `offset` in module `moduleFqn`
- * across the workspace. Returns `{ fqn, title, occurrences: [{ fqn, line, col,
- * end_line, end_col, text, decl }] }` (1-based positions, a trimmed source-line
- * preview, `decl` marking the declaration), or `null` when the cursor rests on
- * no resolvable symbol. `modules` is `[{ fqn, source }]`.
- */
-export function references(modules: Module[], moduleFqn: string, offset: number): References | null {
-  return callWasm("references", () => JSON.parse(wasmReferences(JSON.stringify(modules), moduleFqn, offset)));
-}
-
-/** An occurrence the user chose to rename, keyed as {@link references} reports it. */
-export interface RenameSelection {
-  fqn: string;
-  line: number;
-  col: number;
-}
-
-/** One module's rewritten source after a rename ({@link renameApply}). */
-export interface RenamedSource {
-  fqn: string;
-  source: string;
-}
-
-/**
- * Renames the symbol under `offset` in `moduleFqn` to `newName`, applying only
- * the `selected` occurrences (as {@link references} reports them). Returns the
- * new full source of every module that changed — the host swaps these into its
- * buffers. Throws when `newName` is not a valid identifier.
- */
-export function renameApply(
-  modules: Module[],
-  moduleFqn: string,
-  offset: number,
-  newName: string,
-  selected: RenameSelection[],
-): RenamedSource[] {
-  return callWasm("rename_apply", () =>
-    JSON.parse(wasmRenameApply(JSON.stringify(modules), moduleFqn, offset, newName, JSON.stringify(selected))),
-  );
-}
-
-/**
- * Context-aware completion at a byte `offset` in module `moduleFqn`, as standard
- * LSP `CompletionItem`s (`[{ label, kind, detail }]`, where `kind` is the
- * integer `CompletionItemKind`). Scoped to the trigger before the caret
- * (`.`/`::`/`#[`/type-position/general); the editor filters against the typed
- * prefix. Served exactly as the stdio LSP serves it. `modules` is
- * `[{ fqn, source }]`.
- */
-export function completion(modules: Module[], moduleFqn: string, offset: number): CompletionItem[] {
-  return callWasm("completion", () => JSON.parse(wasmCompletion(JSON.stringify(modules), moduleFqn, offset)));
-}
-
-/**
- * AST-aware semantic tokens for `source` as a standard LSP `SemanticTokens`
- * (`{ data: [Δline, Δstart, len, type, mods], … }`, delta-encoded over UTF-16
- * positions). `type` indexes the legend in `pseudoscript-lsp-core::semantic`.
- * The same colouring the stdio LSP serves — no hand-written tokenizer.
- */
-export function semanticTokens(source: string): SemanticTokens {
-  return JSON.parse(wasmSemanticTokens(source));
-}
-
-/**
- * Foldable regions of `source` as standard LSP `FoldingRange`s
- * (`[{ startLine, endLine, kind }]`, 0-based lines) — every multi-line
- * declaration and statement block, from the same AST-accurate fold logic the
- * LSP serves.
- */
-export function foldRanges(source: string): FoldingRange[] {
-  return JSON.parse(wasmFoldingRanges(source));
-}
-
-/**
- * Project the fitting diagram for a symbol to its laid-out scene object (the
- * interactive counterpart of {@link hover}'s `svg`, for a side panel or
- * full-screen view). `modules` is `[{ fqn, source }]`.
- */
-// A throw here is control flow, not an error: a non-projectable symbol (a
-// feature, a data type) signals the canvas to show its lifeline fallback, which
-// reports PDS-DIAGRAM-001. Wrapping it in `callWasm` would double-log at error
-// severity — leave it to the caller's recovery.
-export function symbolScene(modules: Module[], fqn: string): Scene {
-  return JSON.parse(wasmSymbolScene(JSON.stringify(modules), fqn));
-}
-
-/**
- * Render the fitting diagram for a symbol to a self-contained SVG string (the
- * live, re-derivable form of {@link hover}'s `svg`, for a docked side panel).
- * `modules` is `[{ fqn, source }]`.
- */
-export function symbolSvg(modules: Module[], fqn: string): string {
-  return wasmSymbolSvg(JSON.stringify(modules), fqn);
+/** The session after {@link initWasm}. Throws if used before init resolves. */
+function ide(): IdeSession {
+  if (!session) throw new Error("IdeSession not initialised — await initWasm() first");
+  return session;
 }
 
 /** The compiler crate version. */
@@ -378,47 +102,163 @@ export function version(): string {
   return wasmVersion();
 }
 
+// ---- file-system port: push the workspace + edits in ----------------------
+
+/** Load the workspace into the session: the consumer's modules and the resolved
+ *  dependency externals. Called on a structural change, not per keystroke. */
+export function mountIde(modules: Module[], externals: Module[] = []): void {
+  ide().mount(modules, externals);
+}
+
+/** Apply an edit to one module's buffer (per keystroke). */
+export function setIdeSource(fqn: string, text: string): void {
+  ide().set_source(fqn, text);
+}
+
+// ---- editor port: queries over the held state -----------------------------
+
+/** Workspace diagnostics, each module's problems attributed to it. */
+export function ideDiagnostics(): ModuleResult[] {
+  return ide().diagnostics();
+}
+
+/** Completions at byte `offset` in module `fqn`. */
+export function ideCompletion(fqn: string, offset: number): Completion[] {
+  return ide().completion(fqn, offset);
+}
+
+/** Markdown hover at byte `offset` in module `fqn`, or null. */
+export function ideHover(fqn: string, offset: number): Hover | null {
+  return ide().hover(fqn, offset) ?? null;
+}
+
+/** The declaration FQN for the symbol at `offset` in module `fqn`, or null. */
+export function ideDefinition(fqn: string, offset: number): string | null {
+  return callWasm("definition", () => ide().definition(fqn, offset) ?? null);
+}
+
+/** Find-usages for the symbol at `offset` in module `fqn`, or null. */
+export function ideReferences(fqn: string, offset: number): References | null {
+  return callWasm("references", () => ide().references(fqn, offset) ?? null);
+}
+
+/** Rename the symbol at `offset` in module `fqn` to `newName`, over the chosen
+ *  occurrences. Returns the new full source of every module that changed. */
+export function ideRename(
+  fqn: string,
+  offset: number,
+  newName: string,
+  selected: RenameSelection[],
+): RenamedSource[] {
+  return callWasm("rename_apply", () => ide().rename_apply(fqn, offset, newName, selected));
+}
+
+/** The nodes declared across the held workspace, for a diagram target picker. */
+export function ideOutline(): OutlineNode[] {
+  return ide().outline();
+}
+
+/** Project a diagram `view` over the held workspace to its laid-out scene. */
+export function ideEmitScene(view: string, target = ""): Scene {
+  return callWasm("emitScene", () => JSON.parse(ide().emit_scene(view, target)) as Scene);
+}
+
+/** Project the fitting diagram for the symbol `fqn` to its scene. A throw here
+ *  is control flow (a non-projectable symbol → the canvas lifeline fallback), so
+ *  it is left unwrapped — `callWasm` would double-log it at error severity. */
+export function ideSymbolScene(fqn: string): Scene {
+  return JSON.parse(ide().symbol_scene(fqn)) as Scene;
+}
+
+/** Position a scene into absolute coordinates with the layout engine. */
+export function ideLayoutScene(scene: Scene): Scene {
+  return callWasm(
+    "layoutScene",
+    () => JSON.parse(ide().layout_scene(JSON.stringify(scene))) as Scene,
+  );
+}
+
+// ---- editor-local pure transforms (a single buffer, no held state) --------
+
+/** Parse + static-check one `source` buffer (the per-keystroke lint path). */
+export function check(source: string): Diagnostic[] {
+  return ide().check(source);
+}
+
+/** Semantic tokens for one `source` buffer (delta-encoded over UTF-16). */
+export function semanticTokens(source: string): SemanticTokens {
+  return ide().semantic_tokens(source);
+}
+
+/** Foldable regions of one `source` buffer (0-based lines). */
+export function foldRanges(source: string): FoldingRange[] {
+  return ide().folding_ranges(source);
+}
+
+/** Format one `source` buffer to canonical form; throws on a parse error. */
+export function format(source: string): string {
+  return callWasm("format", () => ide().format(source));
+}
+
+// ---- project + docs --------------------------------------------------------
+
+/**
+ * Resolve the consumer workspace's direct dependencies (LANG.md §8.3) into
+ * dependency-name-prefixed modules — the externals {@link mountIde} takes.
+ * `lockToml` is the consumer's `pds.lock` (empty when absent); `vendored` are the
+ * files read under `pds_modules/<slug>/`; `local` are local-source dependency
+ * files (ADR-026).
+ */
+export function dependencyModules(
+  lockToml: string,
+  vendored: VendoredDepFile[],
+  local: LocalDepFile[],
+): Module[] {
+  return callWasm("dependencyModules", () => ide().dependency_modules(lockToml, vendored, local));
+}
+
+/**
+ * Parse a `pds.toml` string into its doc manifest (`{ name?, theme?, logo?,
+ * sidebar: [{ title, items: [{ title, path }] }] }`). The caller loads each
+ * page's `path` and folds the content into the config it hands {@link renderDocSite}.
+ * Throws only on malformed TOML.
+ */
+export function docManifest(toml: string): DocManifest {
+  return ide().doc_manifest(toml);
+}
+
+/** The `globalThis.SSR` the embedded Svelte bundle defines. */
+interface SsrGlobal {
+  renderPage: (propsJson: string) => string;
+}
+
 let ssrLoaded = false;
 
 /**
  * Evaluate the embedded Svelte SSR bundle once, defining `globalThis.SSR`. The
- * browser is the JavaScript engine the compiler's site generator renders
- * through (the native CLI uses an embedded QuickJS instead).
+ * browser is the JavaScript engine the site generator renders through (the
+ * native CLI uses an embedded QuickJS instead).
  */
 function ensureSsr(): void {
   if (ssrLoaded) return;
-  // The bundle is an esbuild IIFE that defines a top-level `var SSR`; that only
+  // The bundle is an esbuild IIFE defining a top-level `var SSR`; that only
   // becomes the global `SSR` when run at global scope, so inject it as a
   // <script> (executes synchronously on append) rather than via `new Function`.
   const script = document.createElement("script");
-  script.textContent = wasmDocSsrBundle();
+  script.textContent = ide().doc_ssr_bundle();
   document.head.appendChild(script);
   script.remove();
   ssrLoaded = true;
 }
 
 /**
- * Parse a `pds.toml` string into its doc manifest:
- * `{ name?, theme?, logo?, sidebar: [{ title, items: [{ title, path }] }] }`.
- * The caller loads each page's `path` and folds the content into the config it
- * hands {@link renderDocSite}. Uses the same TOML parser as the CLI. Returns an
- * empty manifest (`{ sidebar: [] }`) for a `pds.toml` with no `[doc]` table;
- * throws only on malformed TOML.
+ * Render the whole documentation site for the held workspace — the browser
+ * equivalent of the CLI's `pds doc`. `config` carries each authored page's
+ * Markdown `content`. Returns `[{ path, contents }]`.
  */
-export function docManifest(toml: string): DocManifest {
-  return JSON.parse(wasmDocManifest(toml));
-}
-
-/**
- * Render the whole documentation site for a workspace — the browser equivalent
- * of the CLI's `pds doc`. `modules` is `[{ fqn, source }]`; `config` is
- * `{ name, theme?, logo?, docs?: [{ title, items: [{ title, path, content }] }] }`
- * — `docs` carries each authored page's Markdown `content`. Returns
- * `[{ path, contents }]`.
- */
-export function renderDocSite(modules: Module[], config: DocConfig): RenderedFile[] {
+export function renderDocSite(config: DocConfig): RenderedFile[] {
   ensureSsr();
   const ssr = (globalThis as unknown as { SSR: SsrGlobal }).SSR;
   const render = (propsJson: string): string => ssr.renderPage(propsJson);
-  return JSON.parse(wasmRenderDocSite(JSON.stringify(modules), JSON.stringify(config), render));
+  return callWasm("renderDocSite", () => ide().render_doc_site(config, render));
 }

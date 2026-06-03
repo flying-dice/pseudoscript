@@ -11,22 +11,22 @@ public data ConsoleError =
 public container Backoffice for context::AcmeTickets;
 
 /// Organiser and support actions, each gated on the caller's role.
-public component Console for Backoffice {
+public component Console for backoffice::Backoffice {
   /// Create a new event (organisers only).
-  public createEvent(token: identity::SessionToken, draft: catalog::NewEvent): Result<catalog::Event, ConsoleError> {
+  public createEvent(token: identity::SessionToken, draft: catalog::NewEvent): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     return Ok(catalog::Events.create(draft))
   }
 
   /// Add a price tier to an event (organisers only), provisioning its seat pool
   /// from the tier's capacity.
-  public addTier(token: identity::SessionToken, tier: catalog::NewTier): Result<catalog::Tier, ConsoleError> {
+  public addTier(token: identity::SessionToken, tier: catalog::NewTier): Result<catalog::Tier, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     created: Tier = catalog::Tiers.add(tier)
     inventory::Holds.provision(created.event, created.id, created.capacity)
@@ -34,10 +34,10 @@ public component Console for Backoffice {
   }
 
   /// Put an event on sale (organisers only).
-  public putOnSale(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, ConsoleError> {
+  public putOnSale(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     live: Result<Event, EventNotFound> = catalog::Events.putOnSale(event)
     if (live.isErr) {
@@ -47,10 +47,10 @@ public component Console for Backoffice {
   }
 
   /// Cancel an event (organisers only). Triggers bulk refunds and holder alerts.
-  public cancelEvent(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, ConsoleError> {
+  public cancelEvent(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     dead: Result<Event, EventNotFound> = catalog::Events.cancel(event)
     if (dead.isErr) {
@@ -60,10 +60,10 @@ public component Console for Backoffice {
   }
 
   /// Refund a customer's order (support only).
-  public refundOrder(token: identity::SessionToken, order: shared::OrderId): Result<orders::Order, ConsoleError> {
+  public refundOrder(token: identity::SessionToken, order: shared::OrderId): Result<orders::Order, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireSupport(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     refunded: Result<Order, CheckoutError> = orders::OrderService.refund(order)
     if (refunded.isErr) {
@@ -74,22 +74,22 @@ public component Console for Backoffice {
 
   /// Review orders stranded by failed ticket issuance (support only), so a
   /// charged buyer with un-issuable tickets surfaces as a work item.
-  public reviewStranded(token: identity::SessionToken): Result<shared::OrderId[], ConsoleError> {
+  public reviewStranded(token: identity::SessionToken): Result<shared::OrderId[], backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireSupport(token)
     if (staff.isErr) {
-      return Err(Unauthorized)
+      return Err(backoffice::Unauthorized)
     }
     return Ok(tickets::Quarantine.pending())
   }
 
   /// Map an event-lookup failure to a console error.
-  notFound(e: catalog::EventNotFound): ConsoleError;
+  notFound(e: catalog::EventNotFound): backoffice::ConsoleError;
   /// Map an order refund failure to a console error.
-  refundRejected(e: orders::CheckoutError): ConsoleError;
+  refundRejected(e: orders::CheckoutError): backoffice::ConsoleError;
 }
 
 /// Only an organiser can put an event on sale.
-feature OnSaleIsOrganizerOnly for Console {
+feature OnSaleIsOrganizerOnly for backoffice::Console {
   given "a session that does not belong to an organiser"
   when  "putting an event on sale is attempted"
   then  "the action is refused as unauthorised"

@@ -6,7 +6,7 @@
 //! WASM-safe, so both edges share one implementation —
 //!
 //! - [`pseudoscript-lsp`] wraps it in a tower-lsp stdio server, and
-//! - [`pseudoscript-wasm`] serialises the same `lsp_types` results to JSON.
+//! - [`pseudoscript-ide`] serialises the same `lsp_types` results to JSON.
 //!
 //! Types are the standalone [`lsp_types`] crate at the version `tower-lsp`
 //! re-exports, so the server passes them through with no conversion.

@@ -35,6 +35,34 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
     When I check the workspace
     Then the workspace has no errors
 
+  Scenario: A bare same-module `for` parent must be fully qualified (ADR-030)
+    Given the workspace modules:
+      | fqn   | source                                              |
+      | shop  | //! shop\npublic system Store;\ncontainer Web for Store; |
+    When I check the workspace
+    Then the workspace diagnostics include "`Store` must be fully qualified: `shop::Store`"
+
+  Scenario: A bare same-module feature target must be fully qualified (ADR-030)
+    Given the workspace modules:
+      | fqn   | source                                                       |
+      | shop  | //! shop\npublic system App;\nfeature Show for App {\n  when "x"\n  then "y"\n} |
+    When I check the workspace
+    Then the workspace diagnostics include "`App` must be fully qualified: `shop::App`"
+
+  Scenario: A bare same-module field type must be fully qualified (ADR-030)
+    Given the workspace modules:
+      | fqn   | source                                                                  |
+      | shop  | //! shop\npublic data Money { amount: number }\npublic data Account { balance: Money } |
+    When I check the workspace
+    Then the workspace diagnostics include "`Money` must be fully qualified: `shop::Money`"
+
+  Scenario: A bare same-module body reference must be fully qualified (ADR-030)
+    Given the workspace modules:
+      | fqn   | source                                                                                                              |
+      | shop  | //! shop\npublic system App;\npublic container Box for shop::App {\n  run(): void;\n}\npublic container Caller for shop::App {\n  go(): void {\n    Box.run()\n  }\n} |
+    When I check the workspace
+    Then the workspace diagnostics include "`Box` must be fully qualified: `shop::Box`"
+
   Scenario: A public cross-module call target resolves
     Given the workspace modules:
       | fqn   | source                                                                                                                |

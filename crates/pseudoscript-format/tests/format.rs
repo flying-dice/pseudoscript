@@ -33,8 +33,6 @@ data OrderEvent =
   | OrderPlaced
   | OrderCancelled { id: string, reason: string }
 
-alias Store = shop::Warehouse;
-
 public system Shop;
 
 public container Web for Shop {

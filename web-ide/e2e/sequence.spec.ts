@@ -19,7 +19,9 @@ test.beforeEach(async ({ page }) => {
 // Open the acme-tickets checkout flow as a sequence: right-click the Attendee
 // node on the canvas and pick its `checkout` entry point.
 async function openCheckoutFlow(page: Page): Promise<void> {
-  await createProject(page, "acme-tickets");
+  // acme-tickets lands on `docs/overview.md` (Markdown, no `.pds` highlight), so
+  // skip the harness highlight gate; the canvas-node wait below gates wasm-ready.
+  await createProject(page, "acme-tickets", undefined, { highlight: false });
   await page.getByLabel("Canvas").click();
   const attendee = page.locator(".svelte-flow__node-card", { hasText: "Attendee" }).first();
   await expect(attendee).toBeVisible({ timeout: 20_000 });

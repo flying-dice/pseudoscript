@@ -1,7 +1,7 @@
 //! identity — user accounts, sessions, and the role checks every gated action runs.
 
 /// A registered user of the platform.
-public data User { id: shared::UserId, email: string, name: string, role: Role }
+public data User { id: shared::UserId, email: string, name: string, role: identity::Role }
 
 /// What a user is allowed to do.
 public data Role =
@@ -32,51 +32,51 @@ public data SignupError =
 public container Identity for context::AcmeTickets;
 
 /// User lifecycle.
-public component Users for Identity {
+public component Users for identity::Identity {
   /// Register a new attendee account; the email must not already be in use.
-  public register(form: Registration): Result<User, SignupError> {
+  public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
     existing: Option<User> = Identity::UserStore.find(form.email)
     if (existing.isSome) {
       return Err(EmailTaken from { form.email })
     }
     id: shared::UserId = Identity::UserStore.nextId()
-    user: User = User from { id, form, Attendee }
+    user: User = User from { id, form, identity::Attendee }
     Identity::UserStore.save(user)
     return Ok(user)
   }
 }
 
 /// Sign-in, sign-out, and the authentication and authorisation checks.
-public component Sessions for Identity {
+public component Sessions for identity::Identity {
   /// Sign in with credentials, issuing a session token.
-  public login(creds: Credentials): Result<SessionToken, AuthError> {
+  public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
     user: Option<User> = Identity::UserStore.find(creds.email)
     if (user.isNone) {
-      return Err(BadCredentials)
+      return Err(identity::BadCredentials)
     }
     ok: Result<void, AuthError> = self.verify(creds, user.value)
     if (ok.isErr) {
-      return Err(BadCredentials)
+      return Err(identity::BadCredentials)
     }
     return Ok(Identity::SessionStore.issue(user.value))
   }
 
   /// Sign out, revoking the session token.
-  public logout(token: SessionToken): void {
+  public logout(token: identity::SessionToken): void {
     Identity::SessionStore.revoke(token)
   }
 
   /// Resolve a session token to its user, or `Err(NoSession)`.
-  public authenticate(token: SessionToken): Result<User, AuthError> {
+  public authenticate(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
     user: Option<User> = Identity::SessionStore.resolve(token)
     if (user.isNone) {
-      return Err(NoSession)
+      return Err(identity::NoSession)
     }
     return Ok(user.value)
   }
 
   /// Authenticate, then require the `Organizer` role.
-  public requireOrganizer(token: SessionToken): Result<User, AuthError> {
+  public requireOrganizer(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
     user: Result<User, AuthError> = self.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
@@ -89,7 +89,7 @@ public component Sessions for Identity {
   }
 
   /// Authenticate, then require the `Support` role.
-  public requireSupport(token: SessionToken): Result<User, AuthError> {
+  public requireSupport(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
     user: Result<User, AuthError> = self.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
@@ -102,29 +102,29 @@ public component Sessions for Identity {
   }
 
   /// `Err(BadCredentials)` if the password does not match.
-  verify(creds: Credentials, user: User): Result<void, AuthError>;
+  verify(creds: identity::Credentials, user: identity::User): Result<void, identity::AuthError>;
   /// `Err(Forbidden)` if the user is not an organiser.
-  ensureOrganizer(user: User): Result<void, AuthError>;
+  ensureOrganizer(user: identity::User): Result<void, identity::AuthError>;
   /// `Err(Forbidden)` if the user is not support staff.
-  ensureSupport(user: User): Result<void, AuthError>;
+  ensureSupport(user: identity::User): Result<void, identity::AuthError>;
 }
 
 /// Durable user records.
-component UserStore for Identity {
+component UserStore for identity::Identity {
   nextId(): shared::UserId;
-  save(user: User): void;
-  find(email: string): Option<User>;
+  save(user: identity::User): void;
+  find(email: string): Option<identity::User>;
 }
 
 /// Issues and resolves session tokens.
-component SessionStore for Identity {
-  issue(user: User): SessionToken;
-  revoke(token: SessionToken): void;
-  resolve(token: SessionToken): Option<User>;
+component SessionStore for identity::Identity {
+  issue(user: identity::User): identity::SessionToken;
+  revoke(token: identity::SessionToken): void;
+  resolve(token: identity::SessionToken): Option<identity::User>;
 }
 
 /// A non-organiser cannot perform organiser actions.
-feature OrganizerRoleEnforced for Sessions {
+feature OrganizerRoleEnforced for identity::Sessions {
   given "a session that belongs to an attendee, not an organiser"
   when  "an organiser-only action is attempted"
   then  "the action is refused as forbidden"

@@ -1,9 +1,8 @@
 Feature: References in a body resolve (LANG.md §7, §8)
 
   A bare single-segment name used in a callable body must resolve to a
-  parameter, a binding, a `for` binding, a node, or an alias. An unresolved
-  reference is rejected. (Multi-segment `::` paths are left to cross-module
-  resolution.)
+  parameter, a binding, a `for` binding, or a node. An unresolved reference is
+  rejected. (Multi-segment `::` paths are left to cross-module resolution.)
 
   Scenario: An undefined reference is rejected
     Given the model file:

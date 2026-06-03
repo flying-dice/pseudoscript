@@ -8,7 +8,7 @@ Diagram generation for `LANG.md` §9. A case is a model plus one golden per view
 | --- | --- |
 | `name.pds` | one `name.<view>.scene` per view the case exercises — e.g. `name.context.scene`, `name.container.scene`, `name.sequence.scene`. |
 
-A case scoped to a node (container/component view) or a sequence entry encodes the target in a header line (`of` / `entry`), so one `.pds` can carry several view goldens. Module FQN derives from the file's `//!` inner doc (single-file cases), matching the `static/` convention.
+A case scoped to a node (container/component view) or a sequence entry encodes the target in a header line (`of` / `entry`), so one `.pds` can carry several view goldens. A single-file case is an anonymous module (ADR-029), as in `static/`.
 
 ## `Scene` IR golden format
 

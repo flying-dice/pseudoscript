@@ -35,8 +35,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release-plz.outputs.releases_created }}
-      releases: ${{ steps.release-plz.outputs.releases }}
+      cli_tag: ${{ steps.cli.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,18 +47,32 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The version-bump PR touches the library crates too, so release-plz can
+      # report several entries; only the `pseudoscript` CLI is tagged, with the
+      # canonical `v<version>` tag (libraries would carry a `<crate>-v…` name).
+      # Pick that tag by its `v` prefix — `releases[0]` is order-dependent and
+      # was landing on a library entry, so `assets` checked out a tag that does
+      # not exist and every build failed at checkout. Empty when nothing was
+      # released, which skips `assets`.
+      - id: cli
+        name: Resolve the pseudoscript CLI release tag
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag=$(jq -r 'map(select(.tag | startswith("v"))) | .[0].tag // empty' <<<"${RELEASES:-[]}")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved CLI tag: ${tag:-<none>}"
 
   # Build the cross-platform binaries + checksums and attach them, with the
   # install scripts, to the freshly published release — in this same run, so it
   # does not depend on a release-event trigger (which GITHUB_TOKEN suppresses).
-  # The single-crate release config means releases[0] is the `v<version>` tag.
   assets:
     name: Release assets
     needs: release
-    if: needs.release.outputs.releases_created == 'true'
+    if: needs.release.outputs.cli_tag != ''
     permissions:
       contents: write
     uses: ./.github/workflows/release-assets.yml
     with:
-      tag: ${{ fromJSON(needs.release.outputs.releases)[0].tag }}
+      tag: ${{ needs.release.outputs.cli_tag }}
     secrets: inherit

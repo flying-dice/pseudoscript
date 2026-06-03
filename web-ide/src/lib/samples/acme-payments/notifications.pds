@@ -6,7 +6,7 @@
 public container Notifications for context::AcmePay;
 
 /// Sends merchant alerts through the external email provider.
-public component Notifier for Notifications {
+public component Notifier for notifications::Notifications {
   /// Alert a merchant that a payment was disputed and needs a response.
   #[onevent(disputes::DisputeOpened)]
   public onDisputeOpened(event: disputes::DisputeOpened): void {

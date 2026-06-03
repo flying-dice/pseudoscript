@@ -64,4 +64,4 @@ web-ide independent (start anytime, isolated files):
 
 ## Done this session
 
-ADR-026 written (`decisions/026-local-path-dependencies.md`), indexed in `decisions/README.md`, and `LANG.md` §8.4/§8.5 amended for the local source. Nothing committed (commit is yours / gated). No spec corruption — an earlier note about a corrupted §8.6 and a stale ADR index were both tooling read artifacts, since verified false.
+ADR-026 written (`decisions/026-local-path-dependencies.md`), indexed in `decisions/README.md`, and `LANG.md` §8.3/§8.3 amended for the local source. Nothing committed (commit is yours / gated). No spec corruption — an earlier note about a corrupted §8.6 and a stale ADR index were both tooling read artifacts, since verified false.

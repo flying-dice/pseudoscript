@@ -49,7 +49,10 @@ impl C4View {
 /// A laid-out C4 view: an ordered set of placed nodes and routed edges.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct C4Scene {
-    /// Which C4 view this is.
+    /// Which C4 view this is. Serialised as `c4view`, not `view`: the [`Scene`]
+    /// enum is internally tagged on `view` (`c4`/`sequence`), so the inner field
+    /// must not reuse that key or a round-trip hits a duplicate-`view` error.
+    #[serde(rename = "c4view")]
     pub view: C4View,
     /// The view's boundary node FQN (`of`): the system for a container view, the
     /// container for a component view. `None` for context.
@@ -134,6 +137,16 @@ pub struct Lifeline {
     pub fqn: String,
     /// The participant node's C4 kind, for the lifeline-head card styling.
     pub kind: NodeKind,
+    /// The node's `///` summary, shown dimmed under the name (like a C4 card).
+    /// `None` for synthesised initiators and unresolved targets.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The structural ancestry shown dimmed under a container/component name
+    /// (enclosing node names, outermost first, joined with `::`). The FQN is
+    /// module-flat, so this is derived from the graph, not the FQN. `None` for
+    /// other kinds and top-level nodes.
+    #[serde(default)]
+    pub parent_path: Option<String>,
 }
 
 /// One ordered item in a sequence trace: a message or a frame.

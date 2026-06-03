@@ -5,10 +5,10 @@
 //! The result always carries a (possibly partial) [`Module`].
 
 use crate::ast::{
-    Alias, Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind,
-    Feature, FeatureStep, Field, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs,
-    MarkerKind, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, StepKind, Stmt, StmtKind,
-    Tag, Type, Variant,
+    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind, Feature,
+    FeatureStep, Field, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs, MarkerKind,
+    Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, StepKind, Stmt, StmtKind, Tag, Type,
+    Variant,
 };
 use crate::diagnostic::Diagnostic;
 use crate::lexer::{Lexed, SpannedTrivia, lex};
@@ -26,6 +26,7 @@ pub struct Parsed {
 
 /// Parses `src` into a [`Module`], recovering from errors (§10).
 #[must_use]
+#[tracing::instrument(level = "debug", skip(src), fields(bytes = src.len()))]
 pub fn parse(src: &str) -> Parsed {
     let lexed = lex(src);
     let mut parser = Parser::new(src, lexed);
@@ -178,10 +179,6 @@ impl Parser {
     fn parse_item(&mut self) -> Option<Item> {
         let leading_trivia = self.take_trivia_before(self.cur_span().start);
 
-        if self.at(TokenKind::KwAlias) {
-            return Some(Item::Alias(self.parse_alias(leading_trivia)));
-        }
-
         // Decl = DocBlock { Macro } { Modifier } Structural
         let doc = self.parse_doc_block();
         let macros = self.parse_macros();
@@ -225,45 +222,6 @@ impl Parser {
         self.tokens
             .get(self.pos - 1)
             .map_or(self.eof_span.end, |t| t.span.end)
-    }
-
-    // --- alias --------------------------------------------------------------
-
-    fn parse_alias(&mut self, leading_trivia: Vec<SpannedTrivia>) -> Alias {
-        let kw = self.bump().expect("peeked alias");
-        let start = leading_trivia
-            .first()
-            .map_or(kw.span.start, |t| t.span.start);
-
-        let name = self.expect_ident("alias name");
-        self.eat(TokenKind::Eq);
-        let target = self.parse_path();
-
-        // An alias target is a node path: `::`-only. A `.` means it points at a
-        // callable, which cannot be aliased (§8.3).
-        if self.at(TokenKind::Dot) {
-            let span = self.cur_span();
-            self.error(span, "alias target is not a node path (contains `.`)");
-            // Skip the dotted tail so recovery lands on the `;`.
-            while self.at(TokenKind::Dot) {
-                self.bump();
-                self.eat(TokenKind::Ident);
-            }
-        }
-
-        let end = if self.at(TokenKind::Semi) {
-            self.bump().expect("peeked semi").span.end
-        } else {
-            self.error(target.span, "alias declaration without terminating `;`");
-            self.prev_end()
-        };
-
-        Alias {
-            name,
-            target,
-            leading_trivia,
-            span: Span::new(start, end),
-        }
     }
 
     // --- features (§5.2) ----------------------------------------------------
@@ -1352,7 +1310,6 @@ impl Parser {
                 | TokenKind::KwPerson
                 | TokenKind::KwData
                 | TokenKind::KwFor
-                | TokenKind::KwAlias
                 | TokenKind::KwFrom
                 | TokenKind::KwPublic
                 | TokenKind::KwSelf
@@ -1408,7 +1365,6 @@ impl Parser {
                     | TokenKind::KwContainer
                     | TokenKind::KwComponent
                     | TokenKind::KwData
-                    | TokenKind::KwAlias
                     | TokenKind::KwFeature
                     | TokenKind::Doc
                     | TokenKind::HashLBracket

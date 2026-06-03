@@ -28,8 +28,8 @@ public data Hold {
   tier: shared::TierId,
   quantity: shared::Quantity,
   owner: shared::UserId,
-  status: HoldStatus,
-  shard: SeatShard
+  status: inventory::HoldStatus,
+  shard: inventory::SeatShard
 }
 
 /// The tickets allocated when a hold is confirmed.
@@ -53,21 +53,21 @@ public container Inventory for context::AcmeTickets;
 
 /// Holds: reserve, validate, confirm, release.
 /// #critical
-public component Holds for Inventory {
+public component Holds for inventory::Inventory {
   /// Reserve `quantity` seats for an owner, atomically taking them from the
   /// tier pool. Overselling is impossible: if the pool cannot satisfy the
   /// request the allocation fails and no hold is created.
-  public reserve(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity, owner: shared::UserId): Result<Hold, InventoryError> {
+  public reserve(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity, owner: shared::UserId): Result<inventory::Hold, inventory::InventoryError> {
     free: Result<void, InventoryError> = self.noActiveHold(owner, event)
     if (free.isErr) {
       return Err(free.error)
     }
     taken: Result<SeatShard, PoolExhausted> = self.allocateSharded(event, tier, quantity)
     if (taken.isErr) {
-      return Err(OutOfStock)
+      return Err(inventory::OutOfStock)
     }
     id: shared::HoldId = Inventory::HoldStore.nextId()
-    hold: Hold = Hold from { id, event, tier, quantity, owner, Held, taken.value }
+    hold: Hold = Hold from { id, event, tier, quantity, owner, inventory::Held, taken.value }
     Inventory::HoldStore.save(hold)
     return Ok(hold)
   }
@@ -76,7 +76,7 @@ public component Holds for Inventory {
   /// fall back to any shard that still has seats. A request only fails when the
   /// tier is genuinely sold out — not merely when one shard ran dry — so
   /// sharding adds throughput without weakening the no-oversell guarantee.
-  allocateSharded(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<SeatShard, PoolExhausted> {
+  allocateSharded(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<inventory::SeatShard, inventory::PoolExhausted> {
     preferred: SeatShard = self.pickShard(event, tier)
     first: Result<void, PoolExhausted> = Inventory::Pool.allocateFrom(preferred, quantity)
     if (first.isOk) {
@@ -86,7 +86,7 @@ public component Holds for Inventory {
   }
 
   /// Validate that a hold is still live and owned by `owner`.
-  public validate(id: shared::HoldId, owner: shared::UserId): Result<Hold, InventoryError> {
+  public validate(id: shared::HoldId, owner: shared::UserId): Result<inventory::Hold, inventory::InventoryError> {
     found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
@@ -101,7 +101,7 @@ public component Holds for Inventory {
   /// Commit a validated hold for checkout: move it `Held → Committing` so the
   /// reaper will not expire it while payment is in flight. Returns the committed
   /// hold; `Err(InvalidState)` if it is no longer `Held` (lost a race).
-  public commit(id: shared::HoldId): Result<Hold, InventoryError> {
+  public commit(id: shared::HoldId): Result<inventory::Hold, inventory::InventoryError> {
     found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
@@ -110,7 +110,7 @@ public component Holds for Inventory {
     if (held.isErr) {
       return Err(held.error)
     }
-    moved: Hold = self.transition(found.value, Committing)
+    moved: Hold = self.transition(found.value, inventory::Committing)
     Inventory::HoldStore.save(moved)
     return Ok(moved)
   }
@@ -119,7 +119,7 @@ public component Holds for Inventory {
   /// seats leave the pool for good. Only a `Committing` hold may be confirmed
   /// (idempotent: an already-`Confirmed` hold returns its allocation), so the
   /// reaper — which only touches `Held` — can never confirm-race the buyer.
-  public confirm(id: shared::HoldId): Result<Allocation, InventoryError> {
+  public confirm(id: shared::HoldId): Result<inventory::Allocation, inventory::InventoryError> {
     found: Option<Hold> = Inventory::HoldStore.fetch(id)
     if (found.isNone) {
       return Err(HoldNotFound from { id })
@@ -133,7 +133,7 @@ public component Holds for Inventory {
       return Err(ready.error)
     }
     allocation: Allocation = self.allocate(found.value)
-    Inventory::HoldStore.save(self.transition(found.value, Confirmed))
+    Inventory::HoldStore.save(self.transition(found.value, inventory::Confirmed))
     return Ok(allocation)
   }
 
@@ -147,7 +147,7 @@ public component Holds for Inventory {
       live: Result<void, InventoryError> = self.ensureReleasable(found.value)
       if (live.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, Released))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::Released))
       }
     }
   }
@@ -162,7 +162,7 @@ public component Holds for Inventory {
       sold: Result<void, InventoryError> = self.ensureConfirmed(found.value)
       if (sold.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, Released))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::Released))
       }
     }
   }
@@ -176,7 +176,7 @@ public component Holds for Inventory {
       held: Result<void, InventoryError> = self.ensureHeld(found.value)
       if (held.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, Expired))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::Expired))
       }
     }
   }
@@ -184,7 +184,7 @@ public component Holds for Inventory {
   /// An event's holds whose time-to-live has elapsed. Scoped per-event so the
   /// reaper processes one event at a time — a single event's huge stale-hold
   /// backlog cannot starve another event's reaping.
-  public staleFor(event: shared::EventId): Hold[] {
+  public staleFor(event: shared::EventId): inventory::Hold[] {
     return Inventory::HoldStore.staleFor(event)
   }
 
@@ -195,48 +195,48 @@ public component Holds for Inventory {
   }
 
   /// `Err` if the hold is expired or not owned by `owner`.
-  ensureLive(hold: Hold, owner: shared::UserId): Result<void, InventoryError>;
+  ensureLive(hold: inventory::Hold, owner: shared::UserId): Result<void, inventory::InventoryError>;
   /// `Err(AlreadyHolding)` if `owner` already has an active (`Held` or
   /// `Committing`) reservation for the event — the one-active-reservation cap,
   /// owned here where holds live so a reaped, released, or confirmed hold frees
   /// the buyer automatically, with no slot to leak in another context.
-  noActiveHold(owner: shared::UserId, event: shared::EventId): Result<void, InventoryError>;
+  noActiveHold(owner: shared::UserId, event: shared::EventId): Result<void, inventory::InventoryError>;
   /// `Err(InvalidState)` unless the hold is still in `Held` — the compare step of
   /// the compare-and-set that makes commit/expire race-safe (reaper vs checkout).
-  ensureHeld(hold: Hold): Result<void, InventoryError>;
+  ensureHeld(hold: inventory::Hold): Result<void, inventory::InventoryError>;
   /// `Err(InvalidState)` unless the hold is `Committing` — the compare step that
   /// makes confirm race-safe.
-  ensureCommitting(hold: Hold): Result<void, InventoryError>;
+  ensureCommitting(hold: inventory::Hold): Result<void, inventory::InventoryError>;
   /// `Err(InvalidState)` unless the hold is `Held` or `Committing` (releasable
   /// before sale).
-  ensureReleasable(hold: Hold): Result<void, InventoryError>;
+  ensureReleasable(hold: inventory::Hold): Result<void, inventory::InventoryError>;
   /// `Err(InvalidState)` unless the hold is `Confirmed` (sold, refundable).
-  ensureConfirmed(hold: Hold): Result<void, InventoryError>;
+  ensureConfirmed(hold: inventory::Hold): Result<void, inventory::InventoryError>;
   /// The allocation a hold already produced, if it is already `Confirmed` —
   /// makes `confirm` idempotent so the saga's forward-recovery can retry it.
-  existingAllocation(hold: Hold): Option<Allocation>;
+  existingAllocation(hold: inventory::Hold): Option<inventory::Allocation>;
   /// Choose which shard to draw a request from (e.g. least-loaded of two), so
   /// load spreads across shards. Shard cardinality is a deployment knob, not a
   /// model concern.
-  pickShard(event: shared::EventId, tier: shared::TierId): SeatShard;
+  pickShard(event: shared::EventId, tier: shared::TierId): inventory::SeatShard;
   /// Mint the ticket ids for a confirmed hold.
-  allocate(hold: Hold): Allocation;
+  allocate(hold: inventory::Hold): inventory::Allocation;
   /// A copy of `hold` in a new status.
-  transition(hold: Hold, status: HoldStatus): Hold;
+  transition(hold: inventory::Hold, status: inventory::HoldStatus): inventory::Hold;
 }
 
 /// The seat pool: sharded, atomic allocation and restoration. The per-shard
 /// atomicity is the no-oversell guarantee; the sharding is what keeps it from
 /// serialising the whole on-sale on one writer.
 /// #critical
-component Pool for Inventory {
+component Pool for inventory::Inventory {
   /// Atomically take `quantity` seats from one shard, or fail if it is exhausted.
-  allocateFrom(shard: SeatShard, quantity: shared::Quantity): Result<void, PoolExhausted>;
+  allocateFrom(shard: inventory::SeatShard, quantity: shared::Quantity): Result<void, inventory::PoolExhausted>;
   /// Atomically take `quantity` seats from any shard with capacity, returning the
   /// shard drawn from, or fail only when the whole tier is sold out.
-  allocateAny(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<SeatShard, PoolExhausted>;
+  allocateAny(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<inventory::SeatShard, inventory::PoolExhausted>;
   /// Return seats to the exact shard they came from.
-  restoreTo(shard: SeatShard, quantity: shared::Quantity): void;
+  restoreTo(shard: inventory::SeatShard, quantity: shared::Quantity): void;
   /// Seed a tier's shards with `capacity` seats total (called when a tier is
   /// added) — the origin of the seat truth, derived from `catalog::Tier.capacity`.
   provision(event: shared::EventId, tier: shared::TierId, capacity: number): void;
@@ -251,22 +251,22 @@ public data CapacitySnapshot { available: number, version: number }
 /// write path must not turn every headroom read into a fan-in. The snapshot is
 /// safe to read stale because the waiting room biases conservative; the version
 /// lets the read be cached.
-public component Capacity for Inventory {
+public component Capacity for inventory::Inventory {
   /// A point-in-time snapshot of uncommitted seats for an event, or `None` until
   /// the read model is warm.
-  snapshot(event: shared::EventId): Option<CapacitySnapshot>;
+  snapshot(event: shared::EventId): Option<inventory::CapacitySnapshot>;
 }
 
 /// Durable hold records.
-component HoldStore for Inventory {
+component HoldStore for inventory::Inventory {
   nextId(): shared::HoldId;
-  save(hold: Hold): void;
-  fetch(id: shared::HoldId): Option<Hold>;
-  staleFor(event: shared::EventId): Hold[];
+  save(hold: inventory::Hold): void;
+  fetch(id: shared::HoldId): Option<inventory::Hold>;
+  staleFor(event: shared::EventId): inventory::Hold[];
 }
 
 /// Two buyers cannot both win the last seat.
-feature NoOversell for Holds {
+feature NoOversell for inventory::Holds {
   given "a tier with exactly one seat left"
   and   "two attendees reserve it at the same moment"
   when  "both reservations are processed"
@@ -275,7 +275,7 @@ feature NoOversell for Holds {
 }
 
 /// An abandoned hold returns its seats to sale.
-feature ExpiredHoldReleasesSeats for Holds {
+feature ExpiredHoldReleasesSeats for inventory::Holds {
   given "a hold whose time-to-live has elapsed"
   when  "the reaper expires it"
   then  "its seats are returned to the tier pool"
@@ -283,7 +283,7 @@ feature ExpiredHoldReleasesSeats for Holds {
 }
 
 /// One active reservation per buyer per event — and a reaped hold frees them.
-feature OneActiveHoldPerBuyer for Holds {
+feature OneActiveHoldPerBuyer for inventory::Holds {
   given "a buyer who already has an active hold for an event"
   when  "they try to reserve again for the same event"
   then  "the second reservation is refused as already-holding"

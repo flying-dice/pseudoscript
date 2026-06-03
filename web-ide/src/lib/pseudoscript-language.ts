@@ -184,7 +184,6 @@ const KIND_TYPE: Record<number, string> = {
   7: "class", // Class (data)
   9: "namespace", // Module (node)
   14: "keyword", // Keyword
-  18: "variable", // Reference (alias)
   22: "type", // Struct (primitive / type)
 };
 
@@ -205,12 +204,14 @@ export function pseudoscriptCompletion(
     icons: true,
     override: [
       (context: CompletionContext): CompletionResult | null => {
-        // Auto-open only once a prefix is typed; an explicit invoke (Ctrl-Space)
-        // still completes at the bare caret. Only the trailing identifier
-        // segment is replaced — the `.`/`::` before it is context the engine
-        // already accounted for.
+        // Auto-open once a prefix is typed, or right after a `.`/`::` trigger
+        // (the engine offers the member / submodule set at that boundary, with no
+        // prefix yet). An explicit invoke (Ctrl-Space) still completes anywhere.
+        // Only the trailing identifier segment is replaced — the `.`/`::` before
+        // it is context the engine already accounted for.
         const word = context.matchBefore(/[A-Za-z_]\w*/);
-        if (!word && !context.explicit) return null;
+        const atTrigger = context.matchBefore(/\.|::/);
+        if (!word && !atTrigger && !context.explicit) return null;
         const from = word ? word.from : context.pos;
         const seen = new Set<string>();
         const options: Completion[] = [];

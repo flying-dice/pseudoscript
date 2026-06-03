@@ -75,7 +75,6 @@ impl Checker<'_> {
         self.check_type_refs(module);
         for item in &module.items {
             match item {
-                Item::Alias(alias) => self.check_alias(alias),
                 Item::Decl(decl) => self.check_decl(decl),
                 Item::Feature(feature) => self.check_feature(feature),
             }
@@ -84,15 +83,14 @@ impl Checker<'_> {
 
     /// §2.3 / ADR-012: a declared identifier must not be a reserved word — a
     /// keyword, a primitive type name, or `Result`/`Option`. Covers data, node,
-    /// callable, field, parameter, variant, feature, and alias names. (A keyword
-    /// in a strict-name position is already a parse error; this catches the
-    /// lenient positions and primitives used as any name.)
+    /// callable, field, parameter, variant, and feature names. (A keyword in a
+    /// strict-name position is already a parse error; this catches the lenient
+    /// positions and primitives used as any name.)
     fn check_reserved_names(&mut self, module: &Module) {
         for item in &module.items {
             match item {
                 Item::Decl(decl) => self.check_reserved_decl(&decl.kind),
                 Item::Feature(feature) => self.check_reserved_ident(&feature.name),
-                Item::Alias(alias) => self.check_reserved_ident(&alias.name),
             }
         }
     }
@@ -221,36 +219,24 @@ impl Checker<'_> {
     fn check_feature(&mut self, feature: &Feature) {
         let target = path_str(&feature.target);
         let leaf = target.rsplit("::").next().unwrap_or(&target);
+        // §8.1: a feature target names a node and MUST be fully qualified.
+        if feature.target.is_simple() && self.model.symbol(leaf).is_some() {
+            self.require_qualified(feature.target.span, leaf);
+        }
         let is_module = self.model.is_module_path(&target);
         let symbol_kind = self.model.symbol(leaf).map(|s| s.kind);
         let resolves = is_module || symbol_kind.is_some();
-        let is_node = !is_module && symbol_kind.is_some_and(|k| k != SymbolKind::Data);
+        // A same-named node wins over the module namespace: a node may share its
+        // module's name (`module Configuration` holding `container Configuration`),
+        // so `is_module` alone must not mask it. Only a target that resolves to a
+        // bare module or a `data` type is rejected.
+        let is_node = symbol_kind.is_some_and(|k| k != SymbolKind::Data);
         if resolves && !is_node {
             self.error(
                 feature.target.span,
                 format!(
                     "feature `{}` target `{target}` is not a node",
                     feature.name.name
-                ),
-            );
-        }
-    }
-
-    // --- §8.3 alias resolution -------------------------------------------------
-
-    fn check_alias(&mut self, alias: &pseudoscript_syntax::ast::Alias) {
-        let target = path_str(&alias.target);
-        if self.model.is_module_path(&target) {
-            self.error(
-                alias.target.span,
-                format!("alias target `{target}` is a module, not a node"),
-            );
-        } else if !self.model.resolves_node(&target) {
-            self.error(
-                alias.span,
-                format!(
-                    "dangling alias `{}`: target `{target}` does not resolve",
-                    alias.name.name
                 ),
             );
         }
@@ -348,6 +334,10 @@ impl Checker<'_> {
     fn check_parent(&mut self, node: &Node, required: SymbolKind) {
         let Some(parent) = &node.parent else { return };
         let parent_name = parent.segments.last().map_or("", |id| id.name.as_str());
+        // §8.1: a `for` parent names a node and MUST be fully qualified.
+        if parent.is_simple() && self.model.symbol(parent_name).is_some() {
+            self.require_qualified(parent.span, parent_name);
+        }
         // Resolve the parent within this module; a parent we cannot see (another
         // file) is not reportable as a kind error here.
         let Some(symbol) = self.model.symbol(parent_name) else {
@@ -402,13 +392,19 @@ impl Checker<'_> {
             return;
         };
         let event_fqn = path_str(event);
+        let event_leaf = event_fqn.rsplit("::").next().unwrap_or(&event_fqn);
+        // §8.1: the triggered event type names a `data` declaration and MUST be
+        // fully qualified.
+        if event.is_simple() && self.model.symbol(event_leaf).is_some() {
+            self.require_qualified(event.span, event_leaf);
+        }
         // §2.4: the handler MUST have exactly one parameter whose type equals the
         // event type. Compare on the leaf name; report both FQNs as written.
         let param_ty = match callable.params.as_slice() {
             [only] => &only.ty,
             _ => return,
         };
-        if type_leaf(param_ty) != event_fqn.rsplit("::").next().unwrap_or(&event_fqn) {
+        if type_leaf(param_ty) != event_leaf {
             let param_fqn = type_str(param_ty);
             self.error(
                 callable.span,
@@ -469,7 +465,7 @@ impl Checker<'_> {
         // §5.1 / ADR-004: a `self.` call names a callable of the enclosing node.
         self.check_self_calls(body, owner);
 
-        // §7/§8: a bare reference resolves to a param, binding, node, or alias.
+        // §7/§8: a bare reference resolves to a param, binding, or node.
         self.check_references(callable, body);
 
         // §2.2/§3.4: a `.field` read on a known `data` record names a field.
@@ -767,8 +763,8 @@ impl Checker<'_> {
     }
 
     /// §7/§8: every bare single-segment reference in a body must resolve to a
-    /// parameter, a binding, a `for` binding, a node, or an alias. Multi-segment
-    /// `::` paths are left to cross-module resolution.
+    /// parameter, a binding, a `for` binding, or a node. Multi-segment `::`
+    /// paths are left to cross-module resolution.
     fn check_references(&mut self, callable: &Callable, body: &Block) {
         let mut scope: FxHashSet<&str> = callable
             .params
@@ -779,8 +775,9 @@ impl Checker<'_> {
         for_each_expr(body, &mut |expr| self.check_ref_at(expr, &scope));
     }
 
-    /// Checks one expression: a bare single-segment reference that is not a
-    /// parameter, binding, node, alias, or variant is unresolved.
+    /// Checks one expression: a bare single-segment reference. A local (param,
+    /// binding, `for` binding) is bare; a module-level symbol MUST be qualified
+    /// (§8.1); anything else is unresolved.
     fn check_ref_at(&mut self, expr: &Expr, scope: &FxHashSet<&str>) {
         let ExprKind::Ref(Ref::Path(path)) = &expr.kind else {
             return;
@@ -788,28 +785,44 @@ impl Checker<'_> {
         if !path.is_simple() {
             return;
         }
-        let name = &path.segments[0].name;
-        if !scope.contains(name.as_str())
-            && self.model.symbol(name).is_none()
-            && self.model.alias(name).is_none()
-            && !self.variant_names.contains(name.as_str())
-        {
-            let hint = if name == "void" {
-                // `void` is a type, not a value: a void callable returns with a
-                // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
-                "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)"
-                    .to_owned()
-            } else {
-                let candidates: Vec<&str> = scope
-                    .iter()
-                    .copied()
-                    .chain(self.model.symbols().map(|s| s.name.as_str()))
-                    .chain(self.model.aliases().map(|(n, _)| n))
-                    .chain(self.variant_names.iter().map(String::as_str))
-                    .collect();
-                suggest(name, &candidates)
-            };
-            self.error(path.span, format!("unresolved reference `{name}`{hint}"));
+        let name = path.segments[0].name.as_str();
+        if scope.contains(name) {
+            return; // a local — parameter, binding, or `for` binding — stays bare
+        }
+        if self.model.symbol(name).is_some() || self.variant_names.contains(name) {
+            self.require_qualified(path.span, name);
+            return;
+        }
+        let hint = if name == "void" {
+            // `void` is a type, not a value: a void callable returns with a
+            // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
+            "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)".to_owned()
+        } else {
+            let candidates: Vec<&str> = scope
+                .iter()
+                .copied()
+                .chain(self.model.symbols().map(|s| s.name.as_str()))
+                .chain(self.variant_names.iter().map(String::as_str))
+                .collect();
+            suggest(name, &candidates)
+        };
+        self.error(path.span, format!("unresolved reference `{name}`{hint}"));
+    }
+
+    /// §8.1 (ADR-030): a reference to a module-level symbol (node, type, or
+    /// hoisted variant) MUST be its full FQN. In a workspace module (known path)
+    /// a bare name is rejected with the qualified form. A path-less anonymous
+    /// module — a single-file snippet (`check`/`eval`) — has no module name to
+    /// qualify against, so it is left lenient (§8.1, ADR-029).
+    fn require_qualified(&mut self, span: Span, name: &str) {
+        if !self.model.module_path.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`{name}` must be fully qualified: `{}::{name}`",
+                    self.model.module_path
+                ),
+            );
         }
     }
 
@@ -1011,36 +1024,26 @@ impl Checker<'_> {
     fn check_type(&mut self, ty: &Type) {
         if ty.name.is_simple() {
             let leaf = ty.name.segments[0].name.as_str();
-            if !self.type_resolves(leaf) {
-                let hint = {
-                    let candidates: Vec<&str> = TokenKind::PRIMITIVE_TYPES
-                        .iter()
-                        .copied()
-                        .chain(["Result", "Option"])
-                        .chain(self.model.symbols().map(|s| s.name.as_str()))
-                        .chain(self.model.aliases().map(|(n, _)| n))
-                        .chain(self.variant_names.iter().map(String::as_str))
-                        .collect();
-                    suggest(leaf, &candidates)
-                };
+            if is_primitive(leaf) || leaf == "Result" || leaf == "Option" {
+                // A built-in type is bare; no module qualifies it.
+            } else if self.model.symbol(leaf).is_some() || self.variant_names.contains(leaf) {
+                // A declared type/node/variant — §8.1: name it by its full FQN.
+                self.require_qualified(ty.name.span, leaf);
+            } else {
+                let candidates: Vec<&str> = TokenKind::PRIMITIVE_TYPES
+                    .iter()
+                    .copied()
+                    .chain(["Result", "Option"])
+                    .chain(self.model.symbols().map(|s| s.name.as_str()))
+                    .chain(self.variant_names.iter().map(String::as_str))
+                    .collect();
+                let hint = suggest(leaf, &candidates);
                 self.error(ty.name.span, format!("unresolved type `{leaf}`{hint}"));
             }
         }
         for generic in &ty.generics {
             self.check_type(generic);
         }
-    }
-
-    /// Whether a single-segment type name resolves (§3.1/§3.3): a primitive,
-    /// `Result`/`Option`, or an in-module symbol, alias, or union variant. A
-    /// node names a type as freely as a `data` record does (`owner: Person`).
-    fn type_resolves(&self, leaf: &str) -> bool {
-        is_primitive(leaf)
-            || leaf == "Result"
-            || leaf == "Option"
-            || self.model.symbol(leaf).is_some()
-            || self.model.alias(leaf).is_some()
-            || self.variant_names.contains(leaf)
     }
 
     fn check_rebinds(&mut self, block: &Block, bound: &mut FxHashMap<String, Span>) {

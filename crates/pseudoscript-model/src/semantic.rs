@@ -1,5 +1,5 @@
 //! AST-aware semantic tokens — the shared engine behind the LSP
-//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-wasm`).
+//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-ide`).
 //!
 //! Two passes feed one sorted, non-overlapping token list in absolute byte
 //! offsets:
@@ -118,7 +118,6 @@ fn is_keyword(kind: TokenKind) -> bool {
             | TokenKind::KwPerson
             | TokenKind::KwData
             | TokenKind::KwFor
-            | TokenKind::KwAlias
             | TokenKind::KwFrom
             | TokenKind::KwPublic
             | TokenKind::KwSelf
@@ -146,10 +145,6 @@ fn is_keyword(kind: TokenKind) -> bool {
 fn ast_pass(module: &ast::Module, out: &mut Vec<SemToken>) {
     for item in &module.items {
         match item {
-            ast::Item::Alias(alias) => {
-                push(out, alias.name.span, SemKind::Namespace, true);
-                namespace_path(&alias.target, out);
-            }
             ast::Item::Decl(decl) => decl_tokens(decl, out),
             ast::Item::Feature(feature) => {
                 push(out, feature.name.span, SemKind::Namespace, true);

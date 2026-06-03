@@ -184,21 +184,3 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       """
     Then the diagnostics include "`.error` read on an `Ok` branch"
     And there is exactly 1 diagnostic
-
-  Scenario: A dangling alias is rejected
-    Given the model file:
-      """
-      alias Created = banking::events::BankAccCreated;
-      """
-    Then the diagnostics include "dangling alias `Created`: target `banking::events::BankAccCreated` does not resolve"
-    And there is exactly 1 diagnostic
-
-  Scenario: An alias to the enclosing module is rejected
-    Given the model file:
-      """
-      //! banking::core
-      public system Banking;
-      alias Events = banking::core;
-      """
-    Then the diagnostics include "alias target `banking::core` is a module, not a node"
-    And there is exactly 1 diagnostic

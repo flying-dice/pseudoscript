@@ -47,7 +47,6 @@ fn check_module(workspace: &Workspace, entry: &ModuleEntry, out: &mut Vec<Diagno
     };
     for item in &entry.ast.items {
         match item {
-            Item::Alias(alias) => ctx.check_ref(&alias.target, "alias target"),
             Item::Decl(decl) => ctx.check_decl_kind(&decl.kind),
             // §5.2: a cross-module feature target must be `public`.
             Item::Feature(feature) => ctx.check_ref(&feature.target, "feature target"),
@@ -227,7 +226,7 @@ impl Ctx<'_> {
 }
 
 /// Whether `fqn`'s module portion names a known module (local or a dependency,
-/// §8.4) other than `from_module` — i.e. the reference points across a module or
+/// §8.3) other than `from_module` — i.e. the reference points across a module or
 /// workspace boundary.
 fn references_other_module(fqn: &str, from_module: &str, workspace: &Workspace) -> bool {
     let Some((module, _)) = fqn.rsplit_once("::") else {

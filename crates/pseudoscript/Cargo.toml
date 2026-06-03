@@ -17,6 +17,7 @@ pseudoscript-format = { path = "../pseudoscript-format" }
 pseudoscript-emit = { path = "../pseudoscript-emit" }
 pseudoscript-lsp = { path = "../pseudoscript-lsp" }
 pseudoscript-doc = { path = "../pseudoscript-doc" }
+pseudoscript-project = { path = "../pseudoscript-project" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 anyhow = "1"

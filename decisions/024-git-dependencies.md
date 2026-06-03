@@ -1,7 +1,7 @@
 # ADR-024 — Cross-workspace git dependencies
 
 **Status:** Accepted
-**Affects:** LANG.md §8.1, §8.3, §8.4 (new), §8.5 (new); CONFORMANCE/static
+**Affects:** LANG.md §8.1, §8.3 (new), §8.4 (new); CONFORMANCE/static
 
 ## Context
 
@@ -15,13 +15,13 @@
 - **Only direct dependencies are addressable.** A package's own dependencies are fetched and resolved so it is internally well-formed, but are not nameable from a workspace that does not declare them.
 - **Versions coexist side-by-side.** A package's identity is `(source, revision, path)`. Entries resolving to one identity are the same package; entries differing in revision or path are distinct packages and MAY coexist. There is no version unification.
 - **`pds.lock` pins the resolved graph.** One entry per package — source, resolved commit, path, and dependency edges — making resolution reproducible.
-- **`alias` MAY target a cross-workspace node FQN** (§8.3), with the same dangling/private rejection.
+- **`alias` MAY target a cross-workspace node FQN**, with the same dangling/private rejection. *(`alias` has since been removed — ADR-028.)*
 
 ## Consequences
 
-- §8.1: dependency names (§8.4) add roots beyond the file-derived ones.
-- §8.4, §8.5 (new): the dependency model, per-workspace resolution, side-by-side identity, and the lockfile.
-- §8.3: `alias` targets MAY be cross-workspace.
+- §8.1: dependency names (§8.3) add roots beyond the file-derived ones.
+- §8.3, §8.4 (new): the dependency model, per-workspace resolution, side-by-side identity, and the lockfile.
+- `alias` targets MAY be cross-workspace. *(Superseded by ADR-028: `alias` removed.)*
 - CONFORMANCE: cross-workspace cases need multi-workspace fixtures; they land with the dependency loader, like the cross-module §8.2 fixtures already deferred there.
 - Tooling (non-normative): `pds add` populates `[dependencies]` and `pds.lock`; the fetch uses a sparse, partial checkout to materialize only the dependency workspace's subdirectory; `pds install` restores from the lock; storage is project-local and gitignored.
 - Rejected alternatives:

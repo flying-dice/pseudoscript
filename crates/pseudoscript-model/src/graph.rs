@@ -389,7 +389,6 @@ impl Builder<'_> {
             match item {
                 Item::Decl(decl) => self.collect_decl(decl, &entry.fqn, None, entry),
                 Item::Feature(feature) => self.collect_feature(feature, &entry.fqn),
-                Item::Alias(_) => {}
             }
         }
     }
@@ -698,8 +697,7 @@ impl Builder<'_> {
         match &base.kind {
             ExprKind::Ref(Ref::SelfNode(_)) => CallTarget::SelfNode,
             ExprKind::Ref(Ref::Path(path)) => {
-                let target = resolve_call_target(path, entry);
-                CallTarget::Node(self.canonicalize(&target, module))
+                CallTarget::Node(self.canonicalize(&path_str(path), module))
             }
             _ => {
                 self.trace_expr(base, owner_fqn, module, entry, out);
@@ -814,18 +812,6 @@ enum CallTarget {
     Node(String),
     /// A local value or an intermediate result of an earlier call.
     Local,
-}
-
-/// Resolves a call-target path to its referent path: expands a same-module
-/// alias, otherwise returns the path as written. The caller canonicalises the
-/// result to a full FQN against the workspace.
-fn resolve_call_target(path: &Path, entry: &ModuleEntry) -> String {
-    if path.is_simple()
-        && let Some(target) = alias_target(&entry.ast, &path.segments[0].name)
-    {
-        return target;
-    }
-    path_str(path)
 }
 
 /// Resolves a bare-or-qualified path to an FQN in `module`.
@@ -990,15 +976,6 @@ fn expr_label(expr: &Expr) -> String {
         ExprKind::Marker { kind, .. } => kind.keyword().to_owned(),
         ExprKind::From { ty, .. } => format!("{} from", path_str(ty)),
     }
-}
-
-/// The FQN an `alias Name = Target;` in `module` binds, if `name` matches an
-/// alias declared there.
-fn alias_target(module: &ast::Module, name: &str) -> Option<String> {
-    module.items.iter().find_map(|item| match item {
-        Item::Alias(alias) if alias.name.name == name => Some(path_str(&alias.target)),
-        _ => None,
-    })
 }
 
 #[cfg(test)]

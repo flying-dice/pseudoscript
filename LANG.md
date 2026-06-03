@@ -16,7 +16,7 @@ Principles:
 - **Progressive disclosure**: any `system`, `container`, `component`, `data` type, or callable MAY disclose internals with a block, or stay a black box with `;`. Sketch the architecture as signatures, then fill in only the flows worth tracing.
 - **High-level**: bodies describe *flow and provenance*, not field-level computation.
 - **Fallibility and absence live in the type** (`Result`, `Option`), handled explicitly with `if`.
-- **Fully-qualified names everywhere**; `alias` provides local shorthand.
+- **Fully-qualified names everywhere**.
 - **Tags** are additive visual labels (in docs); **macros** are active annotations (on declarations); **modifiers** are behavior- or styling-altering keywords.
 
 ---
@@ -42,12 +42,11 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 - Identifiers: letter or `_`, then letters, digits, `_`. Case-sensitive (`Banking` ≠ `banking`); PascalCase nodes and lowercase locals are convention, not enforced.
 - `::` walks the module/node path: `banking::core::Ledger`.
 - `.` invokes a method on, or reads a field of, a resolved node/value: `Repository.store(x)`, `r.value`. The member MUST exist on the receiver's type where it resolves (ADR-022). Chains freely: `Repo.fetch(id).value.owner` (§7).
-- After an `alias` name, only `.` MUST follow; `::` MUST NOT.
 
 ### 2.3 Keywords
 ```
 system  container  component  person
-data    for        alias      from
+data    for        from
 public  self
 return  Ok    Err   Some  None
 if      else  while  in
@@ -73,7 +72,7 @@ Three annotation kinds, distinct in syntax and effect.
 ```pds
 /// Durable store of account records.
 /// #critical
-public container AccountStore for Banking;
+public container AccountStore for banking::core::Banking;
 ```
 
 **Macros** — Rust-style outer attributes on the declaration (a trimmed Rust `MetaItem`).
@@ -103,7 +102,7 @@ Each macro declares the declaration kind(s) it may attach to; a macro on a kind 
 
 ### 2.5 Terminators
 - **Optional block** (`{ }` discloses internals, `;` is a black box): `system`, `container`, `component`, `person`, `data` (record form), and **callables**.
-- **Trailing `;`**: `alias`, and the black-box form of any construct above.
+- **Trailing `;`**: the black-box form of any construct above.
 
 ---
 
@@ -124,7 +123,7 @@ Option<T>        // optional value:   Some(T) | None
 ### 3.3 Type expressions
 A named type (`BankingInfo`), generic (`Result<BankingInfo, NotFound>`, `Option<Person>`), or array (`T[]`). `[]` is the only type suffix; an absent value is modeled with `Option<T>` (§6).
 
-Every named type — a field, parameter, or return type, and each generic argument — MUST resolve to a primitive (§3.1), `Result`/`Option` (§3.2), or a declared type or node (§3.4, §3.5, §4); an unresolved type MUST be rejected (ADR-022). A `::`-qualified type resolves cross-module (§8.2).
+Every named type — a field, parameter, or return type, and each generic argument — MUST resolve to a primitive (§3.1), `Result`/`Option` (§3.2), or a declared type or node (§3.4, §3.5, §4); an unresolved type MUST be rejected (ADR-022). A reference to a declared type or node MUST be its FQN (§8.1), including one in the same module; only primitives, `Result`/`Option`, and `self` are bare.
 
 ### 3.4 Data declarations
 A `data` type models any payload — DTOs, entities, messages alike. It MAY stay a **black box** with `;` (fields not yet disclosed).
@@ -182,11 +181,11 @@ public person Buyer {                          // a person MAY own behavior it i
 
 public system Banking;                         // black box
 
-public container Mainframe for Banking { }     // disclosed (behaviors per §5)
-public container AccountStore for Banking;     // black box
+public container Mainframe for banking::core::Banking { }     // disclosed (behaviors per §5)
+public container AccountStore for banking::core::Banking;     // black box
 
-component AccountService for Mainframe { }     // disclosed
-component Repository for AccountStore;         // black box
+component AccountService for banking::core::Mainframe { }     // disclosed
+component Repository for banking::core::AccountStore;         // black box
 ```
 
 - A `person` is an external actor. It MAY own callables modeling actions it initiates (e.g. `MakePurchase`), or stay a black box (`;`).
@@ -195,7 +194,7 @@ component Repository for AccountStore;         // black box
 ### 4.1 Modifiers
 `public` is the only modifier and precedes the construct keyword. **`public` means cross-module addressable** (§8.2); a node without it is reachable only within its own file.
 ```pds
-public container Ledger for Banking { ... }
+public container Ledger for banking::core::Banking { ... }
 ```
 
 ---
@@ -210,17 +209,17 @@ A function-shaped declaration is a callable.
 - All calls are request/response. A call to a resolvable callable MUST pass one argument per declared parameter, and each inferable argument MUST match its parameter's type; a wrong arity or argument type MUST be rejected (ADR-022, ADR-023).
 - Return type is optional; absence means `void`. A disclosed non-`void` callable MUST return a value on every path.
 - A `return` expression whose type is inferable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `Type from { … }` composition (§7.2), or a parameter/binding reference — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). Calls, field accesses, and `self` are not inferred (ADR-022).
-- A bare name in a body MUST resolve to a parameter, a binding, a node, an alias, or a union variant; an unresolved reference MUST be rejected (ADR-022).
+- A bare name in a body MUST resolve to a parameter, a binding, or a `for` binding; it MUST NOT resolve to a node or union variant (ADR-030) — those are referenced by FQN (§8.1). An unresolved bare name MUST be rejected (ADR-022).
 - A same-node callable is invoked via `self.Name(args)` (`self` = the enclosing node); this also covers recursion.
 - A callable's name and its parameter names MUST NOT be reserved words (§2.3) — `container`, `component`, `data`, and `for` are reserved.
 - A call statement MAY ignore its `Result` (the call still renders as a message).
 - A black-box callable shows in C4 as a capability; a call to it in a sequence diagram is a single message with no expansion.
 ```pds
-component AccountService for Mainframe {
+component AccountService for banking::core::Mainframe {
 
   // disclosed
   GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
-    r = AccountStore::Repository.fetch(id)
+    r = banking::core::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.error)
     }
@@ -266,11 +265,11 @@ Fallibility and absence live in the **type**, and every branch is explicit. The 
 
 ```pds
 OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError> {
-  check = KYC::Verifier.check(req.owner)
+  check = banking::core::Verifier.check(req.owner)
   if (check.isErr) {
     return Err(check.error)
   }
-  acc = AccountStore::Repository.create(req)
+  acc = banking::core::Repository.create(req)
   if (acc.isErr) {
     return Err(acc.error)
   }
@@ -284,7 +283,7 @@ OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError> {
 
 ```pds
 FindOwner(id: number): Option<Person> {
-  o = AccountStore::Directory.lookup(id)
+  o = banking::core::Directory.lookup(id)
   if (o.isNone) {
     return None
   }
@@ -348,42 +347,35 @@ banking/
   events.pds    → module  banking::events
 platforms/
   legacy.pds    → module  platforms::legacy
+web-ide/
+  file-tree.pds → module  web_ide::file_tree
 ```
-A node declared in `banking/core.pds` is addressed `banking::core::NodeName`.
+A node declared in `banking/core.pds` is addressed `banking::core::NodeName`. A module's identity is its file path alone; a `//!` inner doc documents the module (§2.1) but MUST NOT determine its name.
+
+Each path segment becomes an FQN segment, which MUST be an identifier (§2.2). A hyphen in a directory or filename normalises to `_` so a kebab-case path yields a valid root (ADR-031): `web-ide/file-tree.pds` is the module `web_ide::file_tree`. A dependency name carries no such normalisation — it MUST already be a valid identifier (§8.3).
 
 A module has three distinct namespaces: **type names** (`data` declarations and hoisted record variants, §3.5), **node names** (`system`/`container`/`component`/`person`), and **feature names** (§5.2). A name MUST be unique within its namespace; the three do not collide — a `data`, a `container`, and a `feature` MAY share a name. Callable and parameter names are scoped to their owner, not the module.
 
-An FQN's first segment is a **root**. The file-derived module paths above are the local roots; a `[dependencies]` entry (§8.4) adds one root per declared dependency.
+Every reference to a node, type, or union variant MUST be its FQN, including a reference to one declared in the same module (ADR-030). A bare leaf name MUST NOT resolve to a node, type, or variant; it resolves only to a parameter, a binding, or a `for` binding (§7). `self` and member access (§7.1) are unaffected, as are the primitives (§3.1) and `Result`/`Option` (§3.2). Within `banking/core.pds`, a sibling node is addressed `banking::core::Other`, never `Other`.
+
+An FQN's first segment is a **root**. The file-derived module paths above are the local roots; a `[dependencies]` entry (§8.3) adds one root per declared dependency.
 
 ### 8.2 Visibility
 All declarations are module-private by default. **`public` means cross-module addressable**; a private node is reachable only within its own file, even by FQN. Applies to `data`, `person`, `system`, `container`, `component`, and callables.
 ```pds
-public container Mainframe for Banking {
+public container Mainframe for banking::core::Banking {
   public GetBankingInfo(id: number): Result<BankingInfo, NotFound>;
   internalReconcile(): void;   // private — same-file only
 }
 ```
 
-### 8.3 alias
-`alias` binds a local name to a **node** FQN, not a module/namespace.
-- File-scoped, not exported; nothing MAY follow it via `::`.
-- The target is a node addressable by `::`; a callable (reached via `.`) cannot be aliased. The target MAY be a cross-workspace node (a dependency-rooted FQN, §8.4).
-- A dangling alias (target missing, or not `public` when cross-module or cross-workspace) MUST be rejected.
-```pds
-alias Store = banking::core::AccountStore;       // ✓ a container node
-alias Created = banking::core::BankAccCreated;   // ✓ a data node
-alias Core = banking::core;                      // ✗ that's a module, not a node
-
-Store.fetch(id)   // alias then invoke
-```
-
-### 8.4 Dependencies
+### 8.3 Dependencies
 A `pds.toml` `[dependencies]` table declares other workspaces. Each entry is one dependency with one **source**, selected by the presence of `git`: a **git source** when `git` is set, a **local source** otherwise.
 - A **git source** carries a git URL, at most one **revision selector** (`tag`, `rev`, or `branch`; default = the remote's default-branch HEAD), and an optional **`path`** — the dependency workspace's directory within its repository (default = repo root).
-- A **local source** carries a **`path`** and no `git` — a filesystem path to a sibling workspace, resolved relative to the declaring `pds.toml`. A local dependency is read live from disk; it is not version-pinned and records no `pds.lock` entry (§8.5).
+- A **local source** carries a **`path`** and no `git` — a filesystem path to a sibling workspace, resolved relative to the declaring `pds.toml`. A local dependency is read live from disk; it is not version-pinned and records no `pds.lock` entry (§8.4).
 - A local source MUST NOT be the resolved source of a git dependency: a consumer fetching a git dependency cannot follow its local entries (ADR-026).
 - An entry with neither `git` nor `path` declares no source and MUST be rejected.
-- Each declared name is an **FQN root** (§8.1), scoped to the declaring workspace: `dep::module::Node` addresses the node at module path `module` within dependency `dep`. The same name MAY denote different dependencies in different workspaces.
+- Each declared name is an **FQN root** (§8.1), scoped to the declaring workspace: `dep::module::Node` addresses the node at module path `module` within dependency `dep`. The same name MAY denote different dependencies in different workspaces. The name MUST be an identifier (§2.2); unlike a filename (§8.1), it is not normalised — a hyphenated name MUST be rejected (ADR-031).
 - A cross-workspace target MUST be `public`; a private or missing target MUST be rejected (extends §8.2).
 - Only **direct** dependencies are addressable. A dependency's own dependencies are resolved so it is internally well-formed, but MUST NOT be nameable from a workspace that does not declare them.
 ```toml
@@ -391,11 +383,11 @@ A `pds.toml` `[dependencies]` table declares other workspaces. Each entry is one
 banking = { git = "https://example.com/acme/banking.git", tag = "v2.1.0", path = "model" }
 ```
 
-### 8.5 Resolution & lockfile
+### 8.4 Resolution & lockfile
 A dependency's **identity** is `(source, revision, path)`.
 - Entries resolving to one identity are the same package. Entries differing in revision or path are distinct packages and MAY coexist; there is no version unification.
 - `pds.lock` pins the resolved graph: one entry per package — source, resolved commit, path, and dependency edges — making resolution reproducible.
-- A **local** dependency (§8.4) has no commit and no `pds.lock` entry; the resolver reads it live from disk. Its identity is its resolved path.
+- A **local** dependency (§8.3) has no commit and no `pds.lock` entry; the resolver reads it live from disk. Its identity is its resolved path.
 
 ---
 
@@ -415,6 +407,8 @@ From disclosed callables per §7. A **triggered** callable (one bearing a trigge
 A call to a **disclosed** callee expands inline: the callee becomes the active lifeline, its body traces in place, and each of its `return`s is a return message to its caller's lifeline. A call to a **black-box** callable renders as a single message with no expansion (§5.1). A callee already in flight on the call path (direct or mutual recursion) MUST NOT re-expand; it renders as a single message.
 
 In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
+
+Each lifeline head card shows the participant's C4 kind and name. A `container` or `component` participant SHOULD also show its `for` ancestry (enclosing node names, outermost first) dimmed beneath the name. Every declared participant SHOULD show its `///` summary, as on a C4 card (§9.1). A synthesised initiator carries neither.
 
 ### 9.3 Documentation site (`pds doc`)
 `pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded on the relevant pages.
@@ -457,9 +451,7 @@ items = [
 ## 10. Grammar Sketch (EBNF, informal)
 
 ```ebnf
-Program     = { InnerDoc } { Alias | Decl | Feature } ;
-
-Alias       = "alias" Ident "=" Path ";" ;          // Path must resolve to a node
+Program     = { InnerDoc } { Decl | Feature } ;
 
 Decl        = DocBlock { Macro } { Modifier } Structural ;
 Modifier    = "public" ;
@@ -508,7 +500,7 @@ Marker      = ( "Ok" | "Err" | "Some" ) [ "(" Expr ")" ] | "None" ;   // built-i
 FromExpr    = Path [ "[]" ] "from" "{" Expr { "," Expr } "}" ;   // "[]" composes an array
 Unary       = "!" Expr ;
 Args        = Expr { "," Expr } ;
-Ref         = "self" | Ident | Path ;               // self, alias name, or FQN
+Ref         = "self" | Ident | Path ;               // self or an FQN
 Path        = Ident { "::" Ident } ;
 
 Literal     = String | Number | Bool ;
@@ -543,31 +535,31 @@ public data OpenError   { reason: string }
 public system Banking;
 
 /// Core transaction processor.
-public container Mainframe for Banking {
+public container Mainframe for banking::core::Banking {
 
   /// Fetches current banking info for an account.
-  public GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
-    r = AccountStore::Repository.fetch(id)
+  public GetBankingInfo(id: number): Result<banking::core::BankingInfo, banking::core::NotFound> {
+    r = banking::core::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.error)
     }
     return Ok(r.value)
   }
 
-  public OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError>;
+  public OpenAccount(req: banking::core::OpenRequest): Result<banking::core::BankingInfo, banking::core::OpenError>;
 }
 
 /// Durable store of account records.
 /// #critical
-public container AccountStore for Banking;
+public container AccountStore for banking::core::Banking;
 
-component Repository for AccountStore {
-  fetch(id: number): Result<BankingInfo, NotFound>;
-  create(req: OpenRequest): Result<BankingInfo, OpenError>;
+component Repository for banking::core::AccountStore {
+  fetch(id: number): Result<banking::core::BankingInfo, banking::core::NotFound>;
+  create(req: banking::core::OpenRequest): Result<banking::core::BankingInfo, banking::core::OpenError>;
 }
 
 /// A customer opens an account through the mainframe.
-feature OpenAccount for Mainframe {
+feature OpenAccount for banking::core::Mainframe {
   given "a verified owner"
   when  "the owner opens an account"
   then  "banking info is returned"

@@ -38,18 +38,36 @@ const entries: FileEntry[] = [
 // The file tree is the entry point every e2e flow drives, so its module rows must
 // be addressable by a stable `data-testid` (file-<fqn>), never by label text.
 describe("FileTree", () => {
-  it("renders a stable data-testid per module", () => {
-    renderTree({ entries });
+  it("renders a stable data-testid per module (nested revealed via openKey)", () => {
+    // `shared` is nested under `banking/`; folders start collapsed, so opening it
+    // auto-expands its folder and makes the row addressable.
+    renderTree({ entries, openKey: "shared" });
     expect(screen.getByTestId("file-orders")).toBeInTheDocument();
     expect(screen.getByTestId("file-shared")).toBeInTheDocument();
   });
 
   it("shows the file name as the row label and nests by directory", () => {
-    renderTree({ entries });
+    renderTree({ entries, openKey: "shared" });
     expect(screen.getByTestId("file-shared")).toHaveTextContent("shared.pds");
     // a directory folder is rendered for the nested module + the docs
     expect(screen.getByText("banking")).toBeInTheDocument();
     expect(screen.getByText("docs")).toBeInTheDocument();
+  });
+
+  it("starts folders collapsed; expanding one reveals its children", async () => {
+    renderTree({ entries });
+    // Root file shows; the folder shows but its nested file is hidden.
+    expect(screen.getByTestId("file-orders")).toBeInTheDocument();
+    expect(screen.getByText("banking")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-shared")).not.toBeInTheDocument();
+    // Clicking the folder expands it.
+    await userEvent.click(screen.getByText("banking"));
+    expect(screen.getByTestId("file-shared")).toBeInTheDocument();
+  });
+
+  it("auto-expands the active file's ancestor folders so it stays visible", () => {
+    renderTree({ entries, openKey: "shared" });
+    expect(screen.getByTestId("file-shared")).toBeInTheDocument();
   });
 
   it("calls onopen with the entry when a row is clicked", async () => {
@@ -61,8 +79,8 @@ describe("FileTree", () => {
   });
 
   it("marks the open file with aria-current via openKey", () => {
-    renderTree({ entries, openKey: "orders" });
-    expect(screen.getByTestId("file-orders")).toHaveAttribute("aria-current", "true");
-    expect(screen.getByTestId("file-shared")).not.toHaveAttribute("aria-current");
+    renderTree({ entries, openKey: "shared" });
+    expect(screen.getByTestId("file-shared")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTestId("file-orders")).not.toHaveAttribute("aria-current");
   });
 });

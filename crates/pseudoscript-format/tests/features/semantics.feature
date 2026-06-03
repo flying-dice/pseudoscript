@@ -22,8 +22,8 @@ Feature: Formatting preserves semantics
     Then the result re-parses without errors
     And the result preserves the meaningful tokens
 
-  Scenario: array types and aliases
-    Given the source "alias R = a::b::Repo;\npublic container M for B {\nparse(argv:string[]):Result<Request,E>;\n}"
+  Scenario: array types in a node body
+    Given the source "public container M for B {\nparse(argv:string[]):Result<Request,E>;\n}"
     When I format it
     Then the result re-parses without errors
     And the result preserves the meaningful tokens

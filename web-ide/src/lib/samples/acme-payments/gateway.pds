@@ -28,49 +28,49 @@ public container Gateway for context::AcmePay;
 /// different parameters is rejected. A cached server error (5xx) is replayed too,
 /// so an indeterminate failure stays indeterminate for the client until ACME Pay
 /// reconciles it out of band — the same principle the intent saga uses internally.
-public component Idempotency for Gateway {
+public component Idempotency for gateway::Gateway {
   /// Begin a keyed operation. `Ok(Some replay)` means the key was already used
   /// with matching parameters — the caller MUST return the cached resource rather
   /// than re-execute. `Ok(None)` reserves the key and lets the caller proceed.
   /// `Err(KeyConflict)` means the key was reused with different parameters.
-  public begin(key: IdempotencyKey): Result<Option<Replay>, ApiError> {
+  public begin(key: gateway::IdempotencyKey): Result<Option<gateway::Replay>, gateway::ApiError> {
     prior: Option<Replay> = Gateway::IdempotencyStore.lookup(key)
     if (prior.isSome) {
       return Ok(prior)
     }
     reserved: Result<void, ApiError> = Gateway::IdempotencyStore.reserve(key)
     if (reserved.isErr) {
-      return Err(KeyConflict)
+      return Err(gateway::KeyConflict)
     }
     return Ok(prior)
   }
 
   /// Cache the resource a keyed operation created, so a later replay returns it.
-  public record(key: IdempotencyKey, resource: string): void {
+  public record(key: gateway::IdempotencyKey, resource: string): void {
     Gateway::IdempotencyStore.save(key, resource)
   }
 }
 
 /// Durable idempotency records: key → created-resource id, plus the request
 /// fingerprint used to detect parameter mismatch.
-component IdempotencyStore for Gateway {
+component IdempotencyStore for gateway::Gateway {
   /// The resource created for a key, if it was already processed.
-  lookup(key: IdempotencyKey): Option<Replay>;
+  lookup(key: gateway::IdempotencyKey): Option<gateway::Replay>;
   /// Reserve a fresh key; `Err` if it is already reserved with different
   /// parameters or a concurrent request holds it.
-  reserve(key: IdempotencyKey): Result<void, ApiError>;
+  reserve(key: gateway::IdempotencyKey): Result<void, gateway::ApiError>;
   /// Cache the resource id a keyed operation produced.
-  save(key: IdempotencyKey, resource: string): void;
+  save(key: gateway::IdempotencyKey, resource: string): void;
 }
 
 /// Card tokenisation — the only route a publishable (client-side) key may call.
-public component TokenApi for Gateway {
+public component TokenApi for gateway::Gateway {
   /// Tokenise a card into a reusable payment method.
   #[http("POST /v1/payment_methods")]
-  public tokenize(key: identity::PublishableKey, card: vault::CardEntry): Result<vault::PaymentMethod, ApiError> {
+  public tokenize(key: identity::PublishableKey, card: vault::CardEntry): Result<vault::PaymentMethod, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticatePublishable(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     method: Result<PaymentMethod, TokenizeError> = vault::Tokenizer.tokenize(merchant.value.id, card)
     if (method.isErr) {
@@ -80,20 +80,20 @@ public component TokenApi for Gateway {
   }
 
   /// Map a tokenisation failure to an edge error.
-  rejectTokenize(e: vault::TokenizeError): ApiError;
+  rejectTokenize(e: vault::TokenizeError): gateway::ApiError;
 }
 
 /// PaymentIntent endpoints (secret-key, except the cardholder's 3-D Secure
 /// confirmation, which is authorised by the intent's client secret).
-public component IntentApi for Gateway {
+public component IntentApi for gateway::Gateway {
   /// Create a PaymentIntent. The merchant is the authenticated key's merchant.
   /// Carries an idempotency key so a retried create returns the same intent rather
   /// than a duplicate (the recommended key derives from the cart/session id).
   #[http("POST /v1/payment_intents")]
-  public create(key: identity::SecretKey, idem: IdempotencyKey, req: intents::CreateIntent): Result<intents::PaymentIntent, ApiError> {
+  public create(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: intents::CreateIntent): Result<intents::PaymentIntent, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     guard: Result<Option<Replay>, ApiError> = Gateway::Idempotency.begin(idem)
     if (guard.isErr) {
@@ -109,10 +109,10 @@ public component IntentApi for Gateway {
 
   /// Confirm a PaymentIntent with a payment method.
   #[http("POST /v1/payment_intents/{intent}/confirm")]
-  public confirm(key: identity::SecretKey, req: intents::ConfirmIntent): Result<intents::PaymentIntent, ApiError> {
+  public confirm(key: identity::SecretKey, req: intents::ConfirmIntent): Result<intents::PaymentIntent, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.confirm(merchant.value.id, req)
     if (done.isErr) {
@@ -124,7 +124,7 @@ public component IntentApi for Gateway {
   /// Complete a 3-D Secure challenge (cardholder-initiated; the intent's client
   /// secret authorises it, which the edge verifies as plumbing).
   #[http("POST /v1/payment_intents/{intent}/confirm_action")]
-  public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, ApiError> {
+  public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, gateway::ApiError> {
     done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.confirmAction(intent, outcome)
     if (done.isErr) {
       return Err(self.rejectIntent(done.error))
@@ -134,10 +134,10 @@ public component IntentApi for Gateway {
 
   /// Capture a manually-captured PaymentIntent.
   #[http("POST /v1/payment_intents/{intent}/capture")]
-  public capture(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, ApiError> {
+  public capture(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.capture(merchant.value.id, intent)
     if (done.isErr) {
@@ -148,10 +148,10 @@ public component IntentApi for Gateway {
 
   /// Cancel a PaymentIntent before capture.
   #[http("POST /v1/payment_intents/{intent}/cancel")]
-  public cancel(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, ApiError> {
+  public cancel(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.cancel(merchant.value.id, intent)
     if (done.isErr) {
@@ -161,22 +161,22 @@ public component IntentApi for Gateway {
   }
 
   /// Map an intent failure to an edge error.
-  rejectIntent(e: intents::IntentError): ApiError;
+  rejectIntent(e: intents::IntentError): gateway::ApiError;
   /// Re-fetch the intent a replayed idempotency key already created.
-  reloadIntent(replay: Replay): Result<intents::PaymentIntent, ApiError>;
+  reloadIntent(replay: gateway::Replay): Result<intents::PaymentIntent, gateway::ApiError>;
   /// The cache key (resource id) for a created intent.
   intentId(intent: intents::PaymentIntent): string;
 }
 
 /// Refund endpoint (secret-key).
-public component RefundApi for Gateway {
+public component RefundApi for gateway::Gateway {
   /// Refund a captured payment. Idempotency-keyed so a retried refund returns the
   /// same refund rather than reversing twice.
   #[http("POST /v1/refunds")]
-  public create(key: identity::SecretKey, idem: IdempotencyKey, req: refunds::RefundRequest): Result<refunds::Refund, ApiError> {
+  public create(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: refunds::RefundRequest): Result<refunds::Refund, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     guard: Result<Option<Replay>, ApiError> = Gateway::Idempotency.begin(idem)
     if (guard.isErr) {
@@ -194,21 +194,21 @@ public component RefundApi for Gateway {
   }
 
   /// Map a refund failure to an edge error.
-  rejectRefund(e: refunds::RefundError): ApiError;
+  rejectRefund(e: refunds::RefundError): gateway::ApiError;
   /// Re-fetch the refund a replayed idempotency key already created.
-  reloadRefund(replay: Replay): Result<refunds::Refund, ApiError>;
+  reloadRefund(replay: gateway::Replay): Result<refunds::Refund, gateway::ApiError>;
   /// The cache key (resource id) for a created refund.
   refundId(refund: refunds::Refund): string;
 }
 
 /// Dispute-evidence endpoint (secret-key).
-public component DisputeApi for Gateway {
+public component DisputeApi for gateway::Gateway {
   /// Submit evidence contesting a chargeback.
   #[http("POST /v1/disputes/{dispute}/evidence")]
-  public submitEvidence(key: identity::SecretKey, req: disputes::EvidenceSubmission): Result<disputes::Dispute, ApiError> {
+  public submitEvidence(key: identity::SecretKey, req: disputes::EvidenceSubmission): Result<disputes::Dispute, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     done: Result<Dispute, DisputeError> = disputes::DisputeService.submitEvidence(merchant.value.id, req)
     if (done.isErr) {
@@ -218,24 +218,24 @@ public component DisputeApi for Gateway {
   }
 
   /// Map a dispute failure to an edge error.
-  rejectDispute(e: disputes::DisputeError): ApiError;
+  rejectDispute(e: disputes::DisputeError): gateway::ApiError;
 }
 
 /// Balance read (secret-key), scoped to the authenticated merchant.
-public component BalanceApi for Gateway {
+public component BalanceApi for gateway::Gateway {
   /// Read the authenticated merchant's balance.
   #[http("GET /v1/balance")]
-  public balance(key: identity::SecretKey): Result<ledger::Balance, ApiError> {
+  public balance(key: identity::SecretKey): Result<ledger::Balance, gateway::ApiError> {
     merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
-      return Err(Unauthorized)
+      return Err(gateway::Unauthorized)
     }
     return Ok(ledger::Balance.balance(merchant.value.id))
   }
 }
 
 /// A payment acts as the key's merchant, not a merchant id from the body.
-feature MerchantIsTakenFromTheKey for IntentApi {
+feature MerchantIsTakenFromTheKey for gateway::IntentApi {
   given "a secret key belonging to one merchant"
   when  "a payment is created with it"
   then  "the payment belongs to the key's merchant"
@@ -243,7 +243,7 @@ feature MerchantIsTakenFromTheKey for IntentApi {
 }
 
 /// A retried create with the same idempotency key returns the same resource.
-feature IdempotentCreateReplays for Idempotency {
+feature IdempotentCreateReplays for gateway::Idempotency {
   given "a create request that already succeeded under an idempotency key"
   when  "the same request is retried with the same key"
   then  "the originally created resource is returned"
@@ -251,7 +251,7 @@ feature IdempotentCreateReplays for Idempotency {
 }
 
 /// Reusing a key with different parameters is refused.
-feature KeyReuseWithDifferentParamsRejected for Idempotency {
+feature KeyReuseWithDifferentParamsRejected for gateway::Idempotency {
   given "an idempotency key already used for one request"
   when  "it is reused with different parameters"
   then  "the request is refused as a key conflict"

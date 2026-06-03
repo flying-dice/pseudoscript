@@ -8,19 +8,19 @@
 
 import { collapseSequence } from "../sequence.js";
 import { singleLifelineScene, type ModelIndex } from "./model.js";
-import type { Canvas, Depth, Module, Scene } from "./types.js";
+import type { Canvas, Depth, Scene } from "./types.js";
 
-// The WASM scene functions the projection needs.
+// The scene functions the projection needs. The session holds the workspace, so
+// these take only the view/symbol — no modules argument.
 export type CanvasWasm = {
-  symbolScene: (modules: Module[], fqn: string) => Scene;
-  emitSceneModules: (modules: Module[], view: string, target?: string) => Scene;
+  symbolScene: (fqn: string) => Scene;
+  emitScene: (view: string, target?: string) => Scene;
   layoutScene: (scene: Scene) => Scene;
 };
 
 export type ProjectCanvasArgs = {
   selected: { fqn: string } | null;
   seqDepth: Depth;
-  modules: Module[];
   index: ModelIndex;
   wasm: CanvasWasm;
   onError: (code: "DIAGRAM_PROJECTION_FAILED" | "DIAGRAM_RENDER_FAILED", detail: string) => void;
@@ -28,26 +28,29 @@ export type ProjectCanvasArgs = {
 
 /**
  * Project the canvas scene + layout. A selected symbol projects its fitting view;
- * no selection projects the context overview. A sequence is collapsed to `seqDepth`
- * and positioned by the layout engine; C4 stays as-is. An empty or unprojectable
- * selected symbol falls back to its single lifeline; an unprojectable context is an
- * error. Both error paths report via `onError`.
+ * no selection projects the context overview. A sequence is collapsed to `seqDepth`;
+ * both kinds are then positioned by the Rust layout engine. An empty or
+ * unprojectable selected symbol falls back to its single lifeline; an
+ * unprojectable context is an error. Both error paths report via `onError`.
  */
 export function projectCanvas(args: ProjectCanvasArgs): Canvas {
-  const { selected, seqDepth, modules, index, wasm, onError } = args;
+  const { selected, seqDepth, index, wasm, onError } = args;
   const lifelineFallback = (): Canvas => {
     const scene = singleLifelineScene(index, selected!.fqn);
     return { scene, layout: wasm.layoutScene(scene), error: "" };
   };
   try {
-    const raw = selected ? wasm.symbolScene(modules, selected.fqn) : wasm.emitSceneModules(modules, "context", "");
+    const raw = selected ? wasm.symbolScene(selected.fqn) : wasm.emitScene("context", "");
     const isSeq = !!raw && Array.isArray(raw.participants);
     const shown = (isSeq ? collapseSequence(raw as never, seqDepth, index.nodeInfo) : raw) as Scene | null;
     const isEmpty = isSeq
       ? !(shown?.participants as unknown[] | undefined)?.length
       : !(shown?.nodes as unknown[] | undefined)?.length;
     if (isEmpty && selected) return lifelineFallback();
-    const layout = isSeq && shown ? wasm.layoutScene(shown) : null;
+    // Both kinds are positioned by the Rust layout engine: a sequence yields a
+    // positioned timeline, a C4 scene yields placed cards + routed edges (the
+    // same geometry the static SVG draws).
+    const layout = shown ? wasm.layoutScene(shown) : null;
     return { scene: shown, layout, error: "" };
   } catch (e) {
     const detail = String((e as Error)?.message ?? e);

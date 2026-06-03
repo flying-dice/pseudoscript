@@ -8,13 +8,13 @@
 use crate::lexer::SpannedTrivia;
 use crate::span::Span;
 
-/// A whole parsed file: module-level inner docs followed by aliases and
-/// declarations, in source order.
+/// A whole parsed file: module-level inner docs followed by declarations, in
+/// source order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// `//!` inner-doc lines documenting this module (§2.1).
     pub inner_docs: Vec<InnerDoc>,
-    /// Top-level items: `alias`es and declarations, interleaved in source order.
+    /// Top-level items: declarations and features, in source order.
     pub items: Vec<Item>,
     /// Source span of the whole module.
     pub span: Span,
@@ -32,8 +32,6 @@ pub struct InnerDoc {
 /// A top-level item.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    /// An `alias` binding (§8.3).
-    Alias(Alias),
     /// A documented, annotated structural declaration (§4, §3.4).
     Decl(Decl),
     /// A `feature` BDD scenario (§5.2).
@@ -45,7 +43,6 @@ impl Item {
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
-            Item::Alias(a) => a.span,
             Item::Decl(d) => d.span,
             Item::Feature(f) => f.span,
         }
@@ -127,19 +124,6 @@ impl StepKind {
             _ => None,
         }
     }
-}
-
-/// `alias Name = Path ;` — a file-local shorthand for a node FQN (§8.3).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Alias {
-    /// The local name introduced.
-    pub name: Ident,
-    /// The target node path (must be `::`-only; no `.`).
-    pub target: Path,
-    /// Comments / blank lines preceding this alias.
-    pub leading_trivia: Vec<SpannedTrivia>,
-    /// Source span of the whole `alias` statement.
-    pub span: Span,
 }
 
 /// The doc block, macros, and modifiers shared by every declaration, plus the
@@ -410,7 +394,7 @@ pub enum ExprKind {
         base: Box<Expr>,
         segments: Vec<PostfixSeg>,
     },
-    /// `self`, an alias name, or an FQN (§10 `Ref`).
+    /// `self` or an FQN (§10 `Ref`).
     Ref(Ref),
     /// A string / number / bool literal (ADR-013).
     Literal(Literal),
@@ -436,7 +420,7 @@ pub struct PostfixSeg {
 pub enum Ref {
     /// `self` — the enclosing node (ADR-004).
     SelfNode(Span),
-    /// An identifier or `::`-separated path (alias name or FQN).
+    /// An identifier or `::`-separated path (a node FQN).
     Path(Path),
 }
 

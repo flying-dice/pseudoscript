@@ -1,5 +1,5 @@
 //! Foldable source regions — the shared engine behind the LSP
-//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-wasm`).
+//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-ide`).
 //!
 //! Every brace-delimited declaration (a node or `data` record) and every
 //! statement block is foldable; brace-less `data = | …` unions and black-box

@@ -141,7 +141,7 @@ Turns parsed modules into the one resolved `Graph`, and runs the static checks. 
 Classic compiler shape, matching LANG.md §8:
 
 1. **Collect** — walk modules, derive each declaration's FQN from the file path (filename is a segment, §8.1), record visibility into an FQN→node map.
-2. **Resolve** — walk references (`::` paths, `.` access, `alias` targets, macro args). Separating the phases is what lets forward references resolve regardless of order.
+2. **Resolve** — walk references (`::` paths, `.` access, macro args). Separating the phases is what lets forward references resolve regardless of order.
 
 #### Edge derivation: AST visitor
 

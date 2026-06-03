@@ -112,7 +112,7 @@ Genuine gaps / weaknesses (the actual work):
   (`deps.rs:238` `insert`) — acceptable but undocumented.
 - **`--path` validation** is trim-only; a `../escape` path is passed to
   `sparse-checkout` unsanitised (git will reject, but the error is opaque).
-- **Spec/conformance:** verify `LANG.md` §8.4/§8.5 and ADR-024 actually describe
+- **Spec/conformance:** verify `LANG.md` §8.3/§8.3 and ADR-024 actually describe
   this surface (referenced in `deps.rs:1-2` doc comment); the lockfile schema
   (`root` + `package` arrays, version 1) and the `(source,rev,path)` identity
   should be pinned there. No conformance cases under `CONFORMANCE/` cover deps
@@ -146,12 +146,12 @@ Hardening, not rewrite. In priority order:
    clear error before it reaches git (mirror `safe_rel_path` style in
    `main.rs:576-587`).
 
-5. **Spec alignment:** already done. `LANG.md` §8.4 (`[dependencies]` table,
-   one-of selector, `path` for monorepo subtrees) and §8.5 (`(source, revision,
+5. **Spec alignment:** already done. `LANG.md` §8.3 (`[dependencies]` table,
+   one-of selector, `path` for monorepo subtrees) and §8.3 (`(source, revision,
    path)` identity, `pds.lock` pinning the graph, sparse partial checkout,
    direct-only addressability, acyclicity) match the code; ADR-024 closes with
    "Spec is fully aligned with the implementation." No spec work required for T2
-   unless the `install` HEAD-verify behaviour (step 2) warrants a §8.5 sentence.
+   unless the `install` HEAD-verify behaviour (step 2) warrants a §8.3 sentence.
 
 6. **Docs:** a `PATTERNS.md` recipe for adding a monorepo-hosted dependency
    (`pds add <repo> --path <subdir>`), and a `pds update` follow-up ticket.
@@ -180,7 +180,7 @@ Hardening, not rewrite. In priority order:
   re-fetch (self-heal) with an info line.
 - **Conformance scope:** git deps are a CLI/tooling concern, outside the four
   spec layers (lexical/syntax/static/generation). The cross-workspace *name*
-  rules (§8.4 direct-only addressability) could warrant a `static/` case, but the
+  rules (§8.3 direct-only addressability) could warrant a `static/` case, but the
   fetch/lock mechanics belong in Rust integration tests, not `CONFORMANCE/`.
   Confirm before adding any case.
 - **Outer-repo discovery:** `find_root` stops at the workspace `pds.toml`, not the

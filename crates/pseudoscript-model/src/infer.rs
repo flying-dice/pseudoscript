@@ -141,8 +141,7 @@ fn postfix_type(
     let mut result = None;
     for (i, seg) in segments.iter().enumerate() {
         let member_ty = ws
-            .module(&owner.0)?
-            .model
+            .module_model(&owner.0)?
             .members(&owner.1)
             .iter()
             .find(|m| m.name == seg.name.name)?
@@ -197,7 +196,7 @@ pub fn owner_at_dot(
     let module = pseudoscript_syntax::parse(src).ast;
     module.items.iter().find_map(|item| match item {
         ast::Item::Decl(decl) => decl_owner_at(ws, from_fqn, decl, dot),
-        ast::Item::Alias(_) | ast::Item::Feature(_) => None,
+        ast::Item::Feature(_) => None,
     })
 }
 
@@ -289,8 +288,7 @@ fn expr_owner_at(
                 let mut owner = base_owner(ws, from_fqn, base)?;
                 for seg in &segments[..k] {
                     let ty = ws
-                        .module(&owner.0)?
-                        .model
+                        .module_model(&owner.0)?
                         .members(&owner.1)
                         .iter()
                         .find(|m| m.name == seg.name.name)?

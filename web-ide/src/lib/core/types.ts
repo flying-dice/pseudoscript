@@ -21,6 +21,7 @@ export type StructureNode = {
   line: number;
   col: number;
   parent?: string | null;
+  summary?: string | null;
 };
 
 // A structure node tagged with its declaring file's FQN.

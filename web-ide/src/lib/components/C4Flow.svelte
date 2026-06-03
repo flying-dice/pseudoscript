@@ -1,50 +1,45 @@
 <script lang="ts">
-  // Interactive C4 graph: structure at a glance. Node geometry comes from the
-  // chosen layout algorithm (layered / grid / circular / radial); Svelte Flow
-  // provides pan / zoom / minimap / fit-to-view. Nodes are immutable — not
-  // draggable or connectable — so the diagram stays a true projection of the
-  // model. Edges float: they anchor at the nearest card borders (shortest path)
-  // rather than fixed handles. A boundary view (container / component) draws its
-  // `of` node as an enclosing box rather than a peer card. A floating "Customise"
-  // button opens the layout/edge modal; right-clicking a node opens its context
-  // menu (drill / flows / go-to-definition / find-usages).
+  // Interactive C4 graph: structure at a glance. All geometry comes from the
+  // `pseudoscript-emit` layout engine (the same layout-rs Sugiyama pass the
+  // static SVG draws), handed in as a positioned `C4Layout`; this component is a
+  // dumb renderer of it — it computes no layout. Svelte Flow provides pan / zoom
+  // / minimap / fit-to-view. Nodes are immutable (not draggable or connectable),
+  // so the diagram stays a true projection. Edges follow the engine's routed
+  // polylines. A boundary view (container / component) draws its `of` node as an
+  // enclosing frame. Right-clicking a node opens its context menu (drill / flows
+  // / go-to-definition / find-usages).
   import { Background, Controls, MarkerType, MiniMap, SvelteFlow } from "@xyflow/svelte";
   import type { Edge, Node } from "@xyflow/svelte";
-  import Dagre from "@dagrejs/dagre";
-  import type { Graph } from "@dagrejs/dagre";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
   import CanvasMenu from "./CanvasMenu.svelte";
-  import CanvasSettings from "./CanvasSettings.svelte";
   import DiagramExport from "./DiagramExport.svelte";
-  import FitView from "./FitView.svelte";
-  import FloatingEdge from "./FloatingEdge.svelte";
+  import PolylineEdge from "./PolylineEdge.svelte";
   import { theme } from "$lib/theme.svelte.js";
-  import { canvasPrefs } from "$lib/stores/canvas-prefs.svelte.js";
-  import type { LayoutAlgo, LayoutDir } from "$lib/stores/canvas-prefs.svelte.js";
   import type { MenuItem, MenuSection } from "$lib/core/types.js";
 
-  // A node in the projected scene (one C4 element).
-  type SceneNode = {
-    fqn: string;
-    label: string;
-    kind: string;
-    summary?: string;
-    boundary?: string | null;
-  };
-  // A relationship between two scene nodes.
-  type SceneEdge = {
+  // A scene only contributes its boundary subject here (the export name); all
+  // geometry comes from the layout.
+  type Scene = { of?: string | null };
+  // The positioned C4 layout produced by `pseudoscript-emit::layout_c4_scene`.
+  type Rect = { x: number; y: number; w: number; h: number };
+  type Pt = { x: number; y: number };
+  type LaidOutNode = { fqn: string; kind: string; label: string; summary?: string | null; rect: Rect };
+  type LaidOutEdge = {
     from: string;
     to: string;
-    label?: string;
     kind: string;
+    label: string;
+    points: Pt[];
+    label_pos?: Pt | null;
+    dashed: boolean;
   };
-  // The structural scene this component projects: nodes, their relationships,
-  // and (for a boundary view) the `of` element drawn as the enclosing box.
-  type Scene = {
-    nodes: SceneNode[];
-    edges: SceneEdge[];
-    of?: string | null;
+  type Layout = {
+    width: number;
+    height: number;
+    nodes: LaidOutNode[];
+    edges: LaidOutEdge[];
+    boundary?: { title: string; kind: string; rect: Rect } | null;
   };
   // The `data` payload carried by every Svelte Flow node (card or boundary).
   type NodeData = {
@@ -60,6 +55,7 @@
 
   type Props = {
     scene: Scene;
+    layout: Layout | null;
     onpick?: ((fqn: string) => void) | null;
     onup?: (() => void) | null;
     flows?: Map<string, Flow[]> | null;
@@ -67,7 +63,7 @@
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
   };
 
-  let { scene, onpick, onup, flows = null, onsource = null, onusages = null }: Props = $props();
+  let { scene, layout, onpick, onup, flows = null, onsource = null, onusages = null }: Props = $props();
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
@@ -79,266 +75,70 @@
   const exportName = $derived((scene.of ?? "").split("::").pop() || "diagram");
 
   const nodeTypes = { boundary: BoundaryNode, card: C4Node };
-  const edgeTypes = { floating: FloatingEdge };
-
-  const NODE_W = 200;
-  const NODE_H = 104;
-  const PAD = 34; // inner gap between the boundary box and its children
-  const TITLE_H = 30; // room at the top of the box for the boundary's label
+  const edgeTypes = { polyline: PolylineEdge };
 
   // Which deeper view a node drills into, by kind. Persons / components have no
   // structural view below them, so they get no drill button (info only).
   const DRILL: Record<string, string> = { system: "Open container diagram", container: "Open component diagram" };
 
-  function dagreGraph(rankdir: LayoutDir): Graph {
-    const g = new Dagre.graphlib.Graph();
-    g.setGraph({ rankdir, nodesep: 60, ranksep: 90, marginx: 28, marginy: 28 });
-    g.setDefaultEdgeLabel(() => ({}));
-    return g;
-  }
+  // Map the positioned layout into Svelte Flow nodes + edges. The boundary frame
+  // sits behind (zIndex 0) as a non-interactive box; cards sit on top at their
+  // engine-computed rect (position + size); edges follow the routed polylines.
+  function build(l: Layout | null): { nodes: Node[]; edges: Edge[] } {
+    if (!l || !Array.isArray(l.nodes)) return { nodes: [], edges: [] };
 
-  function card(n: SceneNode, parentId?: string) {
-    return {
+    const frame: Node[] = l.boundary
+      ? [
+          {
+            id: "__boundary",
+            type: "boundary",
+            position: { x: l.boundary.rect.x, y: l.boundary.rect.y },
+            width: l.boundary.rect.w,
+            height: l.boundary.rect.h,
+            data: { label: l.boundary.title, kind: l.boundary.kind, summary: "", fqn: scene.of ?? "", boundary: true, onclose: onup ?? undefined } as NodeData,
+            class: `c4-boundary ${l.boundary.kind}`,
+            draggable: false,
+            connectable: false,
+            selectable: true,
+            zIndex: 0,
+          },
+        ]
+      : [];
+
+    const cards: Node[] = l.nodes.map((n) => ({
       id: n.fqn,
       type: "card",
+      position: { x: n.rect.x, y: n.rect.y },
+      width: n.rect.w,
+      height: n.rect.h,
       data: { label: n.label, kind: n.kind, summary: n.summary ?? "", fqn: n.fqn } as NodeData,
       class: `c4-node ${n.kind}`,
-      width: NODE_W,
-      height: NODE_H,
       draggable: false,
       connectable: false,
-      ...(parentId ? { parentId } : {}),
-    };
-  }
-
-  // A boundary view: lay the `of` children inside a box, the external actors
-  // around it. Two dagre passes — one inside the box, one placing the box and
-  // its outside actors — keep the box from overlapping anything.
-  function grouped(s: Scene, boundaryFqn: string, rankdir: LayoutDir): Node[] {
-    const anchor = s.nodes.find((n) => n.fqn === boundaryFqn);
-    const inside = s.nodes.filter((n) => n.boundary === boundaryFqn);
-    const outside = s.nodes.filter((n) => n.fqn !== boundaryFqn && n.boundary !== boundaryFqn);
-
-    // Inner pass: children, laid out by the edges among them.
-    const inner = dagreGraph(rankdir);
-    for (const n of inside) inner.setNode(n.fqn, { width: NODE_W, height: NODE_H });
-    const insideSet = new Set(inside.map((n) => n.fqn));
-    for (const e of s.edges) if (insideSet.has(e.from) && insideSet.has(e.to)) inner.setEdge(e.from, e.to);
-    Dagre.layout(inner);
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of inside) {
-      const p = inner.node(n.fqn);
-      minX = Math.min(minX, p.x - NODE_W / 2);
-      minY = Math.min(minY, p.y - NODE_H / 2);
-      maxX = Math.max(maxX, p.x + NODE_W / 2);
-      maxY = Math.max(maxY, p.y + NODE_H / 2);
-    }
-    const boxW = maxX - minX + PAD * 2;
-    const boxH = maxY - minY + PAD * 2 + TITLE_H;
-
-    // Outer pass: the box (as one node) plus the external actors, positioned by
-    // the edges that cross the boundary.
-    const outer = dagreGraph(rankdir);
-    outer.setNode(boundaryFqn, { width: boxW, height: boxH });
-    for (const n of outside) outer.setNode(n.fqn, { width: NODE_W, height: NODE_H });
-    const lift = (fqn: string): string => (insideSet.has(fqn) ? boundaryFqn : fqn);
-    for (const e of s.edges) {
-      const from = lift(e.from), to = lift(e.to);
-      if (from !== to && outer.hasNode(from) && outer.hasNode(to)) outer.setEdge(from, to);
-    }
-    Dagre.layout(outer);
-
-    const boxPos = outer.node(boundaryFqn);
-    const boxOrigin = { x: boxPos.x - boxW / 2, y: boxPos.y - boxH / 2 };
-
-    // The box first (Svelte Flow needs a parent before its children), then the
-    // framed children positioned relative to it, then the outside actors.
-    const boundaryNode = {
-      id: boundaryFqn,
-      type: "boundary",
-      position: boxOrigin,
-      data: { label: anchor?.label ?? boundaryFqn, kind: anchor?.kind ?? "system", summary: anchor?.summary ?? "", fqn: boundaryFqn, boundary: true, onclose: onup ?? undefined } as NodeData,
-      class: `c4-boundary ${anchor?.kind ?? "system"}`,
-      width: boxW,
-      height: boxH,
-      draggable: false,
-      connectable: false,
-      selectable: true,
-    };
-    const childNodes = inside.map((n) => {
-      const p = inner.node(n.fqn);
-      return {
-        ...card(n, boundaryFqn),
-        position: { x: p.x - NODE_W / 2 - minX + PAD, y: p.y - NODE_H / 2 - minY + PAD + TITLE_H },
-      };
-    });
-    const outsideNodes = outside.map((n) => {
-      const p = outer.node(n.fqn);
-      return { ...card(n), position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 } };
-    });
-    return [boundaryNode, ...childNodes, ...outsideNodes] as Node[];
-  }
-
-  // Lay out positions over a single index, given a position function. Shared by
-  // the geometric algorithms (grid / circular / radial); origin is irrelevant —
-  // fitView re-centres — so they place cards in a tidy local frame.
-  const COL_GAP = 80;
-  const ROW_GAP = 64;
-
-  function placed(s: Scene, pos: (i: number, n: SceneNode) => { x: number; y: number }): Node[] {
-    return s.nodes.map((n, i) => ({ ...card(n), position: pos(i, n) })) as Node[];
-  }
-
-  // Hierarchical: dagre layered, honouring the flow direction.
-  function layered(s: Scene, rankdir: LayoutDir): Node[] {
-    const g = dagreGraph(rankdir);
-    for (const n of s.nodes) g.setNode(n.fqn, { width: NODE_W, height: NODE_H });
-    for (const e of s.edges) g.setEdge(e.from, e.to);
-    Dagre.layout(g);
-    return s.nodes.map((n) => {
-      const p = g.node(n.fqn);
-      return { ...card(n), position: { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 } };
-    }) as Node[];
-  }
-
-  // Top-left of the k-th of `count` cards spaced evenly on a circle of `radius`,
-  // centred on the origin.
-  function onCircle(radius: number, k: number, count: number): { x: number; y: number } {
-    const a = (2 * Math.PI * k) / count - Math.PI / 2;
-    return { x: radius * Math.cos(a) - NODE_W / 2, y: radius * Math.sin(a) - NODE_H / 2 };
-  }
-
-  // Radius that seats `count` cards around a ring without overlap.
-  function ringRadius(count: number): number {
-    return Math.max(NODE_W, ((NODE_W + COL_GAP) * count) / (2 * Math.PI));
-  }
-
-  // Grid: row-major into the squarest grid that holds every card.
-  function grid(s: Scene): Node[] {
-    const cols = Math.max(1, Math.ceil(Math.sqrt(s.nodes.length)));
-    return placed(s, (i) => ({
-      x: (i % cols) * (NODE_W + COL_GAP),
-      y: Math.floor(i / cols) * (NODE_H + ROW_GAP),
+      zIndex: 1,
     }));
-  }
 
-  // Circular: cards spaced evenly around one ring, sized so they don't overlap.
-  function circular(s: Scene): Node[] {
-    const count = s.nodes.length;
-    const r = ringRadius(count);
-    return placed(s, (i) => onCircle(r, i, count));
-  }
-
-  // Ring index (hop distance from `roots`) of every id; anything unreached lands
-  // one ring beyond the deepest reached.
-  function hopRings(ids: string[], out: Map<string, string[]>, roots: string[]): Map<string, number> {
-    const ring = new Map<string, number>();
-    let frontier = roots;
-    let depth = 0;
-    while (frontier.length) {
-      const next: string[] = [];
-      for (const id of frontier) {
-        if (ring.has(id)) continue;
-        ring.set(id, depth);
-        for (const m of out.get(id) ?? []) if (!ring.has(m)) next.push(m);
-      }
-      frontier = next;
-      depth++;
-    }
-    const maxRing = ring.size ? Math.max(...ring.values()) : 0;
-    for (const id of ids) if (!ring.has(id)) ring.set(id, maxRing + 1);
-    return ring;
-  }
-
-  // Radial: concentric rings by hop distance from the roots (sources with no
-  // incoming edge), so an entry point sits at the centre and dependents fan out.
-  function radial(s: Scene): Node[] {
-    const ids = s.nodes.map((n) => n.fqn);
-    const out = new Map<string, string[]>(ids.map((id) => [id, []]));
-    const indeg = new Map<string, number>(ids.map((id) => [id, 0]));
-    for (const e of s.edges) {
-      if (out.has(e.from) && indeg.has(e.to)) {
-        out.get(e.from)!.push(e.to);
-        indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
-      }
-    }
-    let roots = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
-    if (roots.length === 0) roots = ids.slice(0, 1);
-
-    const ring = hopRings(ids, out, roots);
-
-    // Group ids by ring; give each ring a radius that seats its members and clears
-    // the ring inside it (a lone centre sits at 0), then place members around it.
-    const byRing = new Map<number, string[]>();
-    for (const id of ids) {
-      const d = ring.get(id) ?? 0;
-      if (!byRing.has(d)) byRing.set(d, []);
-      byRing.get(d)!.push(id);
-    }
-    const RING_STEP = NODE_W + ROW_GAP + 40;
-    const place = new Map<string, { x: number; y: number }>();
-    let prev = 0;
-    for (const d of [...byRing.keys()].sort((a, b) => a - b)) {
-      const members = byRing.get(d)!;
-      const radius = d === 0 && members.length === 1 ? 0 : Math.max(prev + RING_STEP, ringRadius(members.length));
-      prev = radius;
-      members.forEach((id, k) => place.set(id, onCircle(radius, k, members.length)));
-    }
-    return placed(s, (_i, n) => place.get(n.fqn) ?? { x: 0, y: 0 });
-  }
-
-  // A flat view (context, or a boundary with no children): every node a peer card,
-  // placed by the chosen algorithm. Direction applies to the layered algorithm only.
-  function flat(s: Scene, algo: LayoutAlgo, rankdir: LayoutDir): Node[] {
-    switch (algo) {
-      case "grid":
-        return grid(s);
-      case "circular":
-        return circular(s);
-      case "radial":
-        return radial(s);
-      default:
-        return layered(s, rankdir);
-    }
-  }
-
-  function layout(s: Scene, algo: LayoutAlgo, rankdir: LayoutDir, edgeType: string): { nodes: Node[]; edges: Edge[] } {
-    const boundaryFqn = s.of ?? null;
-    const hasChildren = boundaryFqn && s.nodes.some((n) => n.boundary === boundaryFqn);
-    // A boundary view is a nested-box layout — always layered; the algorithm
-    // choice applies to the flat (peer) views.
-    const nodes = hasChildren ? grouped(s, boundaryFqn, rankdir) : flat(s, algo, rankdir);
-    const edges = s.edges.map((e, i) => ({
+    const edges: Edge[] = l.edges.map((e, i) => ({
       id: `e${i}`,
       source: e.from,
       target: e.to,
       label: e.label || undefined,
-      // Floating: anchored at the nearest borders, routed in the chosen style.
-      type: "floating",
-      data: { pathType: edgeType },
-      animated: true,
+      type: "polyline",
+      data: { points: e.points, labelPos: e.label_pos ?? null, dashed: e.dashed },
       class: `c4-edge ${e.kind}`,
       selectable: false,
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 14,
-        height: 14,
-        color: e.kind === "trigger" ? "var(--k-callable)" : "var(--line-strong)",
-      },
-    })) as Edge[];
-    return { nodes, edges };
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: e.kind === "trigger" ? "var(--k-callable)" : "var(--line-strong)" },
+    }));
+
+    return { nodes: [...frame, ...cards], edges };
   }
 
-  // Re-project whenever the scene or the algorithm / direction / edge preferences
-  // change. The graph is a projection, so a wholesale re-layout is the right call.
-  const initial = layout(scene, canvasPrefs.algorithm, canvasPrefs.layout, canvasPrefs.edgeType);
-  let nodes = $state<Node[]>(initial.nodes);
-  let edges = $state<Edge[]>(initial.edges);
+  const built = $derived(build(layout));
+  let nodes = $state<Node[]>([]);
+  let edges = $state<Edge[]>([]);
   $effect(() => {
-    const l = layout(scene, canvasPrefs.algorithm, canvasPrefs.layout, canvasPrefs.edgeType);
-    nodes = l.nodes;
-    edges = l.edges;
+    nodes = built.nodes;
+    edges = built.edges;
   });
 
   // The node a right-click opened the context menu on, anchored at the pointer.
@@ -404,16 +204,11 @@
     <Background gap={24} />
     <MiniMap pannable zoomable />
     <Controls showLock={false} />
-    <!-- Re-frame the viewport when the algorithm / direction moves the nodes.
-         The flow stays mounted, so nodes keep their measured sizes and fitView
-         frames them correctly (a remount would refit before re-measuring). -->
-    <FitView sig={`${canvasPrefs.algorithm}|${canvasPrefs.layout}`} />
   </SvelteFlow>
 
-  <!-- Top-right toolbar: export the diagram, and the layout/edge modal. -->
+  <!-- Top-right toolbar: export the diagram. -->
   <div class="customise">
     <DiagramExport container={flowEl} {nodes} filename={exportName} />
-    <CanvasSettings />
   </div>
 
   {#if menu}
@@ -425,7 +220,7 @@
 <style>
   .flow { position: relative; width: 100%; height: 100%; }
 
-  /* Floating "Customise" button, top-right, clear of the minimap (bottom-right). */
+  /* Floating toolbar, top-right, clear of the minimap (bottom-right). */
   .customise {
     position: absolute;
     top: 0.7rem;

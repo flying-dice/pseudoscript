@@ -1,7 +1,7 @@
 # ADR-026 — Local path dependencies
 
 **Status:** Accepted
-**Affects:** LANG.md §8.4, §8.5
+**Affects:** LANG.md §8.3, §8.4
 
 ## Context
 

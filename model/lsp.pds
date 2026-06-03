@@ -45,7 +45,7 @@ public container Lsp for context::Pseudoscript;
 /// store, the server lifecycle, and request routing. Holds no language logic —
 /// it locks the store, hands the active text to `Analysis`, and maps the result
 /// back to LSP positions via `Convert`.
-public component Server for Lsp {
+public component Server for lsp::Lsp {
   /// Build the server over stdin/stdout and drive it until the editor sends
   /// `exit`. The function `pds lsp` awaits.
   public runStdio(): void;
@@ -92,7 +92,7 @@ public component Server for Lsp {
 
   /// Go-to-definition: resolve the cursor; if it resolves, map the target FQN
   /// back to its file and span. Nothing under the cursor yields no location.
-  gotoDefinition(uri: string, line: number, col: number): Option<Occurrence> {
+  gotoDefinition(uri: string, line: number, col: number): Option<lsp::Occurrence> {
     text: string = Lsp::Store.source(uri)
     target: Option<DefTarget> = Lsp::Analysis.definition(text, line, col)
     if (target.isNone) {
@@ -109,14 +109,14 @@ public component Server for Lsp {
 
   /// Map a resolved `(targetFqn, span)` to an editor `Location` via the target
   /// module's file URI and its own line index.
-  locate(fqn: string, span: syntax::Span): Occurrence;
+  locate(fqn: string, span: syntax::Span): lsp::Occurrence;
 }
 
 /// The workspace document store: the filesystem edge. Finds the project root
 /// (`pds.toml`, LANG.md §8.1), loads every `.pds` file, derives each module's
 /// FQN from its path, and overlays open buffers on disk text. Caches each parse
 /// and memoises the resolved `model::Workspace`, both invalidated on any edit.
-component Store for Lsp {
+component Store for lsp::Lsp {
   /// Discover the project rooted at or above `rootUri` and load every `.pds`
   /// file under it; a root resolving to no `pds.toml` leaves the store empty.
   discover(rootUri: string): void;
@@ -160,7 +160,7 @@ component Store for Lsp {
 /// Pure language logic, free of any server or I/O. Each function maps source
 /// text (and, for cursor features, a position) to an LSP value, delegating to
 /// the core crates. The behaviour lives here and is tested without a server.
-component Analysis for Lsp {
+component Analysis for lsp::Lsp {
   /// Diagnostics for one document's text: run the check pipeline and map every
   /// diagnostic's byte span to a UTF-16 range.
   diagnostics(text: string): syntax::Diagnostic[] {
@@ -188,7 +188,7 @@ component Analysis for Lsp {
   /// Resolve the cursor to its definition target (module FQN + span), across
   /// files, through aliases, and into `self.`/node members; `None` when the
   /// cursor rests on nothing resolvable.
-  definition(text: string, line: number, col: number): Option<DefTarget> {
+  definition(text: string, line: number, col: number): Option<lsp::DefTarget> {
     offset: number = Lsp::Convert.positionToOffset(text, line, col)
     hit: Result<Hit, void> = Lsp::Resolve.resolveAt(text, offset)
     if (hit.isErr) {
@@ -199,7 +199,7 @@ component Analysis for Lsp {
   }
 
   /// Render a resolved hit as a Markdown hover: bold title, then the body.
-  renderHover(hit: Hit): string;
+  renderHover(hit: lsp::Hit): string;
 }
 
 /// Cursor resolution shared by hover, go-to-definition, references, and rename.
@@ -207,11 +207,11 @@ component Analysis for Lsp {
 /// resolved workspace. Understands three reference forms: a `::` path (bare or
 /// FQN, §8.2), a `.` member after `self` or a node base, and an `alias` (§8.3).
 /// A caret resting just past an identifier's last character still resolves it.
-component Resolve for Lsp {
+component Resolve for lsp::Lsp {
   /// Resolve the identifier under `offset` in the active source to its
   /// definition. Tokenizes, picks the identifier (or the one ending at the
   /// caret), then dispatches: a `.member`, a self/field declaration, or a path.
-  resolveAt(text: string, offset: number): Result<Hit, void> {
+  resolveAt(text: string, offset: number): Result<lsp::Hit, void> {
     tokens: Token[] = syntax::Lexer.tokenize(text)
     idx: Result<number, void> = self.identIndex(tokens, offset)
     if (idx.isErr) {
@@ -221,7 +221,7 @@ component Resolve for Lsp {
   }
 
   /// Dispatch a resolved identifier index to the member, self, or path resolver.
-  resolveToken(text: string, tokens: syntax::Token[], idx: number): Result<Hit, void>;
+  resolveToken(text: string, tokens: syntax::Token[], idx: number): Result<lsp::Hit, void>;
 
   /// The index of the identifier token at `offset`, or the one ending exactly at
   /// `offset` (caret just past the word); none if no identifier is there.
@@ -238,7 +238,7 @@ component Resolve for Lsp {
 
   /// Resolve `.member` after a `self` or node/data base — including a qualified,
   /// cross-module base and an alias base — to the owner's callable or field.
-  resolveMember(text: string, tokens: syntax::Token[], idx: number): Result<Hit, void>;
+  resolveMember(text: string, tokens: syntax::Token[], idx: number): Result<lsp::Hit, void>;
 
   /// The single workspace symbol named `name`, or nothing when zero or more than
   /// one exists (an ambiguous bare reference is never guessed).
@@ -253,10 +253,10 @@ component Resolve for Lsp {
 /// untyped (`x = expr`); this infers the binding's type from its right-hand side
 /// — a call's return type, a field access, a `from` expression, or a literal.
 /// Best-effort: an expression it can't type yields no hint rather than a guess.
-component Infer for Lsp {
+component Infer for lsp::Lsp {
   /// Every typed local binding in the active module: walk each callable body,
   /// inferring the type of each assignment and `for`-binding it can.
-  localTypes(text: string): LocalType[];
+  localTypes(text: string): lsp::LocalType[];
 
   /// The inferred type of the binding named by the identifier under `offset`,
   /// rendered as a `name: Type` hover; empty when nothing is inferable.
@@ -278,7 +278,7 @@ component Infer for Lsp {
 /// identifiers by role (node→namespace, `data`→class, callable→method, param,
 /// `.f()` call→method). The legend the server advertises and the encoder index
 /// stay in step.
-component Semantic for Lsp {
+component Semantic for lsp::Lsp {
   /// The semantic tokens for the source as a full-document set: run both passes,
   /// then encode.
   semanticTokens(text: string): string {
@@ -305,7 +305,7 @@ component Semantic for Lsp {
 /// Document outline, folding ranges, and workspace symbol search. The outline
 /// and folds are pure over one module's source; workspace search scans the
 /// resolved index by name.
-component Symbols for Lsp {
+component Symbols for lsp::Lsp {
   /// The hierarchical outline of the source: nodes with their callables and
   /// nested declarations, `data` types with their fields or variants, aliases,
   /// and features.
@@ -324,11 +324,11 @@ component Symbols for Lsp {
 /// definition under the cursor, then scan every name-position identifier in the
 /// workspace and keep those resolving to the same definition. A `::` qualifier
 /// names a module, not the symbol, so it is never an occurrence.
-component Refs for Lsp {
+component Refs for lsp::Lsp {
   /// Every occurrence of the symbol under `offset` across all modules. With
   /// `includeDecl` false the defining occurrence is omitted (find-references
   /// convention).
-  references(text: string, offset: number, includeDecl: bool): Occurrence[];
+  references(text: string, offset: number, includeDecl: bool): lsp::Occurrence[];
 
   /// The occurrences of the symbol under `offset` confined to the active file
   /// (document highlight).
@@ -347,7 +347,7 @@ component Refs for Lsp {
 /// public symbols (§8.2); after `#[` → the built-in macros; in type position
 /// (`:`/`<`) → primitives, `Result`, and declared types; otherwise → keywords,
 /// this module's symbols, and its aliases.
-component Complete for Lsp {
+component Complete for lsp::Lsp {
   /// Completion items for the caret position: dispatch on the trigger token.
   completion(text: string, line: number, col: number): string {
     offset: number = Lsp::Convert.positionToOffset(text, line, col)
@@ -371,7 +371,7 @@ component Complete for Lsp {
 /// Byte-offset spans to LSP positions and back. PseudoScript spans are byte
 /// offsets; LSP positions are 0-based line and 0-based UTF-16 code-unit column.
 /// A line index turns a byte offset into a line/column pair.
-component Convert for Lsp {
+component Convert for lsp::Lsp {
   /// A byte offset to a 0-based LSP position, summing each character's UTF-16
   /// width from the line start.
   offsetToPosition(text: string, offset: number): string;
@@ -388,7 +388,7 @@ component Convert for Lsp {
 }
 
 /// The editor spawns `pds lsp` as a child process and drives it over stdio.
-feature SpawnedOverStdio for Server {
+feature SpawnedOverStdio for lsp::Server {
   given "an editor that speaks the Language Server Protocol"
   when  "it needs language support for a .pds document"
   then  "it spawns `pds lsp` as a child process"
@@ -396,7 +396,7 @@ feature SpawnedOverStdio for Server {
 }
 
 /// Every change re-checks and republishes diagnostics for the whole workspace.
-feature RepublishOnChange for Server {
+feature RepublishOnChange for lsp::Server {
   given "a document open in the editor"
   when  "the editor sends didOpen, didChange, or didClose"
   then  "the store re-converges from the document's current text"
@@ -405,7 +405,7 @@ feature RepublishOnChange for Server {
 }
 
 /// Full document sync: each change carries the entire new text.
-feature FullDocumentSync for Server {
+feature FullDocumentSync for lsp::Server {
   given "the server advertised full text-document sync"
   when  "the editor sends a didChange notification"
   then  "the last content change carries the whole new document text"
@@ -413,7 +413,7 @@ feature FullDocumentSync for Server {
 }
 
 /// All requests are answered from the document's current source.
-feature AnswerFromCurrentText for Analysis {
+feature AnswerFromCurrentText for lsp::Analysis {
   given "a document with unsaved edits open in the editor"
   when  "the editor requests hover, definition, completion, or formatting"
   then  "the answer is computed from the open buffer's current text"
@@ -421,7 +421,7 @@ feature AnswerFromCurrentText for Analysis {
 }
 
 /// The server owns no language logic — it delegates to the core crates.
-feature DelegatesAllLanguageLogic for Analysis {
+feature DelegatesAllLanguageLogic for lsp::Analysis {
   given "a request that needs parsing, checking, or formatting"
   when  "Analysis handles it"
   then  "parsing and tokenizing delegate to the syntax crate"
@@ -431,7 +431,7 @@ feature DelegatesAllLanguageLogic for Analysis {
 }
 
 /// Hover shows the `///` summary of the symbol under the cursor.
-feature HoverShowsDocSummary for Analysis {
+feature HoverShowsDocSummary for lsp::Analysis {
   given "the cursor resting on a declared node, data type, or member"
   when  "the editor requests hover"
   then  "the symbol's kind and FQN, or its member signature, is shown"
@@ -439,7 +439,7 @@ feature HoverShowsDocSummary for Analysis {
 }
 
 /// An unresolved cursor on a local binding falls back to its inferred type.
-feature HoverFallsBackToInferredType for Analysis {
+feature HoverFallsBackToInferredType for lsp::Analysis {
   given "the cursor resting on a local binding rather than a declaration"
   when  "hover finds no declared symbol there"
   then  "the binding's inferred type is shown as `name: Type`"
@@ -447,7 +447,7 @@ feature HoverFallsBackToInferredType for Analysis {
 }
 
 /// Go-to-definition jumps to the declaring span, across files.
-feature DefinitionJumpsToDeclaration for Server {
+feature DefinitionJumpsToDeclaration for lsp::Server {
   given "the cursor on a reference to a node, member, or data type"
   when  "the editor requests go-to-definition"
   then  "the reference resolves to its declaring span"
@@ -455,7 +455,7 @@ feature DefinitionJumpsToDeclaration for Server {
 }
 
 /// Whole-document format produces an edit, or nothing on a parse error.
-feature FormatOrLeaveUntouched for Analysis {
+feature FormatOrLeaveUntouched for lsp::Analysis {
   given "an open document"
   when  "the editor requests formatting"
   then  "a parseable document yields one whole-document edit to canonical form"
@@ -463,7 +463,7 @@ feature FormatOrLeaveUntouched for Analysis {
 }
 
 /// Cursor resolution survives a partial parse by working at the token level.
-feature ResolutionSurvivesPartialParse for Resolve {
+feature ResolutionSurvivesPartialParse for lsp::Resolve {
   given "a document that does not fully parse"
   when  "the cursor rests on an identifier in a well-formed region"
   then  "resolution still tokenizes and resolves that identifier"
@@ -471,7 +471,7 @@ feature ResolutionSurvivesPartialParse for Resolve {
 }
 
 /// An unresolved cursor yields nothing rather than erroring.
-feature UnresolvedCursorYieldsNothing for Resolve {
+feature UnresolvedCursorYieldsNothing for lsp::Resolve {
   given "the cursor on whitespace, punctuation, or an unknown name"
   when  "a cursor feature runs"
   then  "resolution returns no hit"
@@ -479,7 +479,7 @@ feature UnresolvedCursorYieldsNothing for Resolve {
 }
 
 /// Spans map to UTF-16 LSP positions.
-feature SpansMapToUtf16Positions for Convert {
+feature SpansMapToUtf16Positions for lsp::Convert {
   given "a byte-offset span over source containing non-ASCII characters"
   when  "it is converted to an LSP range"
   then  "each column counts UTF-16 code units from the line start"
@@ -487,7 +487,7 @@ feature SpansMapToUtf16Positions for Convert {
 }
 
 /// Semantic tokens colour identifiers by their declared role.
-feature ColourByDeclaredRole for Semantic {
+feature ColourByDeclaredRole for lsp::Semantic {
   given "a parsed module"
   when  "the editor requests full semantic tokens"
   then  "each identifier is coloured by its role — node, data, callable, parameter"
@@ -496,7 +496,7 @@ feature ColourByDeclaredRole for Semantic {
 }
 
 /// Rename rewrites every occurrence of one definition across the workspace.
-feature RenameAcrossWorkspace for Refs {
+feature RenameAcrossWorkspace for lsp::Refs {
   given "the cursor on a renameable symbol"
   when  "the editor requests rename"
   then  "every identifier resolving to the same definition is collected"
