@@ -112,9 +112,35 @@
     navigation.recordIfMoved(nav.originLoc(openFile.fqn, loc.line, loc.col));
   }
 
-  // Apply a location without recording it (back/forward, history-list click):
-  // open its file, jump the editor there, and re-scope to its node when it has one.
+  // Record a canvas scope (a drilled node, or `null` for the whole-model
+  // overview) as a history entry, so Back returns to the previous diagram.
+  function recordCanvasScope(fqn: string | null) {
+    const hit = fqn ? nodeIndex.get(fqn) : null;
+    recordLocation({
+      view: "canvas",
+      fqn: fqn ?? undefined,
+      fileFqn: hit?.fileFqn ?? "",
+      line: hit?.node.line ?? 0,
+      col: hit?.node.col ?? 0,
+      label: fqn ? nodeTitle(fqn) : "Overview",
+    });
+  }
+
+  // Apply a location without recording it (back/forward, history-list click).
+  // A canvas entry replays the diagram scope and stays on the canvas (no editor
+  // jump); a code entry opens its file, re-scopes, and jumps the editor.
+  // Sets state directly (never via selectNode/resetScope), so replay does not
+  // re-enter the recording paths.
   function applyLocation(loc: Loc) {
+    if (loc.view === "canvas") {
+      selection.selected = loc.fqn
+        ? { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn }
+        : null;
+      const file = loc.fqn ? workspace?.files.find((f) => f.fqn === loc.fileFqn) : null;
+      if (file && openFile?.fqn !== file.fqn) wsStore.openFile = file;
+      selection.view = "canvas";
+      return;
+    }
     const file = workspace?.files.find((f) => f.fqn === loc.fileFqn);
     if (!file) return;
     if (openFile?.fqn !== file.fqn) wsStore.openFile = file;
@@ -390,7 +416,7 @@
   // to the declaration; a canvas drill leaves the view alone. A member/field fqn
   // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
   // field opens its declaring type instead of no-opping (PDS-GOTO-002).
-  function selectNode(fqn: string, { goto = false }: { goto?: boolean } = {}) {
+  function selectNode(fqn: string, { goto = false, origin = true }: { goto?: boolean; origin?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
     // opens its declaring type instead of no-opping (PDS-GOTO-002).
@@ -415,7 +441,9 @@
     }
     const fileFqn = file.fqn;
     // Record the pre-jump caret before the file/scope changes, so Back returns.
-    if (goto && view !== "canvas") recordOrigin();
+    // `origin: false` suppresses it when the caller already recorded the origin
+    // (a canvas→code "go to definition" records the canvas scope as the origin).
+    if (goto && view !== "canvas" && origin) recordOrigin();
     if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
@@ -424,6 +452,10 @@
       selection.view = "code";
       selection.pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
       recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
+    } else {
+      // A canvas drill (or a goto re-scope while the canvas shows): record the
+      // new scope so Back returns to the previous diagram.
+      recordCanvasScope(targetFqn);
     }
   }
 
@@ -431,14 +463,21 @@
   // canvas); synthetic initiators (client, scheduler, …) aren't declared nodes.
   const pickNode = (fqn: string) => selectNode(fqn);
   // "Go to definition" from the canvas context menu: leave the canvas for the
-  // editor and jump to the node's declaration (selectNode's goto path stays put
-  // while the canvas is showing, so switch the view first).
+  // editor and jump to the node's declaration. Record the canvas scope we're
+  // leaving as the origin (so Back returns to that diagram, not the editor's
+  // last caret), then switch the view — selectNode's goto path stays put while
+  // the canvas shows, so the view must flip first — and suppress its own origin.
   function openNodeInEditor(fqn: string) {
+    if (view === "canvas") recordCanvasScope(selected?.fqn ?? null);
     selection.view = "code";
-    selectNode(fqn, { goto: true });
+    selectNode(fqn, { goto: true, origin: false });
   }
-  // Reset the canvas scope to the whole-model context.
-  const resetScope = () => (selection.selected = null);
+  // Reset the canvas scope to the whole-model context, recording it so Back
+  // returns to the previous diagram.
+  const resetScope = () => {
+    selection.selected = null;
+    recordCanvasScope(null);
+  };
   // Close the expanded boundary: pop up to the structural parent (the `for`
   // owner — system → container → component), or the whole-model context at the
   // top level. FQNs are flat within a module, so this follows `parent`, not `::`.
@@ -453,8 +492,11 @@
   const ancestry = (fqn: string) => model.ancestry(index, fqn);
 
   // The editor's hover popover: reveal the symbol's diagram on the canvas.
+  // Record the code spot first so Back from the canvas returns to it; selectNode
+  // then records the revealed canvas scope.
   function revealSymbol(fqn: string) {
     if (!nodeIndex.has(fqn)) return;
+    recordOrigin();
     selectNode(fqn);
     selection.view = "canvas";
   }

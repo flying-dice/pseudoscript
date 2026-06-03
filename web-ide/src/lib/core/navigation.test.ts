@@ -71,4 +71,39 @@ describe("navigation history", () => {
     expect(samePosition(at("m", 1, 2), at("m", 1, 3))).toBe(false);
     expect(samePosition(undefined, at("m", 1))).toBe(false);
   });
+
+  it("treats a code entry and a canvas entry at the same position as distinct", () => {
+    const code = at("m", 7, 3);
+    const canvas: Loc = { fileFqn: "m", line: 7, col: 3, view: "canvas", fqn: "m::Node" };
+    expect(samePosition(code, canvas)).toBe(false);
+    let s = recordLocation(empty, code);
+    s = recordLocation(s, canvas);
+    expect(s.history).toHaveLength(2);
+    expect(s.index).toBe(1);
+  });
+
+  it("collapses a repeat of the same canvas scope", () => {
+    const canvas: Loc = { fileFqn: "m", line: 7, col: 3, view: "canvas", fqn: "m::Node", label: "old" };
+    let s = recordLocation(empty, canvas);
+    s = recordLocation(s, { ...canvas, label: "new" });
+    expect(s.history).toEqual([{ ...canvas, label: "new" }]);
+    expect(s.index).toBe(0);
+  });
+
+  it("distinguishes two canvas scopes at the same position by fqn", () => {
+    const a: Loc = { fileFqn: "m", line: 0, col: 0, view: "canvas", fqn: "m::A" };
+    const b: Loc = { fileFqn: "m", line: 0, col: 0, view: "canvas", fqn: "m::B" };
+    expect(samePosition(a, b)).toBe(false);
+    let s = recordLocation(empty, a);
+    s = recordLocation(s, b);
+    expect(s.history.map((l) => l.fqn)).toEqual(["m::A", "m::B"]);
+  });
+
+  it("preserves the view through a back step", () => {
+    let s = recordLocation(empty, { fileFqn: "m", line: 1, col: 1, view: "canvas", fqn: "m::A" });
+    s = recordLocation(s, at("m", 2));
+    const back = stepBack(s)!;
+    expect(back.loc.view).toBe("canvas");
+    expect(back.loc.fqn).toBe("m::A");
+  });
 });
