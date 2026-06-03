@@ -1715,7 +1715,19 @@
     saveStore.persisted = { ...sources };
     await mountWorkspace(ws, landing ?? ws.files[0]?.fqn);
     if (ws.root) {
-      await recordFolder(ws.name, ws.root);
+      // Label the recent with the manifest's `[doc].name` when present (so a list
+      // of `<root>/model` folders reads as their project titles, not "model"); the
+      // folder name (`ws.name` === `root.name`) becomes the subtitle. `docManifest`
+      // throws on malformed TOML — fall back to the folder name.
+      let display = ws.name;
+      if (ws.manifestToml) {
+        try {
+          display = docManifest(ws.manifestToml).name?.trim() || ws.name;
+        } catch {
+          /* malformed manifest — keep the folder name */
+        }
+      }
+      await recordFolder(display, ws.name, ws.root);
       refreshRecents();
     }
   }
