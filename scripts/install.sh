@@ -42,7 +42,12 @@ detect_platform() {
 
     # Only targets with a prebuilt release asset are supported.
     case "$target" in
-        x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-apple-darwin) ;;
+        x86_64-unknown-linux-gnu|aarch64-apple-darwin) ;;
+        x86_64-apple-darwin)
+            echo "error: no prebuilt binary for Intel macOS" >&2
+            echo "       build from source: cargo install --git https://github.com/$REPO" >&2
+            exit 1
+            ;;
         aarch64-unknown-linux-gnu)
             echo "error: no prebuilt binary for aarch64 Linux" >&2
             echo "       build from source: cargo install --git https://github.com/$REPO" >&2
