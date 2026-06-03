@@ -40,7 +40,7 @@ pub mod resolve;
 pub mod semantic;
 
 pub use complete::{CompletionItem, CompletionKind, completion};
-pub use fold::{FoldRange, folding_ranges};
+pub use fold::{FoldKind, FoldRange, folding_ranges};
 pub use graph::{
     Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
     Visibility,

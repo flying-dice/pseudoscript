@@ -4,7 +4,7 @@
   import { copyLineDown, defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
   import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
   import type { Extension, StateEffectType, Text, TransactionSpec } from "@codemirror/state";
-  import { codeFolding, foldedRanges, foldEffect, foldGutter, foldKeymap, foldService, HighlightStyle, LanguageDescription, StreamLanguage, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
+  import { codeFolding, foldedRanges, foldEffect, foldGutter, foldKeymap, foldService, HighlightStyle, LanguageDescription, StreamLanguage, syntaxHighlighting, unfoldAll, unfoldEffect } from "@codemirror/language";
   import { languages } from "@codemirror/language-data";
   import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
   import { tags as t } from "@lezer/highlight";
@@ -26,7 +26,7 @@
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
-  import { ideDefinition, foldRanges, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
+  import { ideDefinition, foldRanges, type FoldingRange, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
   import type { Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
@@ -507,8 +507,8 @@
   // document. Each maps to `{ open, close }` editor offsets: `open` on the header
   // line, `close` at the closing brace itself — past the closing line's
   // indentation, so a nested `}` folds flush against the `…` (no trailing space).
-  /** A foldable block, as `{ open, close }` editor offsets. */
-  type FoldBlock = { open: number; close: number };
+  /** A foldable block, as `{ open, close }` editor offsets, tagged with its kind. */
+  type FoldBlock = { open: number; close: number; kind: FoldingRange["kind"] };
   const rangeCache = new WeakMap<Text, FoldBlock[]>();
   function rangesOf(doc: Text): FoldBlock[] {
     let r = rangeCache.get(doc);
@@ -521,6 +521,7 @@
           return {
             open: doc.line(range.startLine + 1).from,
             close: closeLine.from + indent,
+            kind: range.kind,
           };
         });
       rangeCache.set(doc, r);
@@ -533,18 +534,46 @@
     const from = doc.lineAt(range.open).to;
     return from < range.close ? { from, to: range.close } : null;
   }
-  // Fold every block except those whose header line through `}` contains `pos`
-  // (the target and its ancestors). `pos` null collapses everything.
+  // The default fold state: collapse every member impl block, except the one
+  // whose header line through `}` contains `pos` (the navigation target's
+  // member). Structural `node`/`data` bodies and nested `block` scopes are left
+  // expanded — you see the full structure, members collapsed, and expanding a
+  // member reveals its child scopes already open. `pos` null collapses every
+  // member (a freshly opened file with nothing navigated to yet).
   function applyFold(view: EditorView, pos: number | null): void {
     const doc = view.state.doc;
     const effects: StateEffect<{ from: number; to: number }>[] = [];
     for (const r of rangesOf(doc)) {
+      if (r.kind !== "member") continue;
       const span = foldSpan(doc, r);
       if (!span) continue;
       const open = pos != null && pos >= doc.lineAt(r.open).from && pos <= r.close;
       effects.push((open ? unfoldEffect : foldEffect).of(span));
     }
     if (effects.length) view.dispatch({ effects });
+  }
+
+  // The innermost foldable block whose header line through `}` contains `pos` —
+  // the block a right-click at `pos` acts on (any kind, not just members).
+  function blockAt(doc: Text, pos: number): FoldBlock | null {
+    let best: FoldBlock | null = null;
+    for (const r of rangesOf(doc)) {
+      if (pos >= doc.lineAt(r.open).from && pos <= r.close && (!best || r.open > best.open)) best = r;
+    }
+    return best;
+  }
+  // Right-click "Fold"/"Unfold": collapse or expand the block at the click.
+  function foldBlockAt(pos: number): void {
+    if (!editor) return;
+    const block = blockAt(editor.state.doc, pos);
+    const span = block && foldSpan(editor.state.doc, block);
+    if (span) editor.dispatch({ effects: foldEffect.of(span) });
+  }
+  function unfoldBlockAt(pos: number): void {
+    if (!editor) return;
+    const block = blockAt(editor.state.doc, pos);
+    const span = block && foldSpan(editor.state.doc, block);
+    if (span) editor.dispatch({ effects: unfoldEffect.of(span) });
   }
   // The CodeMirror fold service: a block opening on a line is foldable there.
   const pdsFoldService = foldService.of((state: EditorState, lineStart: number, lineEnd: number) => {
@@ -977,6 +1006,11 @@
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && findUsages(editor, m.pos))}>Find usages</button>
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => m.fqn && onopensymbol?.(m.fqn))}>Reveal on canvas</button>
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && onrename?.(charToByte(editor.state.doc.toString(), m.pos)))}>Rename symbol…</button>
+      <div class="cm-ctx-sep"></div>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => foldBlockAt(m.pos))}>Fold</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => unfoldBlockAt(m.pos))}>Unfold</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => editor && applyFold(editor, null))}>Fold all members</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => editor && unfoldAll(editor))}>Unfold all</button>
       <div class="cm-ctx-sep"></div>
       <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => onformat?.())}>Format document</button>
     </div>

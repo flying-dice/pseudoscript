@@ -2,11 +2,12 @@
 /* eslint-disable */
 /**
  * A foldable region, 0-based lines — the editor folds these instead of
- * brace-matching in JS.
+ * brace-matching in JS — tagged with the kind of construct it covers.
  */
 export interface FoldingRange {
     startLine: number;
     endLine: number;
+    kind: FoldKind;
 }
 
 /**
@@ -214,6 +215,13 @@ export interface DocConfigInput {
 }
 
 /**
+ * The kind of construct a fold covers (§3.5/§5.1), so the editor can pick a
+ * default fold state per kind — collapse `member` impl blocks on open, leave
+ * the structural `node` bodies expanded.
+ */
+export type FoldKind = "node" | "member" | "data" | "block";
+
+/**
  * The result of find-usages: the resolved symbol plus every occurrence.
  */
 export interface References {
@@ -292,7 +300,9 @@ export class IdeSession {
      */
     emit_scene(view: string, target: string): string;
     /**
-     * Foldable regions of a single `source` buffer (editor-local).
+     * Foldable regions of a single `source` buffer (editor-local), each tagged
+     * with its construct kind. 0-based lines; single-line spans are dropped (an
+     * editor cannot fold them).
      */
     folding_ranges(source: string): FoldingRange[];
     /**

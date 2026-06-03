@@ -27,7 +27,7 @@ use pseudoscript_emit::{
     Scene, View, layout_c4_scene, layout_sequence_scene, project, project_symbol,
 };
 use pseudoscript_format::format as format_source;
-use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic, symbols};
+use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic};
 use pseudoscript_model::{
     Graph, Workspace, WorkspaceModule,
     ast::Module as AstModule,
@@ -168,14 +168,28 @@ pub struct OutlineNode {
     pub summary: Option<String>,
 }
 
+/// The kind of construct a fold covers (§3.5/§5.1), so the editor can pick a
+/// default fold state per kind — collapse `member` impl blocks on open, leave
+/// the structural `node` bodies expanded.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Tsify)]
+#[serde(rename_all = "lowercase")]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub enum FoldKind {
+    Node,
+    Member,
+    Data,
+    Block,
+}
+
 /// A foldable region, 0-based lines — the editor folds these instead of
-/// brace-matching in JS.
+/// brace-matching in JS — tagged with the kind of construct it covers.
 #[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 pub struct FoldingRange {
     pub start_line: u32,
     pub end_line: u32,
+    pub kind: FoldKind,
 }
 
 /// AST-aware semantic tokens: the delta-encoded flat `data` array over UTF-16
@@ -536,12 +550,20 @@ impl IdeSession {
         to_semantic_tokens(&semantic::semantic_tokens(source))
     }
 
-    /// Foldable regions of a single `source` buffer (editor-local).
+    /// Foldable regions of a single `source` buffer (editor-local), each tagged
+    /// with its construct kind. 0-based lines; single-line spans are dropped (an
+    /// editor cannot fold them).
     #[must_use]
     pub fn folding_ranges(&self, source: &str) -> Vec<FoldingRange> {
-        symbols::folding_ranges(source)
-            .iter()
-            .map(to_folding_range)
+        let index = LineIndex::new(source);
+        pseudoscript_model::folding_ranges(source)
+            .into_iter()
+            .map(|r| FoldingRange {
+                start_line: index.line_col(r.start).0 - 1,
+                end_line: index.line_col(r.end).0 - 1,
+                kind: fold_kind(r.kind),
+            })
+            .filter(|r| r.end_line > r.start_line)
             .collect()
     }
 
@@ -1163,11 +1185,12 @@ fn to_hover(hover: &impl Serialize) -> Hover {
     }
 }
 
-fn to_folding_range(range: &impl Serialize) -> FoldingRange {
-    let v = to_value(range);
-    FoldingRange {
-        start_line: u32::try_from(v["startLine"].as_u64().unwrap_or(0)).unwrap_or(0),
-        end_line: u32::try_from(v["endLine"].as_u64().unwrap_or(0)).unwrap_or(0),
+fn fold_kind(kind: pseudoscript_model::FoldKind) -> FoldKind {
+    match kind {
+        pseudoscript_model::FoldKind::Node => FoldKind::Node,
+        pseudoscript_model::FoldKind::Member => FoldKind::Member,
+        pseudoscript_model::FoldKind::Data => FoldKind::Data,
+        pseudoscript_model::FoldKind::Block => FoldKind::Block,
     }
 }
 

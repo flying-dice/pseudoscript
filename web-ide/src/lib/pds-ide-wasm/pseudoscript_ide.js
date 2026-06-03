@@ -179,7 +179,9 @@ export class IdeSession {
         }
     }
     /**
-     * Foldable regions of a single `source` buffer (editor-local).
+     * Foldable regions of a single `source` buffer (editor-local), each tagged
+     * with its construct kind. 0-based lines; single-line spans are dropped (an
+     * editor cannot fold them).
      * @param {string} source
      * @returns {FoldingRange[]}
      */
