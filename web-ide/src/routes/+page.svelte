@@ -1671,15 +1671,49 @@
     const f = openTabs.find((t) => keyOf(t) === key);
     if (f) selectFile(f);
   }
-  function closeTab(key: string) {
-    const remaining = openTabs.filter((t) => keyOf(t) !== key);
-    const wasActive = keyOf(openFile) === key;
+  // Commit a new tab list. If the active file survived, leave it; otherwise pick
+  // the survivor at `preferIndex` (the slot the closed/active tab vacated, falling
+  // back to the last tab), or clear the editor when nothing remains.
+  function applyTabs(remaining: OpenFile[], preferIndex: number) {
+    const activeKey = keyOf(openFile);
     wsStore.openTabs = remaining;
-    if (wasActive) {
-      const next = remaining.at(-1) ?? null;
-      if (next) selectFile(next);
-      else wsStore.openFile = null;
-    }
+    if (remaining.some((t) => keyOf(t) === activeKey)) return;
+    const next = remaining[Math.min(preferIndex, remaining.length - 1)] ?? null;
+    if (next) selectFile(next);
+    else wsStore.openFile = null;
+  }
+  function closeTab(key: string) {
+    const idx = openTabs.findIndex((t) => keyOf(t) === key);
+    applyTabs(
+      openTabs.filter((t) => keyOf(t) !== key),
+      idx,
+    );
+  }
+  function closeOthers(key: string) {
+    const keep = openTabs.find((t) => keyOf(t) === key);
+    if (!keep) return;
+    wsStore.openTabs = [keep];
+    selectFile(keep);
+  }
+  function closeToRight(key: string) {
+    const idx = openTabs.findIndex((t) => keyOf(t) === key);
+    if (idx < 0) return;
+    applyTabs(openTabs.slice(0, idx + 1), idx);
+  }
+  function closeAll() {
+    wsStore.openTabs = [];
+    wsStore.openFile = null;
+  }
+  // Move `fromKey` to sit immediately before `toKey`. Active file is unchanged.
+  function reorderTabs(fromKey: string, toKey: string) {
+    if (fromKey === toKey) return;
+    const moved = openTabs.find((t) => keyOf(t) === fromKey);
+    if (!moved) return;
+    const next = openTabs.filter((t) => keyOf(t) !== fromKey);
+    const insertAt = next.findIndex((t) => keyOf(t) === toKey);
+    if (insertAt < 0) return;
+    next.splice(insertAt, 0, moved);
+    wsStore.openTabs = next;
   }
 
   async function onProblemPick(d: Problem) {
@@ -2397,7 +2431,15 @@ show('index.html');
         <div class="content-body">
           <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
             {#if tabList.length}
-              <TabBar tabs={tabList} onselect={selectTab} onclose={closeTab} />
+              <TabBar
+                tabs={tabList}
+                onselect={selectTab}
+                onclose={closeTab}
+                oncloseothers={closeOthers}
+                onclosetoright={closeToRight}
+                oncloseall={closeAll}
+                onreorder={reorderTabs}
+              />
             {/if}
             {#if openFile?.isManifest && manifestError}
               <div class="manifest-error" role="status">
