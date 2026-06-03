@@ -36,8 +36,8 @@ concurrency:
 
 jobs:
   # Build native binaries for the released commit. Runner arch is load-bearing:
-  # macos-13 is the last Intel image, macos-latest is Apple Silicon. Do not
-  # "modernize" macos-13 to macos-latest.
+  # macos-latest is Apple Silicon (aarch64). Intel macOS (x86_64-apple-darwin) is
+  # not shipped — keep it out of the installer and `pds upgrade` too.
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -47,9 +47,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            archive: tar.gz
-          - target: x86_64-apple-darwin
-            runner: macos-13       # Intel
             archive: tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest   # Apple Silicon
