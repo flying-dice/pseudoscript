@@ -87,7 +87,7 @@ public component PaymentIntents for intents::Intents {
   /// Create a PaymentIntent ready to confirm.
   public create(merchant: shared::MerchantId, req: intents::CreateIntent): intents::PaymentIntent {
     id: shared::PaymentIntentId = Intents::IntentStore.nextId()
-    intent: PaymentIntent = PaymentIntent from { id, merchant, req, intents::RequiresConfirmation }
+    intent: PaymentIntent = PaymentIntent from { id, merchant, req, intents::IntentStatus::RequiresConfirmation }
     Intents::IntentStore.save(intent)
     return intent
   }
@@ -110,7 +110,7 @@ public component PaymentIntents for intents::Intents {
     }
     instrument: Option<context::NetworkInstrument> = vault::Instruments.instrumentFor(merchant, req.method)
     if (instrument.isNone) {
-      return Err(intents::InvalidInstrument)
+      return Err(intents::IntentError::InvalidInstrument)
     }
     input: risk::RiskInput = risk::RiskInput from { merchant, req.intent, intent.value.amount, req.method }
     outcome: RiskOutcome = risk::Engine.screen(input)
@@ -168,7 +168,7 @@ public component PaymentIntents for intents::Intents {
       return Err(cancelable.error)
     }
     charges::ChargeService.release(intent)
-    canceled: PaymentIntent = self.mark(loaded.value, intents::Canceled)
+    canceled: PaymentIntent = self.mark(loaded.value, intents::IntentStatus::Canceled)
     Intents::IntentStore.save(canceled)
     Intents::Events.canceled(PaymentCanceled from { canceled })
     return Ok(canceled)
@@ -233,7 +233,7 @@ public component PaymentIntents for intents::Intents {
     }
     action: Result<void, IntentError> = self.actionRequired(auth.value)
     if (action.isOk) {
-      pending: PaymentIntent = self.mark(intent, intents::RequiresAction)
+      pending: PaymentIntent = self.mark(intent, intents::IntentStatus::RequiresAction)
       Intents::IntentStore.save(pending)
       return Ok(pending)
     }
@@ -247,7 +247,7 @@ public component PaymentIntents for intents::Intents {
     if (auto.isOk) {
       return self.finalize(intent)
     }
-    awaiting: PaymentIntent = self.mark(intent, intents::RequiresCapture)
+    awaiting: PaymentIntent = self.mark(intent, intents::IntentStatus::RequiresCapture)
     Intents::IntentStore.save(awaiting)
     return Ok(awaiting)
   }
@@ -258,7 +258,7 @@ public component PaymentIntents for intents::Intents {
     if (receipt.isErr) {
       return Err(self.afterChargeFailure(intent, receipt.error))
     }
-    done: PaymentIntent = self.mark(intent, intents::Succeeded)
+    done: PaymentIntent = self.mark(intent, intents::IntentStatus::Succeeded)
     Intents::IntentStore.save(done)
     Intents::Events.succeeded(PaymentSucceeded from { done, receipt.value.charge })
     return Ok(done)
@@ -271,10 +271,10 @@ public component PaymentIntents for intents::Intents {
   afterChargeFailure(intent: intents::PaymentIntent, e: charges::ChargeError): intents::IntentError {
     sure: Result<void, IntentError> = self.definite(e)
     if (sure.isErr) {
-      Intents::IntentStore.save(self.mark(intent, intents::Processing))
-      return intents::Uncertain
+      Intents::IntentStore.save(self.mark(intent, intents::IntentStatus::Processing))
+      return intents::IntentError::Uncertain
     }
-    reset: PaymentIntent = self.mark(intent, intents::RequiresPaymentMethod)
+    reset: PaymentIntent = self.mark(intent, intents::IntentStatus::RequiresPaymentMethod)
     Intents::IntentStore.save(reset)
     Intents::Events.failed(PaymentFailed from { reset })
     return self.declined(e)
@@ -282,7 +282,7 @@ public component PaymentIntents for intents::Intents {
 
   /// Drive a reconciled-as-captured intent to `Succeeded` idempotently.
   complete(intent: intents::PaymentIntent, receipt: charges::Receipt): void {
-    done: PaymentIntent = self.mark(intent, intents::Succeeded)
+    done: PaymentIntent = self.mark(intent, intents::IntentStatus::Succeeded)
     Intents::IntentStore.save(done)
     Intents::Events.succeeded(PaymentSucceeded from { done, receipt.charge })
   }
@@ -290,7 +290,7 @@ public component PaymentIntents for intents::Intents {
   /// Abandon an intent whose charge never completed: reset it for retry and
   /// raise `PaymentFailed`.
   abandon(intent: intents::PaymentIntent): void {
-    reset: PaymentIntent = self.mark(intent, intents::RequiresPaymentMethod)
+    reset: PaymentIntent = self.mark(intent, intents::IntentStatus::RequiresPaymentMethod)
     Intents::IntentStore.save(reset)
     Intents::Events.failed(PaymentFailed from { reset })
   }

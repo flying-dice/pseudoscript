@@ -118,6 +118,10 @@ pub struct Model {
     symbols: FxHashMap<String, Symbol>,
     /// Members (callables, fields) keyed by their owner's bare name.
     members: FxHashMap<String, Vec<Member>>,
+    /// Each union's fieldless variant names, keyed by the union's bare name
+    /// (§3.5). Fieldless variants do not hoist to `symbols`; they are addressed
+    /// `module::Union::Variant` (ADR-032), so they index under their union.
+    union_variants: FxHashMap<String, Vec<String>>,
 }
 
 impl Model {
@@ -142,6 +146,7 @@ impl Model {
             module_path,
             symbols: FxHashMap::default(),
             members: FxHashMap::default(),
+            union_variants: FxHashMap::default(),
         };
         for item in &module.items {
             match item {
@@ -163,6 +168,16 @@ impl Model {
     /// Every declared symbol in this module, in unspecified order.
     pub fn symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.values()
+    }
+
+    /// Whether `union` (a bare data name in this module) declares the fieldless
+    /// variant `variant` (§3.5, ADR-032). Fieldless variants do not hoist, so
+    /// they are not in [`Self::symbol`].
+    #[must_use]
+    pub fn has_fieldless_variant(&self, union: &str, variant: &str) -> bool {
+        self.union_variants
+            .get(union)
+            .is_some_and(|vs| vs.iter().any(|v| v == variant))
     }
 
     /// The members (callables, fields) of the node or record named `owner`.
@@ -215,9 +230,17 @@ impl Model {
                 self.insert(&data.name.name, SymbolKind::Data, is_public, data.name.span);
                 match &data.body {
                     pseudoscript_syntax::ast::DataBody::Union(variants) => {
+                        let mut fieldless = Vec::new();
                         for variant in variants {
-                            // A hoisted variant shares the union's visibility (§8.2).
+                            // A hoisted record variant shares the union's visibility (§8.2).
                             self.collect_variant(variant, is_public);
+                            if variant.record.is_none() {
+                                fieldless.push(variant.name.name.clone());
+                            }
+                        }
+                        if !fieldless.is_empty() {
+                            self.union_variants
+                                .insert(data.name.name.clone(), fieldless);
                         }
                     }
                     pseudoscript_syntax::ast::DataBody::Record(fields) => {

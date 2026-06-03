@@ -53,14 +53,14 @@ public component RefundService for refunds::Refunds {
     }
     intent: Result<PaymentIntent, IntentError> = intents::PaymentIntents.getFor(merchant, req.intent)
     if (intent.isErr) {
-      return Err(refunds::IntentNotFound)
+      return Err(refunds::RefundError::IntentNotFound)
     }
     ready: Result<void, RefundError> = self.refundable(intent.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
     id: shared::RefundId = Refunds::RefundStore.nextId()
-    pending: Refund = Refund from { id, merchant, req, refunds::Pending }
+    pending: Refund = Refund from { id, merchant, req, refunds::RefundStatus::Pending }
     Refunds::RefundStore.save(pending)
     back: Result<context::NetworkRefund, ChargeError> = charges::ChargeService.refund(req.intent, req.amount)
     if (back.isErr) {

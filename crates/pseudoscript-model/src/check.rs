@@ -334,12 +334,30 @@ impl Checker<'_> {
     fn check_parent(&mut self, node: &Node, required: SymbolKind) {
         let Some(parent) = &node.parent else { return };
         let parent_name = parent.segments.last().map_or("", |id| id.name.as_str());
-        // §8.1: a `for` parent names a node and MUST be fully qualified.
-        if parent.is_simple() && self.model.symbol(parent_name).is_some() {
+        // §8.1: a `for` parent names a node and MUST be fully qualified. A bare
+        // name cannot reach another module (ADR-030), so a bare parent that
+        // names no same-module node is unresolved — not a deferred cross-module
+        // reference. Only a qualified (`module::Node`) parent is left to
+        // cross-module resolution.
+        if parent.is_simple() {
+            let Some(_) = self.model.symbol(parent_name) else {
+                let cands: Vec<&str> = self
+                    .model
+                    .symbols()
+                    .filter(|s| s.kind != SymbolKind::Data)
+                    .map(|s| s.name.as_str())
+                    .collect();
+                let hint = suggest(parent_name, &cands);
+                self.error(
+                    parent.span,
+                    format!("unresolved parent `{parent_name}`{hint}"),
+                );
+                return;
+            };
             self.require_qualified(parent.span, parent_name);
         }
         // Resolve the parent within this module; a parent we cannot see (another
-        // file) is not reportable as a kind error here.
+        // file, named by FQN) is not reportable as a kind error here.
         let Some(symbol) = self.model.symbol(parent_name) else {
             return;
         };

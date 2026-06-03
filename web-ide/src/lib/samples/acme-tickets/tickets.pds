@@ -90,7 +90,7 @@ public component Redemption for tickets::Tickets {
   public redeem(barcode: string): Result<tickets::Ticket, tickets::RedeemError> {
     found: Option<Ticket> = Tickets::TicketStore.byBarcode(barcode)
     if (found.isNone) {
-      return Err(tickets::TicketNotFound)
+      return Err(tickets::RedeemError::TicketNotFound)
     }
     admit: Result<void, RedeemError> = self.admissible(found.value)
     if (admit.isErr) {

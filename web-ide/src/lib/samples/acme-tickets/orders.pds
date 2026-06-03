@@ -86,19 +86,19 @@ public component Reservation for orders::Orders {
   public hold(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
     admitted: Result<void, WaitingError> = waitingroom::Admission.verify(req.admission)
     if (admitted.isErr) {
-      return Err(orders::NotAdmitted)
+      return Err(orders::ReserveError::NotAdmitted)
     }
     buyer: Result<User, AuthError> = identity::Sessions.authenticate(req.session)
     if (buyer.isErr) {
-      return Err(orders::NotAuthenticated)
+      return Err(orders::ReserveError::NotAuthenticated)
     }
     sellable: Result<void, NotSellable> = catalog::Events.onSaleNow(req.event)
     if (sellable.isErr) {
-      return Err(orders::NotOnSale)
+      return Err(orders::ReserveError::NotOnSale)
     }
     within: Result<void, ReserveError> = self.withinLimit(req.quantity)
     if (within.isErr) {
-      return Err(orders::ExceedsLimit)
+      return Err(orders::ReserveError::ExceedsLimit)
     }
     held: Result<Hold, InventoryError> = inventory::Holds.reserve(req.event, req.tier, req.quantity, buyer.value.id)
     if (held.isErr) {
@@ -107,7 +107,7 @@ public component Reservation for orders::Orders {
     quote: Result<Quote, PricingError> = pricing::Quotes.quote(req.event, req.tier, req.quantity)
     if (quote.isErr) {
       inventory::Holds.release(held.value.id)
-      return Err(orders::Unpriced)
+      return Err(orders::ReserveError::Unpriced)
     }
     pricing::Locks.lock(held.value.id, quote.value)
     return Ok(held.value)
@@ -131,11 +131,11 @@ public component OrderService for orders::Orders {
   public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
     admitted: Result<void, WaitingError> = waitingroom::Admission.verify(req.admission)
     if (admitted.isErr) {
-      return Err(orders::NotAdmitted)
+      return Err(orders::CheckoutError::NotAdmitted)
     }
     buyer: Result<User, AuthError> = identity::Sessions.authenticate(req.session)
     if (buyer.isErr) {
-      return Err(orders::NotAuthenticated)
+      return Err(orders::CheckoutError::NotAuthenticated)
     }
     prior: Option<Order> = Orders::OrderStore.byHold(req.hold)
     if (prior.isSome) {
@@ -146,24 +146,24 @@ public component OrderService for orders::Orders {
     //   the caller inspects — a retry never creates a second order or charge.
     hold: Result<Hold, InventoryError> = inventory::Holds.validate(req.hold, buyer.value.id)
     if (hold.isErr) {
-      return Err(orders::HoldInvalid)
+      return Err(orders::CheckoutError::HoldInvalid)
     }
     locked: Option<Quote> = pricing::Locks.priceFor(req.hold)
     if (locked.isNone) {
-      return Err(orders::PriceUnavailable)
+      return Err(orders::CheckoutError::PriceUnavailable)
     }
     committed: Result<Hold, InventoryError> = inventory::Holds.commit(req.hold)
     if (committed.isErr) {
-      return Err(orders::HoldInvalid)
+      return Err(orders::CheckoutError::HoldInvalid)
     }
     id: shared::OrderId = Orders::OrderStore.idFor(req.hold)
-    order: Order = Order from { id, hold.value, buyer.value.id, locked.value.total, orders::Pending }
+    order: Order = Order from { id, hold.value, buyer.value.id, locked.value.total, orders::OrderStatus::Pending }
     Orders::OrderStore.save(order)
     charged: Result<Receipt, PaymentError> = payments::PaymentService.charge(id, locked.value.total, req.method)
     if (charged.isErr) {
       return Err(self.afterChargeFailure(order, charged.error))
     }
-    paid: Order = self.mark(order, orders::Charged)
+    paid: Order = self.mark(order, orders::OrderStatus::Charged)
     Orders::OrderStore.save(paid)
     allocated: Result<Allocation, InventoryError> = inventory::Holds.confirm(req.hold)
     if (allocated.isErr) {
@@ -172,10 +172,10 @@ public component OrderService for orders::Orders {
         return Err(RefundFailed from { id })
       }
       inventory::Holds.release(req.hold)
-      Orders::OrderStore.save(self.mark(order, orders::Refunded))
-      return Err(orders::AllocationFailed)
+      Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Refunded))
+      return Err(orders::CheckoutError::AllocationFailed)
     }
-    confirmed: Order = self.mark(paid, orders::Confirmed)
+    confirmed: Order = self.mark(paid, orders::OrderStatus::Confirmed)
     Orders::OrderStore.save(confirmed)
     done: OrderConfirmed = OrderConfirmed from { confirmed, buyer.value.id, allocated.value }
     Orders::Events.confirmed(done)
@@ -191,10 +191,10 @@ public component OrderService for orders::Orders {
   afterChargeFailure(order: orders::Order, e: payments::PaymentError): orders::CheckoutError {
     sure: Result<void, CheckoutError> = self.definite(e)
     if (sure.isErr) {
-      return orders::PaymentUncertain
+      return orders::CheckoutError::PaymentUncertain
     }
     inventory::Holds.release(order.hold)
-    Orders::OrderStore.save(self.mark(order, orders::Failed))
+    Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
     return self.declined(e)
   }
 
@@ -216,7 +216,7 @@ public component OrderService for orders::Orders {
       return Err(RefundFailed from { id })
     }
     inventory::Holds.releaseSold(order.value.hold)
-    refunded: Order = self.mark(order.value, orders::Refunded)
+    refunded: Order = self.mark(order.value, orders::OrderStatus::Refunded)
     Orders::OrderStore.save(refunded)
     event: OrderRefunded = OrderRefunded from { refunded }
     Orders::Events.refunded(event)
@@ -268,7 +268,7 @@ public component OrderService for orders::Orders {
   complete(order: orders::Order): void {
     allocated: Result<Allocation, InventoryError> = inventory::Holds.confirm(order.hold)
     if (allocated.isOk) {
-      confirmed: Order = self.mark(order, orders::Confirmed)
+      confirmed: Order = self.mark(order, orders::OrderStatus::Confirmed)
       Orders::OrderStore.save(confirmed)
       done: OrderConfirmed = OrderConfirmed from { confirmed, confirmed.buyer, allocated.value }
       Orders::Events.confirmed(done)
@@ -278,7 +278,7 @@ public component OrderService for orders::Orders {
   /// Abandon an order whose charge never completed: release the hold, fail it.
   abandon(order: orders::Order): void {
     inventory::Holds.release(order.hold)
-    Orders::OrderStore.save(self.mark(order, orders::Failed))
+    Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
   }
 
   /// Read an order, or `OrderNotFound`.

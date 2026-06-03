@@ -54,7 +54,7 @@ public component Events for catalog::Catalog {
   /// Create a new event in `Draft`.
   public create(draft: catalog::NewEvent): catalog::Event {
     id: shared::EventId = Catalog::EventStore.nextId()
-    event: Event = Event from { id, draft, catalog::Draft }
+    event: Event = Event from { id, draft, catalog::EventStatus::Draft }
     Catalog::EventStore.save(event)
     return event
   }
@@ -65,7 +65,7 @@ public component Events for catalog::Catalog {
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    live: Event = self.transition(found.value, catalog::OnSale)
+    live: Event = self.transition(found.value, catalog::EventStatus::OnSale)
     Catalog::EventStore.save(live)
     return Ok(live)
   }
@@ -77,7 +77,7 @@ public component Events for catalog::Catalog {
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    dead: Event = self.transition(found.value, catalog::Cancelled)
+    dead: Event = self.transition(found.value, catalog::EventStatus::Cancelled)
     Catalog::EventStore.save(dead)
     Catalog::Signals.cancelled(EventCancelled from { id })
     return Ok(dead)

@@ -146,7 +146,7 @@ A variant is either a record (its own `data` type) or fieldless.
 ```pds
 data BankAccCreated { accId: string }    // standalone
 data AccountEvent =
-  | BankAccCreated                       // reference to an existing data
+  | BankAccCreated                       // binds an existing same-module data
   | BankAccClosed { accId: string, reason: string }   // declares + hoists to the module
 
 data Severity =          // fieldless variants — an enum
@@ -155,8 +155,10 @@ data Severity =          // fieldless variants — an enum
   | Info
 ```
 - `| Name { ... }` (record variant) declares the variant and hoists it to the module's type namespace, addressed `module::Name` — the same as a top-level `data`. Its name MUST be unique among module-level type names (§8.1); a collision MUST be rejected.
-- Bare `| Name` (no record): if a module-level `data Name` exists, it references that type; otherwise it declares a fieldless variant scoped to the union. A fieldless variant does not hoist.
+- Bare `| Name` (no record): if a module-level `data Name` exists, the variant binds that same-module type; otherwise it declares a fieldless variant scoped to the union. A fieldless variant does not hoist.
+- A variant's `data` MUST be in the same module as the union. The bare name is a declaration-site binding, not a use-site reference, so the FQN rule (§8.1, ADR-030) does not govern it (ADR-033); a qualified variant (`| other::Name`) MUST be rejected. A cross-module type is composed as a record field, not a variant.
 - A fieldless variant's name MAY repeat across unions and MAY coincide with a node name (§8.1).
+- A record variant is referenced `module::Name`, the same FQN as a top-level `data` (§8.1, ADR-030). A fieldless variant has no module-level form; it is referenced through its union, `module::Union::Variant` (ADR-032). A reference naming no such variant MUST be rejected.
 
 ---
 

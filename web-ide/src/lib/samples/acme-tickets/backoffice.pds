@@ -16,7 +16,7 @@ public component Console for backoffice::Backoffice {
   public createEvent(token: identity::SessionToken, draft: catalog::NewEvent): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     return Ok(catalog::Events.create(draft))
   }
@@ -26,7 +26,7 @@ public component Console for backoffice::Backoffice {
   public addTier(token: identity::SessionToken, tier: catalog::NewTier): Result<catalog::Tier, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     created: Tier = catalog::Tiers.add(tier)
     inventory::Holds.provision(created.event, created.id, created.capacity)
@@ -37,7 +37,7 @@ public component Console for backoffice::Backoffice {
   public putOnSale(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     live: Result<Event, EventNotFound> = catalog::Events.putOnSale(event)
     if (live.isErr) {
@@ -50,7 +50,7 @@ public component Console for backoffice::Backoffice {
   public cancelEvent(token: identity::SessionToken, event: shared::EventId): Result<catalog::Event, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireOrganizer(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     dead: Result<Event, EventNotFound> = catalog::Events.cancel(event)
     if (dead.isErr) {
@@ -63,7 +63,7 @@ public component Console for backoffice::Backoffice {
   public refundOrder(token: identity::SessionToken, order: shared::OrderId): Result<orders::Order, backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireSupport(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     refunded: Result<Order, CheckoutError> = orders::OrderService.refund(order)
     if (refunded.isErr) {
@@ -77,7 +77,7 @@ public component Console for backoffice::Backoffice {
   public reviewStranded(token: identity::SessionToken): Result<shared::OrderId[], backoffice::ConsoleError> {
     staff: Result<User, AuthError> = identity::Sessions.requireSupport(token)
     if (staff.isErr) {
-      return Err(backoffice::Unauthorized)
+      return Err(backoffice::ConsoleError::Unauthorized)
     }
     return Ok(tickets::Quarantine.pending())
   }

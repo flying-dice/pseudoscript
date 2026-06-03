@@ -25,7 +25,7 @@ public component EventApi for gateway::Gateway {
   public getEvent(eventId: shared::EventId): Result<catalog::EventListing, gateway::AccessError> {
     found: Option<EventListing> = catalog::Listings.listing(eventId)
     if (found.isNone) {
-      return Err(gateway::NotFound)
+      return Err(gateway::AccessError::NotFound)
     }
     return Ok(found.value)
   }
@@ -44,11 +44,11 @@ public component QueueApi for gateway::Gateway {
   public join(eventId: shared::EventId, token: identity::SessionToken): Result<waitingroom::QueueTicket, gateway::QueueDenied> {
     user: Result<User, AuthError> = identity::Sessions.authenticate(token)
     if (user.isErr) {
-      return Err(gateway::NotAuthenticated)
+      return Err(gateway::QueueDenied::NotAuthenticated)
     }
     joined: Result<QueueTicket, WaitingError> = waitingroom::Queue.join(eventId, user.value.id)
     if (joined.isErr) {
-      return Err(gateway::Closed)
+      return Err(gateway::QueueDenied::Closed)
     }
     return Ok(joined.value)
   }
@@ -86,11 +86,11 @@ public component AccountApi for gateway::Gateway {
   public getOrder(token: identity::SessionToken, orderId: shared::OrderId): Result<orders::Order, gateway::AccessError> {
     user: Result<User, AuthError> = identity::Sessions.authenticate(token)
     if (user.isErr) {
-      return Err(gateway::NotAuthenticated)
+      return Err(gateway::AccessError::NotAuthenticated)
     }
     found: Result<Order, CheckoutError> = orders::OrderService.getFor(user.value.id, orderId)
     if (found.isErr) {
-      return Err(gateway::NotFound)
+      return Err(gateway::AccessError::NotFound)
     }
     return Ok(found.value)
   }

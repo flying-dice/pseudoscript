@@ -187,3 +187,15 @@ Read in full for the four-meanings-per-bare-name ambiguity it removes, and the w
 A kebab-case directory or filename maps to an identifier FQN segment by `-`→`_`, as Cargo maps `my-crate` to `my_crate`: `web-ide/file-tree.pds` is module `web_ide::file_tree`. One-way, load-time only; the file keeps its name on disk. A dependency name is not normalised — it MUST already be a valid identifier (§8.3). Single-sourced in `module_fqn`, mirrored by the web IDE's `fqnOf`.
 
 Read in full for the ADR-030 interaction (a hyphen file could not address its own nodes) and the dependency-name contrast.
+
+## [032 — A fieldless union variant is referenced through its union](032-fieldless-variant-fqn.md)
+
+ADR-030 requires a variant reference to be its FQN, but §3.5 gave only a record variant one (`module::Name`, it hoists). A fieldless variant does not hoist and its name may repeat across unions, so it is referenced `module::Union::Variant` — the union is its scope. The checker resolves a value-position variant reference (`Ok`/`Err`/`from` operand, `return` value) against the union; a made-up variant, unknown union, or wrong module is rejected.
+
+Read in full for the daemon fieldless-error example and the rejected hoist-fieldless-too alternative.
+
+## [033 — A union variant binds a same-module `data` (not an ADR-030 reference)](033-variant-declaration-same-module-binding.md)
+
+§3.5 called a bare `| Name` variant a "reference" to a same-module `data`, which ADR-030 would then require to be an FQN — but the grammar `Variant = Ident [ Record ]` admits only a bare identifier. The variant declaration is a declaration-site binding, not a use-site reference; ADR-030 governs use-site references (§8.1) and does not reach it. A variant names a same-module `data` and stays bare; a qualified variant (`| other::Name`) is rejected. Cross-module composition is a record field, not a variant.
+
+Read in full for the rejected `Variant = Path [ Record ]` alternative and why same-module keeps a union resolvable within one file.

@@ -64,10 +64,10 @@ public component Holds for inventory::Inventory {
     }
     taken: Result<SeatShard, PoolExhausted> = self.allocateSharded(event, tier, quantity)
     if (taken.isErr) {
-      return Err(inventory::OutOfStock)
+      return Err(inventory::InventoryError::OutOfStock)
     }
     id: shared::HoldId = Inventory::HoldStore.nextId()
-    hold: Hold = Hold from { id, event, tier, quantity, owner, inventory::Held, taken.value }
+    hold: Hold = Hold from { id, event, tier, quantity, owner, inventory::HoldStatus::Held, taken.value }
     Inventory::HoldStore.save(hold)
     return Ok(hold)
   }
@@ -110,7 +110,7 @@ public component Holds for inventory::Inventory {
     if (held.isErr) {
       return Err(held.error)
     }
-    moved: Hold = self.transition(found.value, inventory::Committing)
+    moved: Hold = self.transition(found.value, inventory::HoldStatus::Committing)
     Inventory::HoldStore.save(moved)
     return Ok(moved)
   }
@@ -133,7 +133,7 @@ public component Holds for inventory::Inventory {
       return Err(ready.error)
     }
     allocation: Allocation = self.allocate(found.value)
-    Inventory::HoldStore.save(self.transition(found.value, inventory::Confirmed))
+    Inventory::HoldStore.save(self.transition(found.value, inventory::HoldStatus::Confirmed))
     return Ok(allocation)
   }
 
@@ -147,7 +147,7 @@ public component Holds for inventory::Inventory {
       live: Result<void, InventoryError> = self.ensureReleasable(found.value)
       if (live.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, inventory::Released))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::HoldStatus::Released))
       }
     }
   }
@@ -162,7 +162,7 @@ public component Holds for inventory::Inventory {
       sold: Result<void, InventoryError> = self.ensureConfirmed(found.value)
       if (sold.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, inventory::Released))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::HoldStatus::Released))
       }
     }
   }
@@ -176,7 +176,7 @@ public component Holds for inventory::Inventory {
       held: Result<void, InventoryError> = self.ensureHeld(found.value)
       if (held.isOk) {
         Inventory::Pool.restoreTo(found.value.shard, found.value.quantity)
-        Inventory::HoldStore.save(self.transition(found.value, inventory::Expired))
+        Inventory::HoldStore.save(self.transition(found.value, inventory::HoldStatus::Expired))
       }
     }
   }

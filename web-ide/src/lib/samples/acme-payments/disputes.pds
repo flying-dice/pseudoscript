@@ -90,7 +90,7 @@ public component DisputeService for disputes::Disputes {
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
-    dispute: Dispute = Dispute from { event, disputes::NeedsResponse }
+    dispute: Dispute = Dispute from { event, disputes::DisputeStatus::NeedsResponse }
     Disputes::DisputeStore.save(dispute)
     Disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
     Disputes::CallbackLog.record(event.eventId)
@@ -110,9 +110,9 @@ public component DisputeService for disputes::Disputes {
     }
     sent: Result<void, NetworkError> = context::CardNetwork.submitEvidence(loaded.value.ref, req.evidence)
     if (sent.isErr) {
-      return Err(disputes::NetworkUnreachable)
+      return Err(disputes::DisputeError::NetworkUnreachable)
     }
-    reviewing: Dispute = self.mark(loaded.value, disputes::UnderReview)
+    reviewing: Dispute = self.mark(loaded.value, disputes::DisputeStatus::UnderReview)
     Disputes::DisputeStore.save(reviewing)
     return Ok(reviewing)
   }
@@ -151,7 +151,7 @@ public component DisputeService for disputes::Disputes {
     if (loaded.isOk) {
       open: Result<void, DisputeError> = self.contestable(loaded.value)
       if (open.isOk) {
-        Disputes::DisputeStore.save(self.mark(loaded.value, disputes::Lost))
+        Disputes::DisputeStore.save(self.mark(loaded.value, disputes::DisputeStatus::Lost))
       }
     }
   }
@@ -161,10 +161,10 @@ public component DisputeService for disputes::Disputes {
   applyRuling(dispute: disputes::Dispute, ruling: disputes::DisputeRuling): void {
     won: Result<void, DisputeError> = self.isWin(ruling)
     if (won.isOk) {
-      Disputes::DisputeStore.save(self.mark(dispute, disputes::Won))
+      Disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Won))
       Disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
     } else {
-      Disputes::DisputeStore.save(self.mark(dispute, disputes::Lost))
+      Disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Lost))
     }
   }
 
@@ -186,7 +186,7 @@ public component DisputeService for disputes::Disputes {
   get(dispute: shared::DisputeId): Result<disputes::Dispute, disputes::DisputeError> {
     found: Option<Dispute> = Disputes::DisputeStore.fetch(dispute)
     if (found.isNone) {
-      return Err(disputes::NotFound)
+      return Err(disputes::DisputeError::NotFound)
     }
     return Ok(found.value)
   }

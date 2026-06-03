@@ -60,10 +60,10 @@ public component PayoutService for payouts::Payouts {
     id: shared::PayoutId = Payouts::PayoutStore.nextId()
     drawn: Result<BalanceTransaction, LedgerError> = ledger::Balance.withdraw(merchant, id, due.value)
     if (drawn.isErr) {
-      return Err(payouts::InsufficientFunds)
+      return Err(payouts::PayoutError::InsufficientFunds)
     }
     destination: context::BankAccountRef = self.destinationFor(merchant)
-    payout: Payout = Payout from { id, merchant, due.value, destination, payouts::Pending }
+    payout: Payout = Payout from { id, merchant, due.value, destination, payouts::PayoutStatus::Pending }
     Payouts::PayoutStore.save(payout)
     return self.send(payout)
   }

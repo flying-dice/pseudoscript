@@ -86,7 +86,7 @@ public component PaymentService for payments::Payments {
       return Ok(existing.value)
     }
     key: IdempotencyKey = self.keyFor(order, "charge")
-    payment: Payment = Payment from { order, amount, payments::Charging }
+    payment: Payment = Payment from { order, amount, payments::PaymentStatus::Charging }
     Payments::PaymentStore.save(payment)
     held: Result<context::ProviderAuth, PaymentError> = Payments::Gateway.authorize(amount, method, key)
     if (held.isErr) {

@@ -40,7 +40,7 @@ public component Users for identity::Identity {
       return Err(EmailTaken from { form.email })
     }
     id: shared::UserId = Identity::UserStore.nextId()
-    user: User = User from { id, form, identity::Attendee }
+    user: User = User from { id, form, identity::Role::Attendee }
     Identity::UserStore.save(user)
     return Ok(user)
   }
@@ -52,11 +52,11 @@ public component Sessions for identity::Identity {
   public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
     user: Option<User> = Identity::UserStore.find(creds.email)
     if (user.isNone) {
-      return Err(identity::BadCredentials)
+      return Err(identity::AuthError::BadCredentials)
     }
     ok: Result<void, AuthError> = self.verify(creds, user.value)
     if (ok.isErr) {
-      return Err(identity::BadCredentials)
+      return Err(identity::AuthError::BadCredentials)
     }
     return Ok(Identity::SessionStore.issue(user.value))
   }
@@ -70,7 +70,7 @@ public component Sessions for identity::Identity {
   public authenticate(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
     user: Option<User> = Identity::SessionStore.resolve(token)
     if (user.isNone) {
-      return Err(identity::NoSession)
+      return Err(identity::AuthError::NoSession)
     }
     return Ok(user.value)
   }

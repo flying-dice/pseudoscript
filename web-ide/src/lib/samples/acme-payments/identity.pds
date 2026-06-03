@@ -47,7 +47,7 @@ public component Keys for identity::Identity {
   public authenticateSecret(key: identity::SecretKey): Result<identity::Merchant, identity::ApiKeyError> {
     merchant: Option<Merchant> = Identity::KeyStore.resolveSecret(key)
     if (merchant.isNone) {
-      return Err(identity::InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
     return Ok(merchant.value)
   }
@@ -58,7 +58,7 @@ public component Keys for identity::Identity {
   public authenticatePublishable(key: identity::PublishableKey): Result<identity::Merchant, identity::ApiKeyError> {
     merchant: Option<Merchant> = Identity::KeyStore.resolvePublishable(key)
     if (merchant.isNone) {
-      return Err(identity::InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
     return Ok(merchant.value)
   }
@@ -69,11 +69,11 @@ public component Keys for identity::Identity {
   public authenticateRestricted(key: identity::RestrictedKey, need: identity::Scope): Result<identity::Merchant, identity::ApiKeyError> {
     merchant: Option<Merchant> = Identity::KeyStore.resolveRestricted(key)
     if (merchant.isNone) {
-      return Err(identity::InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
     granted: Result<void, ApiKeyError> = self.permits(key, need)
     if (granted.isErr) {
-      return Err(identity::InsufficientScope)
+      return Err(identity::ApiKeyError::InsufficientScope)
     }
     return Ok(merchant.value)
   }

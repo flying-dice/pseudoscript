@@ -65,7 +65,7 @@ public component Admission for waitingroom::WaitingRoom {
   public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
     found: Option<AdmissionToken> = WaitingRoom::AdmissionStore.lookup(token)
     if (found.isNone) {
-      return Err(waitingroom::AdmissionInvalid)
+      return Err(waitingroom::WaitingError::AdmissionInvalid)
     }
     return self.unexpired(found.value)
   }

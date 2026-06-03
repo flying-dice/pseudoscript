@@ -90,7 +90,7 @@ public component ChargeService for charges::Charges {
   /// #headline
   public authorize(intent: shared::PaymentIntentId, amount: shared::Money, instrument: context::NetworkInstrument): Result<charges::AuthResult, charges::ChargeError> {
     id: shared::ChargeId = Charges::ChargeStore.nextId()
-    charge: Charge = Charge from { id, intent, amount, charges::Authorizing }
+    charge: Charge = Charge from { id, intent, amount, charges::ChargeStatus::Authorizing }
     Charges::ChargeStore.save(charge)
     key: IdempotencyKey = self.keyFor(id, "authorize")
     held: Result<context::AuthOutcome, ChargeError> = Charges::Gateway.authorize(amount, instrument, key)
