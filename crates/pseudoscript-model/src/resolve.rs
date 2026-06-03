@@ -119,19 +119,30 @@ fn resolve_node<'a>(ws: &'a Workspace, from_fqn: &str, segments: &[&str]) -> Opt
         }
         // Best-effort: a bare name declared in another module — an
         // under-qualified cross-module reference (§8 wants an FQN) —
-        // navigates to its declaration when exactly one workspace symbol bears
-        // that name. Goto leniency only; the static checker still flags the
-        // missing qualifier, and an ambiguous name is left unresolved.
-        return unique_symbol(ws, name);
+        // navigates to its declaration when exactly one *visible* workspace
+        // symbol bears that name. Goto leniency only; the static checker still
+        // flags the missing qualifier, and an ambiguous name is left unresolved.
+        return unique_symbol(ws, from_fqn, name);
     }
     if let Some(symbol) = ws.symbol(&segments.join("::")) {
-        return Some(symbol);
+        // §8: a private symbol is reachable only within its own module, even by
+        // FQN — a cross-module path resolves only to a `public` symbol. (Don't
+        // fall back to the leaf below: the FQN named a real, just-invisible
+        // symbol, so the reference resolves nowhere, as the checker also reports.)
+        return visible_from(symbol, from_fqn).then_some(symbol);
     }
     // A qualified path whose FQN is not indexed — a wrong or non-module
     // qualifier, e.g. a container name (`Syntax::Lexer` for module `syntax`) —
     // falls back to the unique symbol named by its leaf segment. Same goto
     // leniency as the bare-name case.
-    unique_symbol(ws, segments.last().copied()?)
+    unique_symbol(ws, from_fqn, segments.last().copied()?)
+}
+
+/// Whether `symbol` is reachable from module `from_fqn` (§8.2): a same-module
+/// declaration is always visible within its own file; a cross-module reference
+/// resolves only to a `public` symbol.
+fn visible_from(symbol: &Symbol, from_fqn: &str) -> bool {
+    module_of(&symbol.fqn) == from_fqn || symbol.is_public
 }
 
 /// The `(module, name)` of the node/data a `::` path names, for type inference
@@ -153,10 +164,10 @@ pub fn resolve_owner(
 /// be qualified `dep::module::Node` (§8.3), so a bare name never leniently
 /// resolves into a dependency — that would over-resolve common identifiers into
 /// a dependency's symbols (wrong goto, every same-named token highlighted).
-fn unique_symbol<'a>(ws: &'a Workspace, name: &str) -> Option<&'a Symbol> {
-    let mut matches = ws
-        .symbols()
-        .filter(|s| s.name == name && !ws.is_external_module(module_of(&s.fqn)));
+fn unique_symbol<'a>(ws: &'a Workspace, from_fqn: &str, name: &str) -> Option<&'a Symbol> {
+    let mut matches = ws.symbols().filter(|s| {
+        s.name == name && !ws.is_external_module(module_of(&s.fqn)) && visible_from(s, from_fqn)
+    });
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
@@ -397,6 +408,45 @@ mod tests {
         let hit = resolve_at(&ws, "b", src, call as u32 + 1).expect("cross-module member resolves");
         assert_eq!(hit.target_module, "a");
         assert_eq!(slice(&mods, &hit), "op");
+    }
+
+    #[test]
+    fn private_node_is_not_reachable_cross_module() {
+        // §8: a private node is reachable only within its own module, even by FQN.
+        // A cross-module reference resolves nowhere (the checker flags it); a
+        // public sibling resolves.
+        let mods = [
+            ("a", "//! a\n\nsystem Hidden;\npublic system Shown;\n"),
+            (
+                "b",
+                "//! b\n\npublic container P for a::Hidden;\npublic container Q for a::Shown;\n",
+            ),
+        ];
+        let ws = workspace(&mods);
+        let b = mods[1].1;
+        let hidden = b.find("a::Hidden").unwrap() + "a::".len();
+        assert!(
+            resolve_at(&ws, "b", b, hidden as u32 + 1).is_none(),
+            "private node leaked across modules"
+        );
+        let shown = b.find("a::Shown").unwrap() + "a::".len();
+        let hit = resolve_at(&ws, "b", b, shown as u32 + 1).expect("public node resolves");
+        assert_eq!(hit.target_module, "a");
+        assert_eq!(slice(&mods, &hit), "Shown");
+    }
+
+    #[test]
+    fn private_node_resolves_within_its_own_module() {
+        // Same-module: a private node IS reachable by its own FQN within its file.
+        let mods = [(
+            "a",
+            "//! a\n\nsystem Hidden;\npublic container C for a::Hidden;\n",
+        )];
+        let ws = workspace(&mods);
+        let a = mods[0].1;
+        let h = a.find("for a::Hidden").unwrap() + "for a::".len();
+        let hit = resolve_at(&ws, "a", a, h as u32 + 1).expect("same-module private resolves");
+        assert_eq!(slice(&mods, &hit), "Hidden");
     }
 
     #[test]
