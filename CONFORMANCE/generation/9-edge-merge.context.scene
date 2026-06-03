@@ -1,0 +1,5 @@
+view context
+node m::A system "A"
+node m::B system "B"
+edge m::A -> m::B call "Ping" "Read"
+edge m::B -> m::A call "Go"

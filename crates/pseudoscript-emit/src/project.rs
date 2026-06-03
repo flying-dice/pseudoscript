@@ -7,6 +7,8 @@
 //! does not resolve to the required node kind returns an [`EmitError`] rather
 //! than panicking.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use pseudoscript_model::{EdgeKind, Graph, GraphNode, NodeKind, Signature, Step, Trigger};
 
 use crate::scene::{
@@ -260,7 +262,14 @@ fn collect_edges(
     in_view: &[&str],
     lift: impl Fn(&str) -> Option<String>,
 ) -> Vec<RoutedEdges> {
-    let mut edges: Vec<RoutedEdges> = Vec::new();
+    // Group by (from, to, kind) so parallel same-direction relationships of one
+    // kind collapse into a single edge whose labels are merged. The key's third
+    // component is the kind keyword, so the map's canonical order is
+    // `(from, to, kind)` — the golden order. The `BTreeSet` value sorts and
+    // de-duplicates the merged labels. Empty labels (trigger/provenance) never
+    // enter the set, leaving those edges label-less.
+    let mut grouped: BTreeMap<(String, String, &'static str), (C4EdgeKind, BTreeSet<String>)> =
+        BTreeMap::new();
     for edge in graph.edges() {
         let Some(kind) = c4_edge_kind(edge.kind) else {
             continue;
@@ -273,23 +282,22 @@ fn collect_edges(
         if from == to {
             continue;
         }
-        edges.push(RoutedEdges {
+        let (_, labels) = grouped
+            .entry((from, to, kind.keyword()))
+            .or_insert_with(|| (kind, BTreeSet::new()));
+        if !edge.label.is_empty() {
+            labels.insert(edge.label.clone());
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((from, to, _), (kind, labels))| RoutedEdges {
             from,
             to,
             kind,
-            label: edge.label.clone(),
-        });
-    }
-    edges.sort_by(|a, b| {
-        (&a.from, &a.to, a.kind.keyword(), &a.label).cmp(&(
-            &b.from,
-            &b.to,
-            b.kind.keyword(),
-            &b.label,
-        ))
-    });
-    edges.dedup();
-    edges
+            labels: labels.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// Working edge form before placement into the scene (same shape as
@@ -936,6 +944,49 @@ mod tests {
             let node = scene.nodes.iter().find(|n| n.fqn == ext).unwrap();
             assert_eq!(node.boundary, None);
         }
+    }
+
+    #[test]
+    fn parallel_same_direction_calls_merge_into_one_edge() {
+        // AWeb makes two distinct calls to BApi (both bubble A->B in the context
+        // view); BApi calls back AWeb (B->A). The two A->B calls collapse to one
+        // edge with sorted, de-duplicated labels; the opposite-direction callback
+        // stays a separate edge.
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system A;\npublic container AWeb for A {\n  \
+             public Go(): void { m::BApi.Read(); m::BApi.Ping() }\n}\n\
+             public system B;\npublic container BApi for B {\n  \
+             public Read(): void;\n  public Ping(): void;\n  \
+             public Cb(): void { m::AWeb.Go() }\n}"
+                .to_owned(),
+        );
+        let scene = c4(project(&graph(&[m]), View::Context).expect("projects"));
+        let ab = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::A" && e.to == "m::B")
+            .expect("a single merged A->B edge");
+        assert_eq!(
+            ab.labels,
+            ["Ping", "Read"],
+            "labels sorted and de-duplicated"
+        );
+        let ba = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::B" && e.to == "m::A")
+            .expect("the opposite-direction callback stays separate");
+        assert_eq!(ba.labels, ["Go"]);
+        assert_eq!(
+            scene
+                .edges
+                .iter()
+                .filter(|e| e.kind == C4EdgeKind::Call)
+                .count(),
+            2,
+            "exactly two call edges: one merged A->B, one B->A"
+        );
     }
 
     #[test]

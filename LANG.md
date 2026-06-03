@@ -400,6 +400,7 @@ A dependency's **identity** is `(source, revision, path)`.
 - **Container:** one system's containers (resolved via `for`).
 - **Component:** one container's components (resolved via `for`).
 - Arrows from cross-boundary body calls.
+- Relationships of one kind between the same ordered pair of nodes MUST collapse to a single arrow; its label lists each relationship name. Opposite-direction relationships (A→B, B→A) render as separate arrows.
 - **Trigger** macros add an inbound edge from the initiator: `#[onevent]` from an event source, `#[schedule]` from a scheduler actor, `#[http]` from a client, `#[manual]` from a person/caller. Tags drive styling/filtering; `///` summaries become descriptions.
 - `from` composition can render as data-flow/provenance edges in a dedicated view.
 

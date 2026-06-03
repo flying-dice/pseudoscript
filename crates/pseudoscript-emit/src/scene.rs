@@ -107,6 +107,10 @@ impl C4EdgeKind {
 }
 
 /// An edge routed between two C4 nodes.
+///
+/// Parallel same-direction relationships of one kind collapse to a single edge:
+/// `labels` lists every method (call) name, sorted and de-duplicated. Empty for
+/// a trigger or provenance edge (no method).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutedEdge {
     /// Source endpoint FQN.
@@ -115,8 +119,9 @@ pub struct RoutedEdge {
     pub to: String,
     /// The relationship kind.
     pub kind: C4EdgeKind,
-    /// Edge label (the method name for a call, else empty).
-    pub label: String,
+    /// The merged edge labels (call method names), sorted and de-duplicated;
+    /// empty for a trigger or provenance edge.
+    pub labels: Vec<String>,
 }
 
 /// A laid-out sequence view: lifelines, messages, and nested frames.
@@ -280,14 +285,17 @@ impl C4Scene {
             out.push('\n');
         }
         for edge in &self.edges {
-            let _ = writeln!(
+            let _ = write!(
                 out,
-                "edge {} -> {} {} {}",
+                "edge {} -> {} {}",
                 edge.from,
                 edge.to,
-                edge.kind.keyword(),
-                quote(&edge.label),
+                edge.kind.keyword()
             );
+            for label in &edge.labels {
+                let _ = write!(out, " {}", quote(label));
+            }
+            out.push('\n');
         }
     }
 }

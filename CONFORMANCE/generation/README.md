@@ -20,12 +20,12 @@ One element per line, UTF-8, `\n`-terminated. The `Scene` is laid out by the emi
 view <context|container|component>
 of <FQN>                                  # container/component only; absent for context
 node <FQN> <kind> "<label>" [in <FQN>]    # kind: person|system|container|component; `in` names the boundary
-edge <from-FQN> -> <to-FQN> <kind> "<label>"   # kind: call|trigger|provenance
+edge <from-FQN> -> <to-FQN> <kind> "<label>"...   # kind: call|trigger|provenance; zero or more labels
 ```
 
 - **Nodes** in source-declaration order. `<label>` is the node's simple name; a `///` summary, if any, does not appear in the `Scene` (it is renderer tooltip text, not structure).
 - `in` is present when the node sits inside the view's boundary (a system's containers in a `container` view; a container's components in a `component` view), resolved via `for`.
-- **Edges** after all nodes, sorted by `(from, to, kind, label)`. A trigger macro contributes one `trigger` edge from a synthesised initiator node — `event:<FQN>` (`#[onevent]`), `scheduler` (`#[schedule]`), `client` (`#[http]`), `caller` (`#[manual]`); a cross-boundary body call contributes a `call` edge; a `from` composition contributes a `provenance` edge.
+- **Edges** after all nodes, sorted by `(from, to, kind)`. Relationships of one kind between the same ordered endpoint pair collapse to one edge whose labels follow the `kind`, sorted and de-duplicated (`LANG.md §9.1`); a trigger or provenance edge carries no label. A trigger macro contributes one `trigger` edge from a synthesised initiator node — `event:<FQN>` (`#[onevent]`), `scheduler` (`#[schedule]`), `client` (`#[http]`), `caller` (`#[manual]`); a cross-boundary body call contributes a `call` edge; a `from` composition contributes a `provenance` edge.
 
 ### Sequence view (`sequence`)
 

@@ -149,8 +149,10 @@ pub struct LaidOutEdge {
     pub to: String,
     /// The relationship kind.
     pub kind: C4EdgeKind,
-    /// Edge label (the method name for a call, else empty).
-    pub label: String,
+    /// The merged edge labels (call method names), sorted and de-duplicated;
+    /// empty for a trigger or provenance edge. The canvas stacks them one per
+    /// line, matching the SVG.
+    pub labels: Vec<String>,
     /// The routed polyline (at least two points).
     pub points: Vec<PointI>,
     /// The engine's label position, when a matching label was found.
@@ -242,8 +244,12 @@ fn capture_to_layout(capture: &Capture, scene: &C4Scene, boundary: Option<&str>)
                 Some(i) => {
                     used_arrow[i] = true;
                     let arrow = &capture.arrows[i];
-                    let label_pos =
-                        nearest_label(&capture.texts, &mut used_text, &edge.label, arrow);
+                    let label_pos = nearest_label(
+                        &capture.texts,
+                        &mut used_text,
+                        &edge_display(&edge.labels),
+                        arrow,
+                    );
                     (
                         arrow.points.iter().map(point_i).collect(),
                         arrow.dashed,
@@ -262,7 +268,7 @@ fn capture_to_layout(capture: &Capture, scene: &C4Scene, boundary: Option<&str>)
             from: edge.from.clone(),
             to: edge.to.clone(),
             kind: edge.kind,
-            label: edge.label.clone(),
+            labels: edge.labels.clone(),
             points,
             label_pos,
             dashed,
@@ -297,9 +303,10 @@ fn nearest_arrow(arrows: &[CapturedArrow], used: &[bool], from: Point, to: Point
         .map(|(i, _)| i)
 }
 
-/// The unused captured edge label matching `label` nearest the arrow's midpoint,
-/// marking it consumed so parallel same-label edges take distinct labels. `None`
-/// for an empty label or when none matches.
+/// The unused captured edge label matching `label` (an edge's `\n`-joined
+/// display string, [`edge_display`]) nearest the arrow's midpoint, marking it
+/// consumed so parallel same-label edges take distinct labels. `None` for an
+/// empty label or when none matches.
 fn nearest_label(
     texts: &[CapturedText],
     used: &mut [bool],
@@ -436,7 +443,7 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
                 from: e.from.clone(),
                 to: e.to.clone(),
                 kind: e.kind,
-                label: e.label.clone(),
+                labels: e.labels.clone(),
                 points: vec![rect_centre(&from.rect), rect_centre(&to.rect)],
                 label_pos: None,
                 dashed: matches!(e.kind, C4EdgeKind::Provenance),
@@ -640,6 +647,18 @@ fn node_style() -> StyleAttr {
     }
 }
 
+/// The separator between an edge's merged labels in its display string. Joined by
+/// [`edge_display`], split back by [`draw_edge_label`]; the web canvas mirrors it
+/// (`C4Flow.svelte`). One newline per stacked label.
+const LABEL_SEP: &str = "\n";
+
+/// An edge's display label: its merged labels stacked one per line. Fed to the
+/// layout engine (which routes around it and emits a matching [`CapturedText`])
+/// and matched verbatim by [`nearest_label`], so both sides agree on the string.
+fn edge_display(labels: &[String]) -> String {
+    labels.join(LABEL_SEP)
+}
+
 /// The arrow style for a C4 edge: a thin line with an arrowhead at the target,
 /// dashed for provenance, carrying the edge label for the engine to route.
 fn edge_arrow(edge: &RoutedEdge) -> Arrow {
@@ -659,7 +678,7 @@ fn edge_arrow(edge: &RoutedEdge) -> Arrow {
         LineEndKind::None,
         LineEndKind::Arrow,
         line_style,
-        &edge.label,
+        &edge_display(&edge.labels),
         &look,
         &None,
         &None,
@@ -1172,31 +1191,57 @@ fn draw_arrow(out: &mut String, arrow: &CapturedArrow) {
     );
 }
 
+/// The line height (px) of a stacked edge label, sized for the 11.5px label
+/// font. A single-line plate is one line tall plus [`EDGE_PLATE_PAD`].
+const EDGE_LINE_H: i32 = 14;
+/// The vertical padding (px) added to an edge-label plate's text block.
+const EDGE_PLATE_PAD: i32 = 2;
+
 /// Draws a captured edge label on a small light plate so it never reads against a
 /// routed line. Node boxes carry empty labels, so every captured text is an edge
-/// label.
+/// label. A merged edge carries its labels `\n`-joined; each becomes a stacked
+/// `<tspan>` and the plate grows to fit.
 fn draw_edge_label(out: &mut String, label: &CapturedText) {
     if label.text.is_empty() {
         return;
     }
+    let lines: Vec<&str> = label.text.split(LABEL_SEP).collect();
+    let widest = lines
+        .iter()
+        .map(|line| i32::try_from(line.chars().count()).unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    let n = i32::try_from(lines.len()).unwrap_or(1);
+
     let lx = round(label.xy.x);
     let ly = round(label.xy.y);
-    let chars = i32::try_from(label.text.chars().count()).unwrap_or(0);
-    let plate_w = chars * 7 + 8;
+    let plate_w = widest * 7 + 8;
+    let plate_h = n * EDGE_LINE_H + EDGE_PLATE_PAD;
+    let top = ly - plate_h / 2;
+    // First baseline sits 12px below the plate top — the single-line plate's
+    // baseline offset, so a one-line label renders exactly as before.
+    let first_baseline = top + 12;
+
     #[allow(non_snake_case)]
     let DESC_FILL = pal().muted;
     let _ = write!(
         out,
-        "<rect x=\"{rx}\" y=\"{ry}\" width=\"{plate_w}\" height=\"16\" rx=\"4\" \
+        "<rect x=\"{rx}\" y=\"{top}\" width=\"{plate_w}\" height=\"{plate_h}\" rx=\"4\" \
          fill=\"{plate}\"/>\
-         <text x=\"{lx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"11.5\" \
-         fill=\"{DESC_FILL}\">{text}</text>",
+         <text x=\"{lx}\" y=\"{first_baseline}\" text-anchor=\"middle\" font-size=\"11.5\" \
+         fill=\"{DESC_FILL}\">",
         plate = pal().edge_plate,
         rx = lx - plate_w / 2,
-        ry = ly - 8,
-        ty = ly + 4,
-        text = escape_xml(&label.text),
     );
+    for (i, line) in lines.iter().enumerate() {
+        let dy = if i == 0 { 0 } else { EDGE_LINE_H };
+        let _ = write!(
+            out,
+            "<tspan x=\"{lx}\" dy=\"{dy}\">{text}</tspan>",
+            text = escape_xml(line),
+        );
+    }
+    out.push_str("</text>");
 }
 
 /// Rounds a layout coordinate to the nearest integer SVG unit.
@@ -1248,7 +1293,7 @@ mod tests {
                 from: "m::A".to_owned(),
                 to: "m::B".to_owned(),
                 kind: C4EdgeKind::Call,
-                label: "uses".to_owned(),
+                labels: vec!["uses".to_owned()],
             }],
         }
     }
@@ -1310,7 +1355,7 @@ mod tests {
             from: "m::B".to_owned(),
             to: "m::A".to_owned(),
             kind: C4EdgeKind::Call,
-            label: "calls back".to_owned(),
+            labels: vec!["calls back".to_owned()],
         });
         let svg = render_c4(&scene);
         assert!(svg.starts_with("<svg"));
@@ -1325,10 +1370,38 @@ mod tests {
             from: "m::B".to_owned(),
             to: "m::A".to_owned(),
             kind: C4EdgeKind::Call,
-            label: "back".to_owned(),
+            labels: vec!["back".to_owned()],
         });
         // one of the two mutual edges is dropped, leaving an acyclic set
         assert_eq!(acyclic_edges(&scene, None).len(), 1);
+    }
+
+    #[test]
+    fn draw_edge_label_stacks_merged_labels_as_tspans() {
+        let mut single = String::new();
+        draw_edge_label(
+            &mut single,
+            &CapturedText {
+                xy: Point::new(40.0, 20.0),
+                text: "getB".to_owned(),
+            },
+        );
+        assert_eq!(single.matches("<tspan").count(), 1, "one label: one tspan");
+
+        let mut merged = String::new();
+        draw_edge_label(
+            &mut merged,
+            &CapturedText {
+                xy: Point::new(40.0, 20.0),
+                text: "getB\ngetBb".to_owned(),
+            },
+        );
+        assert_eq!(
+            merged.matches("<tspan").count(),
+            2,
+            "two merged labels: two stacked tspans"
+        );
+        assert!(merged.contains(">getB</tspan>") && merged.contains(">getBb</tspan>"));
     }
 
     #[test]
@@ -1369,7 +1442,7 @@ mod tests {
                 from: "m::Sys::Web".to_owned(),
                 to: "m::Sys::Api".to_owned(),
                 kind: C4EdgeKind::Call,
-                label: "calls".to_owned(),
+                labels: vec!["calls".to_owned()],
             }],
         }
     }
@@ -1396,7 +1469,7 @@ mod tests {
         let edge = layout.edges.first().expect("the A->B edge is laid out");
         assert_eq!((edge.from.as_str(), edge.to.as_str()), ("m::A", "m::B"));
         assert_eq!(edge.kind, C4EdgeKind::Call);
-        assert_eq!(edge.label, "uses");
+        assert_eq!(edge.labels, ["uses"]);
         assert!(edge.points.len() >= 2, "routed polyline: {edge:?}");
     }
 
@@ -1428,7 +1501,7 @@ mod tests {
             from: "m::B".to_owned(),
             to: "m::A".to_owned(),
             kind: C4EdgeKind::Call,
-            label: "back".to_owned(),
+            labels: vec!["back".to_owned()],
         });
         let layout = layout_c4_scene(&scene);
         assert_eq!(layout.nodes.len(), 2);

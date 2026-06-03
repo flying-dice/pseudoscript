@@ -29,7 +29,9 @@
     from: string;
     to: string;
     kind: string;
-    label: string;
+    // Merged labels of parallel same-direction relationships, sorted and
+    // de-duplicated; empty for a trigger/provenance edge. Stacked one per line.
+    labels: string[];
     points: Pt[];
     label_pos?: Pt | null;
     dashed: boolean;
@@ -122,7 +124,7 @@
       id: `e${i}`,
       source: e.from,
       target: e.to,
-      label: e.label || undefined,
+      label: e.labels.join("\n") || undefined,
       type: "polyline",
       data: { points: e.points, labelPos: e.label_pos ?? null, dashed: e.dashed },
       class: `c4-edge ${e.kind}`,
