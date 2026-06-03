@@ -58,8 +58,9 @@
   const hasC4 = $derived(!!scene && Array.isArray(scene.nodes) && scene.nodes.length > 0);
   const hasFlow = $derived(isFlow && (scene?.participants?.length ?? 0) > 0);
   const ready = $derived(isFlow ? hasFlow : hasC4);
-  // Remount the flow when the rendered content changes so the view resets.
-  const sig = $derived(isFlow ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
+  // Remount the flow when the rendered content changes so the view resets. Both
+  // kinds are now positioned by the layout engine, so key off the layout.
+  const sig = $derived(layout ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
 </script>
 
 <div class="stage" class:framed={ready}>
@@ -77,7 +78,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">

@@ -40,7 +40,8 @@ use pseudoscript_doc::{
     try_render_site_with,
 };
 use pseudoscript_emit::{
-    Scene, View, graph_of_source, layout_sequence_scene, project, project_symbol, render_svg,
+    Scene, View, graph_of_source, layout_c4_scene, layout_sequence_scene, project, project_symbol,
+    render_svg,
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_model::{
@@ -329,14 +330,16 @@ pub fn symbol_svg(modules_json: &str, fqn: &str) -> Result<String, JsError> {
     symbol_svg_impl(modules_json, fqn).map_err(|e| JsError::new(&e))
 }
 
-/// Positions a sequence [`Scene`] (as JSON) into absolute coordinates, returning
-/// the layout as JSON. The host collapses the scene to a chosen depth first,
-/// then hands it here; the layout engine owns all geometry. A non-sequence scene
-/// is an error.
+/// Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
+/// layout as JSON. The layout engine owns all geometry: a sequence scene yields
+/// a positioned sequence layout (the host collapses it to a chosen depth first);
+/// a C4 scene yields a [`pseudoscript_emit::C4Layout`] (placed cards + routed
+/// edges + boundary frame), the same geometry the SVG draws. The two layout
+/// shapes are distinguishable by their fields (`participants` vs `nodes`).
 ///
 /// # Errors
 ///
-/// Returns an error for invalid JSON or a non-sequence scene.
+/// Returns an error for invalid JSON.
 #[wasm_bindgen]
 pub fn layout_scene(scene_json: &str) -> Result<String, JsError> {
     layout_scene_impl(scene_json).map_err(|e| JsError::new(&e))
@@ -752,7 +755,7 @@ fn layout_scene_impl(scene_json: &str) -> Result<String, String> {
     let scene: Scene = serde_json::from_str(scene_json).map_err(|e| e.to_string())?;
     match scene {
         Scene::Sequence(seq) => Ok(to_json(&layout_sequence_scene(&seq))),
-        Scene::C4(_) => Err("layout_scene expects a sequence scene".to_owned()),
+        Scene::C4(c4) => Ok(to_json(&layout_c4_scene(&c4))),
     }
 }
 
@@ -1281,6 +1284,18 @@ mod tests {
         }"#;
         let out = layout_scene_impl(fallback).expect("fallback scene lays out");
         assert!(out.contains("m::F"), "{out}");
+    }
+
+    #[test]
+    fn layout_scene_lays_out_a_c4_scene() {
+        // The exact IDE path: a projected C4 scene serialised to JSON
+        // (`emit_scene_modules`) and handed back to `layout_scene`. It must
+        // positionally lay out (placed cards), not error as it once did.
+        let scene = project_view("//! m\npublic person P;\npublic system S;", "context", "")
+            .expect("context view projects");
+        let out = layout_scene_impl(&to_json(&scene)).expect("c4 scene lays out");
+        assert!(out.contains(r#""nodes""#), "C4 layout carries nodes: {out}");
+        assert!(out.contains("m::P") && out.contains("m::S"), "{out}");
     }
 
     #[test]

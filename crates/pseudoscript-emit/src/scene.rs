@@ -49,7 +49,10 @@ impl C4View {
 /// A laid-out C4 view: an ordered set of placed nodes and routed edges.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct C4Scene {
-    /// Which C4 view this is.
+    /// Which C4 view this is. Serialised as `c4view`, not `view`: the [`Scene`]
+    /// enum is internally tagged on `view` (`c4`/`sequence`), so the inner field
+    /// must not reuse that key or a round-trip hits a duplicate-`view` error.
+    #[serde(rename = "c4view")]
     pub view: C4View,
     /// The view's boundary node FQN (`of`): the system for a container view, the
     /// container for a component view. `None` for context.

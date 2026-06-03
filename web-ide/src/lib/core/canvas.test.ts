@@ -26,10 +26,11 @@ describe("projectCanvas", () => {
     expect((r.layout as { laid?: boolean })?.laid).toBe(true);
   });
 
-  it("projects the context overview with no selection (no layout)", () => {
+  it("projects and lays out the context overview with no selection", () => {
     const r = projectCanvas({ selected: null, seqDepth: "component", modules: [], index: idx, wasm: wasm(), onError: () => {} });
     expect((r.scene as { nodes: unknown[] }).nodes).toHaveLength(1);
-    expect(r.layout).toBeNull();
+    // The C4 context is positioned by the layout engine too (not just sequences).
+    expect((r.layout as { laid?: boolean })?.laid).toBe(true);
   });
 
   it("falls back to a lifeline when a selected sequence is empty", () => {
