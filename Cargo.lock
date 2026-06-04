@@ -1378,6 +1378,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pseudoscript-dot"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pseudoscript-emit"
 version = "0.1.0"
 dependencies = [
