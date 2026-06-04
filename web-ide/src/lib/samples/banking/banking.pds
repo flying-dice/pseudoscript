@@ -17,26 +17,49 @@ container SinglePageApp for banking::InternetBanking;
 /// Native mobile banking client.
 container MobileApp for banking::InternetBanking;
 
-/// JSON/HTTPS API behind the web, SPA, and mobile clients.
+/// JSON/HTTPS API behind the web, SPA, and mobile clients. The handlers are
+/// disclosed, so each renders as a sequence flow (`#[http]` = entry point).
 container Api for banking::InternetBanking {
+
   #[http("GET /accounts/{id}")]
-  GetAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound>;
+  GetAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound> {
+    return banking::Mainframe.FetchAccount(id)
+  }
 
   #[http("POST /payments")]
-  MakePayment(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError>;
+  MakePayment(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError> {
+    paid = Result<banking::Payment, banking::PaymentError> from banking::Mainframe.Transfer(req)
+    if (paid.isErr) {
+      return Err(paid.error)
+    }
+    banking::Database.RecordPayment(paid.value)
+    banking::Email.SendReceipt(req.payer, paid.value)
+    return Ok(paid.value)
+  }
 }
 
 /// User registrations, hashed credentials, and access logs.
 /// #critical
-container Database for banking::InternetBanking;
+container Database for banking::InternetBanking {
+  /// Persist a completed payment.
+  RecordPayment(payment: banking::Payment): void;
+}
 
 // --- existing systems we integrate with -------------------------------------
 
 /// The bank's core mainframe banking system.
-system Mainframe;
+system Mainframe {
+  /// Current snapshot of an account.
+  FetchAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound>;
+  /// Move funds between accounts on the core ledger.
+  Transfer(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError>;
+}
 
 /// Sends transactional email to customers.
-system Email;
+system Email {
+  /// Email a payment receipt to the payer.
+  SendReceipt(payer: banking::AccountId, payment: banking::Payment): void;
+}
 
 // --- the shapes the API speaks ----------------------------------------------
 

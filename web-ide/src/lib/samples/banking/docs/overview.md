@@ -8,6 +8,6 @@ A C4 container diagram shows three things, and so does this model:
 - **The system in focus** — `InternetBanking`, split into the runnable and storage units it's built from: the `Web` server, the `SinglePageApp`, the `MobileApp`, the `Api`, and the `Database`.
 - **The systems it integrates with** — the bank's core `Mainframe` and the `Email` system.
 
-The `Api` container discloses its HTTP surface as signature-only callables tagged `#[http(...)]`, so the diagram draws the inbound request edges; the `data` records at the bottom are the shapes that API speaks.
+The `Api` container's `#[http]` handlers are **disclosed**: `GetAccount` and `MakePayment` orchestrate calls to the core `Mainframe`, the `Database`, and the `Email` system. Because each is a trigger entry point, it renders as a **sequence flow** as well as contributing the container edges. The `data` records at the bottom are the shapes the API speaks.
 
-Open `banking.pds`, then select a node on the canvas (or run **Doc**) to see the C4 view. To go a level deeper, drill into a container and add `component`s with disclosed callable bodies — that's the component level, where the flows and provenance live.
+Open `banking.pds`, then select a node for the C4 view — or select `MakePayment` to see its flow (the authorise → record → notify sequence, with its `Err` short-circuit). To go deeper, drill into a container and add `component`s to model the level below.
