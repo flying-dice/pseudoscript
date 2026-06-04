@@ -1,71 +1,104 @@
-//! Internet Banking — a canonical C4 model, taken to the container level.
+//! Internet Banking System — the C4 *container* view, after Simon Brown's
+//! canonical example (c4model.com, CC BY 4.0). Each container-diagram
+//! relationship is modelled as a call between nodes, so the container view
+//! draws every edge; nothing is taken below the container level.
 
-/// A personal banking customer.
-person Customer;
+/// A customer of the bank with one or more personal bank accounts.
+person Customer {
+  /// Views account balances and makes payments using Internet banking.
+  UseInternetBanking() {
+    banking::StaticContent.LoadApp()
+    banking::SinglePageApp.ViewAccounts()
+    banking::SinglePageApp.MakePayment()
+  }
 
-// --- the system we're building ----------------------------------------------
+  /// Receives transactional e-mail from the bank.
+  ReceiveEmail();
+}
 
-/// Lets customers view their accounts and make payments online.
+// --- the Internet Banking System and its containers -------------------------
+
+/// Allows customers to view information about their bank accounts and make
+/// payments via the web.
 system InternetBanking;
 
-/// Static content and the single-page app shell.
-container Web for banking::InternetBanking;
-
-/// In-browser banking client.
-container SinglePageApp for banking::InternetBanking;
-
-/// Native mobile banking client.
-container MobileApp for banking::InternetBanking;
-
-/// JSON/HTTPS API behind the web, SPA, and mobile clients. The handlers are
-/// disclosed, so each renders as a sequence flow (`#[http]` = entry point).
-container Api for banking::InternetBanking {
-
-  #[http("GET /accounts/{id}")]
-  GetAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound> {
-    return banking::Mainframe.FetchAccount(id)
-  }
-
-  #[http("POST /payments")]
-  MakePayment(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError> {
-    paid = Result<banking::Payment, banking::PaymentError> from banking::Mainframe.Transfer(req)
-    if (paid.isErr) {
-      return Err(paid.error)
-    }
-    banking::Database.RecordPayment(paid.value)
-    banking::Email.SendReceipt(req.payer, paid.value)
-    return Ok(paid.value)
+/// HTML, CSS, JavaScript, etc. Delivers the single-page app to the browser.
+container StaticContent for banking::InternetBanking {
+  /// Deliver the single-page app to the customer's browser.
+  LoadApp() {
+    banking::SinglePageApp.Deliver()
   }
 }
 
-/// User registrations, hashed credentials, and access logs.
+/// Single-page app providing Internet banking in the browser (JavaScript / Angular).
+container SinglePageApp for banking::InternetBanking {
+  /// The app shell, delivered by the static content.
+  Deliver();
+
+  /// Show the customer's account summary.
+  ViewAccounts() {
+    banking::Backend.AccountsSummary()
+  }
+
+  /// Submit a payment.
+  MakePayment() {
+    banking::Backend.MakePayment()
+  }
+}
+
+/// Provides Internet banking functionality via a JSON/HTTP API (Java / Spring Boot).
+container Backend for banking::InternetBanking {
+  /// Sign a customer in; credentials are checked against the database.
+  SignIn() {
+    banking::Database.ReadUser()
+  }
+
+  /// A summary of the customer's bank accounts.
+  AccountsSummary() {
+    banking::Database.ReadUser()
+    banking::CoreBanking.FetchAccounts()
+  }
+
+  /// Make a payment, then e-mail a receipt.
+  MakePayment() {
+    banking::Database.ReadUser()
+    banking::CoreBanking.Transfer()
+    banking::Email.SendReceipt()
+  }
+
+  /// Fetch a rendered PDF statement.
+  GetStatement() {
+    banking::StatementStore.Fetch()
+    banking::CoreBanking.FetchStatement()
+  }
+}
+
+/// User account information, hashed credentials, access logs, etc. (MySQL).
 /// #critical
 container Database for banking::InternetBanking {
-  /// Persist a completed payment.
-  RecordPayment(payment: banking::Payment): void;
+  /// Read a user / session record.
+  ReadUser();
 }
 
-// --- existing systems we integrate with -------------------------------------
-
-/// The bank's core mainframe banking system.
-system Mainframe {
-  /// Current snapshot of an account.
-  FetchAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound>;
-  /// Move funds between accounts on the core ledger.
-  Transfer(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError>;
+/// Bank-account statements rendered as PDF files (AWS S3).
+container StatementStore for banking::InternetBanking {
+  /// Read a rendered statement PDF.
+  Fetch();
 }
 
-/// Sends transactional email to customers.
+// --- existing systems the bank already runs ---------------------------------
+
+/// Handles core banking functions: customers, accounts, transactions, etc.
+system CoreBanking {
+  FetchAccounts();
+  FetchStatement();
+  Transfer();
+}
+
+/// Cloud-based e-mail service (AWS Simple Email Service).
 system Email {
-  /// Email a payment receipt to the payer.
-  SendReceipt(payer: banking::AccountId, payment: banking::Payment): void;
+  /// E-mail a receipt / notification to the customer.
+  SendReceipt() {
+    banking::Customer.ReceiveEmail()
+  }
 }
-
-// --- the shapes the API speaks ----------------------------------------------
-
-data AccountId;
-data Account        { id: banking::AccountId, balance: number }
-data NotFound       { id: banking::AccountId }
-data PaymentRequest { payer: banking::AccountId, payee: banking::AccountId, amount: number }
-data Payment        { id: uuid }
-data PaymentError   { reason: string }
