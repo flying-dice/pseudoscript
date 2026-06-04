@@ -747,8 +747,14 @@ pub fn layout_data_scene(scene: &DataScene) -> DataScene {
         };
         y += h + ENTITY_VGAP;
     }
-    let extent =
-        |f: fn(&Rect) -> i32| scene.entities.iter().map(|e| f(&e.rect)).max().unwrap_or(PAD);
+    let extent = |f: fn(&Rect) -> i32| {
+        scene
+            .entities
+            .iter()
+            .map(|e| f(&e.rect))
+            .max()
+            .unwrap_or(PAD)
+    };
     scene.width = extent(|r| r.x + r.w) + PAD;
     scene.height = extent(|r| r.y + r.h) + PAD;
     scene
@@ -851,7 +857,11 @@ fn draw_data_link(out: &mut String, scene: &DataScene, link: &crate::scene::Data
     let Some(to) = scene.entities.iter().find(|e| e.fqn == link.to) else {
         return;
     };
-    let row_idx = from.rows.iter().position(|r| r.name == link.field).unwrap_or(0);
+    let row_idx = from
+        .rows
+        .iter()
+        .position(|r| r.name == link.field)
+        .unwrap_or(0);
     let y1 = from.rect.y + ENTITY_HDR + i32::try_from(row_idx).unwrap_or(0) * ENTITY_ROW_H + 11;
     let x1 = from.rect.x + from.rect.w;
     let x2 = to.rect.x;
@@ -879,7 +889,9 @@ const FEATURE_HDR: i32 = 66; // header band: eyebrow + name + target
 
 /// The per-line character budget a step box wraps its prose to.
 fn step_max_chars() -> usize {
-    usize::try_from((STEP_W - 2 * STEP_PAD_X) / STEP_CHAR_W).unwrap_or(1).max(1)
+    usize::try_from((STEP_W - 2 * STEP_PAD_X) / STEP_CHAR_W)
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// The box height for a step with `lines` wrapped prose lines.
@@ -1012,7 +1024,11 @@ fn draw_step(out: &mut String, step: &crate::scene::FeatureStepNode) {
     );
     for (i, line) in wrap_text(&step.text, step_max_chars()).iter().enumerate() {
         let dy = if i == 0 { 0 } else { STEP_LINE_H };
-        let _ = write!(out, "<tspan x=\"{tx}\" dy=\"{dy}\">{}</tspan>", escape_xml(line));
+        let _ = write!(
+            out,
+            "<tspan x=\"{tx}\" dy=\"{dy}\">{}</tspan>",
+            escape_xml(line)
+        );
     }
     out.push_str("</text>");
 }

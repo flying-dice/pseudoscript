@@ -1225,7 +1225,12 @@ mod tests {
             ),
             ("m::Order", "m::Money", "total"),
         );
-        assert!(scene.entities.iter().any(|e| e.fqn == "m::Money" && !e.focal));
+        assert!(
+            scene
+                .entities
+                .iter()
+                .any(|e| e.fqn == "m::Money" && !e.focal)
+        );
     }
 
     /// A union `data` symbol projects its variants as rows, each linking to the
@@ -1234,13 +1239,18 @@ mod tests {
     fn project_data_renders_union_variants() {
         let m = WorkspaceModule::new(
             "m".to_owned(),
-            "//! m\npublic data Event = | Created { id: string } | Closed { id: string }".to_owned(),
+            "//! m\npublic data Event = | Created { id: string } | Closed { id: string }"
+                .to_owned(),
         );
         let Scene::Data(scene) = project_symbol(&graph(&[m]), "m::Event").expect("projects") else {
             panic!("expected a data scene");
         };
         assert_eq!(scene.entities[0].form, EntityForm::Union);
-        let variants: Vec<&str> = scene.entities[0].rows.iter().map(|r| r.name.as_str()).collect();
+        let variants: Vec<&str> = scene.entities[0]
+            .rows
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
         assert_eq!(variants, ["Created", "Closed"]);
         assert_eq!(scene.links.len(), 2, "each variant links to its record");
     }

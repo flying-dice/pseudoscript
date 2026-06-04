@@ -1533,7 +1533,10 @@ mod tests {
         // A `feature` is not a graph node, but selecting it projects its flow
         // view — it must not error and crash the canvas.
         let json = symbol_scene_of(&modules, "m::F").expect("feature projects a flow scene");
-        assert!(json.contains("\"view\":\"feature\""), "feature scene: {json}");
+        assert!(
+            json.contains("\"view\":\"feature\""),
+            "feature scene: {json}"
+        );
         assert!(json.contains("\"target_fqn\":\"m::S\""));
         // A genuinely unknown symbol still errors.
         assert!(symbol_scene_of(&modules, "m::Nope").is_err());
@@ -1547,7 +1550,10 @@ mod tests {
         )]);
         let json = symbol_scene_of(&modules, "m::Order").expect("data projects an entity scene");
         assert!(json.contains("\"view\":\"data\""), "data scene: {json}");
-        assert!(json.contains("m::Money"), "referenced type pulled in: {json}");
+        assert!(
+            json.contains("m::Money"),
+            "referenced type pulled in: {json}"
+        );
     }
 
     #[test]
