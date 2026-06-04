@@ -291,6 +291,12 @@
   const allModules = $derived(wsStore.allModules);
   const problems = $derived(diagnostics.problems);
   const errorCount = $derived(diagnostics.errorCount);
+  // The open module's diagnostics (same workspace source as the problems pane),
+  // for inline editor highlighting — so workspace-only diagnostics (FQN
+  // qualification, cross-module visibility, §8) highlight at their position.
+  const editorDiagnostics = $derived(
+    diagnostics.results?.find((m) => m.fqn === openFile?.fqn)?.diagnostics ?? [],
+  );
 
   // Every workspace file — modules, authored docs, and the manifest — as a single
   // list for one unified file tree (path-based, no per-type sections). `relPath`
@@ -2464,6 +2470,7 @@ show('index.html');
                 onchange={onEditorChange}
                 onready={(api) => (editorApi = api)}
                 moduleFqn={openFile?.fqn ?? ""}
+                diagnostics={editorDiagnostics}
                 fileKey={openKey}
                 plain={(openFile?.isDoc || openFile?.isManifest || openFile?.isOther) ?? false}
                 markdown={openFile?.isDoc ?? false}

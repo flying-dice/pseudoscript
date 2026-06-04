@@ -5,7 +5,7 @@
 // errorCount / errorPaths for the problems pane and the file-tree markers.
 
 import { computeDiagnostics, type DiagnosticsResult } from "$lib/core/diagnostics.js";
-import { ideDiagnostics } from "$lib/pds.js";
+import { ideDiagnostics, type ModuleDiagnostics } from "$lib/pds.js";
 import { sessionMount } from "./session.svelte.js";
 import { wasm } from "./wasm.svelte.js";
 import { wsStore } from "./workspace.svelte.js";
@@ -34,6 +34,13 @@ class DiagnosticsStore {
   }
   get errorPaths() {
     return this.result.errorPaths;
+  }
+
+  /** Per-module results with full diagnostic spans (the `ideDiagnostics` shape),
+   *  for inline editor highlighting. `computeDiagnostics` types them minimally,
+   *  but the source is `ideDiagnostics()`, so the cast is sound. */
+  get results(): readonly ModuleDiagnostics[] | null {
+    return this.result.results as readonly ModuleDiagnostics[] | null;
   }
 }
 

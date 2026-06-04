@@ -8,7 +8,7 @@
   import { languages } from "@codemirror/language-data";
   import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
   import { tags as t } from "@lezer/highlight";
-  import { lintGutter } from "@codemirror/lint";
+  import { lintGutter, forceLinting } from "@codemirror/lint";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import {
     Decoration,
@@ -22,7 +22,7 @@
   } from "@codemirror/view";
   import type { Command, DecorationSet, Tooltip } from "@codemirror/view";
   import { pseudoscript, pseudoscriptCompletion, pseudoscriptLinter } from "$lib/pseudoscript-language.js";
-  import type { CompletionFetcher } from "$lib/pseudoscript-language.js";
+  import type { CompletionFetcher, CompilerDiagnostic } from "$lib/pseudoscript-language.js";
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
@@ -87,6 +87,12 @@
      * resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
      */
     previewOpts?: MarkdownLivePreviewOptions;
+    /**
+     * The open module's *workspace* diagnostics (byte spans), shown inline. Sourced
+     * from the workspace check, not a single-file one, so workspace-only diagnostics
+     * (FQN qualification, cross-module visibility, §8) highlight at their position.
+     */
+    diagnostics?: readonly CompilerDiagnostic[];
   };
 
   let {
@@ -108,6 +114,7 @@
     toml = false,
     filename = "",
     previewOpts = {},
+    diagnostics = [],
   }: Props = $props();
 
   // Highlight tags → the editor's --hl-* token colours, for the TOML manifest.
@@ -751,7 +758,7 @@
       pseudoscriptCompletion(completionsAt),
       pdsFoldService,
       lintGutter(),
-      pseudoscriptLinter(),
+      pseudoscriptLinter(() => diagnostics),
       hoverTooltip(symbolTooltip, { hoverTime: 600 }),
     ];
   };
@@ -760,6 +767,14 @@
   $effect(() => {
     keybindings.version;
     editor?.dispatch({ effects: keysCompartment.reconfigure(shortcutKeymap()) });
+  });
+
+  // Re-lint when this file's workspace diagnostics change. The linter reads them
+  // through a getter, so a recompute (after an edit elsewhere, or a structural
+  // mount) doesn't re-trigger it on its own.
+  $effect(() => {
+    void diagnostics;
+    if (editor) forceLinting(editor);
   });
 
   // Swap the language bundle when the file type flips (file switch) or the
