@@ -1,0 +1,13 @@
+# Root of the Internet Banking PseudoScript project. `pds doc` documents every
+# `.pds` file under this directory; module FQNs derive from each file's path
+# (LANG.md §8.1, ADR-017).
+[doc]
+name  = "Internet Banking — C4 to the Container Level"
+out   = "target/doc"
+theme = "light"
+
+[[doc.sidebar]]
+title = "Internet Banking"
+items = [
+  { title = "Overview", path = "docs/overview.md" },
+]

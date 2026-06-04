@@ -1,0 +1,7 @@
+{
+  "name": "Internet Banking",
+  "category": "Tutorial",
+  "order": 0,
+  "landing": "docs/overview.md",
+  "description": "A canonical C4 model to the container level: a customer, the Internet Banking system split into web / SPA / mobile / API / database containers, and the existing mainframe and email systems it integrates with. A gentle starting point."
+}

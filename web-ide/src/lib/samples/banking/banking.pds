@@ -1,0 +1,48 @@
+//! Internet Banking — a canonical C4 model, taken to the container level.
+
+/// A personal banking customer.
+person Customer;
+
+// --- the system we're building ----------------------------------------------
+
+/// Lets customers view their accounts and make payments online.
+system InternetBanking;
+
+/// Static content and the single-page app shell.
+container Web for banking::InternetBanking;
+
+/// In-browser banking client.
+container SinglePageApp for banking::InternetBanking;
+
+/// Native mobile banking client.
+container MobileApp for banking::InternetBanking;
+
+/// JSON/HTTPS API behind the web, SPA, and mobile clients.
+container Api for banking::InternetBanking {
+  #[http("GET /accounts/{id}")]
+  GetAccount(id: banking::AccountId): Result<banking::Account, banking::NotFound>;
+
+  #[http("POST /payments")]
+  MakePayment(req: banking::PaymentRequest): Result<banking::Payment, banking::PaymentError>;
+}
+
+/// User registrations, hashed credentials, and access logs.
+/// #critical
+container Database for banking::InternetBanking;
+
+// --- existing systems we integrate with -------------------------------------
+
+/// The bank's core mainframe banking system.
+system Mainframe;
+
+/// Sends transactional email to customers.
+system Email;
+
+// --- the shapes the API speaks ----------------------------------------------
+
+data AccountId;
+data Account        { id: banking::AccountId, balance: number }
+data NotFound       { id: banking::AccountId }
+data PaymentRequest { payer: banking::AccountId, payee: banking::AccountId, amount: number }
+data Payment        { id: uuid }
+data PaymentError   { reason: string }
