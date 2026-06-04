@@ -15,7 +15,7 @@ public data Ticket {
   event: shared::EventId,
   holder: shared::UserId,
   barcode: string,
-  status: TicketStatus
+  status: tickets::TicketStatus
 }
 
 /// Why issuance failed.
@@ -33,7 +33,7 @@ public data RedeemError =
 public container Tickets for context::AcmeTickets;
 
 /// Mints and delivers tickets for confirmed orders, and revokes them on refund.
-public component Issuer for Tickets {
+public component Issuer for tickets::Tickets {
   /// React to a confirmed order by issuing its tickets. Issuance is idempotent
   /// (ticket ids are derived from the allocation, so a re-delivered event upserts
   /// the same tickets). If issuance cannot complete it is quarantined for manual
@@ -41,7 +41,7 @@ public component Issuer for Tickets {
   /// loop silently.
   #[onevent(orders::OrderConfirmed)]
   public onConfirmed(event: orders::OrderConfirmed): void {
-    issued: Result<Ticket[], IssueError> = self.issue(event.order, event.allocation)
+    issued = Result<Ticket[], IssueError> from self.issue(event.order, event.allocation)
     if (issued.isErr) {
       Tickets::Quarantine.stranded(event.order.id)
     }
@@ -57,69 +57,69 @@ public component Issuer for Tickets {
   /// Mint the tickets for an order's allocation and deliver them to the buyer.
   /// Mints exactly the ticket ids the inventory allocation named, so credentials
   /// match the seats that left the pool.
-  public issue(order: orders::Order, allocation: inventory::Allocation): Result<Ticket[], IssueError> {
-    minted: Ticket[] = self.mint(order, allocation)
+  public issue(order: orders::Order, allocation: inventory::Allocation): Result<tickets::Ticket[], tickets::IssueError> {
+    minted = Ticket[] from self.mint(order, allocation)
     Tickets::TicketStore.saveAll(minted)
     Tickets::Delivery.deliver(order.buyer, minted)
     return Ok(minted)
   }
 
   /// The tickets currently held by a user.
-  public mine(holder: shared::UserId): Ticket[] {
+  public mine(holder: shared::UserId): tickets::Ticket[] {
     return Tickets::TicketStore.forUser(holder)
   }
 
   /// Revoke every ticket for an order (idempotent).
   revoke(order: shared::OrderId): void {
-    held: Ticket[] = Tickets::TicketStore.forOrder(order)
+    held = Ticket[] from Tickets::TicketStore.forOrder(order)
     for (ticket in held) {
       Tickets::TicketStore.save(self.markRevoked(ticket))
     }
   }
 
   /// Mint the ticket records for an order's allocation.
-  mint(order: orders::Order, allocation: inventory::Allocation): Ticket[];
+  mint(order: orders::Order, allocation: inventory::Allocation): tickets::Ticket[];
   /// A copy of `ticket` marked `Revoked`.
-  markRevoked(ticket: Ticket): Ticket;
+  markRevoked(ticket: tickets::Ticket): tickets::Ticket;
 }
 
 /// Redemption at the venue: admits each ticket exactly once.
-public component Redemption for Tickets {
+public component Redemption for tickets::Tickets {
   /// Redeem a ticket by its barcode at the gate. Refused if unknown, already
   /// redeemed (no double entry), or revoked (refunded).
-  public redeem(barcode: string): Result<Ticket, RedeemError> {
-    found: Option<Ticket> = Tickets::TicketStore.byBarcode(barcode)
+  public redeem(barcode: string): Result<tickets::Ticket, tickets::RedeemError> {
+    found = Option<Ticket> from Tickets::TicketStore.byBarcode(barcode)
     if (found.isNone) {
-      return Err(TicketNotFound)
+      return Err(tickets::RedeemError::TicketNotFound)
     }
-    admit: Result<void, RedeemError> = self.admissible(found.value)
+    admit = Result<void, RedeemError> from self.admissible(found.value)
     if (admit.isErr) {
       return Err(admit.error)
     }
-    redeemed: Ticket = self.markRedeemed(found.value)
+    redeemed = Ticket from self.markRedeemed(found.value)
     Tickets::TicketStore.save(redeemed)
     return Ok(redeemed)
   }
 
   /// `Err(AlreadyRedeemed)` if already scanned, `Err(TicketRevoked)` if revoked —
   /// the no-double-entry and refunded-ticket guards.
-  admissible(ticket: Ticket): Result<void, RedeemError>;
+  admissible(ticket: tickets::Ticket): Result<void, tickets::RedeemError>;
   /// A copy of `ticket` marked `Redeemed`.
-  markRedeemed(ticket: Ticket): Ticket;
+  markRedeemed(ticket: tickets::Ticket): tickets::Ticket;
 }
 
 /// Durable ticket records.
-component TicketStore for Tickets {
-  saveAll(tickets: Ticket[]): void;
-  save(ticket: Ticket): void;
-  forUser(holder: shared::UserId): Ticket[];
-  forOrder(order: shared::OrderId): Ticket[];
-  byBarcode(barcode: string): Option<Ticket>;
+component TicketStore for tickets::Tickets {
+  saveAll(tickets: tickets::Ticket[]): void;
+  save(ticket: tickets::Ticket): void;
+  forUser(holder: shared::UserId): tickets::Ticket[];
+  forOrder(order: shared::OrderId): tickets::Ticket[];
+  byBarcode(barcode: string): Option<tickets::Ticket>;
 }
 
 /// Delivers tickets to the buyer's wallet (external).
-component Delivery for Tickets {
-  deliver(holder: shared::UserId, tickets: Ticket[]): void;
+component Delivery for tickets::Tickets {
+  deliver(holder: shared::UserId, tickets: tickets::Ticket[]): void;
 }
 
 /// Quarantines orders whose tickets cannot be issued, so a permanently-failing
@@ -127,7 +127,7 @@ component Delivery for Tickets {
 /// the event forever — the give-up boundary for poison messages. The queue is
 /// drained by support (`backoffice`), not silently — a stranded buyer is a human
 /// task, not a lost message.
-public component Quarantine for Tickets {
+public component Quarantine for tickets::Tickets {
   /// Record an order whose tickets could not be issued.
   stranded(order: shared::OrderId): void;
   /// The orders awaiting manual resolution (read by the support console).
@@ -135,7 +135,7 @@ public component Quarantine for Tickets {
 }
 
 /// Confirming an order issues and delivers its tickets.
-feature ConfirmIssuesTickets for Issuer {
+feature ConfirmIssuesTickets for tickets::Issuer {
   given "an order has just been confirmed"
   when  "the tickets context handles the order-confirmed event"
   then  "a ticket is minted for the allocation"
@@ -143,7 +143,7 @@ feature ConfirmIssuesTickets for Issuer {
 }
 
 /// A refunded order's tickets are revoked.
-feature RefundRevokesTickets for Issuer {
+feature RefundRevokesTickets for tickets::Issuer {
   given "a confirmed order with delivered tickets"
   when  "the order is refunded"
   then  "every ticket for the order is revoked"
@@ -151,7 +151,7 @@ feature RefundRevokesTickets for Issuer {
 }
 
 /// A ticket admits its holder exactly once.
-feature NoDoubleRedeem for Redemption {
+feature NoDoubleRedeem for tickets::Redemption {
   given "a ticket that has already been redeemed"
   when  "it is scanned again at the gate"
   then  "redemption is refused as already-redeemed"

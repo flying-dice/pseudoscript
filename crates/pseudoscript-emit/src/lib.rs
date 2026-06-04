@@ -42,9 +42,13 @@ mod scene;
 
 pub use c4_render::{BoundaryFrame, C4Layout, LaidOutEdge, LaidOutNode, PointI, layout_c4_scene};
 pub use project::{EmitError, View, project, project_symbol};
-pub use render::{Theme, layout_sequence_scene, render_svg, render_svg_themed};
+pub use render::{
+    Theme, layout_data_scene, layout_feature_scene, layout_sequence_scene, render_svg,
+    render_svg_themed,
+};
 pub use scene::{
-    C4EdgeKind, C4Scene, C4View, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
+    C4EdgeKind, C4Scene, C4View, DataEntity, DataLink, DataScene, EntityForm, EntityRow,
+    FeatureScene, FeatureStepNode, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
     Rect, RoutedEdge, Scene, SeqItem, SequenceScene,
 };
 

@@ -10,7 +10,7 @@ public system Banking;
 
 public container Mainframe for Banking {
   Get(): Result<Info, Missing> {
-    r: Result<Info, Missing> = self.Fetch()
+    r = Result<Info, Missing> from self.Fetch()
     if (r.isErr) {
       return Err(r.error)
     }

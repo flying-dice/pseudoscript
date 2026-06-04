@@ -6,9 +6,9 @@
 //! the violation is certain.
 
 use pseudoscript_syntax::ast::{
-    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, Expr, ExprKind, Feature, Ident,
-    Item, Literal, Macro, MacroArg, MacroArgs, MarkerKind, Module, Node, NodeKind, Path, Ref, Stmt,
-    StmtKind, Type,
+    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, Expr, ExprKind, Feature,
+    FromSource, Ident, Item, Literal, Macro, MacroArg, MacroArgs, MarkerKind, Module, Node,
+    NodeKind, Path, Ref, Stmt, StmtKind, Type,
 };
 use pseudoscript_syntax::{Diagnostic, Span, TokenKind};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -75,7 +75,6 @@ impl Checker<'_> {
         self.check_type_refs(module);
         for item in &module.items {
             match item {
-                Item::Alias(alias) => self.check_alias(alias),
                 Item::Decl(decl) => self.check_decl(decl),
                 Item::Feature(feature) => self.check_feature(feature),
             }
@@ -84,15 +83,14 @@ impl Checker<'_> {
 
     /// §2.3 / ADR-012: a declared identifier must not be a reserved word — a
     /// keyword, a primitive type name, or `Result`/`Option`. Covers data, node,
-    /// callable, field, parameter, variant, feature, and alias names. (A keyword
-    /// in a strict-name position is already a parse error; this catches the
-    /// lenient positions and primitives used as any name.)
+    /// callable, field, parameter, variant, and feature names. (A keyword in a
+    /// strict-name position is already a parse error; this catches the lenient
+    /// positions and primitives used as any name.)
     fn check_reserved_names(&mut self, module: &Module) {
         for item in &module.items {
             match item {
                 Item::Decl(decl) => self.check_reserved_decl(&decl.kind),
                 Item::Feature(feature) => self.check_reserved_ident(&feature.name),
-                Item::Alias(alias) => self.check_reserved_ident(&alias.name),
             }
         }
     }
@@ -221,36 +219,24 @@ impl Checker<'_> {
     fn check_feature(&mut self, feature: &Feature) {
         let target = path_str(&feature.target);
         let leaf = target.rsplit("::").next().unwrap_or(&target);
+        // §8.1: a feature target names a node and MUST be fully qualified.
+        if feature.target.is_simple() && self.model.symbol(leaf).is_some() {
+            self.require_qualified(feature.target.span, leaf);
+        }
         let is_module = self.model.is_module_path(&target);
         let symbol_kind = self.model.symbol(leaf).map(|s| s.kind);
         let resolves = is_module || symbol_kind.is_some();
-        let is_node = !is_module && symbol_kind.is_some_and(|k| k != SymbolKind::Data);
+        // A same-named node wins over the module namespace: a node may share its
+        // module's name (`module Configuration` holding `container Configuration`),
+        // so `is_module` alone must not mask it. Only a target that resolves to a
+        // bare module or a `data` type is rejected.
+        let is_node = symbol_kind.is_some_and(|k| k != SymbolKind::Data);
         if resolves && !is_node {
             self.error(
                 feature.target.span,
                 format!(
                     "feature `{}` target `{target}` is not a node",
                     feature.name.name
-                ),
-            );
-        }
-    }
-
-    // --- §8.3 alias resolution -------------------------------------------------
-
-    fn check_alias(&mut self, alias: &pseudoscript_syntax::ast::Alias) {
-        let target = path_str(&alias.target);
-        if self.model.is_module_path(&target) {
-            self.error(
-                alias.target.span,
-                format!("alias target `{target}` is a module, not a node"),
-            );
-        } else if !self.model.resolves_node(&target) {
-            self.error(
-                alias.span,
-                format!(
-                    "dangling alias `{}`: target `{target}` does not resolve",
-                    alias.name.name
                 ),
             );
         }
@@ -348,8 +334,30 @@ impl Checker<'_> {
     fn check_parent(&mut self, node: &Node, required: SymbolKind) {
         let Some(parent) = &node.parent else { return };
         let parent_name = parent.segments.last().map_or("", |id| id.name.as_str());
+        // §8.1: a `for` parent names a node and MUST be fully qualified. A bare
+        // name cannot reach another module (ADR-030), so a bare parent that
+        // names no same-module node is unresolved — not a deferred cross-module
+        // reference. Only a qualified (`module::Node`) parent is left to
+        // cross-module resolution.
+        if parent.is_simple() {
+            let Some(_) = self.model.symbol(parent_name) else {
+                let cands: Vec<&str> = self
+                    .model
+                    .symbols()
+                    .filter(|s| s.kind != SymbolKind::Data)
+                    .map(|s| s.name.as_str())
+                    .collect();
+                let hint = suggest(parent_name, &cands);
+                self.error(
+                    parent.span,
+                    format!("unresolved parent `{parent_name}`{hint}"),
+                );
+                return;
+            };
+            self.require_qualified(parent.span, parent_name);
+        }
         // Resolve the parent within this module; a parent we cannot see (another
-        // file) is not reportable as a kind error here.
+        // file, named by FQN) is not reportable as a kind error here.
         let Some(symbol) = self.model.symbol(parent_name) else {
             return;
         };
@@ -402,13 +410,19 @@ impl Checker<'_> {
             return;
         };
         let event_fqn = path_str(event);
+        let event_leaf = event_fqn.rsplit("::").next().unwrap_or(&event_fqn);
+        // §8.1: the triggered event type names a `data` declaration and MUST be
+        // fully qualified.
+        if event.is_simple() && self.model.symbol(event_leaf).is_some() {
+            self.require_qualified(event.span, event_leaf);
+        }
         // §2.4: the handler MUST have exactly one parameter whose type equals the
         // event type. Compare on the leaf name; report both FQNs as written.
         let param_ty = match callable.params.as_slice() {
             [only] => &only.ty,
             _ => return,
         };
-        if type_leaf(param_ty) != event_fqn.rsplit("::").next().unwrap_or(&event_fqn) {
+        if type_leaf(param_ty) != event_leaf {
             let param_fqn = type_str(param_ty);
             self.error(
                 callable.span,
@@ -450,13 +464,14 @@ impl Checker<'_> {
         let mut env = Bindings::default();
         check_callable_result_flow(body, &mut env, &mut self.diagnostics);
 
-        // §5.1 / §7.2 (ADR-020): a determinable `return` type must match the
-        // declared one, and every `from` target must be a `data` record/variant.
+        // §5.1 / §7.2 (ADR-035): a determinable `return` type must match the
+        // declared one, and every `from` is checked (target kind, and a
+        // single-expression source against the target).
         let vars = build_vars(callable, body);
         if let Some(ret) = &callable.return_ty {
             self.check_return_types(body, ret, &vars);
         }
-        self.check_from_targets(body);
+        self.check_from(body, owner, &vars);
 
         // §7.3 / ADR-014: `for` iterates an array.
         let params: FxHashMap<&str, &Type> = callable
@@ -469,7 +484,7 @@ impl Checker<'_> {
         // §5.1 / ADR-004: a `self.` call names a callable of the enclosing node.
         self.check_self_calls(body, owner);
 
-        // §7/§8: a bare reference resolves to a param, binding, node, or alias.
+        // §7/§8: a bare reference resolves to a param, binding, or node.
         self.check_references(callable, body);
 
         // §2.2/§3.4: a `.field` read on a known `data` record names a field.
@@ -485,40 +500,6 @@ impl Checker<'_> {
 
         // §7 (ADR-023): an `if`/`while` condition is boolean.
         self.check_conditions(body, &vars);
-
-        // §7.1: a binding's annotation must match a determinable initialiser.
-        self.check_binding_types(body, &vars);
-    }
-
-    /// §7.1: a binding states its type (`x: T = expr`). Where the initialiser's
-    /// type is determinable — a literal, marker, `from`, or bare reference — it
-    /// must match the annotation. Calls, field accesses, `self`, and `::` paths
-    /// infer to `Unknown` (ADR-022), so the annotation is authoritative there and
-    /// nothing is flagged. A generic annotation (`Result<…>`/`Option<…>`) is
-    /// compared only by its constructor, not its inner types.
-    fn check_binding_types(&mut self, block: &Block, vars: &FxHashMap<String, Ty>) {
-        for_each_stmt(block, &mut |stmt| {
-            let StmtKind::Assign { name, ty, value } = &stmt.kind else {
-                return;
-            };
-            // The placeholder type of an untyped-assignment parse error names no
-            // type; the missing-annotation diagnostic already stands.
-            if !ty.generics.is_empty() || type_leaf(ty).is_empty() {
-                return;
-            }
-            let found = infer(value, vars);
-            if !arg_matches(&found, type_leaf(ty), ty.is_array, &self.unions) {
-                self.error(
-                    value.span,
-                    format!(
-                        "binding `{}` is annotated `{}` but its value is `{}`",
-                        name.name,
-                        type_display(ty),
-                        ty_display(&found)
-                    ),
-                );
-            }
-        });
     }
 
     /// §7: an `if`/`while` condition whose type is inferable must be `bool`.
@@ -767,8 +748,8 @@ impl Checker<'_> {
     }
 
     /// §7/§8: every bare single-segment reference in a body must resolve to a
-    /// parameter, a binding, a `for` binding, a node, or an alias. Multi-segment
-    /// `::` paths are left to cross-module resolution.
+    /// parameter, a binding, a `for` binding, or a node. Multi-segment `::`
+    /// paths are left to cross-module resolution.
     fn check_references(&mut self, callable: &Callable, body: &Block) {
         let mut scope: FxHashSet<&str> = callable
             .params
@@ -779,8 +760,9 @@ impl Checker<'_> {
         for_each_expr(body, &mut |expr| self.check_ref_at(expr, &scope));
     }
 
-    /// Checks one expression: a bare single-segment reference that is not a
-    /// parameter, binding, node, alias, or variant is unresolved.
+    /// Checks one expression: a bare single-segment reference. A local (param,
+    /// binding, `for` binding) is bare; a module-level symbol MUST be qualified
+    /// (§8.1); anything else is unresolved.
     fn check_ref_at(&mut self, expr: &Expr, scope: &FxHashSet<&str>) {
         let ExprKind::Ref(Ref::Path(path)) = &expr.kind else {
             return;
@@ -788,28 +770,44 @@ impl Checker<'_> {
         if !path.is_simple() {
             return;
         }
-        let name = &path.segments[0].name;
-        if !scope.contains(name.as_str())
-            && self.model.symbol(name).is_none()
-            && self.model.alias(name).is_none()
-            && !self.variant_names.contains(name.as_str())
-        {
-            let hint = if name == "void" {
-                // `void` is a type, not a value: a void callable returns with a
-                // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
-                "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)"
-                    .to_owned()
-            } else {
-                let candidates: Vec<&str> = scope
-                    .iter()
-                    .copied()
-                    .chain(self.model.symbols().map(|s| s.name.as_str()))
-                    .chain(self.model.aliases().map(|(n, _)| n))
-                    .chain(self.variant_names.iter().map(String::as_str))
-                    .collect();
-                suggest(name, &candidates)
-            };
-            self.error(path.span, format!("unresolved reference `{name}`{hint}"));
+        let name = path.segments[0].name.as_str();
+        if scope.contains(name) {
+            return; // a local — parameter, binding, or `for` binding — stays bare
+        }
+        if self.model.symbol(name).is_some() || self.variant_names.contains(name) {
+            self.require_qualified(path.span, name);
+            return;
+        }
+        let hint = if name == "void" {
+            // `void` is a type, not a value: a void callable returns with a
+            // bare `Ok` (or `return`), never `Ok(void)` (§5.1, §6.1).
+            "; `void` is a type, not a value — a void result returns bare `Ok` (§6.1)".to_owned()
+        } else {
+            let candidates: Vec<&str> = scope
+                .iter()
+                .copied()
+                .chain(self.model.symbols().map(|s| s.name.as_str()))
+                .chain(self.variant_names.iter().map(String::as_str))
+                .collect();
+            suggest(name, &candidates)
+        };
+        self.error(path.span, format!("unresolved reference `{name}`{hint}"));
+    }
+
+    /// §8.1 (ADR-030): a reference to a module-level symbol (node, type, or
+    /// hoisted variant) MUST be its full FQN. In a workspace module (known path)
+    /// a bare name is rejected with the qualified form. A path-less anonymous
+    /// module — a single-file snippet (`check`/`eval`) — has no module name to
+    /// qualify against, so it is left lenient (§8.1, ADR-029).
+    fn require_qualified(&mut self, span: Span, name: &str) {
+        if !self.model.module_path.is_empty() {
+            self.error(
+                span,
+                format!(
+                    "`{name}` must be fully qualified: `{}::{name}`",
+                    self.model.module_path
+                ),
+            );
         }
     }
 
@@ -891,6 +889,10 @@ impl Checker<'_> {
     }
 
     fn check_return_expr(&mut self, expr: &Expr, ret: &Type, vars: &FxHashMap<String, Ty>) {
+        // §7.2 (ADR-035): a bare `data`-record or node reference is not a value.
+        if self.report_not_a_value(expr, vars) {
+            return;
+        }
         let ty = infer(expr, vars);
         if matches!(ty, Ty::Unknown) {
             return;
@@ -907,6 +909,30 @@ impl Checker<'_> {
         }
     }
 
+    /// §5.1/§7.2 (ADR-035): a value-position reference resolving to a `data`
+    /// record or a node is not a value — `from` produces a `data` value, and a
+    /// node is never one. Reports it and returns whether it fired. A reference
+    /// to a local (parameter, binding, `for` binding) is a value and is left
+    /// alone; an unresolved or fieldless-variant reference is not this check's.
+    fn report_not_a_value(&mut self, expr: &Expr, vars: &FxHashMap<String, Ty>) -> bool {
+        let ExprKind::Ref(Ref::Path(path)) = &expr.kind else {
+            return false;
+        };
+        if path.is_simple() && vars.contains_key(&path.segments[0].name) {
+            return false;
+        }
+        let leaf = path_leaf(path);
+        let Some(symbol) = self.model.symbol(leaf) else {
+            return false;
+        };
+        let message = match symbol.kind {
+            SymbolKind::Data => format!("`{leaf}` is not a value: compose it with `from`"),
+            _ => format!("`{leaf}` is a node, not a value"),
+        };
+        self.error(expr.span, message);
+        true
+    }
+
     /// Whether an inferred type satisfies the declared return type. `Unknown` is
     /// permissive (not flagged); a `Named` reuses the array/union rule.
     fn ty_satisfies_ret(&self, ty: &Ty, ret: &Type) -> bool {
@@ -918,33 +944,95 @@ impl Checker<'_> {
         }
     }
 
-    /// §7.2: a `from` target MUST resolve to a `data` record or union variant.
-    /// Walks every expression in the body, flagging a `from` whose target is a
-    /// primitive, `Result`/`Option`, or a node.
-    fn check_from_targets(&mut self, block: &Block) {
+    /// §7.2 (ADR-035): every `from` is checked. The target MUST NOT be a node. A
+    /// brace source set composes a `data` record or union variant. A single
+    /// expression source MUST satisfy the target where its type is determinable.
+    fn check_from(&mut self, block: &Block, owner: &str, vars: &FxHashMap<String, Ty>) {
         for_each_expr(block, &mut |expr| {
-            if let ExprKind::From { ty, .. } = &expr.kind {
-                self.check_from_target(ty, expr.span);
+            if let ExprKind::From { ty, source } = &expr.kind {
+                self.check_from_expr(ty, source, owner, vars);
             }
         });
     }
 
-    fn check_from_target(&mut self, ty: &Path, span: Span) {
-        let leaf = ty.segments.last().map_or("", |id| id.name.as_str());
-        let invalid_builtin = is_primitive(leaf) || leaf == "Result" || leaf == "Option";
-        // A target this single-module model resolves to a non-`data` symbol is a
-        // node; a target it cannot see (another module) is left alone, mirroring
-        // `check_parent`.
-        let resolves_non_data = self
+    fn check_from_expr(
+        &mut self,
+        ty: &Type,
+        source: &FromSource,
+        owner: &str,
+        vars: &FxHashMap<String, Ty>,
+    ) {
+        let leaf = path_leaf(&ty.name);
+        // A node is never a value (§7.2). A target this single-module model
+        // cannot see (another module) is left alone, mirroring `check_parent`.
+        if self
             .model
             .symbol(leaf)
-            .is_some_and(|s| s.kind != SymbolKind::Data);
-        if invalid_builtin || resolves_non_data {
+            .is_some_and(|s| s.kind != SymbolKind::Data)
+        {
             self.error(
-                span,
-                format!("`from` target `{leaf}` is not a `data` record or variant"),
+                ty.span,
+                format!("`from` target `{leaf}` is a node, not a value"),
             );
+            return;
         }
+        match source {
+            // A brace source set composes a `data` record or union variant.
+            FromSource::Compose(_) => {
+                if is_primitive(leaf) || leaf == "Result" || leaf == "Option" {
+                    self.error(
+                        ty.span,
+                        format!("`from {{ … }}` composes a `data` record or variant, not `{leaf}`"),
+                    );
+                }
+            }
+            // A single value source carries the target type; its determinable
+            // type MUST satisfy the target.
+            FromSource::Convert(expr) => {
+                let src = self.infer_value(expr, vars, owner);
+                if !arg_matches(&src, leaf, ty.is_array, &self.unions) {
+                    self.error(
+                        expr.span,
+                        format!(
+                            "`from` source `{}` does not match target `{}`",
+                            ty_display(&src),
+                            type_display(ty)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Like [`infer`], but additionally resolves a same-node `self.Method()` call
+    /// to the callee's declared return type (ADR-035) — the determinable source
+    /// a `from` conversion checks. Other calls stay `Unknown`.
+    fn infer_value(&self, expr: &Expr, vars: &FxHashMap<String, Ty>, owner: &str) -> Ty {
+        match infer(expr, vars) {
+            Ty::Unknown => self.self_call_return(expr, owner).unwrap_or(Ty::Unknown),
+            ty => ty,
+        }
+    }
+
+    /// The declared return type of a `self.Method(args)` call whose `Method` is a
+    /// callable of the enclosing node `owner`, as a [`Ty`]; `None` otherwise.
+    fn self_call_return(&self, expr: &Expr, owner: &str) -> Option<Ty> {
+        let ExprKind::Postfix { base, segments } = &expr.kind else {
+            return None;
+        };
+        if !matches!(&base.kind, ExprKind::Ref(Ref::SelfNode(_))) {
+            return None;
+        }
+        let [seg] = segments.as_slice() else {
+            return None;
+        };
+        seg.call_args.as_ref()?; // a call segment, not a field access
+        let member = self
+            .model
+            .members(owner)
+            .iter()
+            .find(|m| m.kind == MemberKind::Callable && m.name == seg.name.name)?;
+        Some(ty_from_rendered(&member.ty))
     }
 
     // --- §3.1/§3.3/§8 type-reference resolution --------------------------------
@@ -1011,36 +1099,26 @@ impl Checker<'_> {
     fn check_type(&mut self, ty: &Type) {
         if ty.name.is_simple() {
             let leaf = ty.name.segments[0].name.as_str();
-            if !self.type_resolves(leaf) {
-                let hint = {
-                    let candidates: Vec<&str> = TokenKind::PRIMITIVE_TYPES
-                        .iter()
-                        .copied()
-                        .chain(["Result", "Option"])
-                        .chain(self.model.symbols().map(|s| s.name.as_str()))
-                        .chain(self.model.aliases().map(|(n, _)| n))
-                        .chain(self.variant_names.iter().map(String::as_str))
-                        .collect();
-                    suggest(leaf, &candidates)
-                };
+            if is_primitive(leaf) || leaf == "Result" || leaf == "Option" {
+                // A built-in type is bare; no module qualifies it.
+            } else if self.model.symbol(leaf).is_some() || self.variant_names.contains(leaf) {
+                // A declared type/node/variant — §8.1: name it by its full FQN.
+                self.require_qualified(ty.name.span, leaf);
+            } else {
+                let candidates: Vec<&str> = TokenKind::PRIMITIVE_TYPES
+                    .iter()
+                    .copied()
+                    .chain(["Result", "Option"])
+                    .chain(self.model.symbols().map(|s| s.name.as_str()))
+                    .chain(self.variant_names.iter().map(String::as_str))
+                    .collect();
+                let hint = suggest(leaf, &candidates);
                 self.error(ty.name.span, format!("unresolved type `{leaf}`{hint}"));
             }
         }
         for generic in &ty.generics {
             self.check_type(generic);
         }
-    }
-
-    /// Whether a single-segment type name resolves (§3.1/§3.3): a primitive,
-    /// `Result`/`Option`, or an in-module symbol, alias, or union variant. A
-    /// node names a type as freely as a `data` record does (`owner: Person`).
-    fn type_resolves(&self, leaf: &str) -> bool {
-        is_primitive(leaf)
-            || leaf == "Result"
-            || leaf == "Option"
-            || self.model.symbol(leaf).is_some()
-            || self.model.alias(leaf).is_some()
-            || self.variant_names.contains(leaf)
     }
 
     fn check_rebinds(&mut self, block: &Block, bound: &mut FxHashMap<String, Span>) {
@@ -1108,11 +1186,10 @@ fn build_vars(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
     vars
 }
 
-/// Each parameter and annotated binding mapped to its *declared* type — the
-/// receiver type a later `.method()` chain resolves against. Unlike [`build_vars`],
-/// a call-initialised binding keeps its annotation rather than `Unknown`: calls
-/// are not inferred (ADR-022), but the declared type names the receiver whose
-/// members must exist (§6). Used only by the call-member check.
+/// Each parameter and `from`-typed binding mapped to its *declared* type — the
+/// receiver type a later `.method()` chain resolves against. The binding's type
+/// is its `from` target (ADR-035), which names the receiver whose members must
+/// exist (§6). Used only by the call-member check.
 fn build_receiver_types(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
     let mut types: FxHashMap<String, Ty> = callable
         .params
@@ -1120,8 +1197,10 @@ fn build_receiver_types(callable: &Callable, body: &Block) -> FxHashMap<String, 
         .map(|p| (p.name.name.clone(), ty_from_ast(&p.ty)))
         .collect();
     for_each_stmt(body, &mut |stmt| {
-        if let StmtKind::Assign { name, ty, .. } = &stmt.kind
-            && !type_leaf(ty).is_empty()
+        // A binding's declared type is its `from` target (ADR-035); a non-`from`
+        // RHS leaves the receiver type unknown.
+        if let StmtKind::Assign { name, value } = &stmt.kind
+            && let ExprKind::From { ty, .. } = &value.kind
         {
             types.insert(name.name.clone(), ty_from_ast(ty));
         }
@@ -1131,9 +1210,9 @@ fn build_receiver_types(callable: &Callable, body: &Block) -> FxHashMap<String, 
 
 fn collect_binding_types(block: &Block, vars: &mut FxHashMap<String, Ty>) {
     for_each_stmt(block, &mut |stmt| match &stmt.kind {
-        StmtKind::Assign { name, value, .. } => {
-            // The result-flow lattice keeps inferring from the RHS (calls stay
-            // Unknown, ADR-022); the annotation is validated separately.
+        StmtKind::Assign { name, value } => {
+            // A binding's type is its `from` target (`from` is `ty_from_ast`'d by
+            // `infer`); a non-`from` RHS stays `Unknown` (ADR-035).
             let ty = infer(value, vars);
             vars.insert(name.name.clone(), ty);
         }
@@ -1157,10 +1236,7 @@ fn infer(expr: &Expr, vars: &FxHashMap<String, Ty>) -> Ty {
             MarkerKind::Ok | MarkerKind::Err => Ty::Result,
             MarkerKind::Some | MarkerKind::None => Ty::Option,
         },
-        ExprKind::From { ty, is_array, .. } => Ty::Named {
-            name: path_leaf(ty).to_owned(),
-            array: *is_array,
-        },
+        ExprKind::From { ty, .. } => ty_from_ast(ty),
         ExprKind::Ref(Ref::Path(path)) if path.is_simple() => vars
             .get(&path.segments[0].name)
             .cloned()
@@ -1170,19 +1246,27 @@ fn infer(expr: &Expr, vars: &FxHashMap<String, Ty>) -> Ty {
     }
 }
 
+/// Splits a rendered type string into its base leaf and array flag, dropping a
+/// `[]` suffix, a `<…>` generic tail, and any `::` qualifier — so it compares by
+/// leaf name, as inferred types do.
+fn rendered_leaf(rendered: &str) -> (&str, bool) {
+    let rendered = rendered.trim();
+    let (base, array) = match rendered.strip_suffix("[]") {
+        Some(base) => (base.trim(), true),
+        None => (rendered, false),
+    };
+    let head = base.split('<').next().unwrap_or(base).trim();
+    (head.rsplit("::").next().unwrap_or(head).trim(), array)
+}
+
 /// A parameter type as `(leaf, is_array)`, or `None` when it is generic
 /// (`Result<…>`/`Option<…>`) — those carry inner types this checker does not
-/// compare. The leaf drops any `::` qualifier, matching inferred types which are
-/// compared by leaf name.
+/// compare.
 fn param_shape(rendered: &str) -> Option<(&str, bool)> {
     if rendered.contains('<') {
         return None;
     }
-    let (base, array) = match rendered.strip_suffix("[]") {
-        Some(base) => (base, true),
-        None => (rendered, false),
-    };
-    Some((base.rsplit("::").next().unwrap_or(base), array))
+    Some(rendered_leaf(rendered))
 }
 
 /// Whether an inferred argument type matches a parameter `(leaf, array)`, with a
@@ -1211,6 +1295,21 @@ fn ty_from_ast(ty: &Type) -> Ty {
         name => Ty::Named {
             name: name.to_owned(),
             array: ty.is_array,
+        },
+    }
+}
+
+/// The [`Ty`] of a rendered type string (a [`Member`](crate::model::Member)'s
+/// `ty`): `Dog`, `Item[]`, `Result<…>`, or `void`.
+fn ty_from_rendered(rendered: &str) -> Ty {
+    let (leaf, array) = rendered_leaf(rendered);
+    match leaf {
+        "Result" => Ty::Result,
+        "Option" => Ty::Option,
+        "" | "void" => Ty::Unknown,
+        name => Ty::Named {
+            name: name.to_owned(),
+            array,
         },
     }
 }
@@ -1245,7 +1344,7 @@ fn iter_shape(iter: &Expr, params: &FxHashMap<&str, &Type>) -> Option<(String, b
             .to_owned(),
             false,
         )),
-        ExprKind::From { ty, is_array, .. } => Some((path_leaf(ty).to_owned(), *is_array)),
+        ExprKind::From { ty, .. } => Some((path_leaf(&ty.name).to_owned(), ty.is_array)),
         ExprKind::Paren(inner) => iter_shape(inner, params),
         _ => None,
     }
@@ -1352,8 +1451,8 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 }
             }
         }
-        ExprKind::From { sources, .. } => {
-            for src in sources {
+        ExprKind::From { source, .. } => {
+            for src in source.sources() {
                 walk_expr(src, f);
             }
         }

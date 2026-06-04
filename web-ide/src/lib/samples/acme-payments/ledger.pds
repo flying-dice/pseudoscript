@@ -25,7 +25,7 @@ public data EntryType =
 public data BalanceTransaction {
   id: shared::BalanceTxnId,
   merchant: shared::MerchantId,
-  type: EntryType,
+  type: ledger::EntryType,
   amount: shared::Money,
   source: string,
   availableOn: datetime
@@ -48,21 +48,21 @@ public container Ledger for context::AcmePay;
 /// the balance from the log. Every append is idempotent on the entry's
 /// `(type, source)`, so an at-least-once event delivered twice posts once.
 /// #headline
-public component Balance for Ledger {
+public component Balance for ledger::Ledger {
   /// A captured payment credits the merchant's pending balance, net of the
   /// platform fee, available after the settlement window (`availableOn`). The
   /// credit sits in pending until then and becomes available by the passage of
   /// time alone.
   #[onevent(intents::PaymentSucceeded)]
   public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
-    entry: BalanceTransaction = self.creditFor(event)
+    entry = BalanceTransaction from self.creditFor(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
   /// A successful refund debits available, immediately.
   #[onevent(refunds::RefundSucceeded)]
   public onRefund(event: refunds::RefundSucceeded): void {
-    entry: BalanceTransaction = self.refundDebit(event)
+    entry = BalanceTransaction from self.refundDebit(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
@@ -70,20 +70,20 @@ public component Balance for Ledger {
   /// available, held until the dispute resolves.
   #[onevent(disputes::DisputeOpened)]
   public onDisputeOpened(event: disputes::DisputeOpened): void {
-    entry: BalanceTransaction = self.disputeDebit(event)
+    entry = BalanceTransaction from self.disputeDebit(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
   /// A won dispute reverses the hold, returning the disputed amount to available.
   #[onevent(disputes::DisputeWon)]
   public onDisputeWon(event: disputes::DisputeWon): void {
-    entry: BalanceTransaction = self.disputeReversal(event)
+    entry = BalanceTransaction from self.disputeReversal(event)
     Ledger::EntryLog.appendOnce(entry)
   }
 
   /// The merchant's balance, derived by folding the log: available is the sum of
   /// settled entries (`availableOn` in the past), pending the rest.
-  public balance(merchant: shared::MerchantId): Balance {
+  public balance(merchant: shared::MerchantId): ledger::Balance {
     return Ledger::EntryLog.derive(merchant)
   }
 
@@ -91,8 +91,8 @@ public component Balance for Ledger {
   /// conditional on available covering the amount — one atomic check-and-append —
   /// so two concurrent payouts cannot both draw the same funds, and the balance
   /// can never go negative from a payout.
-  public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<BalanceTransaction, LedgerError> {
-    debit: BalanceTransaction = self.payoutDebit(merchant, payout, amount)
+  public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<ledger::BalanceTransaction, ledger::LedgerError> {
+    debit = BalanceTransaction from self.payoutDebit(merchant, payout, amount)
     return Ledger::EntryLog.appendIfAvailable(merchant, debit, amount)
   }
 
@@ -104,27 +104,27 @@ public component Balance for Ledger {
 
   /// Build a pending `ChargeCredit` from a payment-succeeded event: net of fee,
   /// keyed on the charge, available after the settlement window.
-  creditFor(event: intents::PaymentSucceeded): BalanceTransaction;
+  creditFor(event: intents::PaymentSucceeded): ledger::BalanceTransaction;
   /// Build a `RefundDebit` from a refund event (available immediately).
-  refundDebit(event: refunds::RefundSucceeded): BalanceTransaction;
+  refundDebit(event: refunds::RefundSucceeded): ledger::BalanceTransaction;
   /// Build a `DisputeDebit` (disputed amount + dispute fee) from a dispute event.
-  disputeDebit(event: disputes::DisputeOpened): BalanceTransaction;
+  disputeDebit(event: disputes::DisputeOpened): ledger::BalanceTransaction;
   /// Build a `DisputeReversal` returning the disputed amount on a won dispute.
-  disputeReversal(event: disputes::DisputeWon): BalanceTransaction;
+  disputeReversal(event: disputes::DisputeWon): ledger::BalanceTransaction;
   /// Build a `PayoutDebit` for a payout draw.
-  payoutDebit(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): BalanceTransaction;
+  payoutDebit(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): ledger::BalanceTransaction;
   /// Build a `PayoutReversal` returning a failed payout's funds.
-  payoutReversal(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): BalanceTransaction;
+  payoutReversal(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): ledger::BalanceTransaction;
 }
 
 /// Verifies the double-entry invariant across the log. Run periodically by the
 /// scheduled clearing job.
-public component Clearing for Ledger {
+public component Clearing for ledger::Ledger {
   /// Assert that the log balances — every credit nets against a debit, payout, or
   /// reversal, so internal accounts return to zero at steady state. A nonzero
   /// account surfaces a missing or incorrect entry (`Unbalanced`) for
   /// investigation, rather than being silently absorbed.
-  public clear(): Result<void, LedgerError> {
+  public clear(): Result<void, ledger::LedgerError> {
     return Ledger::EntryLog.verifyBalanced()
   }
 }
@@ -132,23 +132,23 @@ public component Clearing for Ledger {
 /// The immutable, append-only balance-transaction log. Appends are idempotent on
 /// the entry's `(type, source)`; the balance and the clearing invariant are
 /// derived by folding the log, never stored.
-component EntryLog for Ledger {
+component EntryLog for ledger::Ledger {
   /// Append an entry unless one with the same `(type, source)` already exists
   /// (idempotent re-delivery).
-  appendOnce(entry: BalanceTransaction): void;
+  appendOnce(entry: ledger::BalanceTransaction): void;
   /// Append a debit only if available covers `amount` (atomic check-and-append);
   /// `Err(InsufficientFunds)` otherwise.
-  appendIfAvailable(merchant: shared::MerchantId, debit: BalanceTransaction, amount: shared::Money): Result<BalanceTransaction, LedgerError>;
+  appendIfAvailable(merchant: shared::MerchantId, debit: ledger::BalanceTransaction, amount: shared::Money): Result<ledger::BalanceTransaction, ledger::LedgerError>;
   /// Derive a merchant's available/pending balance by folding the log against the
   /// current time.
-  derive(merchant: shared::MerchantId): Balance;
+  derive(merchant: shared::MerchantId): ledger::Balance;
   /// Fold every account to confirm it nets to zero; `Err(Unbalanced)` on a
   /// discrepancy.
-  verifyBalanced(): Result<void, LedgerError>;
+  verifyBalanced(): Result<void, ledger::LedgerError>;
 }
 
 /// A duplicated payment-succeeded event posts to the balance only once.
-feature CreditIsIdempotent for Balance {
+feature CreditIsIdempotent for ledger::Balance {
   given "a payment-succeeded event already appended to the log"
   when  "the event is delivered again"
   then  "no second entry is appended"
@@ -156,7 +156,7 @@ feature CreditIsIdempotent for Balance {
 }
 
 /// Captured funds are pending until the settlement window passes.
-feature FundsArePendingUntilSettled for Balance {
+feature FundsArePendingUntilSettled for ledger::Balance {
   given "a payment captured today with a two-day settlement window"
   when  "the balance is derived before the window elapses"
   then  "the funds count as pending, not available"
@@ -164,7 +164,7 @@ feature FundsArePendingUntilSettled for Balance {
 }
 
 /// A payout can never draw more than the available balance.
-feature PayoutCannotOverdraw for Balance {
+feature PayoutCannotOverdraw for ledger::Balance {
   given "a payout draw larger than the available balance"
   when  "the withdrawal is attempted"
   then  "it is refused as insufficient funds"

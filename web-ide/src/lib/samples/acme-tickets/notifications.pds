@@ -5,7 +5,7 @@
 public container Notifications for context::AcmeTickets;
 
 /// Sends messages through the external provider.
-public component Notifier for Notifications {
+public component Notifier for notifications::Notifications {
   /// Alert a queued attendee that they have been admitted to buy.
   #[onevent(waitingroom::Admitted)]
   public onAdmitted(event: waitingroom::Admitted): void {

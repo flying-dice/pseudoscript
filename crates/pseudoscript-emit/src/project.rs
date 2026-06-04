@@ -7,10 +7,15 @@
 //! does not resolve to the required node kind returns an [`EmitError`] rather
 //! than panicking.
 
-use pseudoscript_model::{EdgeKind, Graph, GraphNode, NodeKind, Signature, Step, Trigger};
+use std::collections::{BTreeMap, BTreeSet};
+
+use pseudoscript_model::{
+    DataShape, EdgeKind, Graph, GraphNode, NodeKind, Signature, Step, Trigger,
+};
 
 use crate::scene::{
-    C4EdgeKind, C4Scene, C4View, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
+    C4EdgeKind, C4Scene, C4View, DataEntity, DataLink, DataScene, EntityForm, EntityRow,
+    FeatureScene, FeatureStepNode, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
     Rect, Scene, SeqItem, SequenceScene,
 };
 
@@ -33,6 +38,16 @@ pub enum View {
     Sequence {
         /// The entry callable FQN.
         entry: String,
+    },
+    /// A `data` type's entity (ER) view (`LANG.md` §9.4).
+    Data {
+        /// The focal data type FQN.
+        of: String,
+    },
+    /// A `feature` scenario's flow view (`LANG.md` §9.5).
+    Feature {
+        /// The feature FQN (`module::name`).
+        of: String,
     },
 }
 
@@ -78,6 +93,7 @@ impl std::error::Error for EmitError {}
 ///
 /// Returns [`EmitError`] when the view's target FQN does not resolve to the
 /// required node kind.
+#[tracing::instrument(level = "debug", skip(graph))]
 pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
     project_view(graph, view)
 }
@@ -96,9 +112,12 @@ pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
 ///
 /// Returns [`EmitError::UnknownNode`] when `fqn` names no graph node.
 pub fn project_symbol(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
-    let node = graph
-        .node(fqn)
-        .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
+    let Some(node) = graph.node(fqn) else {
+        // A `feature` is not a graph node (`LANG.md` §5.2); a non-node `fqn`
+        // projects its flow view, which itself reports `UnknownNode` (the same
+        // error) when `fqn` names no scenario either.
+        return project_view(graph, View::Feature { of: fqn.to_owned() });
+    };
     if node.kind == NodeKind::Callable {
         return project_view(
             graph,
@@ -123,7 +142,10 @@ fn structural_view(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
         NodeKind::Component => View::Component {
             of: node.parent.clone().unwrap_or_else(|| fqn.to_owned()),
         },
-        NodeKind::Person | NodeKind::Data | NodeKind::Callable => View::Context,
+        // A `data` symbol shows its entity (ER) view (`LANG.md` §9.4); a person
+        // has no boundary, so the context overview stands in.
+        NodeKind::Data => View::Data { of: fqn.to_owned() },
+        NodeKind::Person | NodeKind::Callable => View::Context,
     };
     project_view(graph, view)
 }
@@ -146,7 +168,165 @@ fn project_view(graph: &Graph, view: View) -> Result<Scene, EmitError> {
             C4View::Component,
         )?)),
         View::Sequence { entry } => Ok(Scene::Sequence(project_sequence(graph, &entry)?)),
+        View::Data { of } => Ok(Scene::Data(project_data(graph, &of)?)),
+        View::Feature { of } => Ok(Scene::Feature(project_feature(graph, &of)?)),
     }
+}
+
+// --- data (ER) projection ---------------------------------------------------
+
+/// The entity (ER) view of a data type (`LANG.md` §9.4): the focal type's card,
+/// the data types its fields reference (one hop), and the reference links
+/// between them. The returned scene is unpositioned — [`crate::layout_data_scene`]
+/// assigns coordinates at render time.
+///
+/// # Errors
+///
+/// Returns [`EmitError`] when `of` is not a data node.
+fn project_data(graph: &Graph, of: &str) -> Result<DataScene, EmitError> {
+    let node = require_kind(graph, of, NodeKind::Data)?;
+    let focal = data_entity(graph, node, true);
+
+    let mut entities = Vec::new();
+    let mut links = Vec::new();
+    let mut added: BTreeSet<String> = BTreeSet::new();
+    added.insert(of.to_owned());
+    for row in &focal.rows {
+        // A row whose type resolves to another data type (not itself) becomes a
+        // reference link, and pulls that type in as a referenced card (one hop).
+        let Some(target) = row.target.as_ref().filter(|t| t.as_str() != of) else {
+            continue;
+        };
+        links.push(DataLink {
+            from: of.to_owned(),
+            to: target.clone(),
+            field: row.name.clone(),
+        });
+        if added.insert(target.clone())
+            && let Some(referenced) = graph.node(target)
+        {
+            entities.push(data_entity(graph, referenced, false));
+        }
+    }
+    entities.insert(0, focal);
+
+    Ok(DataScene {
+        of: of.to_owned(),
+        entities,
+        links,
+        width: 0,
+        height: 0,
+    })
+}
+
+/// Builds the [`DataEntity`] card for a data node from its disclosed
+/// [`DataShape`]: record fields become `name: ty` rows, union variants become
+/// name rows, each resolving its referenced data type where one exists.
+fn data_entity(graph: &Graph, node: &GraphNode, focal: bool) -> DataEntity {
+    let (form, rows) = match &node.shape {
+        Some(DataShape::Record { fields }) => (
+            EntityForm::Record,
+            fields
+                .iter()
+                .map(|f| EntityRow {
+                    name: f.name.clone(),
+                    ty: f.ty.clone(),
+                    target: resolve_data_type(graph, &node.module, &f.ty),
+                })
+                .collect(),
+        ),
+        Some(DataShape::Union { variants }) => (
+            EntityForm::Union,
+            variants
+                .iter()
+                .map(|v| EntityRow {
+                    name: v.name.clone(),
+                    ty: String::new(),
+                    target: resolve_data_type(graph, &node.module, &v.name),
+                })
+                .collect(),
+        ),
+        Some(DataShape::BlackBox) | None => (EntityForm::BlackBox, Vec::new()),
+    };
+    DataEntity {
+        fqn: node.fqn.clone(),
+        label: node.name.clone(),
+        form,
+        rows,
+        focal,
+        rect: Rect::default(),
+    }
+}
+
+/// Resolves a rendered field type to the FQN of the data type it names, when one
+/// exists in the workspace. Strips a trailing `[]` and any generic arguments,
+/// then tries an exact FQN, a name qualified by the declaring `module`, and
+/// finally any data node with that simple name. Built-in types (`string`,
+/// `number`, …) and generic wrappers resolve to `None`.
+fn resolve_data_type(graph: &Graph, module: &str, ty: &str) -> Option<String> {
+    let base = ty.trim_end_matches("[]");
+    let base = base.split('<').next().unwrap_or(base).trim();
+    if base.is_empty() {
+        return None;
+    }
+    let is_data = |fqn: &str| graph.node(fqn).is_some_and(|n| n.kind == NodeKind::Data);
+    if is_data(base) {
+        return Some(base.to_owned());
+    }
+    let qualified = format!("{module}::{base}");
+    if is_data(&qualified) {
+        return Some(qualified);
+    }
+    graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind == NodeKind::Data && n.name == base)
+        .map(|n| n.fqn.clone())
+}
+
+// --- feature (flow) projection ----------------------------------------------
+
+/// The flow view of a `feature` scenario (`LANG.md` §9.5): its ordered
+/// given/when/then steps. A feature is not a graph node (`LANG.md` §5.2), so it
+/// is looked up among the graph's scenarios by its `module::name` FQN. The
+/// returned scene is unpositioned — [`crate::layout_feature_scene`] assigns
+/// coordinates.
+///
+/// # Errors
+///
+/// Returns [`EmitError::UnknownNode`] when `of` names no scenario.
+fn project_feature(graph: &Graph, of: &str) -> Result<FeatureScene, EmitError> {
+    let scenario = graph
+        .scenarios()
+        .iter()
+        .find(|s| format!("{}::{}", s.module, s.name) == of)
+        .ok_or_else(|| EmitError::UnknownNode(of.to_owned()))?;
+    let target_label = graph
+        .node(&scenario.target_fqn)
+        .map_or_else(|| simple_fqn(&scenario.target_fqn), |n| n.name.clone());
+    let steps = scenario
+        .steps
+        .iter()
+        .map(|s| FeatureStepNode {
+            keyword: s.keyword.clone(),
+            text: s.text.clone(),
+            rect: Rect::default(),
+        })
+        .collect();
+    Ok(FeatureScene {
+        entry: of.to_owned(),
+        target_fqn: scenario.target_fqn.clone(),
+        target_label,
+        name: scenario.name.clone(),
+        steps,
+        width: 0,
+        height: 0,
+    })
+}
+
+/// The simple (final-segment) name of an FQN.
+fn simple_fqn(fqn: &str) -> String {
+    fqn.rsplit("::").next().unwrap_or(fqn).to_owned()
 }
 
 // --- C4 projections ---------------------------------------------------------
@@ -259,7 +439,14 @@ fn collect_edges(
     in_view: &[&str],
     lift: impl Fn(&str) -> Option<String>,
 ) -> Vec<RoutedEdges> {
-    let mut edges: Vec<RoutedEdges> = Vec::new();
+    // Group by (from, to, kind) so parallel same-direction relationships of one
+    // kind collapse into a single edge whose labels are merged. The key's third
+    // component is the kind keyword, so the map's canonical order is
+    // `(from, to, kind)` — the golden order. The `BTreeSet` value sorts and
+    // de-duplicates the merged labels. Empty labels (trigger/provenance) never
+    // enter the set, leaving those edges label-less.
+    let mut grouped: BTreeMap<(String, String, &'static str), (C4EdgeKind, BTreeSet<String>)> =
+        BTreeMap::new();
     for edge in graph.edges() {
         let Some(kind) = c4_edge_kind(edge.kind) else {
             continue;
@@ -272,23 +459,22 @@ fn collect_edges(
         if from == to {
             continue;
         }
-        edges.push(RoutedEdges {
+        let (_, labels) = grouped
+            .entry((from, to, kind.keyword()))
+            .or_insert_with(|| (kind, BTreeSet::new()));
+        if !edge.label.is_empty() {
+            labels.insert(edge.label.clone());
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((from, to, _), (kind, labels))| RoutedEdges {
             from,
             to,
             kind,
-            label: edge.label.clone(),
-        });
-    }
-    edges.sort_by(|a, b| {
-        (&a.from, &a.to, a.kind.keyword(), &a.label).cmp(&(
-            &b.from,
-            &b.to,
-            b.kind.keyword(),
-            &b.label,
-        ))
-    });
-    edges.dedup();
-    edges
+            labels: labels.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// Working edge form before placement into the scene (same shape as
@@ -829,7 +1015,7 @@ mod tests {
     fn c4(scene: Scene) -> C4Scene {
         match scene {
             Scene::C4(s) => s,
-            Scene::Sequence(_) => panic!("expected a C4 scene"),
+            _ => panic!("expected a C4 scene"),
         }
     }
 
@@ -938,6 +1124,49 @@ mod tests {
     }
 
     #[test]
+    fn parallel_same_direction_calls_merge_into_one_edge() {
+        // AWeb makes two distinct calls to BApi (both bubble A->B in the context
+        // view); BApi calls back AWeb (B->A). The two A->B calls collapse to one
+        // edge with sorted, de-duplicated labels; the opposite-direction callback
+        // stays a separate edge.
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system A;\npublic container AWeb for A {\n  \
+             public Go(): void { m::BApi.Read(); m::BApi.Ping() }\n}\n\
+             public system B;\npublic container BApi for B {\n  \
+             public Read(): void;\n  public Ping(): void;\n  \
+             public Cb(): void { m::AWeb.Go() }\n}"
+                .to_owned(),
+        );
+        let scene = c4(project(&graph(&[m]), View::Context).expect("projects"));
+        let ab = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::A" && e.to == "m::B")
+            .expect("a single merged A->B edge");
+        assert_eq!(
+            ab.labels,
+            ["Ping", "Read"],
+            "labels sorted and de-duplicated"
+        );
+        let ba = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::B" && e.to == "m::A")
+            .expect("the opposite-direction callback stays separate");
+        assert_eq!(ba.labels, ["Go"]);
+        assert_eq!(
+            scene
+                .edges
+                .iter()
+                .filter(|e| e.kind == C4EdgeKind::Call)
+                .count(),
+            2,
+            "exactly two call edges: one merged A->B, one B->A"
+        );
+    }
+
+    #[test]
     fn sequence_lifeline_carries_for_ancestry_and_summary() {
         let m = WorkspaceModule::new(
             "m".to_owned(),
@@ -964,5 +1193,81 @@ mod tests {
         // module-flat FQN.
         assert_eq!(v.parent_path.as_deref(), Some("Shop::Api"));
         assert_eq!(v.summary.as_deref(), Some("Validates orders."));
+    }
+
+    /// A record `data` symbol projects an entity (ER) view: the focal card, the
+    /// data types its fields reference pulled in as cards, and a link per
+    /// referencing field. Built-in field types (here `number`) add no card.
+    #[test]
+    fn project_symbol_projects_a_data_entity_view() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic data Money { minor: number }\n\
+             public data Order { id: string, total: Money }"
+                .to_owned(),
+        );
+        let Scene::Data(scene) = project_symbol(&graph(&[m]), "m::Order").expect("projects") else {
+            panic!("expected a data scene");
+        };
+        assert_eq!(scene.of, "m::Order");
+        // The focal Order card plus the referenced Money card (string/number are
+        // built-ins, so they pull in no card).
+        assert_eq!(scene.entities.len(), 2, "focal + referenced: {scene:?}");
+        assert!(scene.entities[0].focal, "focal entity first");
+        assert_eq!(scene.entities[0].rows.len(), 2);
+        // Exactly the `total: Money` field links to the Money entity.
+        assert_eq!(scene.links.len(), 1);
+        assert_eq!(
+            (
+                scene.links[0].from.as_str(),
+                scene.links[0].to.as_str(),
+                scene.links[0].field.as_str()
+            ),
+            ("m::Order", "m::Money", "total"),
+        );
+        assert!(scene.entities.iter().any(|e| e.fqn == "m::Money" && !e.focal));
+    }
+
+    /// A union `data` symbol projects its variants as rows, each linking to the
+    /// variant's hoisted record type.
+    #[test]
+    fn project_data_renders_union_variants() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic data Event = | Created { id: string } | Closed { id: string }".to_owned(),
+        );
+        let Scene::Data(scene) = project_symbol(&graph(&[m]), "m::Event").expect("projects") else {
+            panic!("expected a data scene");
+        };
+        assert_eq!(scene.entities[0].form, EntityForm::Union);
+        let variants: Vec<&str> = scene.entities[0].rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(variants, ["Created", "Closed"]);
+        assert_eq!(scene.links.len(), 2, "each variant links to its record");
+    }
+
+    /// A `feature` is not a graph node, so it projects via its `module::name`
+    /// FQN into a flow view of its ordered steps.
+    #[test]
+    fn project_feature_view_lists_the_scenario_steps() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system S;\nfeature Charged for S {\n  \
+             given \"a charge\"\n  when \"charged twice\"\n  then \"one debit\"\n}"
+                .to_owned(),
+        );
+        let Scene::Feature(scene) = project(
+            &graph(&[m]),
+            View::Feature {
+                of: "m::Charged".to_owned(),
+            },
+        )
+        .expect("projects") else {
+            panic!("expected a feature scene");
+        };
+        assert_eq!(scene.entry, "m::Charged");
+        assert_eq!(scene.target_fqn, "m::S");
+        assert_eq!(scene.target_label, "S");
+        let kinds: Vec<&str> = scene.steps.iter().map(|s| s.keyword.as_str()).collect();
+        assert_eq!(kinds, ["given", "when", "then"]);
     }
 }

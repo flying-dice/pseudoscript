@@ -6,7 +6,7 @@
 // filename is the final segment (`banking/core.pds` → `banking::core`). Files
 // are read and written through their handles, so edits persist to disk.
 
-import type { ManifestSection } from "./pds.js";
+import type { ManifestSection, VendoredDepFile } from "./pds.js";
 
 // `showDirectoryPicker` is shipped by Chromium browsers but absent from the base
 // DOM lib; declare just what we use.
@@ -82,7 +82,18 @@ export interface SiteFile {
 export const fsSupported =
   typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 
-const SKIP_DIRS = new Set(["node_modules", "target", ".git", ".svelte-kit"]);
+// Directories whose `.pds` contents are vendored dependencies or build output —
+// not the consumer's own model. The file tree shows everything (it is just a
+// browser); these are excluded only from the *module index* the language
+// services scope to: a dependency is addressed as `dep::module::Node` via
+// resolved externals (LANG.md §8.3), and `target/` is generated.
+const NON_MODULE_DIRS = new Set(["pds_modules", "target", "node_modules"]);
+
+/** Whether `path` lies inside a non-module directory (so it is browsable in the
+ *  tree but not indexed as a workspace module). */
+function isNonModulePath(path: string): boolean {
+  return path.split("/").some((segment) => NON_MODULE_DIRS.has(segment));
+}
 
 /** Prompts for a directory (read/write) and returns its handle. The single
  *  picker entry point — opening a folder and choosing a new project's target
@@ -191,16 +202,27 @@ export async function readWorkspace(root: FileSystemDirectoryHandle): Promise<Wo
   });
 
   const base: string = manifestPrefix ?? ""; // workspace root prefix ("" = picked dir)
+  // Workspace modules: the consumer's own `.pds` files only. `.pds` under a
+  // non-module dir (vendored `pds_modules/`, generated `target/`) is excluded
+  // from the index so completion never offers a raw `pds_modules::…` path — the
+  // consumer addresses a dependency as `dep::module::Node` (§8.3). The tree
+  // still shows those files (below); scope is an index concern, not a tree one.
   const files = found
-    .filter((f) => f.path.endsWith(".pds") && underBase(f.path, base))
+    .filter((f) => f.path.endsWith(".pds") && underBase(f.path, base) && !isNonModulePath(f.path))
     .map((f): WorkspaceFile => ({ path: f.path, handle: f.handle, fqn: fqnOf(f.path, base) }))
     .sort((a, b) => a.fqn.localeCompare(b.fqn));
 
-  // Everything else under `base`: companion files the tree shows read-only. The
-  // workspace manifest is already surfaced on its own, so it's excluded here.
+  // Everything else under `base`: companion files the tree shows — non-`.pds`
+  // files plus every `.pds` that isn't an indexed module (vendored deps, build
+  // output). The workspace manifest is already surfaced on its own.
   const manifestFullPath = base ? `${base}/pds.toml` : "pds.toml";
   const others = found
-    .filter((f) => !f.path.endsWith(".pds") && f.path !== manifestFullPath && underBase(f.path, base))
+    .filter(
+      (f) =>
+        (!f.path.endsWith(".pds") || isNonModulePath(f.path)) &&
+        f.path !== manifestFullPath &&
+        underBase(f.path, base),
+    )
     .map((f): WorkspaceFile => ({ path: f.path, handle: f.handle, fqn: "" }))
     .sort((a, b) => a.path.localeCompare(b.path));
 
@@ -223,6 +245,97 @@ export async function readWorkspace(root: FileSystemDirectoryHandle): Promise<Wo
     handle && manifestPath ? { handle, path: manifestPath } : null;
 
   return { name: root.name, root, base, manifestToml, manifest, files, others, dirs };
+}
+
+/**
+ * Reads the workspace's vendored git dependencies for cross-workspace resolution
+ * (LANG.md §8.3). Returns the `pds.lock` text and the `.pds` files under
+ * `<base>/pds_modules/<slug>/`, each tagged with its slug and its FQN within the
+ * dependency workspace (relative to that package's own `pds.toml`). Empty when
+ * the workspace has no `pds_modules/`.
+ *
+ * Local-source dependencies (ADR-026) resolve a sibling path (`../shared`) that
+ * lies outside the opened directory tree, so the File System Access API cannot
+ * read them — only git dependencies are resolved in the browser.
+ */
+export async function readVendoredDeps(
+  root: FileSystemDirectoryHandle,
+  base: string,
+): Promise<{ lockToml: string; vendored: VendoredDepFile[] }> {
+  const vendorDir = await getDir(root, base ? `${base}/pds_modules` : "pds_modules");
+  if (!vendorDir) return { lockToml: "", vendored: [] };
+
+  const lockToml = (await readFileAt(root, base ? `${base}/pds.lock` : "pds.lock")) ?? "";
+
+  const vendored: VendoredDepFile[] = [];
+  for await (const [slug, handle] of vendorDir.entries()) {
+    if (handle.kind !== "directory" || slug.startsWith(".")) continue;
+    vendored.push(...(await readDepPackage(handle, slug)));
+  }
+  return { lockToml, vendored };
+}
+
+/** Reads one vendored package: its `.pds` files, each FQN relative to the
+ *  package's own `pds.toml` directory (so a `path` sub-workspace resolves
+ *  correctly — `model/core.pds` under a `path = "model"` package → `core`).
+ *
+ *  The package base is the shallowest `pds.toml` under the slug dir rather than
+ *  the lock edge's `path`: `pds install` sparse-checks-out only the dependency
+ *  workspace sub-tree, so that manifest is the only one present and the two
+ *  agree. The `dirs` array is a required `walk` out-param, unused here. */
+async function readDepPackage(
+  pkg: FileSystemDirectoryHandle,
+  slug: string,
+): Promise<VendoredDepFile[]> {
+  const found: Array<{ path: string; handle: FileSystemFileHandle }> = [];
+  const dirs: string[] = [];
+  let pkgBase: string | null = null;
+  // Within a dependency package, skip its own vendored/build dirs so a
+  // transitive `pds_modules/` doesn't leak into this direct dependency's modules.
+  await walk(
+    pkg,
+    "",
+    found,
+    dirs,
+    (prefix) => {
+      if (pkgBase === null || depth(prefix) < depth(pkgBase)) pkgBase = prefix;
+    },
+    NON_MODULE_DIRS,
+  );
+  const b: string = pkgBase ?? "";
+
+  const out: VendoredDepFile[] = [];
+  for (const f of found) {
+    if (!f.path.endsWith(".pds") || !underBase(f.path, b)) continue;
+    out.push({ slug, fqn: fqnOf(f.path, b), source: await readFile(f.handle) });
+  }
+  return out;
+}
+
+/** Resolves a directory handle at `path` under `root`, or `null` if absent. */
+async function getDir(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<FileSystemDirectoryHandle | null> {
+  let dir = root;
+  for (const part of path.split("/").filter(Boolean)) {
+    try {
+      dir = await dir.getDirectoryHandle(part);
+    } catch {
+      return null;
+    }
+  }
+  return dir;
+}
+
+/** Reads the file at `path` under `root`, or `null` if it does not exist. */
+async function readFileAt(root: FileSystemDirectoryHandle, path: string): Promise<string | null> {
+  try {
+    const { dir, name } = await parentDirFor(root, path);
+    return await readFile(await dir.getFileHandle(name));
+  } catch {
+    return null;
+  }
 }
 
 // File extensions opened as inert binaries (no editor): images, fonts, archives,
@@ -482,13 +595,16 @@ async function walk(
   found: Array<{ path: string; handle: FileSystemFileHandle }>,
   dirs: string[],
   onManifest: (prefix: string, handle: FileSystemFileHandle) => void,
+  skip: Set<string> = new Set(),
 ): Promise<void> {
   for await (const [name, handle] of dir.entries()) {
     const path = prefix ? `${prefix}/${name}` : name;
     if (handle.kind === "directory") {
-      if (SKIP_DIRS.has(name) || name.startsWith(".")) continue;
+      // Dot-directories (`.git`, `.svelte-kit`) are VCS/tooling internals and a
+      // walk hazard, so they stay hidden; `skip` adds caller-specific exclusions.
+      if (skip.has(name) || name.startsWith(".")) continue;
       dirs.push(path);
-      await walk(handle, path, found, dirs, onManifest);
+      await walk(handle, path, found, dirs, onManifest, skip);
     } else {
       found.push({ path, handle });
       if (name === "pds.toml") onManifest(prefix, handle);
@@ -504,10 +620,18 @@ function underBase(path: string, base: string): boolean {
   return base === "" || path.startsWith(`${base}/`);
 }
 
-/** Path → module FQN, relative to the manifest `base` directory. */
+/**
+ * Path → module FQN, relative to the manifest `base` directory. A hyphen in any
+ * segment normalises to `_` so a kebab-case file/folder yields a valid
+ * identifier root (ADR-031): `web-ide/file-tree.pds` → `web_ide::file_tree`.
+ */
 export function fqnOf(path: string, base: string): string {
   const rel = base === "" ? path : path.slice(base.length + 1);
-  return rel.replace(/\.pds$/, "").split("/").join("::");
+  return rel
+    .replace(/\.pds$/, "")
+    .split("/")
+    .map((seg) => seg.replace(/-/g, "_"))
+    .join("::");
 }
 
 /**

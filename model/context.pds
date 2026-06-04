@@ -18,7 +18,7 @@ public person Developer {
   /// Author a model in the editor, which drives the language server.
   #[manual]
   public editModel(doc: model::WorkspaceModule): void {
-    Editor.openDocument(doc)
+    context::Editor.openDocument(doc)
   }
 }
 
@@ -45,7 +45,7 @@ public system Editor {
 /// Render a `.pds` workspace to a browsable documentation site — the headline
 /// flow, aggregating load, check, graph, project, and write.
 /// #headline
-feature DocumentAWorkspace for Pseudoscript {
+feature DocumentAWorkspace for context::Pseudoscript {
   given "a directory holding a pds.toml and one or more .pds modules"
   and   "the modules form a well-formed C4 model"
   when  "the developer runs `pds doc` against the directory"
@@ -55,7 +55,7 @@ feature DocumentAWorkspace for Pseudoscript {
 }
 
 /// Statically validate a model and report what is wrong.
-feature CheckAModel for Pseudoscript {
+feature CheckAModel for context::Pseudoscript {
   given "a .pds source file"
   when  "the developer runs `pds check` on it"
   then  "the source is parsed with error recovery"
@@ -65,7 +65,7 @@ feature CheckAModel for Pseudoscript {
 }
 
 /// Reformat a model to one canonical form.
-feature FormatAModel for Pseudoscript {
+feature FormatAModel for context::Pseudoscript {
   given "a .pds source file with non-canonical spacing"
   when  "the developer runs `pds fmt`"
   then  "the source is parsed and pretty-printed to canonical PseudoScript"
@@ -74,7 +74,7 @@ feature FormatAModel for Pseudoscript {
 }
 
 /// Author a model in an editor with live diagnostics.
-feature EditModelInIde for Pseudoscript {
+feature EditModelInIde for context::Pseudoscript {
   given "an editor that speaks the Language Server Protocol"
   and   "`pds lsp` running as a child process over stdio"
   when  "the author changes a document"
@@ -83,7 +83,7 @@ feature EditModelInIde for Pseudoscript {
 }
 
 /// Preview docs that rebuild as the model changes.
-feature ServeLiveDocs for Pseudoscript {
+feature ServeLiveDocs for context::Pseudoscript {
   given "a generated documentation site"
   when  "the developer runs `pds doc --serve --watch`"
   then  "the site is hosted over HTTP on localhost"

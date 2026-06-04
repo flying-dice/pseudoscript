@@ -1,5 +1,5 @@
 //! Context-aware completion — the shared engine behind both the LSP
-//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-wasm`).
+//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-ide`).
 //!
 //! The completion context is read from the token immediately left of the caret:
 //!
@@ -14,6 +14,8 @@
 //! The caller filters the returned set against the prefix being typed, so the
 //! full candidate list is offered. Positions are byte offsets, so the engine is
 //! adapter-neutral: the LSP maps to `lsp_types`, the IDE serialises to JSON.
+
+use std::collections::BTreeSet;
 
 use pseudoscript_syntax::{Token, TokenKind, tokenize};
 use serde::Serialize;
@@ -39,8 +41,6 @@ pub enum CompletionKind {
     Class,
     /// A node declaration (system / container / component / person).
     Module,
-    /// An alias.
-    Reference,
 }
 
 /// One completion candidate: its insert text, what it is, and a one-line detail.
@@ -56,8 +56,17 @@ pub struct CompletionItem {
 
 /// Completion candidates for byte `offset` in module `from_fqn`'s `src`.
 #[must_use]
+#[tracing::instrument(level = "debug", skip(ws, src))]
 pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec<CompletionItem> {
     let tokens = tokenize(src);
+
+    // Inside a string literal or a doc/inner-doc comment the caret is in prose,
+    // not code — offer nothing. (Without this, the token *before* the literal
+    // governs, so typing in `given "…"` or a `///` line dumps the keyword set.)
+    if inside_prose(&tokens, offset) {
+        return Vec::new();
+    }
+
     let trigger = governing_trigger(&tokens, offset);
 
     match trigger.map(|i| (i, tokens[i].kind)) {
@@ -68,26 +77,59 @@ pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec
         Some((i, TokenKind::LParen)) if is_macro_arg(&tokens, i) => type_items(ws),
         Some((_, TokenKind::Colon | TokenKind::LAngle)) => type_items(ws),
         // A `for` parent (or feature target) names a node, possibly cross-module.
-        Some((_, TokenKind::KwFor)) => node_items(ws, from_fqn),
+        // A `container`'s parent must be a `system`, a `component`'s a `container`
+        // (§4); only those kinds are offered. A feature target is any node.
+        Some((i, TokenKind::KwFor)) => node_items(ws, from_fqn, parent_kind(&tokens, i)),
         _ => general_items(ws, from_fqn),
     }
 }
 
 /// Visible node declarations (system / container / component / person) plus the
 /// other modules — for a `for` parent or feature target.
-fn node_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
+fn node_items(ws: &Workspace, from_fqn: &str, required: Option<SymbolKind>) -> Vec<CompletionItem> {
     let nodes = ws
         .symbols()
         .filter(|s| {
-            !matches!(s.kind, SymbolKind::Data) && (module_of(&s.fqn) == from_fqn || s.is_public)
+            // A `for` with a known construct admits exactly one parent kind; a
+            // feature target (no required kind) admits any node, never a `data`.
+            let kind_ok = match required {
+                Some(kind) => s.kind == kind,
+                None => !matches!(s.kind, SymbolKind::Data),
+            };
+            kind_ok && (module_of(&s.fqn) == from_fqn || s.is_public)
         })
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
-    let modules = ws
-        .modules()
+    nodes.chain(other_modules(ws, from_fqn)).collect()
+}
+
+/// The parent kind a `for` at `for_idx` admits, from the construct keyword two
+/// tokens back (`container <name> for` → `system`; `component <name> for` →
+/// `container`). `None` for a feature target or an incomplete construct — any node.
+fn parent_kind(tokens: &[Token], for_idx: usize) -> Option<SymbolKind> {
+    let name_idx = for_idx.checked_sub(1)?;
+    if tokens[name_idx].kind != TokenKind::Ident {
+        return None;
+    }
+    match tokens.get(name_idx.checked_sub(1)?)?.kind {
+        TokenKind::KwContainer => Some(SymbolKind::System),
+        TokenKind::KwComponent => Some(SymbolKind::Container),
+        _ => None,
+    }
+}
+
+/// The other workspace modules — local and dependency (§8.3) — offered as
+/// cross-module reference starters (pick a module, then `::` drills into its
+/// public symbols). Excludes the module being edited.
+fn other_modules<'a>(
+    ws: &'a Workspace,
+    from_fqn: &'a str,
+) -> impl Iterator<Item = CompletionItem> + 'a {
+    ws.modules()
         .iter()
-        .filter(|m| m.fqn != from_fqn)
-        .map(|m| item(&m.fqn, CompletionKind::Module, "module"));
-    nodes.chain(modules).collect()
+        .map(|m| m.fqn.as_str())
+        .chain(ws.external_module_fqns())
+        .filter(move |fqn| *fqn != from_fqn)
+        .map(|fqn| item(fqn, CompletionKind::Module, "module"))
 }
 
 /// Whether `tokens[lparen]` opens a built-in macro's argument list (`#[name(`).
@@ -95,6 +137,19 @@ fn is_macro_arg(tokens: &[Token], lparen: usize) -> bool {
     lparen >= 2
         && tokens[lparen - 1].kind == TokenKind::Ident
         && tokens[lparen - 2].kind == TokenKind::HashLBracket
+}
+
+/// Whether `offset` falls strictly inside a string literal or a doc/inner-doc
+/// comment — prose, where completion stays silent. Strict bounds (`start <
+/// offset < end`) so the caret at a literal's edge still completes normally.
+fn inside_prose(tokens: &[Token], offset: u32) -> bool {
+    tokens.iter().any(|t| {
+        matches!(
+            t.kind,
+            TokenKind::String | TokenKind::Doc | TokenKind::InnerDoc
+        ) && t.span.start < offset
+            && offset < t.span.end
+    })
 }
 
 /// Index of the token whose kind governs completion at `offset`.
@@ -130,13 +185,16 @@ fn member_items(
     let Some((owner_module, owner_name)) = owner else {
         return Vec::new();
     };
-    let Some(entry) = ws.module(&owner_module) else {
+    let Some(model) = ws.module_model(&owner_module) else {
         return Vec::new();
     };
-    entry
-        .model
+    // A private member is reachable only within its own module (§8.2); across
+    // modules only `public` members are offered.
+    let same_module = owner_module == from_fqn;
+    model
         .members(&owner_name)
         .iter()
+        .filter(|m| same_module || m.is_public)
         .map(|m| {
             let kind = match m.kind {
                 MemberKind::Callable => CompletionKind::Method,
@@ -167,7 +225,7 @@ fn owner_before(
         // (or in this module), mirroring `::` path resolution (§8.2).
         TokenKind::Ident if dot >= 2 && tokens[dot - 2].kind == TokenKind::ColonColon => {
             let module = module_prefix(tokens, dot - 2);
-            let symbol = ws.module(&module)?.model.symbol(&base.text)?;
+            let symbol = ws.module_model(&module)?.symbol(&base.text)?;
             (module == from_fqn || symbol.is_public).then(|| (module, symbol.name.clone()))
         }
         TokenKind::Ident => {
@@ -184,8 +242,13 @@ fn owner_before(
     }
 }
 
-/// Symbols of the module named by the `::` path ending at `tokens[ccolon]`.
-/// A cross-module suggestion is offered only when `public` (§8.2).
+/// Completions after a `::` whose left side is the module path `prefix`:
+/// - the symbols of the module named exactly `prefix` (public only across
+///   modules, §8.2), and
+/// - the next path segment of any deeper module the prefix starts — so
+///   `pseudoscript::` offers `cli`, `context`, … when the dependency's modules
+///   are `pseudoscript::cli`, `pseudoscript::context`, … (a dependency root is
+///   a path prefix, never a module itself).
 fn path_items(
     ws: &Workspace,
     from_fqn: &str,
@@ -193,10 +256,28 @@ fn path_items(
     ccolon: usize,
 ) -> Vec<CompletionItem> {
     let prefix = module_prefix(tokens, ccolon);
-    ws.symbols()
+    let mut items: Vec<CompletionItem> = ws
+        .symbols()
         .filter(|s| module_of(&s.fqn) == prefix && (prefix == from_fqn || s.is_public))
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn))
-        .collect()
+        .collect();
+    let with = format!("{prefix}::");
+    let mut next: BTreeSet<&str> = BTreeSet::new();
+    for fqn in ws
+        .modules()
+        .iter()
+        .map(|m| m.fqn.as_str())
+        .chain(ws.external_module_fqns())
+    {
+        if let Some(rest) = fqn.strip_prefix(&with) {
+            next.insert(rest.split("::").next().unwrap_or(rest));
+        }
+    }
+    items.extend(
+        next.into_iter()
+            .map(|seg| item(seg, CompletionKind::Module, "module")),
+    );
+    items
 }
 
 /// The `::`-joined module path written immediately before `tokens[ccolon]`.
@@ -247,11 +328,7 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
     let keywords = TokenKind::KEYWORDS
         .iter()
         .map(|k| item(k, CompletionKind::Keyword, "keyword"));
-    let modules = ws
-        .modules()
-        .iter()
-        .filter(|m| m.fqn != from_fqn)
-        .map(|m| item(&m.fqn, CompletionKind::Module, "module"));
+    let modules = other_modules(ws, from_fqn);
     let Some(entry) = ws.module(from_fqn) else {
         return keywords.chain(modules).collect();
     };
@@ -259,15 +336,7 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
         .model
         .symbols()
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
-    let aliases = entry
-        .model
-        .aliases()
-        .map(|(name, a)| item(name, CompletionKind::Reference, &a.target));
-    keywords
-        .chain(symbols)
-        .chain(aliases)
-        .chain(modules)
-        .collect()
+    keywords.chain(symbols).chain(modules).collect()
 }
 
 /// The completion kind for a declared symbol.
@@ -300,6 +369,54 @@ mod tests {
         )
     }
 
+    fn workspace_with_externals(local: &[(&str, &str)], external: &[(&str, &str)]) -> Workspace {
+        Workspace::build_with_externals(
+            local
+                .iter()
+                .map(|(fqn, src)| ((*fqn).to_owned(), parse(src).ast)),
+            external
+                .iter()
+                .map(|(fqn, src)| ((*fqn).to_owned(), parse(src).ast)),
+        )
+    }
+
+    /// A dependency module `pseudoscript::cli` with a public node `LspHost` that
+    /// has a public `run()` — the shape behind `pseudoscript::cli::LspHost.run()`.
+    const DEP_CLI: (&str, &str) = (
+        "pseudoscript::cli",
+        "//! cli\npublic system Cli;\npublic component LspHost for pseudoscript::cli::Cli {\n  public run(): void;\n}\n",
+    );
+
+    #[test]
+    fn dep_root_offers_its_submodule_segments() {
+        // `pseudoscript::` — a dependency root is a path prefix, never a module
+        // itself; completion offers the next segment (`cli`), not nothing.
+        let src = "//! m\npublic system S;\npublic container X for pseudoscript::";
+        let ws = workspace_with_externals(&[("m", src)], &[DEP_CLI]);
+        let labels = labels_at(&ws, "m", src, src.len() as u32);
+        assert!(labels.contains(&"cli".to_owned()), "{labels:?}");
+    }
+
+    #[test]
+    fn dep_module_offers_its_public_symbols() {
+        let src = "//! m\npublic system S;\npublic container X for pseudoscript::cli::";
+        let ws = workspace_with_externals(&[("m", src)], &[DEP_CLI]);
+        let labels = labels_at(&ws, "m", src, src.len() as u32);
+        assert!(labels.contains(&"LspHost".to_owned()), "{labels:?}");
+    }
+
+    #[test]
+    fn dep_node_offers_its_members_after_dot() {
+        // `pseudoscript::cli::LspHost.` — members of a dependency node complete
+        // (regression: the external module's model was dropped, so `.run` was
+        // never offered).
+        let src = "//! m\npublic container X for pseudoscript::cli::Cli {\n  go(): void {\n    pseudoscript::cli::LspHost.\n  }\n}\n";
+        let ws = workspace_with_externals(&[("m", src)], &[DEP_CLI]);
+        let offset = (src.find("LspHost.").unwrap() + "LspHost.".len()) as u32;
+        let labels = labels_at(&ws, "m", src, offset);
+        assert!(labels.contains(&"run".to_owned()), "{labels:?}");
+    }
+
     /// Completion labels at byte `offset` in module `from`.
     fn labels_at(ws: &Workspace, from: &str, src: &str, offset: u32) -> Vec<String> {
         completion(ws, from, src, offset)
@@ -316,7 +433,7 @@ mod tests {
         let mods = [
             (
                 "identity",
-                "//! identity\n\npublic system sessions {\n  requireOrganizer(): void;\n}\n",
+                "//! identity\n\npublic system sessions {\n  public requireOrganizer(): void;\n}\n",
             ),
             (
                 "m",
@@ -327,6 +444,7 @@ mod tests {
         let src = mods[1].1;
         let offset = (src.find("sessions.req").unwrap() + "sessions.req".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);
+        // A `public` member completes across modules (§8.2).
         assert!(
             labels.contains(&"requireOrganizer".to_owned()),
             "{labels:?}"
@@ -423,6 +541,33 @@ mod tests {
             !labels.contains(&"m".to_owned()),
             "own module excluded: {labels:?}"
         );
+    }
+
+    #[test]
+    fn dependency_modules_offered_as_cross_module_starters() {
+        // A dependency module (§8.3) is offered in general position like any
+        // other module, and `::` drills into its public symbols only.
+        let ws = Workspace::build_with_externals(
+            [("m", "//! m\n\n")]
+                .iter()
+                .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+            [(
+                "banking::core",
+                "//! banking::core\n\npublic system Ledger;\nsystem Hidden;\n",
+            )]
+            .iter()
+            .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+        );
+
+        let src = "//! m\n\n";
+        let labels = labels_at(&ws, "m", src, src.len() as u32);
+        assert!(labels.contains(&"banking::core".to_owned()), "{labels:?}");
+
+        let drill = "//! m\n\ncontainer C for banking::core::\n";
+        let offset = (drill.find("core::").unwrap() + "core::".len()) as u32;
+        let drilled = labels_at(&ws, "m", drill, offset);
+        assert!(drilled.contains(&"Ledger".to_owned()), "{drilled:?}");
+        assert!(!drilled.contains(&"Hidden".to_owned()), "{drilled:?}");
     }
 
     #[test]

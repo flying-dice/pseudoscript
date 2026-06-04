@@ -4,18 +4,22 @@
   // compiler (emit_scene / symbol_scene), so the diagram type is read off the
   // scene itself — the pane is the model, not a picture of it.
   import C4Flow from "./C4Flow.svelte";
+  import DataModel from "./DataModel.svelte";
+  import FeatureFlow from "./FeatureFlow.svelte";
   import FlowTimeline from "./FlowTimeline.svelte";
   import { DEPTHS } from "$lib/sequence.js";
   import type { Depth } from "$lib/sequence.js";
   import type { ComponentProps } from "svelte";
 
   // The pane reads only the discriminating arrays off the scene (`participants`
-  // for a sequence scene, `nodes` for a C4 scene) and passes the whole object
-  // through to whichever child renders it. The index signature keeps it a
-  // structural superset of both child scene types.
+  // for a sequence, `nodes` for C4, `entities` for a data ER view, `steps` for a
+  // feature flow) and passes the whole object through to whichever child renders
+  // it. The index signature keeps it a structural superset of every scene type.
   type Scene = {
     participants?: unknown[];
     nodes?: unknown[];
+    entities?: unknown[];
+    steps?: unknown[];
     [key: string]: unknown;
   };
   // The positioned sequence layout (opaque here — produced by the layout crate
@@ -55,9 +59,13 @@
   }: Props = $props();
 
   const isFlow = $derived(!!scene && Array.isArray(scene.participants));
+  const isData = $derived(!!scene && Array.isArray(scene.entities));
+  const isFeature = $derived(!!scene && Array.isArray(scene.steps));
   const hasC4 = $derived(!!scene && Array.isArray(scene.nodes) && scene.nodes.length > 0);
   const hasFlow = $derived(isFlow && (scene?.participants?.length ?? 0) > 0);
-  const ready = $derived(isFlow ? hasFlow : hasC4);
+  const hasData = $derived(isData && (scene?.entities?.length ?? 0) > 0);
+  const hasFeature = $derived(isFeature && (scene?.steps?.length ?? 0) > 0);
+  const ready = $derived(hasFlow || hasData || hasFeature || hasC4);
   // Remount the flow when the rendered content changes so the view resets. Both
   // kinds are now positioned by the layout engine, so key off the layout.
   const sig = $derived(layout ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
@@ -78,7 +86,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
     {/key}
   {:else}
     <div class="note">

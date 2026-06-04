@@ -78,8 +78,17 @@ export type WorkspaceModel = {
 export type LiveDocItem = { title: string; path: string; handle?: FileSystemFileHandle | null };
 export type LiveDocGroup = { title: string; items: LiveDocItem[] };
 
-// A code location recorded in / replayed from navigation history.
-export type Loc = { fileFqn: string; line: number; col: number; label?: string; fqn?: string };
+// A location recorded in / replayed from navigation history. `view` is which
+// pane it was visited in — `"canvas"` entries replay the diagram scope (`fqn`,
+// or the whole-model overview when absent); absent ⇒ `"code"`.
+export type Loc = {
+  fileFqn: string;
+  line: number;
+  col: number;
+  label?: string;
+  fqn?: string;
+  view?: "code" | "canvas";
+};
 
 // The editor's imperative API, handed back via `onready`. Impure (DOM/CodeMirror) —
 // held by the view/stores, injected into core only as plain values it returns.

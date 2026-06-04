@@ -5,8 +5,8 @@
 //! The result always carries a (possibly partial) [`Module`].
 
 use crate::ast::{
-    Alias, Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind,
-    Feature, FeatureStep, Field, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs,
+    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind, Feature,
+    FeatureStep, Field, FromSource, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs,
     MarkerKind, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, StepKind, Stmt, StmtKind,
     Tag, Type, Variant,
 };
@@ -26,6 +26,7 @@ pub struct Parsed {
 
 /// Parses `src` into a [`Module`], recovering from errors (§10).
 #[must_use]
+#[tracing::instrument(level = "debug", skip(src), fields(bytes = src.len()))]
 pub fn parse(src: &str) -> Parsed {
     let lexed = lex(src);
     let mut parser = Parser::new(src, lexed);
@@ -178,10 +179,6 @@ impl Parser {
     fn parse_item(&mut self) -> Option<Item> {
         let leading_trivia = self.take_trivia_before(self.cur_span().start);
 
-        if self.at(TokenKind::KwAlias) {
-            return Some(Item::Alias(self.parse_alias(leading_trivia)));
-        }
-
         // Decl = DocBlock { Macro } { Modifier } Structural
         let doc = self.parse_doc_block();
         let macros = self.parse_macros();
@@ -225,45 +222,6 @@ impl Parser {
         self.tokens
             .get(self.pos - 1)
             .map_or(self.eof_span.end, |t| t.span.end)
-    }
-
-    // --- alias --------------------------------------------------------------
-
-    fn parse_alias(&mut self, leading_trivia: Vec<SpannedTrivia>) -> Alias {
-        let kw = self.bump().expect("peeked alias");
-        let start = leading_trivia
-            .first()
-            .map_or(kw.span.start, |t| t.span.start);
-
-        let name = self.expect_ident("alias name");
-        self.eat(TokenKind::Eq);
-        let target = self.parse_path();
-
-        // An alias target is a node path: `::`-only. A `.` means it points at a
-        // callable, which cannot be aliased (§8.3).
-        if self.at(TokenKind::Dot) {
-            let span = self.cur_span();
-            self.error(span, "alias target is not a node path (contains `.`)");
-            // Skip the dotted tail so recovery lands on the `;`.
-            while self.at(TokenKind::Dot) {
-                self.bump();
-                self.eat(TokenKind::Ident);
-            }
-        }
-
-        let end = if self.at(TokenKind::Semi) {
-            self.bump().expect("peeked semi").span.end
-        } else {
-            self.error(target.span, "alias declaration without terminating `;`");
-            self.prev_end()
-        };
-
-        Alias {
-            name,
-            target,
-            leading_trivia,
-            span: Span::new(start, end),
-        }
     }
 
     // --- features (§5.2) ----------------------------------------------------
@@ -712,6 +670,12 @@ impl Parser {
 
     fn parse_type(&mut self) -> Type {
         let path = self.parse_path();
+        self.finish_type(path)
+    }
+
+    /// Completes a [`Type`] from an already-parsed base `path`: optional `<..>`
+    /// generics and an optional `[]` array suffix (§3.3, ADR-008).
+    fn finish_type(&mut self, path: Path) -> Type {
         let mut span = path.span;
 
         let mut generics = Vec::new();
@@ -932,33 +896,28 @@ impl Parser {
             TokenKind::KwIf => self.parse_if(),
             TokenKind::KwFor => self.parse_for(),
             TokenKind::KwWhile => self.parse_while(),
-            // `name: Type = Expr` is the sole assignment form (§7.1): a binding
-            // states its type. `name = Expr` (no annotation) is still parsed —
-            // tolerantly, with a placeholder type — so the error is one precise
-            // diagnostic rather than a confusing expression-parse failure.
+            // `name = Expr` binds a name once (§7.1); its type comes from a
+            // `from` right-hand side (ADR-035).
+            TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Eq) => {
+                let name = self.expect_ident("binding name");
+                self.bump(); // `=`
+                let value = self.parse_expr();
+                StmtKind::Assign { name, value }
+            }
+            // Binding annotations are removed (ADR-035): a binding states its
+            // type through `from`. Recover from the old `name: Type = Expr`
+            // shape with one precise diagnostic.
             TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Colon) => {
                 let name = self.expect_ident("binding name");
                 self.bump(); // `:`
-                let ty = self.parse_type();
-                if self.eat(TokenKind::Eq).is_none() {
-                    self.error(self.cur_span(), "expected `=` after the binding type");
-                }
+                let _ty = self.parse_type();
+                self.eat(TokenKind::Eq);
                 let value = self.parse_expr();
-                StmtKind::Assign { name, ty, value }
-            }
-            TokenKind::Ident if self.peek2_kind() == Some(TokenKind::Eq) => {
-                let name = self.expect_ident("binding name");
                 self.error(
                     name.span,
-                    "assignment requires a type annotation: write `name: Type = …`",
+                    "a binding states its type through `from`: write `name = Type from …`",
                 );
-                self.bump(); // `=`
-                let value = self.parse_expr();
-                StmtKind::Assign {
-                    ty: Type::placeholder(name.span),
-                    name,
-                    value,
-                }
+                StmtKind::Assign { name, value }
             }
             _ => StmtKind::Expr(self.parse_expr()),
         };
@@ -1103,20 +1062,38 @@ impl Parser {
             }
             Some(TokenKind::Ident) => {
                 let path = self.parse_path();
-                // `Type from { .. }` composition (§7.2): `from` opens a source
-                // set, never a block (§7.4).
-                if self.at(TokenKind::KwFrom) {
-                    return self.parse_from(path, false);
+                // A type-led expression is a `from` (§7.2, ADR-035). `<..>`
+                // generics, or a `[]` directly before `from`, commit to a `from`
+                // target; a bare `from` uses the path as the target type. `<`
+                // has no other meaning in expression position.
+                if self.at(TokenKind::LAngle) {
+                    let ty = self.finish_type(path);
+                    return self.parse_from(ty);
                 }
-                // `Type[] from { .. }` composes an array (§7.2). Only consume the
-                // `[]` when a `from` follows it, so a stray `[]` is left to error.
+                // Only consume the `[]` when a `from` follows it, so a stray `[]`
+                // is left to error.
                 if self.at(TokenKind::LBracket)
                     && self.peek2_kind() == Some(TokenKind::RBracket)
                     && self.tokens.get(self.pos + 2).map(|t| t.kind) == Some(TokenKind::KwFrom)
                 {
                     self.bump(); // `[`
-                    self.bump(); // `]`
-                    return self.parse_from(path, true);
+                    let rb = self.bump().expect("peeked `]`"); // `]`
+                    let ty = Type {
+                        span: path.span.to(rb.span),
+                        name: path,
+                        generics: Vec::new(),
+                        is_array: true,
+                    };
+                    return self.parse_from(ty);
+                }
+                if self.at(TokenKind::KwFrom) {
+                    let ty = Type {
+                        span: path.span,
+                        generics: Vec::new(),
+                        is_array: false,
+                        name: path,
+                    };
+                    return self.parse_from(ty);
                 }
                 Expr {
                     span: path.span,
@@ -1166,8 +1143,27 @@ impl Parser {
         }
     }
 
-    fn parse_from(&mut self, ty: Path, is_array: bool) -> Expr {
-        self.bump(); // `from`
+    fn parse_from(&mut self, ty: Type) -> Expr {
+        let start = ty.span.start;
+        if self.eat(TokenKind::KwFrom).is_none() {
+            self.error(self.cur_span(), "expected `from` after the target type");
+        }
+        // `{` opens a source set (composition); anything else is a single-value
+        // conversion (§7.2, §7.4, ADR-035).
+        let source = if self.at(TokenKind::LBrace) {
+            FromSource::Compose(self.parse_from_sources())
+        } else {
+            FromSource::Convert(Box::new(self.parse_expr()))
+        };
+        Expr {
+            span: Span::new(start, self.prev_end()),
+            kind: ExprKind::From { ty, source },
+        }
+    }
+
+    /// Parses a `from` brace source set `{ a, b }` (§7.2): comma-separated bare
+    /// expressions, possibly empty.
+    fn parse_from_sources(&mut self) -> Vec<Expr> {
         self.eat(TokenKind::LBrace);
         let mut sources = Vec::new();
         while !self.is_eof() && !self.at(TokenKind::RBrace) {
@@ -1208,18 +1204,8 @@ impl Parser {
             }
             break;
         }
-        let end = self
-            .eat(TokenKind::RBrace)
-            .map_or(self.prev_end(), |t| t.span.end);
-        let span = Span::new(ty.span.start, end);
-        Expr {
-            kind: ExprKind::From {
-                ty,
-                is_array,
-                sources,
-            },
-            span,
-        }
+        self.eat(TokenKind::RBrace);
+        sources
     }
 
     /// Parses chained `.name` / `.name(args)` segments onto `base` (ADR-007).
@@ -1352,7 +1338,6 @@ impl Parser {
                 | TokenKind::KwPerson
                 | TokenKind::KwData
                 | TokenKind::KwFor
-                | TokenKind::KwAlias
                 | TokenKind::KwFrom
                 | TokenKind::KwPublic
                 | TokenKind::KwSelf
@@ -1408,7 +1393,6 @@ impl Parser {
                     | TokenKind::KwContainer
                     | TokenKind::KwComponent
                     | TokenKind::KwData
-                    | TokenKind::KwAlias
                     | TokenKind::KwFeature
                     | TokenKind::Doc
                     | TokenKind::HashLBracket

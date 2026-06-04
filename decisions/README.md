@@ -118,13 +118,13 @@ Read in full for the construction rule, the accessor-only surface, and the rejec
 
 ## [020 — Return-type and `from` checking for determinable forms](020-return-type-and-from-checking.md)
 
-A `return` of a literal, an `Ok`/`Err`/`Some`/`None` marker, or a `Type from { … }` composition MUST match the declared return type (a union variant satisfies its union); a `from` target MUST be a `data` record or union variant. Bindings/calls/field accesses stay uninferred (shape hints, §1).
+A `return` of a literal, an `Ok`/`Err`/`Some`/`None` marker, or a `Type from { … }` composition MUST match the declared return type (a union variant satisfies its union); a `from` target MUST be a `data` record or union variant. Bindings/calls/field accesses stay uninferred (shape hints, §1). **Superseded by ADR-035** — `from` targets any non-node type and checks a single-expression source.
 
 Read in full for the determinable-forms scope, the variant-satisfies-union rule, and the rejected full-static-typing alternative.
 
 ## [021 — `from` can compose an array (`Type[] from { … }`)](021-array-from-composition.md)
 
-`Type[] from { … }` composes an array; `Type from { … }` stays a single value. The return-type and `for`-iterable checks compare array-ness. `alias` is unchanged — it binds a node, not a type, so it is not a type-alias. Amends ADR-020.
+`Type[] from { … }` composes an array; `Type from { … }` stays a single value. The return-type and `for`-iterable checks compare array-ness. Amends ADR-020.
 
 Read in full for the array-composition rule and the rejected type-alias alternative.
 
@@ -142,7 +142,7 @@ Read in full for the two rules and the still-open operator question.
 
 ## [024 — Cross-workspace git dependencies](024-git-dependencies.md)
 
-A `pds.toml` `[dependencies]` table declares other workspaces via git; each name is an FQN root scoped to the declaring workspace. Cross-workspace targets MUST be `public`; only direct dependencies are addressable; identity is `(source, revision, path)` so versions coexist; `pds.lock` pins the graph. `alias` MAY target a cross-workspace node.
+A `pds.toml` `[dependencies]` table declares other workspaces via git; each name is an FQN root scoped to the declaring workspace. Cross-workspace targets MUST be `public`; only direct dependencies are addressable; identity is `(source, revision, path)` so versions coexist; `pds.lock` pins the graph.
 
 Read in full for the resolution model, the side-by-side identity rule, and the rejected `use`-statement / flat-namespace / version-solver alternatives.
 
@@ -160,6 +160,54 @@ Read in full for the source-selection rule, the no-lock rationale, and the rejec
 
 ## [027 — Bindings state their type](027-explicit-binding-types.md)
 
-A binding is `x: Type = Expr`; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable (literal, `from`, marker, bare reference) it MUST match the annotation; a call/field/`self`/`::` path is not inferred, so the annotation stands. The rule is uniform — a composition repeats its type in the annotation. The binding's type now reads from the source, not an inlay. Amends ADR-002 and ADR-022.
+A binding is `x: Type = Expr`; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable (literal, `from`, marker, bare reference) it MUST match the annotation; a call/field/`self`/`::` path is not inferred, so the annotation stands. The rule is uniform — a composition repeats its type in the annotation. The binding's type now reads from the source, not an inlay. Amends ADR-002 and ADR-022. **Superseded by ADR-035** — the annotation is removed; a binding states its type through `from` (`x = Type from Expr`).
 
 Read in full for the uniform-annotation choice and the rejected self-typed-exemption / inlay-hint alternatives.
+
+## [028 — Drop `alias`](028-drop-alias.md)
+
+`alias Name = Path;` is removed. A cross-reference is its fully-qualified name (`banking::core::AccountStore`; `dep::module::Node` across a dependency). The keyword, the AST node, alias-following resolution, and the alias diagnostics all go. (ADR-030 further requires a node/type/variant reference to be its FQN, so a bare name resolves only to a parameter, binding, or `for` binding.)
+
+Read in full for why sugar with no new expressive power earned removal, and the §8/§10 edits (former §8.4/§8.5 renumber to §8.3/§8.4).
+
+## [029 — The filename is a module's only identity](029-filename-module-identity.md)
+
+A module's FQN comes from its file path relative to `pds.toml`; the `//!` inner doc documents the module but MUST NOT name it. The path-less single-file check builds an anonymous module; a rootless file's FQN is its stem.
+
+Read in full for the `//! Configuration` shadowing bug that motivated it, and the anonymous-single-file rule.
+
+## [030 — A node, type, or variant reference is always its FQN](030-require-full-qualification.md)
+
+Every reference to a node, type, or union variant MUST be its FQN, including one in the same module; a bare leaf name resolves only to a parameter, a binding, or a `for` binding. `self`, member access, primitives, and `Result`/`Option` stay bare. The checker flags a bare same-module node/type/variant name and is gated to a named module — the path-less single-file check stays lenient.
+
+Read in full for the four-meanings-per-bare-name ambiguity it removes, and the workspace-vs-anonymous gating.
+
+## [031 — A hyphen in a path segment normalises to `_`](031-hyphen-filename-normalisation.md)
+
+A kebab-case directory or filename maps to an identifier FQN segment by `-`→`_`, as Cargo maps `my-crate` to `my_crate`: `web-ide/file-tree.pds` is module `web_ide::file_tree`. One-way, load-time only; the file keeps its name on disk. A dependency name is not normalised — it MUST already be a valid identifier (§8.3). Single-sourced in `module_fqn`, mirrored by the web IDE's `fqnOf`.
+
+Read in full for the ADR-030 interaction (a hyphen file could not address its own nodes) and the dependency-name contrast.
+
+## [032 — A fieldless union variant is referenced through its union](032-fieldless-variant-fqn.md)
+
+ADR-030 requires a variant reference to be its FQN, but §3.5 gave only a record variant one (`module::Name`, it hoists). A fieldless variant does not hoist and its name may repeat across unions, so it is referenced `module::Union::Variant` — the union is its scope. The checker resolves a value-position variant reference (`Ok`/`Err`/`from` operand, `return` value) against the union; a made-up variant, unknown union, or wrong module is rejected.
+
+Read in full for the daemon fieldless-error example and the rejected hoist-fieldless-too alternative.
+
+## [033 — A union variant binds a same-module `data` (not an ADR-030 reference)](033-variant-declaration-same-module-binding.md)
+
+§3.5 called a bare `| Name` variant a "reference" to a same-module `data`, which ADR-030 would then require to be an FQN — but the grammar `Variant = Ident [ Record ]` admits only a bare identifier. The variant declaration is a declaration-site binding, not a use-site reference; ADR-030 governs use-site references (§8.1) and does not reach it. A variant names a same-module `data` and stays bare; a qualified variant (`| other::Name`) is rejected. Cross-module composition is a record field, not a variant.
+
+Read in full for the rejected `Variant = Path [ Record ]` alternative and why same-module keeps a union resolvable within one file.
+
+## [034 — A `data` symbol projects an entity view; a `feature` projects a flow view](034-data-entity-and-feature-flow-views.md)
+
+Selecting a `data` symbol fell back to the context overview (no view of the type), and selecting a `feature` — not a graph node (§5.2) — projected nothing and crashed the canvas via a lifeline fallback that could not lay out. Now a `data` symbol projects an **entity view** (§9.4): a card of its fields/variants with reference arrows to the data types they name. A `feature` projects a **flow view** (§9.5): its given/when/then steps as connected nodes. The graph carries each `data` node's disclosed shape for the entity view.
+
+Read in full for the field-resolution rule and the rejected reuse-the-C4-card and generic-lifeline-fallback alternatives.
+
+## [035 — `from` is the universal typed value-producer](035-from-universal-value-producer.md)
+
+`from` carries a type onto a value and is the only way a binding states one. A target MAY be any non-node type (`data`, variant, `Result`, `Option`, primitive, array); `T from { … }` composes a `data` record/variant, `T from expr` carries `T` onto a single value and checks the source's type where determinable — including a resolvable call's declared return. The `x: Type = Expr` annotation is removed (`x = Type from Expr`). A bare `data`/node FQN in value position is not a value; a fieldless variant stays one. Supersedes ADR-020 and ADR-027; amends ADR-003, ADR-021, ADR-022, ADR-032.
+
+Read in full for the one-producer rationale, the determinable-source rule (call-return reads), and the rejected keep-annotations / permissive-`from` / structural-check alternatives.

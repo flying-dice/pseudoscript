@@ -1,5 +1,5 @@
-// LANG.md §11: a complete, well-formed model. Every reference resolves, the
-// alias targets a public node, and the Result branch reads the correct accessor.
+// LANG.md §11: a complete, well-formed model. Every reference resolves, and the
+// Result branch reads the correct accessor.
 
 //! banking::core
 
@@ -16,7 +16,7 @@ public system Banking;
 
 public container Mainframe for Banking {
   public GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
-    r: Result<BankingInfo, NotFound> = AccountStore::Repository.fetch(id)
+    r = Result<BankingInfo, NotFound> from AccountStore::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.error)
     }

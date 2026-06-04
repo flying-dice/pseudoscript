@@ -65,6 +65,7 @@ pub fn definition(
 /// Builds hover content for the identifier at `position`: its kind/FQN (or
 /// member signature) and any `///` summary. Workspace-aware.
 #[must_use]
+#[tracing::instrument(level = "debug", skip(ws, src))]
 pub fn hover(ws: &Workspace, from_fqn: &str, src: &str, position: Position) -> Option<Hover> {
     let offset = position_to_offset(src, position);
     let index = LineIndex::new(src);

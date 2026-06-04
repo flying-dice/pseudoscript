@@ -11,10 +11,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use pseudoscript_project::MANIFEST;
 use walkdir::WalkDir;
-
-/// The project-root manifest filename (`LANG.md` §8.1).
-const MANIFEST: &str = "pds.toml";
 
 /// Discovers every `pds.toml` workspace under `root`, returning each workspace
 /// directory sorted for deterministic output.
@@ -33,7 +31,7 @@ pub fn discover(root: &Path) -> Result<Vec<PathBuf>> {
     for entry in WalkDir::new(root)
         .sort_by_file_name()
         .into_iter()
-        .filter_entry(is_visible)
+        .filter_entry(pseudoscript_project::is_visible)
     {
         let entry = entry.with_context(|| format!("walking `{}`", root.display()))?;
         if entry.file_type().is_dir() && entry.path().join(MANIFEST).is_file() {
@@ -50,19 +48,6 @@ pub fn discover(root: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(roots)
-}
-
-/// Whether `entry` should be descended into during discovery: skips `target`
-/// and `pds_modules` directories and any hidden entry. The walk root is kept.
-fn is_visible(entry: &walkdir::DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
-    }
-    let name = entry.file_name().to_string_lossy();
-    if name.starts_with('.') {
-        return false;
-    }
-    !(entry.file_type().is_dir() && (name == "target" || name == "pds_modules"))
 }
 
 #[cfg(test)]

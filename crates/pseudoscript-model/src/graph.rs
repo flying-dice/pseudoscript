@@ -137,6 +137,46 @@ pub struct SigParam {
     pub ty: String,
 }
 
+/// A `data` declaration's disclosed shape (§3.5): a record of typed fields, a
+/// discriminated union of variants, or an undisclosed black box. Populated only
+/// for [`NodeKind::Data`] nodes; drives the entity (ER) view (`LANG.md` §9.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "form")]
+pub enum DataShape {
+    /// `{ field: Type, … }`.
+    Record {
+        /// The fields, in declaration order.
+        fields: Vec<DataField>,
+    },
+    /// `= | A | B { … }`.
+    Union {
+        /// The variants, in declaration order.
+        variants: Vec<DataVariant>,
+    },
+    /// `;` — shape undisclosed.
+    BlackBox,
+}
+
+/// One field of a record (or a variant's inline record): its name and rendered
+/// type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataField {
+    /// The field name.
+    pub name: String,
+    /// The rendered field type (`OrderId`, `Result<Order, Rejected>`, …).
+    pub ty: String,
+}
+
+/// One variant of a union (§3.5): its name and, when it declares an inline
+/// record body, that record's fields (`None` for a bare `| Name` reference).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataVariant {
+    /// The variant name.
+    pub name: String,
+    /// The inline record's fields, or `None` for a bare reference variant.
+    pub fields: Option<Vec<DataField>>,
+}
+
 /// One node in the resolved graph: a structural declaration, a `data` type, or
 /// a callable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +202,9 @@ pub struct GraphNode {
     pub triggers: Vec<Trigger>,
     /// The callable's signature — `None` for non-callable nodes (§9.2).
     pub signature: Option<Signature>,
+    /// The `data` declaration's disclosed shape — `None` for non-`data` nodes
+    /// (`LANG.md` §3.5, §9.4).
+    pub shape: Option<DataShape>,
     /// Documentation lifted from the declaration's `///` block (§2.1).
     pub doc: NodeDoc,
 }
@@ -389,7 +432,6 @@ impl Builder<'_> {
             match item {
                 Item::Decl(decl) => self.collect_decl(decl, &entry.fqn, None, entry),
                 Item::Feature(feature) => self.collect_feature(feature, &entry.fqn),
-                Item::Alias(_) => {}
             }
         }
     }
@@ -452,11 +494,12 @@ impl Builder<'_> {
                     span: data.name.span,
                     triggers: Vec::new(),
                     signature: None,
+                    shape: Some(data_shape(&data.body)),
                     doc: node_doc(&decl.doc),
                 });
                 if let ast::DataBody::Union(variants) = &data.body {
                     for variant in variants {
-                        if variant.record.is_some() {
+                        if let Some(record) = &variant.record {
                             let vfqn = qualify(module, &variant.name.name);
                             self.push_node(GraphNode {
                                 fqn: vfqn,
@@ -468,6 +511,9 @@ impl Builder<'_> {
                                 span: variant.name.span,
                                 triggers: Vec::new(),
                                 signature: None,
+                                shape: Some(DataShape::Record {
+                                    fields: record_fields(record),
+                                }),
                                 // A union variant carries no `///` block of its
                                 // own; its docs live on the parent `data`.
                                 doc: NodeDoc::default(),
@@ -497,6 +543,7 @@ impl Builder<'_> {
             span: node.name.span,
             triggers: Vec::new(),
             signature: None,
+            shape: None,
             doc: node_doc(&decl.doc),
         });
         fqn
@@ -541,6 +588,7 @@ impl Builder<'_> {
             span: callable.name.span,
             triggers: triggers.clone(),
             signature: Some(signature_of(callable)),
+            shape: None,
             doc: node_doc(&callable.doc),
         });
 
@@ -656,12 +704,13 @@ impl Builder<'_> {
                     }
                 }
             }
-            ExprKind::From { ty, sources, .. } => {
+            ExprKind::From { ty, source } => {
+                let sources = source.sources();
                 for src in sources {
                     self.trace_expr(src, owner_fqn, module, entry, out);
                 }
                 // §7.2 / §9.1: each source derives the composed type.
-                let composed = self.canonicalize(&resolve_path(ty, module), module);
+                let composed = self.canonicalize(&resolve_path(&ty.name, module), module);
                 for src in sources {
                     if let Some(source_fqn) = expr_node_fqn(src, owner_fqn, module) {
                         self.graph.edges.push(Edge {
@@ -698,8 +747,7 @@ impl Builder<'_> {
         match &base.kind {
             ExprKind::Ref(Ref::SelfNode(_)) => CallTarget::SelfNode,
             ExprKind::Ref(Ref::Path(path)) => {
-                let target = resolve_call_target(path, entry);
-                CallTarget::Node(self.canonicalize(&target, module))
+                CallTarget::Node(self.canonicalize(&path_str(path), module))
             }
             _ => {
                 self.trace_expr(base, owner_fqn, module, entry, out);
@@ -816,18 +864,6 @@ enum CallTarget {
     Local,
 }
 
-/// Resolves a call-target path to its referent path: expands a same-module
-/// alias, otherwise returns the path as written. The caller canonicalises the
-/// result to a full FQN against the workspace.
-fn resolve_call_target(path: &Path, entry: &ModuleEntry) -> String {
-    if path.is_simple()
-        && let Some(target) = alias_target(&entry.ast, &path.segments[0].name)
-    {
-        return target;
-    }
-    path_str(path)
-}
-
 /// Resolves a bare-or-qualified path to an FQN in `module`.
 fn resolve_path(path: &Path, module: &str) -> String {
     if path.is_simple() {
@@ -874,6 +910,37 @@ fn signature_of(callable: &Callable) -> Signature {
             .as_ref()
             .map_or_else(|| "void".to_owned(), render_type),
     }
+}
+
+/// Lifts a `data` declaration's [`ast::DataBody`] into its disclosed
+/// [`DataShape`] (§3.5), rendering each field type to source form.
+fn data_shape(body: &ast::DataBody) -> DataShape {
+    match body {
+        ast::DataBody::Record(fields) => DataShape::Record {
+            fields: record_fields(fields),
+        },
+        ast::DataBody::Union(variants) => DataShape::Union {
+            variants: variants
+                .iter()
+                .map(|v| DataVariant {
+                    name: v.name.name.clone(),
+                    fields: v.record.as_deref().map(record_fields),
+                })
+                .collect(),
+        },
+        ast::DataBody::BlackBox => DataShape::BlackBox,
+    }
+}
+
+/// Renders a record's fields into [`DataField`]s, in declaration order.
+fn record_fields(fields: &[ast::Field]) -> Vec<DataField> {
+    fields
+        .iter()
+        .map(|f| DataField {
+            name: f.name.name.clone(),
+            ty: render_type(&f.ty),
+        })
+        .collect()
 }
 
 /// Renders a type to its source form: `Result<Order, Rejected>`, `Account[]`.
@@ -988,17 +1055,8 @@ fn expr_label(expr: &Expr) -> String {
         ExprKind::Paren(expr) => expr_label(expr),
         ExprKind::Literal(_) => "literal".to_owned(),
         ExprKind::Marker { kind, .. } => kind.keyword().to_owned(),
-        ExprKind::From { ty, .. } => format!("{} from", path_str(ty)),
+        ExprKind::From { ty, .. } => format!("{} from", path_str(&ty.name)),
     }
-}
-
-/// The FQN an `alias Name = Target;` in `module` binds, if `name` matches an
-/// alias declared there.
-fn alias_target(module: &ast::Module, name: &str) -> Option<String> {
-    module.items.iter().find_map(|item| match item {
-        Item::Alias(alias) if alias.name.name == name => Some(path_str(&alias.target)),
-        _ => None,
-    })
 }
 
 #[cfg(test)]

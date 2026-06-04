@@ -19,7 +19,7 @@ public data Payout {
   merchant: shared::MerchantId,
   amount: shared::Money,
   destination: context::BankAccountRef,
-  status: PayoutStatus,
+  status: payouts::PayoutStatus,
   transfer: Option<context::BankTransferRef>
 }
 
@@ -43,27 +43,27 @@ public data PayoutFailed { payout: shared::PayoutId, merchant: shared::MerchantI
 public container Payouts for context::AcmePay;
 
 /// Orchestrates the draw → send → settle payout saga and owns payout records.
-public component PayoutService for Payouts {
+public component PayoutService for payouts::Payouts {
   /// Pay out a merchant's available balance. Idempotent: a merchant with a payout
   /// already in flight returns it rather than drawing twice. The ledger draw is
   /// atomic, and a partner rejection restores the funds before failing.
-  public schedule(merchant: shared::MerchantId): Result<Payout, PayoutError> {
-    existing: Option<Payout> = Payouts::PayoutStore.inFlight(merchant)
+  public schedule(merchant: shared::MerchantId): Result<payouts::Payout, payouts::PayoutError> {
+    existing = Option<Payout> from Payouts::PayoutStore.inFlight(merchant)
     if (existing.isSome) {
       return Ok(existing.value)
     }
-    balance: Balance = ledger::Balance.balance(merchant)
-    due: Result<shared::Money, PayoutError> = self.payable(balance)
+    balance = Balance from ledger::Balance.balance(merchant)
+    due = Result<shared::Money, PayoutError> from self.payable(balance)
     if (due.isErr) {
       return Err(due.error)
     }
-    id: shared::PayoutId = Payouts::PayoutStore.nextId()
-    drawn: Result<BalanceTransaction, LedgerError> = ledger::Balance.withdraw(merchant, id, due.value)
+    id = shared::PayoutId from Payouts::PayoutStore.nextId()
+    drawn = Result<BalanceTransaction, LedgerError> from ledger::Balance.withdraw(merchant, id, due.value)
     if (drawn.isErr) {
-      return Err(InsufficientFunds)
+      return Err(payouts::PayoutError::InsufficientFunds)
     }
-    destination: context::BankAccountRef = self.destinationFor(merchant)
-    payout: Payout = Payout from { id, merchant, due.value, destination, Pending }
+    destination = context::BankAccountRef from self.destinationFor(merchant)
+    payout = Payout from { id, merchant, due.value, destination, payouts::PayoutStatus::Pending }
     Payouts::PayoutStore.save(payout)
     return self.send(payout)
   }
@@ -71,14 +71,14 @@ public component PayoutService for Payouts {
   /// Send a recorded payout to the banking partner. On rejection, restore the
   /// drawn funds to the ledger and fail the payout (surfacing `PayoutFailed`);
   /// on acceptance, mark it in transit for the reconciler to settle.
-  send(payout: Payout): Result<Payout, PayoutError> {
-    key: PayoutKey = self.keyFor(payout.id)
-    transfer: Result<BankTransfer, BankError> = context::BankingPartner.initiate(payout.amount, payout.destination, key)
+  send(payout: payouts::Payout): Result<payouts::Payout, payouts::PayoutError> {
+    key = PayoutKey from self.keyFor(payout.id)
+    transfer = Result<BankTransfer, BankError> from context::BankingPartner.initiate(payout.amount, payout.destination, key)
     if (transfer.isErr) {
       self.refund(payout)
       return Err(self.translate(transfer.error))
     }
-    inTransit: Payout = self.markInTransit(payout, transfer.value)
+    inTransit = Payout from self.markInTransit(payout, transfer.value)
     Payouts::PayoutStore.save(inTransit)
     return Ok(inTransit)
   }
@@ -87,11 +87,11 @@ public component PayoutService for Payouts {
   /// marks it `Paid` and raises `PayoutPaid`; a returned transfer restores the
   /// funds and fails it; one still in flight is left for the next sweep.
   public reconcile(id: shared::PayoutId): void {
-    loaded: Option<Payout> = Payouts::PayoutStore.fetch(id)
+    loaded = Option<Payout> from Payouts::PayoutStore.fetch(id)
     if (loaded.isSome) {
-      pending: Result<InTransitPayout, PayoutError> = self.inTransit(loaded.value)
+      pending = Result<InTransitPayout, PayoutError> from self.inTransit(loaded.value)
       if (pending.isOk) {
-        state: Option<BankTransferState> = context::BankingPartner.status(pending.value.transfer)
+        state = Option<BankTransferState> from context::BankingPartner.status(pending.value.transfer)
         if (state.isSome) {
           self.applyState(loaded.value, state.value)
         }
@@ -110,8 +110,8 @@ public component PayoutService for Payouts {
   }
 
   /// Apply a partner transfer state: settle, or restore-and-fail on a return.
-  applyState(payout: Payout, state: context::BankTransferState): void {
-    settled: Result<void, PayoutError> = self.isSettled(state)
+  applyState(payout: payouts::Payout, state: context::BankTransferState): void {
+    settled = Result<void, PayoutError> from self.isSettled(state)
     if (settled.isOk) {
       Payouts::PayoutStore.save(self.markPaid(payout))
       Payouts::Events.paid(PayoutPaid from { payout.id, payout.merchant, payout.amount })
@@ -122,8 +122,8 @@ public component PayoutService for Payouts {
 
   /// Restore a failed payout's funds to the ledger and record the failure,
   /// raising `PayoutFailed`. Idempotent: a payout already failed is left alone.
-  refund(payout: Payout): void {
-    fresh: Result<void, PayoutError> = self.notYetFailed(payout)
+  refund(payout: payouts::Payout): void {
+    fresh = Result<void, PayoutError> from self.notYetFailed(payout)
     if (fresh.isOk) {
       ledger::Balance.restore(payout.merchant, payout.id, payout.amount)
       Payouts::PayoutStore.save(self.markFailed(payout))
@@ -133,50 +133,50 @@ public component PayoutService for Payouts {
 
   /// `Ok(amount)` if the available balance is payable; `Err(NothingToPayOut)` if
   /// there is nothing to draw.
-  payable(balance: ledger::Balance): Result<shared::Money, PayoutError>;
+  payable(balance: ledger::Balance): Result<shared::Money, payouts::PayoutError>;
   /// The merchant's registered bank-account handle.
   destinationFor(merchant: shared::MerchantId): context::BankAccountRef;
   /// Build an idempotency key scoped to one payout.
-  keyFor(payout: shared::PayoutId): PayoutKey;
+  keyFor(payout: shared::PayoutId): payouts::PayoutKey;
   /// A payout marked `InTransit` with the partner's transfer ref.
-  markInTransit(payout: Payout, transfer: context::BankTransfer): Payout;
+  markInTransit(payout: payouts::Payout, transfer: context::BankTransfer): payouts::Payout;
   /// A payout marked `Paid`.
-  markPaid(payout: Payout): Payout;
+  markPaid(payout: payouts::Payout): payouts::Payout;
   /// A payout marked `Failed`.
-  markFailed(payout: Payout): Payout;
+  markFailed(payout: payouts::Payout): payouts::Payout;
   /// `Ok` only if the payout is in transit, exposing its transfer ref.
-  inTransit(payout: Payout): Result<InTransitPayout, PayoutError>;
+  inTransit(payout: payouts::Payout): Result<payouts::InTransitPayout, payouts::PayoutError>;
   /// `Ok` only if the transfer has settled at the bank.
-  isSettled(state: context::BankTransferState): Result<void, PayoutError>;
+  isSettled(state: context::BankTransferState): Result<void, payouts::PayoutError>;
   /// `Ok` only if the payout is not already failed (guards the restore).
-  notYetFailed(payout: Payout): Result<void, PayoutError>;
+  notYetFailed(payout: payouts::Payout): Result<void, payouts::PayoutError>;
   /// Map a banking-partner error to a payout error.
-  translate(e: context::BankError): PayoutError;
+  translate(e: context::BankError): payouts::PayoutError;
 }
 
 /// A payout proven to be in transit, with its transfer ref.
 public data InTransitPayout { payout: shared::PayoutId, transfer: context::BankTransferRef }
 
 /// Durable payout records.
-component PayoutStore for Payouts {
+component PayoutStore for payouts::Payouts {
   nextId(): shared::PayoutId;
-  save(payout: Payout): void;
-  fetch(id: shared::PayoutId): Option<Payout>;
+  save(payout: payouts::Payout): void;
+  fetch(id: shared::PayoutId): Option<payouts::Payout>;
   /// A merchant's payout already in flight, if any (idempotent scheduling).
-  inFlight(merchant: shared::MerchantId): Option<Payout>;
+  inFlight(merchant: shared::MerchantId): Option<payouts::Payout>;
   payableMerchants(): shared::MerchantId[];
   inFlightPayouts(): shared::PayoutId[];
 }
 
 /// Raises `PayoutPaid` and `PayoutFailed`. At-least-once through a transactional
 /// outbox; webhook and notification consumers de-duplicate on the payout id.
-component Events for Payouts {
-  paid(event: PayoutPaid): void;
-  failed(event: PayoutFailed): void;
+component Events for payouts::Payouts {
+  paid(event: payouts::PayoutPaid): void;
+  failed(event: payouts::PayoutFailed): void;
 }
 
 /// A rejected payout returns the funds to the merchant's balance.
-feature RejectedPayoutRestoresFunds for PayoutService {
+feature RejectedPayoutRestoresFunds for payouts::PayoutService {
   given "a payout drawn from the available balance"
   when  "the banking partner rejects or returns the transfer"
   then  "the drawn funds are restored to the balance"
@@ -184,7 +184,7 @@ feature RejectedPayoutRestoresFunds for PayoutService {
 }
 
 /// A merchant is never paid out twice for the same balance.
-feature PayoutIsIdempotent for PayoutService {
+feature PayoutIsIdempotent for payouts::PayoutService {
   given "a merchant with a payout already in flight"
   when  "the scheduler runs again"
   then  "the in-flight payout is returned"

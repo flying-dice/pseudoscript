@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use pseudoscript_model::{Workspace, ast, static_diagnostics};
+use pseudoscript_model::{Workspace, WorkspaceModule, ast, static_diagnostics};
 use pseudoscript_syntax::{Diagnostic, parse};
 use tower_lsp::lsp_types::Url;
 use walkdir::WalkDir;
@@ -43,6 +43,13 @@ pub struct Project {
     by_fqn: HashMap<String, Url>,
     /// Memoised resolved workspace; `None` after any edit, rebuilt on demand.
     resolved: Option<Workspace>,
+    /// Direct-dependency modules (`LANG.md` §8.3), each FQN prefixed with the
+    /// dependency name. Indexed as externals for cross-workspace resolution.
+    external: Vec<WorkspaceModule>,
+    /// Whether [`Self::external`] is current. Unlike `resolved`, it survives a
+    /// keystroke: dependencies change only with `pds.lock`/`pds.toml`/
+    /// `pds_modules`, not on every edit.
+    externals_loaded: bool,
 }
 
 impl Project {
@@ -63,6 +70,7 @@ impl Project {
     /// Open buffers keep their unsaved text.
     fn load_root(&mut self, root: &Path) {
         self.root = Some(root.to_path_buf());
+        self.externals_loaded = false;
         for (uri, source) in disk_sources(root) {
             if self.files.get(&uri).is_some_and(|e| e.open) {
                 continue;
@@ -79,6 +87,7 @@ impl Project {
         if self.root.is_none() {
             self.discover(&uri);
         }
+        self.invalidate_externals_if_dependency(&uri);
         let entry = self.make_entry(&uri, text, true);
         self.files.insert(uri, entry);
         self.reindex();
@@ -86,6 +95,7 @@ impl Project {
 
     /// Replaces an open buffer's text (full-sync change).
     pub fn change(&mut self, uri: Url, text: String) {
+        self.invalidate_externals_if_dependency(&uri);
         let entry = self.make_entry(&uri, text, true);
         self.files.insert(uri, entry);
         self.reindex();
@@ -94,6 +104,7 @@ impl Project {
     /// Marks a buffer closed. The editor's unsaved overlay is gone, so on-disk
     /// text is authoritative again: re-read it when present, else drop the entry.
     pub fn close(&mut self, uri: &Url) {
+        self.invalidate_externals_if_dependency(uri);
         match uri
             .to_file_path()
             .ok()
@@ -112,7 +123,7 @@ impl Project {
 
     /// Builds an [`Entry`] for `source`: derives its FQN and caches its parse.
     fn make_entry(&self, uri: &Url, source: String, open: bool) -> Entry {
-        let fqn = self.fqn_for(uri, &source);
+        let fqn = self.fqn_for(uri);
         let parsed = parse(&source);
         Entry {
             fqn,
@@ -188,10 +199,40 @@ impl Project {
     /// use after an edit.
     pub fn workspace(&mut self) -> &Workspace {
         if self.resolved.is_none() {
-            let parsed = self.files.values().map(|e| (e.fqn.clone(), e.ast.clone()));
-            self.resolved = Some(Workspace::build(parsed));
+            self.ensure_externals();
+            let local: Vec<(String, ast::Module)> = self
+                .files
+                .values()
+                .map(|e| (e.fqn.clone(), e.ast.clone()))
+                .collect();
+            let external: Vec<(String, ast::Module)> = self
+                .external
+                .iter()
+                .map(|m| (m.fqn.clone(), parse(&m.source).ast))
+                .collect();
+            self.resolved = Some(Workspace::build_with_externals(local, external));
         }
         self.resolved.as_ref().expect("resolved just built")
+    }
+
+    /// Loads the workspace's direct-dependency modules once per `pds.lock`/
+    /// `pds.toml`/`pds_modules` change (§8.3), caching the result. A load
+    /// failure (e.g. dependencies not installed) degrades to no externals rather
+    /// than failing analysis — the server keeps serving local symbols.
+    fn ensure_externals(&mut self) {
+        if self.externals_loaded {
+            return;
+        }
+        self.external = self.root.as_deref().map(load_externals).unwrap_or_default();
+        self.externals_loaded = true;
+    }
+
+    /// Marks the externals cache stale when `uri` is a manifest/lockfile or
+    /// lives under `pds_modules/`, so the next [`Self::workspace`] reloads them.
+    fn invalidate_externals_if_dependency(&mut self, uri: &Url) {
+        if uri_touches_dependencies(uri) {
+            self.externals_loaded = false;
+        }
     }
 
     /// Diagnostics for every module, each mapped to its file URI and the LSP
@@ -213,23 +254,16 @@ impl Project {
             .collect()
     }
 
-    /// Derives the FQN for `uri`: from its path relative to the project root
-    /// when inside one (§8.1), else from the `//!` inner doc, falling back to
-    /// the file stem so distinct doc-less files never collide on one FQN.
-    fn fqn_for(&self, uri: &Url, text: &str) -> String {
-        if let Some(fqn) = self
-            .root
+    /// Derives the FQN for `uri` from its file path (§8.1): the path relative to
+    /// the project root when inside one, else the file stem for a standalone
+    /// file opened outside any `pds.toml`. The filename is the sole source of a
+    /// module's identity; a `//!` inner doc is documentation, never the FQN.
+    fn fqn_for(&self, uri: &Url) -> String {
+        self.root
             .as_deref()
             .zip(uri.to_file_path().ok())
             .and_then(|(root, path)| path_fqn(root, &path))
-        {
-            return fqn;
-        }
-        let inner = inner_doc_fqn(text);
-        if !inner.is_empty() {
-            return inner;
-        }
-        uri_stem(uri)
+            .unwrap_or_else(|| uri_stem(uri))
     }
 }
 
@@ -238,7 +272,10 @@ impl Project {
 fn uri_stem(uri: &Url) -> String {
     uri.to_file_path()
         .ok()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .and_then(|p| {
+            p.file_stem()
+                .map(|s| pseudoscript_project::normalize_segment(&s.to_string_lossy()))
+        })
         .unwrap_or_else(|| uri.to_string())
 }
 
@@ -250,13 +287,14 @@ fn find_root(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Reads every `.pds` file under `root` as `(uri, source)`, skipping hidden
-/// directories and `target/`.
+/// directories, `target/`, and the vendored `pds_modules/` (its dependency
+/// modules are loaded separately as externals, not as local files).
 fn disk_sources(root: &Path) -> Vec<(Url, String)> {
     WalkDir::new(root)
         .into_iter()
-        .filter_entry(is_visible)
+        .filter_entry(pseudoscript_project::is_visible)
         .filter_map(std::result::Result::ok)
-        .filter(|e| is_pds_file(e.path()))
+        .filter(|e| pseudoscript_project::is_pds_file(e.path()))
         .filter_map(|entry| {
             let path = entry.path();
             let source = std::fs::read_to_string(path).ok()?;
@@ -266,46 +304,35 @@ fn disk_sources(root: &Path) -> Vec<(Url, String)> {
         .collect()
 }
 
-/// Whether a walked entry should be kept: the root itself, and any non-hidden,
-/// non-`target` entry.
-fn is_visible(entry: &walkdir::DirEntry) -> bool {
-    if entry.depth() == 0 {
-        return true;
+/// Loads the workspace's direct-dependency modules (§8.3), degrading to none on
+/// any failure (e.g. dependencies not installed) so the server keeps running.
+fn load_externals(root: &Path) -> Vec<WorkspaceModule> {
+    match pseudoscript_project::dependency_modules(root) {
+        Ok(modules) => modules,
+        Err(err) => {
+            eprintln!("pds: skipping dependency modules: {err:#}");
+            Vec::new()
+        }
     }
-    let name = entry.file_name().to_string_lossy();
-    !(name.starts_with('.') || (entry.file_type().is_dir() && name == "target"))
 }
 
-/// Whether `path` is a regular `.pds` file.
-fn is_pds_file(path: &Path) -> bool {
-    path.is_file() && path.extension().is_some_and(|ext| ext == "pds")
+/// Whether `uri` is a manifest/lockfile or lives under `pds_modules/` — a change
+/// to which invalidates the externals cache.
+fn uri_touches_dependencies(uri: &Url) -> bool {
+    let Ok(path) = uri.to_file_path() else {
+        return false;
+    };
+    path.file_name()
+        .is_some_and(|name| name == "pds.toml" || name == "pds.lock")
+        || path.components().any(|c| c.as_os_str() == "pds_modules")
 }
 
-/// The FQN for `path` relative to project `root`: each path component becomes a
-/// `::`-joined segment, the `.pds` extension stripped (`banking/core.pds` →
-/// `banking::core`). `None` if `path` escapes `root` or has no stem.
+/// The FQN for `path` relative to project `root` (`banking/core.pds` →
+/// `banking::core`), via the shared [`pseudoscript_project::module_fqn`] so
+/// hyphen normalisation (ADR-031) stays single-sourced. `None` if `path`
+/// escapes `root` or has no stem.
 fn path_fqn(root: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(root).ok()?;
-    let mut segments: Vec<String> = relative
-        .parent()
-        .into_iter()
-        .flat_map(Path::components)
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    segments.push(relative.file_stem()?.to_string_lossy().into_owned());
-    Some(segments.join("::"))
-}
-
-/// The FQN from a module's first `//!` inner doc — its first whitespace token
-/// (`//! banking::core — notes` → `banking::core`) — or empty if absent.
-fn inner_doc_fqn(text: &str) -> String {
-    parse(text)
-        .ast
-        .inner_docs
-        .first()
-        .and_then(|doc: &ast::InnerDoc| doc.text.split_whitespace().next())
-        .unwrap_or("")
-        .to_owned()
+    pseudoscript_project::module_fqn(path.strip_prefix(root).ok()?)
 }
 
 #[cfg(test)]
@@ -326,12 +353,25 @@ mod tests {
     }
 
     #[test]
-    fn inner_doc_fqn_reads_first_token() {
+    fn path_fqn_normalises_hyphens() {
+        // ADR-031: a kebab-case path maps to an identifier root.
         assert_eq!(
-            inner_doc_fqn("//! banking::core — notes\n"),
-            "banking::core"
+            path_fqn(Path::new("/proj"), Path::new("/proj/web-ide/file-tree.pds")).as_deref(),
+            Some("web_ide::file_tree"),
         );
-        assert_eq!(inner_doc_fqn("public system S;\n"), "");
+    }
+
+    #[test]
+    fn rootless_file_fqn_is_its_stem_not_the_inner_doc() {
+        // No project root: the module FQN is the file stem (§8.1), never the
+        // `//!` header — the filename is the sole identity.
+        let mut project = Project::default();
+        let uri = Url::parse("file:///tmp/notes.pds").unwrap();
+        project.open(
+            uri.clone(),
+            "//! banking::core\npublic system S;\n".to_owned(),
+        );
+        assert_eq!(project.fqn(&uri).unwrap(), "notes");
     }
 
     #[test]
@@ -355,5 +395,98 @@ mod tests {
         project.change(uri, "//! a\npublic system B;\n".to_owned());
         assert!(project.workspace().symbol("a::A").is_none());
         assert!(project.workspace().symbol("a::B").is_some());
+    }
+
+    #[test]
+    fn pds_modules_dir_is_not_indexed_as_local() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pds.toml"), "[doc]\nname = \"app\"\n").unwrap();
+        std::fs::write(dir.path().join("app.pds"), "//! app\npublic system A;\n").unwrap();
+        let vend = dir.path().join("pds_modules/banking-abc123def456/core.pds");
+        std::fs::create_dir_all(vend.parent().unwrap()).unwrap();
+        std::fs::write(&vend, "//! x\npublic system V;\n").unwrap();
+
+        let mut project = Project::default();
+        project.discover(&Url::from_directory_path(dir.path()).unwrap());
+
+        let fqns: Vec<_> = project.module_pairs().into_iter().map(|(f, _)| f).collect();
+        assert!(fqns.contains(&"app".to_owned()), "{fqns:?}");
+        assert!(
+            !fqns.iter().any(|f| f.contains("pds_modules")),
+            "vendored file leaked as a local module: {fqns:?}"
+        );
+    }
+
+    #[test]
+    fn locked_dependency_modules_are_offered_as_depname() {
+        use pseudoscript_model::deps::PackageId;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pds.toml"), "[doc]\nname = \"app\"\n").unwrap();
+        std::fs::write(dir.path().join("app.pds"), "//! app\npublic system A;\n").unwrap();
+
+        // Materialise a vendored package and lock it under the dependency `banking`.
+        let id = PackageId {
+            source: "https://x/acme/banking".into(),
+            rev: "0123456789abcdef".into(),
+            path: String::new(),
+        };
+        let pkg = dir.path().join("pds_modules").join(id.slug());
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("pds.toml"), "[doc]\nname = \"banking\"\n").unwrap();
+        std::fs::write(pkg.join("core.pds"), "//! c\npublic system Ledger;\n").unwrap();
+        let lock = format!(
+            "version = 1\n\n[[root]]\nname = \"banking\"\nsource = \"{}\"\nrev = \"{}\"\npath = \"\"\n",
+            id.source, id.rev
+        );
+        std::fs::write(dir.path().join("pds.lock"), lock).unwrap();
+
+        let mut project = Project::default();
+        project.discover(&Url::from_directory_path(dir.path()).unwrap());
+
+        let ws = project.workspace();
+        assert!(
+            ws.symbol("banking::core::Ledger").is_some(),
+            "dependency symbol not offered under its `depname::module` FQN"
+        );
+    }
+
+    #[test]
+    fn externals_survive_a_keystroke_but_reload_on_a_dependency_change() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pds.toml"), "[doc]\nname = \"app\"\n").unwrap();
+        std::fs::write(dir.path().join("app.pds"), "//! app\npublic system A;\n").unwrap();
+        let app_uri = Url::from_file_path(dir.path().join("app.pds")).unwrap();
+        let lock_uri = Url::from_file_path(dir.path().join("pds.lock")).unwrap();
+
+        let mut project = Project::default();
+        project.discover(&Url::from_directory_path(dir.path()).unwrap());
+        project.workspace(); // first build loads externals
+        assert!(project.externals_loaded);
+
+        // A normal `.pds` edit must NOT invalidate the externals cache (no fs
+        // re-walk on every keystroke).
+        project.change(app_uri, "//! app\npublic system B;\n".to_owned());
+        assert!(
+            project.externals_loaded,
+            "a non-dependency edit wrongly invalidated externals"
+        );
+
+        // Editing the lockfile must invalidate them.
+        project.change(lock_uri, "version = 1\n".to_owned());
+        assert!(
+            !project.externals_loaded,
+            "a `pds.lock` change must reload externals"
+        );
+    }
+
+    #[test]
+    fn uri_touches_dependencies_matches_manifests_and_vendored_paths() {
+        let touches = |p: &str| uri_touches_dependencies(&Url::from_file_path(p).unwrap());
+        assert!(touches("/proj/pds.toml"));
+        assert!(touches("/proj/pds.lock"));
+        assert!(touches("/proj/pds_modules/banking-abc/core.pds"));
+        assert!(!touches("/proj/app.pds"));
+        assert!(!touches("/proj/src/core.pds"));
     }
 }

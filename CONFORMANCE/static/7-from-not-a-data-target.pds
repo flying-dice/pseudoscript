@@ -1,12 +1,15 @@
-// LANG.md §7.2 (ADR-020): a `from` target must be a `data` record or union
-// variant; a primitive target is rejected.
+// LANG.md §7.2 (ADR-035): a `from` target MAY be any type except a node; a node
+// target is rejected.
 
 //! example
+
+public data Box { id: number }
 
 public system Banking;
 
 public container Mainframe for Banking {
-  Label(id: number): string {
-    return string from { id }
+  Make(): Box {
+    b = Banking from { }
+    return Box from { }
   }
 }

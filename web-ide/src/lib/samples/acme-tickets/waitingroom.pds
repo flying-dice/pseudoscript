@@ -25,18 +25,18 @@ public data WaitingError =
 public data QueueSnapshot { admitted: number, rate: number, version: number }
 
 /// Event: an attendee has been admitted from the queue to buy.
-public data Admitted { event: shared::EventId, token: AdmissionToken }
+public data Admitted { event: shared::EventId, token: waitingroom::AdmissionToken }
 
 /// `waitingroom` — the virtual queue and admission control.
 /// #headline
 public container WaitingRoom for context::AcmeTickets;
 
 /// The queue an attendee joins and polls.
-public component Queue for WaitingRoom {
+public component Queue for waitingroom::WaitingRoom {
   /// Join the queue for an event. Refuses with `QueueClosed` when the queue is
   /// shedding load — the backpressure valve for a surge that outruns capacity.
-  public join(event: shared::EventId, user: shared::UserId): Result<QueueTicket, WaitingError> {
-    open: Result<void, WaitingError> = self.accepting(event)
+  public join(event: shared::EventId, user: shared::UserId): Result<waitingroom::QueueTicket, waitingroom::WaitingError> {
+    open = Result<void, WaitingError> from self.accepting(event)
     if (open.isErr) {
       return Err(open.error)
     }
@@ -46,47 +46,47 @@ public component Queue for WaitingRoom {
   /// The caller's current position and estimated wait — computed from a published
   /// queue snapshot (drain cursor + rate), not live queue state, so millions of
   /// position polls during a hot on-sale never hit the enqueue path.
-  public position(ticket: QueueTicket): Position {
-    snap: Option<QueueSnapshot> = WaitingRoom::QueueStore.snapshot(ticket.event)
+  public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
+    snap = Option<QueueSnapshot> from WaitingRoom::QueueStore.snapshot(ticket.event)
     return self.estimate(ticket, snap)
   }
 
   /// `Err(QueueClosed)` when the queue is shedding load.
-  accepting(event: shared::EventId): Result<void, WaitingError>;
+  accepting(event: shared::EventId): Result<void, waitingroom::WaitingError>;
   /// Estimate a ticket's position from a queue snapshot (cold default if `None`).
-  estimate(ticket: QueueTicket, snapshot: Option<QueueSnapshot>): Position;
+  estimate(ticket: waitingroom::QueueTicket, snapshot: Option<waitingroom::QueueSnapshot>): waitingroom::Position;
 }
 
 /// Admission control: grants entry to the purchase flow, and gates every step
 /// that consumes inventory or money.
-public component Admission for WaitingRoom {
+public component Admission for waitingroom::WaitingRoom {
   /// Verify an admission token is valid and unexpired for its event. The gate
   /// reservation and checkout call before doing anything expensive.
-  public verify(token: AdmissionToken): Result<void, WaitingError> {
-    found: Option<AdmissionToken> = WaitingRoom::AdmissionStore.lookup(token)
+  public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
+    found = Option<AdmissionToken> from WaitingRoom::AdmissionStore.lookup(token)
     if (found.isNone) {
-      return Err(AdmissionInvalid)
+      return Err(waitingroom::WaitingError::AdmissionInvalid)
     }
     return self.unexpired(found.value)
   }
 
   /// `Err(AdmissionExpired)` if the token's window has closed.
-  unexpired(token: AdmissionToken): Result<void, WaitingError>;
+  unexpired(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError>;
 }
 
 /// The rate controller: admits queued attendees only as fast as the event can
 /// safely absorb. Driven by the scheduled drainer (`batch`).
 /// #headline
-public component Gatekeeper for WaitingRoom {
+public component Gatekeeper for waitingroom::WaitingRoom {
   /// Admit as many queued attendees as the event currently has headroom for,
   /// granting each an admission token and alerting them. Headroom is a function
   /// of remaining inventory and in-flight checkouts, so admission never outruns
   /// what the inventory and payment paths can serve.
   public admitNext(event: shared::EventId): void {
-    room: number = self.headroom(event)
-    due: QueueTicket[] = WaitingRoom::QueueStore.dequeue(event, room)
+    room = number from self.headroom(event)
+    due = QueueTicket[] from WaitingRoom::QueueStore.dequeue(event, room)
     for (ticket in due) {
-      token: AdmissionToken = WaitingRoom::AdmissionStore.grant(ticket)
+      token = AdmissionToken from WaitingRoom::AdmissionStore.grant(ticket)
       WaitingRoom::Signals.admitted(Admitted from { ticket.event, token })
     }
   }
@@ -99,11 +99,11 @@ public component Gatekeeper for WaitingRoom {
   /// apart the loop can only ever under-admit, never oversell the path. The
   /// drain interval is an ops knob; this bound holds at any interval.
   headroom(event: shared::EventId): number {
-    seats: Option<CapacitySnapshot> = inventory::Capacity.snapshot(event)
+    seats = Option<CapacitySnapshot> from inventory::Capacity.snapshot(event)
     if (seats.isNone) {
       return self.budget(0, 0)
     }
-    inflight: number = WaitingRoom::AdmissionStore.outstandingAsOf(event, seats.value.version)
+    inflight = number from WaitingRoom::AdmissionStore.outstandingAsOf(event, seats.value.version)
     return self.budget(seats.value.available, inflight)
   }
 
@@ -113,24 +113,24 @@ public component Gatekeeper for WaitingRoom {
 
 /// Durable queue state. The hot writes (`enqueue`/`dequeue`) stay on the store;
 /// reads are served from the cacheable `snapshot`, not a live per-ticket scan.
-component QueueStore for WaitingRoom {
-  enqueue(event: shared::EventId, user: shared::UserId): QueueTicket;
-  dequeue(event: shared::EventId, count: number): QueueTicket[];
+component QueueStore for waitingroom::WaitingRoom {
+  enqueue(event: shared::EventId, user: shared::UserId): waitingroom::QueueTicket;
+  dequeue(event: shared::EventId, count: number): waitingroom::QueueTicket[];
   /// A cacheable, versioned snapshot of an event's queue cursor and rate.
-  snapshot(event: shared::EventId): Option<QueueSnapshot>;
+  snapshot(event: shared::EventId): Option<waitingroom::QueueSnapshot>;
 }
 
 /// Publishes waiting-room domain events.
-component Signals for WaitingRoom {
-  admitted(event: Admitted): void;
+component Signals for waitingroom::WaitingRoom {
+  admitted(event: waitingroom::Admitted): void;
 }
 
 /// Records granted admission tokens and resolves them for the gate.
-component AdmissionStore for WaitingRoom {
+component AdmissionStore for waitingroom::WaitingRoom {
   /// Mint and record an admission token for a dequeued attendee.
-  grant(ticket: QueueTicket): AdmissionToken;
+  grant(ticket: waitingroom::QueueTicket): waitingroom::AdmissionToken;
   /// Resolve a presented token, if it was granted.
-  lookup(token: AdmissionToken): Option<AdmissionToken>;
+  lookup(token: waitingroom::AdmissionToken): Option<waitingroom::AdmissionToken>;
   /// Admissions in flight relative to a capacity version: granted and unexpired,
   /// but whose resulting hold is NOT yet reflected in the capacity snapshot at
   /// version `asOf`. A token counts continuously from grant until the snapshot
@@ -141,7 +141,7 @@ component AdmissionStore for WaitingRoom {
 }
 
 /// Admission only opens at the controlled rate, protecting the purchase path.
-feature AdmitsAtControlledRate for Gatekeeper {
+feature AdmitsAtControlledRate for waitingroom::Gatekeeper {
   given "thousands of attendees are queued for a hot on-sale"
   and   "the event currently has headroom for a limited number of buyers"
   when  "the drainer runs"
@@ -151,7 +151,7 @@ feature AdmitsAtControlledRate for Gatekeeper {
 }
 
 /// No purchase step proceeds without a valid admission token.
-feature AdmissionGatesPurchase for Admission {
+feature AdmissionGatesPurchase for waitingroom::Admission {
   given "an admission token that has expired"
   when  "a reservation or checkout presents it"
   then  "the step is refused as an expired admission"
@@ -161,7 +161,7 @@ feature AdmissionGatesPurchase for Admission {
 /// buyers, seats are assigned best-available (sharded allocation), not by queue
 /// position — true seat-FIFO would re-serialise the allocation the sharding
 /// exists to spread.
-feature QueueGatesRateNotSeatOrder for Queue {
+feature QueueGatesRateNotSeatOrder for waitingroom::Queue {
   given "two attendees admitted from the queue in order"
   when  "both reserve from the same tier"
   then  "seats are assigned best-available across shards"

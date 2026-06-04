@@ -1,12 +1,13 @@
-// LANG.md §7.1 (ADR-027): a binding's annotation must match a determinable
-// initialiser. A `number`-annotated binding initialised with a string literal
-// is rejected.
+// LANG.md §7.2 (ADR-035): `Type from Expr` carries a type onto a value; where
+// the source's type is determinable it MUST match the target. A `number` target
+// with a string-literal source is a model error.
 
 //! example
 
 public system S;
+
 public container C for S {
   run(): void {
-    n: number = ""
+    n = number from ""
   }
 }

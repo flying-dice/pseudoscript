@@ -1,5 +1,5 @@
 //! Integration tests for `pds add` / `pds install` / `pds update` / `pds remove`
-//! against a real local git repository fixture (`LANG.md` §8.4, §8.5, ADR-024).
+//! against a real local git repository fixture (`LANG.md` §8.3, §8.4, ADR-024).
 //!
 //! These drive the built `pds` binary end to end over a `file://` git remote, so
 //! the fetch, sparse subtree checkout, commit pinning, lockfile, and HEAD

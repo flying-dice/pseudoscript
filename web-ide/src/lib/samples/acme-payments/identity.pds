@@ -7,7 +7,7 @@
 //! rather than left to the channel.
 
 /// A merchant account.
-public data Merchant { id: shared::MerchantId, name: string, mode: Mode }
+public data Merchant { id: shared::MerchantId, name: string, mode: identity::Mode }
 
 /// Live keys move real money; test keys exercise the same code paths against the
 /// network's sandbox. A key's mode is fixed; objects in one mode are never
@@ -24,7 +24,7 @@ public data PublishableKey { value: string }
 
 /// A restricted API key — server-side, limited to the permissions it was granted
 /// (the recommended tier for new integrations and for staff tooling).
-public data RestrictedKey { value: string, scope: Scope }
+public data RestrictedKey { value: string, scope: identity::Scope }
 
 /// A named permission a restricted key may carry.
 public data Scope =
@@ -42,12 +42,12 @@ public data ApiKeyError =
 public container Identity for context::AcmePay;
 
 /// Resolves and scope-checks API keys.
-public component Keys for Identity {
+public component Keys for identity::Identity {
   /// Resolve a secret key to its merchant, or `Err(InvalidKey)`.
-  public authenticateSecret(key: SecretKey): Result<Merchant, ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolveSecret(key)
+  public authenticateSecret(key: identity::SecretKey): Result<identity::Merchant, identity::ApiKeyError> {
+    merchant = Option<Merchant> from Identity::KeyStore.resolveSecret(key)
     if (merchant.isNone) {
-      return Err(InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
     return Ok(merchant.value)
   }
@@ -55,10 +55,10 @@ public component Keys for Identity {
   /// Resolve a publishable key to its merchant. A publishable key is valid only
   /// for tokenisation; every other action MUST authenticate a secret or
   /// restricted key.
-  public authenticatePublishable(key: PublishableKey): Result<Merchant, ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolvePublishable(key)
+  public authenticatePublishable(key: identity::PublishableKey): Result<identity::Merchant, identity::ApiKeyError> {
+    merchant = Option<Merchant> from Identity::KeyStore.resolvePublishable(key)
     if (merchant.isNone) {
-      return Err(InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
     return Ok(merchant.value)
   }
@@ -66,31 +66,31 @@ public component Keys for Identity {
   /// Resolve a restricted key to its merchant and require it to carry `need`.
   /// `Err(InsufficientScope)` if the key is valid but lacks the permission — the
   /// disclosed authorisation gate for scoped staff and service keys.
-  public authenticateRestricted(key: RestrictedKey, need: Scope): Result<Merchant, ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolveRestricted(key)
+  public authenticateRestricted(key: identity::RestrictedKey, need: identity::Scope): Result<identity::Merchant, identity::ApiKeyError> {
+    merchant = Option<Merchant> from Identity::KeyStore.resolveRestricted(key)
     if (merchant.isNone) {
-      return Err(InvalidKey)
+      return Err(identity::ApiKeyError::InvalidKey)
     }
-    granted: Result<void, ApiKeyError> = self.permits(key, need)
+    granted = Result<void, ApiKeyError> from self.permits(key, need)
     if (granted.isErr) {
-      return Err(InsufficientScope)
+      return Err(identity::ApiKeyError::InsufficientScope)
     }
     return Ok(merchant.value)
   }
 
   /// `Err(InsufficientScope)` unless `key` carries the `need` permission.
-  permits(key: RestrictedKey, need: Scope): Result<void, ApiKeyError>;
+  permits(key: identity::RestrictedKey, need: identity::Scope): Result<void, identity::ApiKeyError>;
 }
 
 /// Durable key→merchant records.
-component KeyStore for Identity {
-  resolveSecret(key: SecretKey): Option<Merchant>;
-  resolvePublishable(key: PublishableKey): Option<Merchant>;
-  resolveRestricted(key: RestrictedKey): Option<Merchant>;
+component KeyStore for identity::Identity {
+  resolveSecret(key: identity::SecretKey): Option<identity::Merchant>;
+  resolvePublishable(key: identity::PublishableKey): Option<identity::Merchant>;
+  resolveRestricted(key: identity::RestrictedKey): Option<identity::Merchant>;
 }
 
 /// A publishable key cannot move money.
-feature PublishableKeyIsTokenisationOnly for Keys {
+feature PublishableKeyIsTokenisationOnly for identity::Keys {
   given "a publishable key"
   when  "it is presented to a payment-creating endpoint"
   then  "the request is refused"
@@ -98,7 +98,7 @@ feature PublishableKeyIsTokenisationOnly for Keys {
 }
 
 /// A restricted key without the right scope is refused.
-feature RestrictedKeyHonoursScope for Keys {
+feature RestrictedKeyHonoursScope for identity::Keys {
   given "a restricted key that lacks the refunds permission"
   when  "it is used to issue a refund"
   then  "the request is refused as insufficient scope"

@@ -9,13 +9,13 @@ public person Visitor {
   /// #headline
   #[manual]
   public tryInBrowser(): void {
-    Landing.openIde()
+    landing::Landing.openIde()
   }
 
   /// Take the model-driven workflow local with the CLI.
   #[manual]
   public installCli(): void {
-    Landing.showInstall()
+    landing::Landing.showInstall()
   }
 }
 
@@ -37,7 +37,7 @@ public container Landing for context::Pseudoscript {
 
 /// The landing page's one job: get a visitor into the product.
 /// #headline
-feature OpenTheIde for Landing {
+feature OpenTheIde for landing::Landing {
   given "a visitor on pdscript.dev"
   when "they choose to try it in the browser"
   then "the zero-install Web IDE opens at ide.pdscript.dev"

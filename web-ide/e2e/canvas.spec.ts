@@ -38,3 +38,54 @@ test("the menu bar persists across views", async ({ page }) => {
   await expect(page.locator(".svelte-flow__node-card").first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: "File", exact: true })).toBeVisible();
 });
+
+test("go to definition from the canvas, then Back returns to the canvas", async ({ page }) => {
+  await createProject(page, "empty");
+
+  await page.getByLabel("Canvas").click();
+  const flow = page.locator(".svelte-flow");
+  const node = page.locator(".svelte-flow__node-card").first();
+  await expect(node).toBeVisible({ timeout: 20_000 });
+
+  // Leave the canvas for the editor via Go to definition.
+  await node.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("menuitem", { name: "Go to definition" }).click();
+  await expect(page.getByTestId("editor").locator(".cm-content")).toBeVisible();
+  await expect(flow).toHaveCount(0);
+
+  // Back is a genuine back across the app — it returns to the canvas diagram we
+  // were on, not the editor's last caret.
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(flow).toBeVisible();
+  await expect(page.getByTestId("editor").locator(".cm-content")).not.toBeVisible();
+});
+
+test("back/forward stays on the canvas across drill navigations", async ({ page }) => {
+  await createProject(page, "empty");
+
+  // On the canvas, drill the system into its container diagram, then the
+  // container into its component diagram — two recorded canvas navigations.
+  await page.getByLabel("Canvas").click();
+  const flow = page.locator(".svelte-flow");
+  const node = page.locator(".svelte-flow__node-card").first();
+  await expect(node).toBeVisible({ timeout: 20_000 });
+
+  await node.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("menuitem", { name: "Open container diagram" }).click();
+  const container = page.locator(".svelte-flow__node-card").first();
+  await expect(container).toBeVisible();
+  await container.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("menuitem", { name: "Open component diagram" }).click();
+  await expect(flow).toBeVisible();
+
+  // Back returns to the previous diagram scope — staying on the canvas, not the
+  // editor (the bug: back used to drop you into the code).
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(flow).toBeVisible();
+  await expect(page.getByTestId("editor").locator(".cm-content")).not.toBeVisible();
+
+  // Forward re-applies the next scope, still on the canvas.
+  await page.getByRole("button", { name: "Forward", exact: true }).click();
+  await expect(flow).toBeVisible();
+  await expect(page.getByTestId("editor").locator(".cm-content")).not.toBeVisible();
+});

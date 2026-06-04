@@ -16,14 +16,14 @@ public data EventStatus =
   | Cancelled
 
 /// An event that sells tickets.
-public data Event { id: shared::EventId, name: string, venue: Venue, status: EventStatus, onsaleAt: datetime }
+public data Event { id: shared::EventId, name: string, venue: catalog::Venue, status: catalog::EventStatus, onsaleAt: datetime }
 
 /// A price tier within an event (e.g. "Floor", "Balcony"), with a base price
 /// before any surge multiplier and an allocated capacity.
 public data Tier { id: shared::TierId, event: shared::EventId, name: string, basePrice: shared::Money, capacity: number }
 
 /// A new event to create (no id or status yet).
-public data NewEvent { name: string, venue: Venue, onsaleAt: datetime }
+public data NewEvent { name: string, venue: catalog::Venue, onsaleAt: datetime }
 
 /// A new tier to add to an event.
 public data NewTier { event: shared::EventId, name: string, basePrice: shared::Money, capacity: number }
@@ -43,41 +43,41 @@ public data EventCancelled { event: shared::EventId }
 
 /// A cacheable, versioned storefront projection of an event — the read model the
 /// browse path hits instead of the authoritative store.
-public data EventListing { event: shared::EventId, name: string, venue: Venue, status: EventStatus, version: number }
+public data EventListing { event: shared::EventId, name: string, venue: catalog::Venue, status: catalog::EventStatus, version: number }
 
 /// `catalog` — events and tiers; the source of truth for the offer.
 /// #critical
 public container Catalog for context::AcmeTickets;
 
 /// Event lifecycle and authoritative reads.
-public component Events for Catalog {
+public component Events for catalog::Catalog {
   /// Create a new event in `Draft`.
-  public create(draft: NewEvent): Event {
-    id: shared::EventId = Catalog::EventStore.nextId()
-    event: Event = Event from { id, draft, Draft }
+  public create(draft: catalog::NewEvent): catalog::Event {
+    id = shared::EventId from Catalog::EventStore.nextId()
+    event = Event from { id, draft, catalog::EventStatus::Draft }
     Catalog::EventStore.save(event)
     return event
   }
 
   /// Put a draft event on sale.
-  public putOnSale(id: shared::EventId): Result<Event, EventNotFound> {
-    found: Option<Event> = Catalog::EventStore.fetch(id)
+  public putOnSale(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
+    found = Option<Event> from Catalog::EventStore.fetch(id)
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    live: Event = self.transition(found.value, OnSale)
+    live = Event from self.transition(found.value, catalog::EventStatus::OnSale)
     Catalog::EventStore.save(live)
     return Ok(live)
   }
 
   /// Cancel an event: mark it `Cancelled` and raise `EventCancelled` so orders
   /// bulk-refunds and holders are notified.
-  public cancel(id: shared::EventId): Result<Event, EventNotFound> {
-    found: Option<Event> = Catalog::EventStore.fetch(id)
+  public cancel(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
+    found = Option<Event> from Catalog::EventStore.fetch(id)
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    dead: Event = self.transition(found.value, Cancelled)
+    dead = Event from self.transition(found.value, catalog::EventStatus::Cancelled)
     Catalog::EventStore.save(dead)
     Catalog::Signals.cancelled(EventCancelled from { id })
     return Ok(dead)
@@ -86,9 +86,9 @@ public component Events for Catalog {
   /// Advance an event's lifecycle if warranted: `SoldOut` when inventory is
   /// exhausted, `Closed` once the event has passed (driven by the curator job).
   public settle(id: shared::EventId): void {
-    found: Option<Event> = Catalog::EventStore.fetch(id)
+    found = Option<Event> from Catalog::EventStore.fetch(id)
     if (found.isSome) {
-      next: Option<Event> = self.lifecycle(found.value)
+      next = Option<Event> from self.lifecycle(found.value)
       if (next.isSome) {
         Catalog::EventStore.save(next.value)
       }
@@ -96,51 +96,51 @@ public component Events for Catalog {
   }
 
   /// Read one event, or `EventNotFound`.
-  public get(id: shared::EventId): Result<Event, EventNotFound> {
+  public get(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
     return Catalog::EventStore.fetch(id)
   }
 
   /// `Err(NotSellable)` unless the event is `OnSale` — the gate sales pass before
   /// taking a hold, so nothing sells against a draft, sold-out, closed, or
   /// cancelled event.
-  public onSaleNow(id: shared::EventId): Result<void, NotSellable>;
+  public onSaleNow(id: shared::EventId): Result<void, catalog::NotSellable>;
 
   /// Every event currently on sale (authoritative; drives the batch jobs).
-  public onSale(): Event[] {
+  public onSale(): catalog::Event[] {
     return Catalog::EventStore.onSale()
   }
 
   /// A copy of `event` in a new status.
-  transition(event: Event, status: EventStatus): Event;
+  transition(event: catalog::Event, status: catalog::EventStatus): catalog::Event;
   /// The event transitioned to `SoldOut`/`Closed` if its inventory or date now
   /// warrants it, else `None`.
-  lifecycle(event: Event): Option<Event>;
+  lifecycle(event: catalog::Event): Option<catalog::Event>;
 }
 
 /// The cacheable storefront read model: serves browse traffic so the source-of-
 /// record store is never the hot read on a surge on-sale. Maintained off `Events`
 /// writes; safe to read stale; versioned for caching — the same treatment as
 /// `inventory::Capacity` and `pricing::Demand`.
-public component Listings for Catalog {
+public component Listings for catalog::Catalog {
   /// One event's storefront projection, or `None` if absent.
-  listing(event: shared::EventId): Option<EventListing>;
+  listing(event: shared::EventId): Option<catalog::EventListing>;
   /// Every on-sale event's projection.
-  onSale(): EventListing[];
+  onSale(): catalog::EventListing[];
 }
 
 /// Tier configuration and base-price reads.
-public component Tiers for Catalog {
+public component Tiers for catalog::Catalog {
   /// Add a tier to an event.
-  public add(tier: NewTier): Tier {
-    id: shared::TierId = Catalog::TierStore.nextId()
-    created: Tier = Tier from { id, tier }
+  public add(tier: catalog::NewTier): catalog::Tier {
+    id = shared::TierId from Catalog::TierStore.nextId()
+    created = Tier from { id, tier }
     Catalog::TierStore.save(created)
     return created
   }
 
   /// The base price of a tier (before surge), or `TierNotFound`.
-  public priceOf(id: shared::TierId): Result<shared::Money, TierNotFound> {
-    tier: Option<Tier> = Catalog::TierStore.fetch(id)
+  public priceOf(id: shared::TierId): Result<shared::Money, catalog::TierNotFound> {
+    tier = Option<Tier> from Catalog::TierStore.fetch(id)
     if (tier.isNone) {
       return Err(TierNotFound from { id })
     }
@@ -149,21 +149,21 @@ public component Tiers for Catalog {
 }
 
 /// Durable event records.
-component EventStore for Catalog {
+component EventStore for catalog::Catalog {
   nextId(): shared::EventId;
-  save(event: Event): void;
-  fetch(id: shared::EventId): Option<Event>;
-  onSale(): Event[];
+  save(event: catalog::Event): void;
+  fetch(id: shared::EventId): Option<catalog::Event>;
+  onSale(): catalog::Event[];
 }
 
 /// Durable tier records.
-component TierStore for Catalog {
+component TierStore for catalog::Catalog {
   nextId(): shared::TierId;
-  save(tier: Tier): void;
-  fetch(id: shared::TierId): Option<Tier>;
+  save(tier: catalog::Tier): void;
+  fetch(id: shared::TierId): Option<catalog::Tier>;
 }
 
 /// Publishes catalog domain events.
-component Signals for Catalog {
-  cancelled(event: EventCancelled): void;
+component Signals for catalog::Catalog {
+  cancelled(event: catalog::EventCancelled): void;
 }

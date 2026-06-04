@@ -1,0 +1,21 @@
+// LANG.md §9.1: relationships of one kind between the same ordered node pair
+// collapse to a single arrow whose label lists each relationship. `AWeb` calls
+// two methods on `BApi` (both bubble A→B); `BApi` calls back `AWeb` (B→A). The
+// two A→B calls merge into one edge with sorted labels; the opposite-direction
+// callback stays a separate edge.
+
+//! m
+
+public system A;
+
+public container AWeb for A {
+  public Go(): void { m::BApi.Read(); m::BApi.Ping() }
+}
+
+public system B;
+
+public container BApi for B {
+  public Read(): void;
+  public Ping(): void;
+  public Cb(): void { m::AWeb.Go() }
+}

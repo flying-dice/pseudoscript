@@ -1,0 +1,12 @@
+// LANG.md §9.5: a `feature` projects a flow view of its ordered steps, naming the
+// target node it describes.
+
+//! shop
+
+public system Shop;
+
+feature Place for Shop {
+  given "an empty cart"
+  when "an item is added"
+  then "the cart holds one item"
+}

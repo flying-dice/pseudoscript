@@ -1,8 +1,0 @@
-// LANG.md §8.3: an `alias` must bind to a node, not a module/namespace.
-// `banking::core` is this file's module, not a node.
-
-//! banking::core
-
-public system Banking;
-
-alias Events = banking::core;

@@ -32,12 +32,23 @@ class WorkspaceStore {
   // The last manifest parse error, shown inline when the manifest is open.
   manifestError = $state<string | null>(null);
 
+  // Resolved direct-dependency modules (LANG.md §8.3), dependency-name-prefixed
+  // (`auth::core`). Read from `pds_modules/` + `pds.lock` once on workspace mount
+  // — dependencies change only via the `pds` CLI, not in-editor. The language
+  // services take these as externals (public-only visibility, §8.2).
+  dependencyModules = $state<Module[]>([]);
+
   // Every module as {fqn, source} — diagrams and diagnostics span the whole
   // workspace (cross-module edges), not just the open file.
   get allModules(): Module[] {
     return this.workspace
       ? this.workspace.files.map((f) => ({ fqn: f.fqn ?? "", source: this.moduleSources[f.fqn ?? ""] ?? "" }))
       : [];
+  }
+
+  // The dependency modules offered to the language services as externals.
+  get externalModules(): Module[] {
+    return this.dependencyModules;
   }
 }
 

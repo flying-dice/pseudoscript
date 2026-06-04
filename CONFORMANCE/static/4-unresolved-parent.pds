@@ -1,0 +1,9 @@
+// LANG.md §4/§8.1 (ADR-030): a `for` parent names a node by FQN. A bare name
+// cannot reach another module, so a bare parent that names no same-module node
+// is unresolved. `Phantom` is undeclared.
+
+//! example
+
+public system Sys;
+
+public component Widget for Phantom;

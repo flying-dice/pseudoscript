@@ -2,49 +2,90 @@
   import { File, FileCode, FileText, Settings2, X } from "@lucide/svelte";
   import type { Component as ComponentType } from "svelte";
 
+  import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
+
   type Tab = { key: string; label: string; kind: "module" | "doc" | "manifest" | "other"; active: boolean; dirty: boolean };
 
   type Props = {
     tabs?: Tab[];
     onselect?: (key: string) => void;
     onclose?: (key: string) => void;
+    oncloseothers?: (key: string) => void;
+    onclosetoright?: (key: string) => void;
+    oncloseall?: () => void;
+    onreorder?: (fromKey: string, toKey: string) => void;
   };
 
-  let { tabs = [], onselect, onclose }: Props = $props();
+  let { tabs = [], onselect, onclose, oncloseothers, onclosetoright, oncloseall, onreorder }: Props = $props();
 
   const ICON: Record<Tab["kind"], ComponentType> = { module: FileCode, doc: FileText, manifest: Settings2, other: File };
+
+  // Native HTML5 drag-to-reorder (same approach as FileTree's file moves).
+  let dragKey = $state<string | null>(null);
+  let dropKey = $state<string | null>(null);
 </script>
 
 <div class="tabbar" role="tablist" aria-label="Open files">
-  {#each tabs as tab (tab.key)}
+  {#each tabs as tab, index (tab.key)}
     {@const Icon = ICON[tab.kind]}
-    <div
-      class="tab"
-      class:active={tab.active}
-      onauxclick={(e) => {
-        if (e.button === 1) {
-          e.preventDefault();
-          onclose?.(tab.key);
-        }
-      }}
-    >
-      <button class="tab-open" role="tab" aria-selected={tab.active} onclick={() => onselect?.(tab.key)} title={tab.key}>
-        <Icon class="tab-ico" size={13} strokeWidth={2} aria-hidden="true" />
-        <span class="tab-label">{tab.label}</span>
-        {#if tab.dirty}<span class="tab-dirty" aria-hidden="true"></span>{/if}
-      </button>
-      <button
-        class="tab-close"
-        aria-label="Close {tab.label}"
-        title="Close"
-        onclick={(e) => {
-          e.stopPropagation();
-          onclose?.(tab.key);
-        }}
-      >
-        <X size={12} strokeWidth={2.25} aria-hidden="true" />
-      </button>
-    </div>
+    <ContextMenu.Root>
+      <ContextMenu.Trigger class="tab-trigger">
+        <div
+          class="tab"
+          class:active={tab.active}
+          class:drop-target={dropKey === tab.key && dragKey !== tab.key}
+          role="presentation"
+          draggable={true}
+          ondragstart={() => (dragKey = tab.key)}
+          ondragend={() => {
+            dragKey = null;
+            dropKey = null;
+          }}
+          ondragover={(e) => {
+            if (dragKey) {
+              e.preventDefault();
+              dropKey = tab.key;
+            }
+          }}
+          ondrop={(e) => {
+            e.preventDefault();
+            if (dragKey && dragKey !== tab.key) onreorder?.(dragKey, tab.key);
+            dragKey = null;
+            dropKey = null;
+          }}
+          onauxclick={(e) => {
+            if (e.button === 1) {
+              e.preventDefault();
+              onclose?.(tab.key);
+            }
+          }}
+        >
+          <button class="tab-open" role="tab" aria-selected={tab.active} onclick={() => onselect?.(tab.key)} title={tab.key}>
+            <Icon class="tab-ico" size={13} strokeWidth={2} aria-hidden="true" />
+            <span class="tab-label">{tab.label}</span>
+            {#if tab.dirty}<span class="tab-dirty" aria-hidden="true"></span>{/if}
+          </button>
+          <button
+            class="tab-close"
+            aria-label="Close {tab.label}"
+            title="Close"
+            onclick={(e) => {
+              e.stopPropagation();
+              onclose?.(tab.key);
+            }}
+          >
+            <X size={12} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+        </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Content class="ctx-menu">
+        <ContextMenu.Item onSelect={() => onclose?.(tab.key)}>Close</ContextMenu.Item>
+        <ContextMenu.Item disabled={tabs.length <= 1} onSelect={() => oncloseothers?.(tab.key)}>Close Others</ContextMenu.Item>
+        <ContextMenu.Item disabled={index >= tabs.length - 1} onSelect={() => onclosetoright?.(tab.key)}>Close to the Right</ContextMenu.Item>
+        <ContextMenu.Separator />
+        <ContextMenu.Item onSelect={() => oncloseall?.()}>Close All</ContextMenu.Item>
+      </ContextMenu.Content>
+    </ContextMenu.Root>
   {/each}
 </div>
 
@@ -59,6 +100,10 @@
     overflow-y: hidden;
     background: transparent;
     scrollbar-width: thin;
+  }
+  /* The context-menu trigger must not introduce a box into the flex row. */
+  :global(.tab-trigger) {
+    display: contents;
   }
   .tab {
     display: inline-flex;
@@ -78,6 +123,9 @@
     background: var(--surface-3);
     border-color: var(--line-strong);
     color: var(--ink);
+  }
+  .tab.drop-target {
+    box-shadow: inset 2px 0 0 0 var(--line-strong);
   }
   .tab-open {
     display: inline-flex;

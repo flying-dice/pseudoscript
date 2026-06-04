@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import type { Component as ComponentType } from "svelte";
   import { Box, Component, Container, Database, File, FlaskConical, SquareFunction, User } from "@lucide/svelte";
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { docManifest, emitSceneModules, format as formatSource, layoutScene, outlineModules, references, renameApply, renderDocSite, symbolScene } from "$lib/pds.js";
+  import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, initWasm, mountIde, renderDocSite, setIdeSource } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
-  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
+  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
@@ -26,6 +26,7 @@
   import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
   import { notifications } from "$lib/stores/notifications.svelte.js";
   import { wasm } from "$lib/stores/wasm.svelte.js";
+  import { sessionMount } from "$lib/stores/session.svelte.js";
   import { navigation } from "$lib/stores/navigation.svelte.js";
   import { wsStore } from "$lib/stores/workspace.svelte.js";
   import { selection } from "$lib/stores/selection.svelte.js";
@@ -111,9 +112,35 @@
     navigation.recordIfMoved(nav.originLoc(openFile.fqn, loc.line, loc.col));
   }
 
-  // Apply a location without recording it (back/forward, history-list click):
-  // open its file, jump the editor there, and re-scope to its node when it has one.
+  // Record a canvas scope (a drilled node, or `null` for the whole-model
+  // overview) as a history entry, so Back returns to the previous diagram.
+  function recordCanvasScope(fqn: string | null) {
+    const hit = fqn ? nodeIndex.get(fqn) : null;
+    recordLocation({
+      view: "canvas",
+      fqn: fqn ?? undefined,
+      fileFqn: hit?.fileFqn ?? "",
+      line: hit?.node.line ?? 0,
+      col: hit?.node.col ?? 0,
+      label: fqn ? nodeTitle(fqn) : "Overview",
+    });
+  }
+
+  // Apply a location without recording it (back/forward, history-list click).
+  // A canvas entry replays the diagram scope and stays on the canvas (no editor
+  // jump); a code entry opens its file, re-scopes, and jumps the editor.
+  // Sets state directly (never via selectNode/resetScope), so replay does not
+  // re-enter the recording paths.
   function applyLocation(loc: Loc) {
+    if (loc.view === "canvas") {
+      selection.selected = loc.fqn
+        ? { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn }
+        : null;
+      const file = loc.fqn ? workspace?.files.find((f) => f.fqn === loc.fileFqn) : null;
+      if (file && openFile?.fqn !== file.fqn) wsStore.openFile = file;
+      selection.view = "canvas";
+      return;
+    }
     const file = workspace?.files.find((f) => f.fqn === loc.fileFqn);
     if (!file) return;
     if (openFile?.fqn !== file.fqn) wsStore.openFile = file;
@@ -295,9 +322,14 @@
   const openKey = $derived(openFile ? (keyOf(openFile) ?? "") : "");
 
   const nodes = $derived.by<StructureNode[]>(() => {
+    // `ideOutline()` reads the session's held state, which is not reactive — track
+    // `allModules` (per-edit changes, the session already current via `setIdeSource`)
+    // and `sessionMount.seq` (a structural re-mount) so the outline follows it.
+    void allModules;
+    void sessionMount.seq;
     if (!ready || !workspace) return [];
     try {
-      return outlineModules(allModules) as unknown as StructureNode[];
+      return ideOutline() as unknown as StructureNode[];
     } catch {
       return [];
     }
@@ -329,7 +361,13 @@
   // sequence scene is then collapsed to the chosen depth in the IDE.
   const canvas = $derived(
     ready && workspace
-      ? projectCanvas({ selected, seqDepth, modules: allModules, index, wasm: { symbolScene, emitSceneModules, layoutScene }, onError: reportError })
+      ? projectCanvas({
+          selected,
+          seqDepth,
+          index,
+          wasm: { symbolScene: ideSymbolScene, emitScene: ideEmitScene, layoutScene: ideLayoutScene },
+          onError: reportError,
+        })
       : { scene: null, error: "" },
   );
   const canvasHint = $derived(canvasHintOf(selected));
@@ -354,7 +392,7 @@
     }
     let refs = null;
     try {
-      refs = references(allModules, hit.fileFqn, nodeByteOffset(hit.fileFqn, hit.node.line, hit.node.col));
+      refs = ideReferences(hit.fileFqn, nodeByteOffset(hit.fileFqn, hit.node.line, hit.node.col));
     } catch {
       refs = null;
     }
@@ -378,7 +416,7 @@
   // to the declaration; a canvas drill leaves the view alone. A member/field fqn
   // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
   // field opens its declaring type instead of no-opping (PDS-GOTO-002).
-  function selectNode(fqn: string, { goto = false }: { goto?: boolean } = {}) {
+  function selectNode(fqn: string, { goto = false, origin = true }: { goto?: boolean; origin?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
     // opens its declaring type instead of no-opping (PDS-GOTO-002).
@@ -403,7 +441,9 @@
     }
     const fileFqn = file.fqn;
     // Record the pre-jump caret before the file/scope changes, so Back returns.
-    if (goto && view !== "canvas") recordOrigin();
+    // `origin: false` suppresses it when the caller already recorded the origin
+    // (a canvas→code "go to definition" records the canvas scope as the origin).
+    if (goto && view !== "canvas" && origin) recordOrigin();
     if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
@@ -412,6 +452,10 @@
       selection.view = "code";
       selection.pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
       recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
+    } else {
+      // A canvas drill (or a goto re-scope while the canvas shows): record the
+      // new scope so Back returns to the previous diagram.
+      recordCanvasScope(targetFqn);
     }
   }
 
@@ -419,14 +463,21 @@
   // canvas); synthetic initiators (client, scheduler, …) aren't declared nodes.
   const pickNode = (fqn: string) => selectNode(fqn);
   // "Go to definition" from the canvas context menu: leave the canvas for the
-  // editor and jump to the node's declaration (selectNode's goto path stays put
-  // while the canvas is showing, so switch the view first).
+  // editor and jump to the node's declaration. Record the canvas scope we're
+  // leaving as the origin (so Back returns to that diagram, not the editor's
+  // last caret), then switch the view — selectNode's goto path stays put while
+  // the canvas shows, so the view must flip first — and suppress its own origin.
   function openNodeInEditor(fqn: string) {
+    if (view === "canvas") recordCanvasScope(selected?.fqn ?? null);
     selection.view = "code";
-    selectNode(fqn, { goto: true });
+    selectNode(fqn, { goto: true, origin: false });
   }
-  // Reset the canvas scope to the whole-model context.
-  const resetScope = () => (selection.selected = null);
+  // Reset the canvas scope to the whole-model context, recording it so Back
+  // returns to the previous diagram.
+  const resetScope = () => {
+    selection.selected = null;
+    recordCanvasScope(null);
+  };
   // Close the expanded boundary: pop up to the structural parent (the `for`
   // owner — system → container → component), or the whole-model context at the
   // top level. FQNs are flat within a module, so this follows `parent`, not `::`.
@@ -441,8 +492,11 @@
   const ancestry = (fqn: string) => model.ancestry(index, fqn);
 
   // The editor's hover popover: reveal the symbol's diagram on the canvas.
+  // Record the code spot first so Back from the canvas returns to it; selectNode
+  // then records the revealed canvas scope.
   function revealSymbol(fqn: string) {
     if (!nodeIndex.has(fqn)) return;
+    recordOrigin();
     selectNode(fqn);
     selection.view = "canvas";
   }
@@ -474,6 +528,26 @@
   }
   onMount(boot);
 
+  // Keep the IDE-core session's module set in step with the workspace structure:
+  // re-mount on ready, open, file add/remove/rename, and deps-resolved — but NOT on
+  // a plain edit (those flow through `setIdeSource`). The structural signals (the
+  // file-fqn list and the externals) are tracked; `allModules` is read `untrack`ed
+  // so a source change does not retrigger a full re-mount.
+  $effect(() => {
+    if (!wasm.ready) return;
+    const fileKey = (wsStore.workspace?.files ?? []).map((f) => f.fqn).join("\n");
+    const externals = wsStore.externalModules;
+    void fileKey;
+    mountIde(
+      untrack(() => wsStore.allModules),
+      externals,
+    );
+    // Signal that the session now holds the new modules, so held-state deriveds
+    // (the outline) recompute against it. `untrack` keeps this write off the
+    // effect's own dependency set.
+    untrack(() => sessionMount.bump());
+  });
+
   // Register the PWA service worker in production only (dev skips it to keep
   // Vite's HMR/module loading uncontended — see svelte.config.js).
   onMount(() => {
@@ -482,19 +556,63 @@
     }
   });
 
-  // Watch for edits made outside the IDE while this tab is visible: an immediate
-  // re-read on focus, plus a modest backstop timer (visible-only, so a hidden tab
-  // does no disk churn). `reloadExternalChanges` no-ops without an open folder.
+  // `FileSystemObserver` (Chromium 129+) is not in the TS DOM lib yet; the change
+  // records are ignored — a change just triggers the same reconcile.
+  type FileSystemObserverCtor = new (callback: () => void) => {
+    observe(handle: FileSystemHandle, options?: { recursive?: boolean }): Promise<void>;
+    disconnect(): void;
+  };
+
+  // Watch for changes made outside the IDE (an agent scaffolding/editing files).
+  // `FileSystemObserver` (Chromium) fires on the underlying change — event-driven,
+  // no disk churn. A visible-only poll is the fallback where it isn't available
+  // (Firefox/Safari, older Chromium) and a backstop on focus. Both run the same
+  // `reloadExternalChanges`, which re-reads content and reconciles files
+  // created/deleted on disk; it no-ops without an open folder.
+  let watching = $state(false); // true while a native FileSystemObserver is active
+
   onMount(() => {
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") reloadExternalChanges();
+      if (!watching && document.visibilityState === "visible") reloadExternalChanges();
     }, 2500);
     return () => clearInterval(timer);
+  });
+
+  // The native directory observer, (re)attached whenever the open workspace's root
+  // changes. It re-walks only when the OS reports a change (debounced), so there's
+  // no constant polling on capable browsers.
+  $effect(() => {
+    const root = workspace?.root;
+    const Observer = (globalThis as unknown as { FileSystemObserver?: FileSystemObserverCtor })
+      .FileSystemObserver;
+    if (!root || !Observer) return;
+    let observer: { disconnect(): void } | undefined;
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const onchange = () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => void reloadExternalChanges(), 150);
+    };
+    void (async () => {
+      try {
+        const obs = new Observer(onchange);
+        await obs.observe(root, { recursive: true });
+        observer = obs;
+        watching = true;
+      } catch {
+        watching = false; // observe() can reject (unsupported recursive, permission)
+      }
+    })();
+    return () => {
+      watching = false;
+      clearTimeout(debounce);
+      observer?.disconnect();
+    };
   });
 
   // Swap in a freshly-loaded workspace, resetting navigation to `landing`.
   async function mountWorkspace(ws: PageWorkspace, landing?: string | null) {
     wsStore.workspace = ws;
+    void resolveDependencyModules(ws);
     // An explicit landing FQN (meta.json) resolves to its module immediately;
     // otherwise tentatively open the first module and revisit once docs load.
     const explicit = landing ? ws.files.find((f) => f.fqn === landing) : null;
@@ -532,10 +650,59 @@
     }
   }
 
+  // Resolves the workspace's git dependencies (LANG.md §8.3) into externals for
+  // the language services — read from `pds_modules/` + `pds.lock` once per mount
+  // (dependencies change via the `pds` CLI, not in-editor). In-memory workspaces
+  // (samples/shares) have no `root`, so they carry no dependencies. Guarded
+  // against a faster mount superseding this async read.
+  async function resolveDependencyModules(ws: PageWorkspace) {
+    const seq = (depLoadSeq += 1);
+    wsStore.dependencyModules = [];
+    console.info("[pds-deps] start", { hasRoot: !!ws.root, base: ws.base ?? "" });
+    if (!ws.root) {
+      console.info("[pds-deps] no workspace root (in-memory sample) — no dependencies");
+      return;
+    }
+    try {
+      // The wasm resolver must be initialised before the first `dependency_modules`
+      // call; mount can fire before init resolves, which would silently drop
+      // externals for the whole session.
+      await initWasm();
+      const { lockToml, vendored } = await readVendoredDeps(ws.root, ws.base ?? "");
+      console.info("[pds-deps] readVendoredDeps", {
+        lockBytes: lockToml.length,
+        vendoredCount: vendored.length,
+        vendoredSample: vendored.slice(0, 3).map((v) => ({ slug: v.slug, fqn: v.fqn })),
+      });
+      if (seq !== depLoadSeq) {
+        console.info("[pds-deps] workspace superseded — abort");
+        return;
+      }
+      if (vendored.length === 0) {
+        console.info("[pds-deps] no vendored files found under pds_modules — externals empty");
+        return;
+      }
+      const resolved = dependencyModules(lockToml, vendored, []);
+      console.info("[pds-deps] dependencyModules resolved", {
+        count: resolved.length,
+        fqns: resolved.map((m) => m.fqn),
+      });
+      wsStore.dependencyModules = resolved;
+    } catch (e) {
+      console.error("[pds-deps] FAILED", e);
+      reportError("WORKSPACE_IO_FAILED", e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // Parses the workspace `[doc]` manifest and loads its `[[doc.sidebar]]` pages
   // (from disk for a folder, from the bundled map for a sample) into the doc
   // state the FileTree and the site build read.
   let docLoadSeq = 0;
+  // Supersession token for the async dependency read (mirrors `docLoadSeq`). A
+  // monotonic counter, not an identity check: `wsStore.workspace` is a Svelte
+  // `$state` proxy, so `wsStore.workspace !== ws` (proxy vs raw) is always true
+  // and would discard every successful resolve.
+  let depLoadSeq = 0;
   // Returns the loaded doc groups (`[{ title, items:[{title,path,handle}] }]`)
   // so the caller can prefer a docs landing page, `[]` when the workspace has no
   // (or malformed) manifest, or `null` when a faster mount superseded this load.
@@ -1137,8 +1304,70 @@
   // surfaced once) so external changes never clobber in-flight work. Runs on
   // window focus and a modest visible-only timer; comparing content (not mtime)
   // means our own saves never look external.
+  // Pick up `.pds` modules created or deleted in the workspace directory outside
+  // the IDE — e.g. an agent scaffolding or removing files. Re-walks the directory
+  // and reconciles the module set: new files are read in, deleted files are
+  // dropped (a file with unsaved edits is kept so external deletion never loses
+  // work). The mount `$effect` then re-mounts the session and `sessionMount`
+  // re-derives the outline/diagnostics, so the tree and model update live. The
+  // content of files that still exist is reloaded by the caller below.
+  async function reconcileExternalStructure() {
+    const ws = workspace;
+    if (!ws?.root) return;
+    let scanned: PageWorkspace;
+    try {
+      scanned = await readWorkspace(ws.root);
+    } catch {
+      return; // a transient walk failure — leave the structure as-is this tick
+    }
+    const diskFqns = new Set(scanned.files.map((f) => f.fqn));
+    const known = ws.files.filter((f) => f.fqn);
+    const knownFqns = new Set(known.map((f) => f.fqn));
+    const created = scanned.files.filter((f) => !knownFqns.has(f.fqn));
+    const isDirty = (fqn: string) => moduleSources[fqn] !== persisted[fqn];
+    const removed = known.filter((f) => !diskFqns.has(f.fqn) && !isDirty(f.fqn!));
+    if (created.length === 0 && removed.length === 0) return;
+
+    const sources = { ...moduleSources };
+    const baseline = { ...persisted };
+    for (const f of created) {
+      if (!f.fqn || !f.handle) continue;
+      try {
+        const text = await readFile(f.handle);
+        sources[f.fqn] = text;
+        baseline[f.fqn] = text;
+      } catch {
+        /* vanished between the walk and the read — ignore */
+      }
+    }
+    for (const f of removed) {
+      if (!f.fqn) continue;
+      delete sources[f.fqn];
+      delete baseline[f.fqn];
+    }
+    wsStore.moduleSources = sources;
+    saveStore.persisted = baseline;
+
+    // Adopt the scan's file/dir/other listing, but keep any locally-dirty file the
+    // scan no longer sees so its unsaved buffer stays editable (and saveable).
+    const removedFqns = new Set(removed.map((f) => f.fqn));
+    const dirtyKept = known.filter((f) => !diskFqns.has(f.fqn) && !removedFqns.has(f.fqn));
+    const files = [...scanned.files, ...dirtyKept].sort((a, b) => (a.fqn ?? "").localeCompare(b.fqn ?? ""));
+    wsStore.workspace = { ...ws, files, dirs: scanned.dirs, others: scanned.others };
+
+    // If the open module was deleted, fall back to a surviving file.
+    if (openFile?.fqn && !files.some((f) => f.fqn === openFile.fqn)) {
+      wsStore.openTabs = wsStore.openTabs.filter((t) => files.some((f) => keyOf(f) === keyOf(t)));
+      wsStore.openFile = wsStore.openTabs[0] ?? files[0] ?? null;
+    }
+
+    if (created.length) notify("info", `${created.length} file${created.length === 1 ? "" : "s"} added on disk`);
+    if (removed.length) notify("info", `${removed.length} file${removed.length === 1 ? "" : "s"} removed on disk`);
+  }
+
   async function reloadExternalChanges() {
     if (!workspace?.root || saveState === "saving") return;
+    await reconcileExternalStructure();
     const targets: { key: string; handle: FileSystemFileHandle; kind: "module" | "doc" | "manifest" | "other" }[] = [];
     for (const f of workspace.files) if (f.handle && f.fqn) targets.push({ key: f.fqn, handle: f.handle, kind: "module" });
     if (workspace.manifest?.handle && manifestKey)
@@ -1171,8 +1400,13 @@
 
   // Apply one externally-changed file: update its live buffer (which flows to the
   // editor and re-derives the model) and advance its baseline so it reads clean.
+  // A module's new text is pushed into the session first (as an in-IDE edit is),
+  // so the held state the outline/diagnostics query reflects the external change.
   function applyExternalReload(key: string, disk: string, kind: "module" | "doc" | "manifest" | "other") {
-    if (kind === "module") wsStore.moduleSources = { ...moduleSources, [key]: disk };
+    if (kind === "module") {
+      setIdeSource(key, disk);
+      wsStore.moduleSources = { ...moduleSources, [key]: disk };
+    }
     else if (kind === "doc") wsStore.docSources = { ...docSources, [key]: disk };
     else if (kind === "other") wsStore.otherSources = { ...otherSources, [key]: disk };
     else {
@@ -1194,7 +1428,7 @@
     if (!openFile?.fqn) return;
     let refs: References | null = null;
     try {
-      refs = references(allModules, openFile.fqn, offset);
+      refs = ideReferences(openFile.fqn, offset);
     } catch {
       refs = null;
     }
@@ -1210,7 +1444,7 @@
     if (!prompt || !openFile?.fqn) return;
     let edited: { fqn: string; source: string }[];
     try {
-      edited = renameApply(allModules, openFile.fqn, prompt.offset, newName, selected);
+      edited = ideRename(openFile.fqn, prompt.offset, newName, selected);
     } catch (e) {
       notify("error", "Rename failed", String((e as Error)?.message ?? e));
       return;
@@ -1267,6 +1501,10 @@
     } else if (openFile.isDoc) {
       wsStore.docSources = { ...docSources, [openFile.path ?? ""]: value };
     } else {
+      // Push the edit into the IDE-core session before the reactive write, so the
+      // diagnostics derived (re-run by the `moduleSources` change) queries current
+      // state. No whole-workspace re-marshalling — one module.
+      setIdeSource(openFile.fqn ?? "", value);
       wsStore.moduleSources = { ...moduleSources, [openFile.fqn ?? ""]: value };
     }
     // No autosave: edits stay in the in-memory buffer (and show as dirty on the
@@ -1433,15 +1671,49 @@
     const f = openTabs.find((t) => keyOf(t) === key);
     if (f) selectFile(f);
   }
-  function closeTab(key: string) {
-    const remaining = openTabs.filter((t) => keyOf(t) !== key);
-    const wasActive = keyOf(openFile) === key;
+  // Commit a new tab list. If the active file survived, leave it; otherwise pick
+  // the survivor at `preferIndex` (the slot the closed/active tab vacated, falling
+  // back to the last tab), or clear the editor when nothing remains.
+  function applyTabs(remaining: OpenFile[], preferIndex: number) {
+    const activeKey = keyOf(openFile);
     wsStore.openTabs = remaining;
-    if (wasActive) {
-      const next = remaining.at(-1) ?? null;
-      if (next) selectFile(next);
-      else wsStore.openFile = null;
-    }
+    if (remaining.some((t) => keyOf(t) === activeKey)) return;
+    const next = remaining[Math.min(preferIndex, remaining.length - 1)] ?? null;
+    if (next) selectFile(next);
+    else wsStore.openFile = null;
+  }
+  function closeTab(key: string) {
+    const idx = openTabs.findIndex((t) => keyOf(t) === key);
+    applyTabs(
+      openTabs.filter((t) => keyOf(t) !== key),
+      idx,
+    );
+  }
+  function closeOthers(key: string) {
+    const keep = openTabs.find((t) => keyOf(t) === key);
+    if (!keep) return;
+    wsStore.openTabs = [keep];
+    selectFile(keep);
+  }
+  function closeToRight(key: string) {
+    const idx = openTabs.findIndex((t) => keyOf(t) === key);
+    if (idx < 0) return;
+    applyTabs(openTabs.slice(0, idx + 1), idx);
+  }
+  function closeAll() {
+    wsStore.openTabs = [];
+    wsStore.openFile = null;
+  }
+  // Move `fromKey` to sit immediately before `toKey`. Active file is unchanged.
+  function reorderTabs(fromKey: string, toKey: string) {
+    if (fromKey === toKey) return;
+    const moved = openTabs.find((t) => keyOf(t) === fromKey);
+    if (!moved) return;
+    const next = openTabs.filter((t) => keyOf(t) !== fromKey);
+    const insertAt = next.findIndex((t) => keyOf(t) === toKey);
+    if (insertAt < 0) return;
+    next.splice(insertAt, 0, moved);
+    wsStore.openTabs = next;
   }
 
   async function onProblemPick(d: Problem) {
@@ -1477,7 +1749,19 @@
     saveStore.persisted = { ...sources };
     await mountWorkspace(ws, landing ?? ws.files[0]?.fqn);
     if (ws.root) {
-      await recordFolder(ws.name, ws.root);
+      // Label the recent with the manifest's `[doc].name` when present (so a list
+      // of `<root>/model` folders reads as their project titles, not "model"); the
+      // folder name (`ws.name` === `root.name`) becomes the subtitle. `docManifest`
+      // throws on malformed TOML — fall back to the folder name.
+      let display = ws.name;
+      if (ws.manifestToml) {
+        try {
+          display = docManifest(ws.manifestToml).name?.trim() || ws.name;
+        } catch {
+          /* malformed manifest — keep the folder name */
+        }
+      }
+      await recordFolder(display, ws.name, ws.root);
       refreshRecents();
     }
   }
@@ -1634,7 +1918,7 @@
     ui.building = true;
     try {
       const config = buildDocConfig();
-      const files = renderDocSite(allModules, config);
+      const files = renderDocSite(config);
       if (ws.root) {
         const dir = await writeSite(ws.root, files);
         notify(
@@ -2124,6 +2408,7 @@ show('index.html');
             const f = moduleByFqn(fqn);
             if (f) requestDeleteFile(f);
           }}
+          onrefresh={reloadExternalChanges}
         />
       </section>
       <Splitter
@@ -2146,7 +2431,15 @@ show('index.html');
         <div class="content-body">
           <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
             {#if tabList.length}
-              <TabBar tabs={tabList} onselect={selectTab} onclose={closeTab} />
+              <TabBar
+                tabs={tabList}
+                onselect={selectTab}
+                onclose={closeTab}
+                oncloseothers={closeOthers}
+                onclosetoright={closeToRight}
+                oncloseall={closeAll}
+                onreorder={reorderTabs}
+              />
             {/if}
             {#if openFile?.isManifest && manifestError}
               <div class="manifest-error" role="status">
@@ -2170,7 +2463,6 @@ show('index.html');
                 value={source}
                 onchange={onEditorChange}
                 onready={(api) => (editorApi = api)}
-                modules={allModules}
                 moduleFqn={openFile?.fqn ?? ""}
                 fileKey={openKey}
                 plain={(openFile?.isDoc || openFile?.isManifest || openFile?.isOther) ?? false}

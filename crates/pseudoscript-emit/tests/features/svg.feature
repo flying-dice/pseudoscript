@@ -50,7 +50,7 @@ Feature: SVG rendering smoke
       public container Orders for Shop {
         #[manual]
         public Place(order: Order): Result<Order, Rejected> {
-          r: Result<Order, Rejected> = Inventory.reserve(order)
+          r = Result<Order, Rejected> from Inventory.reserve(order)
           return Ok(order)
         }
       }

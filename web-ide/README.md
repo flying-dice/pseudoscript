@@ -1,16 +1,19 @@
 # PseudoScript Web IDE
 
-An in-browser IDE for PseudoScript. The compiler runs entirely client-side as
-WebAssembly (`pseudoscript-wasm`): live diagnostics, formatting, and diagram
-preview with no backend. A static SvelteKit app, deployable to Cloudflare Pages.
+An in-browser IDE for PseudoScript. The application runs entirely client-side as a
+single WebAssembly module (`pseudoscript-ide`): live diagnostics, formatting,
+completion, hover, and diagram preview with no backend. A static SvelteKit app,
+deployable to Cloudflare Pages.
 
 ## Stack
 
 - **SvelteKit** (Svelte 5), client-rendered (`ssr = false`), prerendered shell.
 - **CodeMirror 6** editor with a PseudoScript language mode and a linter wired to
-  the wasm compiler's `check`.
-- **`pseudoscript-wasm`** — the compiler API compiled with `wasm-pack`, vendored
-  into `src/lib/pds-wasm/` and **committed**, so deploys need no Rust toolchain.
+  the wasm's `check`.
+- **`pseudoscript-ide`** — the IDE's single typed wasm (the stateful `IdeSession`),
+  compiled with `wasm-pack`, vendored into `src/lib/pds-ide-wasm/` and
+  **committed**, so deploys need no Rust toolchain. The TS facade is
+  `src/lib/pds.ts`.
 
 ## Develop
 
@@ -25,10 +28,10 @@ npm run dev
 Requires the Rust toolchain + [`wasm-pack`](https://rustwasm.github.io/wasm-pack/):
 
 ```sh
-npm run build:wasm   # regenerates src/lib/pds-wasm/ from ../crates/pseudoscript-wasm
+npm run build:wasm   # regenerates src/lib/pds-ide-wasm/ from ../crates/pseudoscript-ide
 ```
 
-Commit the regenerated `src/lib/pds-wasm/` so the hosted build stays
+Commit the regenerated `src/lib/pds-ide-wasm/` so the hosted build stays
 toolchain-free.
 
 ## Deploy to Cloudflare Pages

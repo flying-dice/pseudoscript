@@ -39,51 +39,51 @@ public container Cli for context::Pseudoscript;
 
 /// Parses argv with clap-derive into the chosen subcommand and its options, then
 /// dispatches to the matching command handler.
-component Args for Cli {
+component Args for cli::Cli {
   /// Parse argv into a `Command`; clap reports usage errors itself.
-  parse(argv: string[]): Command;
+  parse(argv: string[]): cli::Command;
   /// Route a parsed `Command` to its handler, returning the process exit code.
   #[manual]
-  dispatch(command: Command): number;
+  dispatch(command: cli::Command): number;
 }
 
 /// The filesystem loader: resolves the project root by walking up to the nearest
 /// `pds.toml`, then parses the `[doc]` table and reads every `.pds` module.
-component Loader for Cli {
+component Loader for cli::Cli {
   /// Walk the ancestors of `start` (a file begins at its parent) to the nearest
   /// directory holding `pds.toml`; no `pds.toml` anywhere is an error.
-  findRoot(start: string): Result<string, IoError>;
+  findRoot(start: string): Result<string, cli::IoError>;
 
   /// Load the project rooted at `root`: parse the manifest and collect modules.
-  load(root: string): Result<Workspace, IoError> {
-    config: Result<Workspace, IoError> = self.loadManifest(root)
+  load(root: string): Result<cli::Workspace, cli::IoError> {
+    config = Result<Workspace, IoError> from self.loadManifest(root)
     if (config.isErr) {
       return Err(config.error)
     }
-    modules: Result<model::WorkspaceModule[], IoError> = self.loadModules(root)
+    modules = Result<model::WorkspaceModule[], IoError> from self.loadModules(root)
     if (modules.isErr) {
       return Err(modules.error)
     }
-    project: Workspace = Workspace from { config.value, root, modules.value }
+    project = Workspace from { config.value, root, modules.value }
     return Ok(project)
   }
 
   /// Read `<root>/pds.toml` and map its `[doc]` table into a `DocConfig` plus the
   /// resolved output directory; an unknown `theme` is rejected.
-  loadManifest(root: string): Result<Workspace, IoError>;
+  loadManifest(root: string): Result<cli::Workspace, cli::IoError>;
 
   /// Walk `root` (skipping `target/` and hidden dirs) for `*.pds` files, deriving
   /// each module FQN from its path relative to `root`, sorted by FQN.
-  loadModules(root: string): Result<model::WorkspaceModule[], IoError>;
+  loadModules(root: string): Result<model::WorkspaceModule[], cli::IoError>;
 }
 
 /// `pds init` — bootstrap a workspace: write `pds.toml` and a starter `main.pds`.
 /// Refuses to overwrite an existing manifest; the starter is written only when
 /// absent.
-component InitCmd for Cli {
+component InitCmd for cli::Cli {
   #[manual]
-  public run(path: string, name: string): Result<void, IoError> {
-    exists: Result<bool, IoError> = self.manifestExists(path)
+  public run(path: string, name: string): Result<void, cli::IoError> {
+    exists = Result<bool, IoError> from self.manifestExists(path)
     if (exists.isErr) {
       return Err(exists.error)
     }
@@ -91,10 +91,10 @@ component InitCmd for Cli {
   }
 
   /// Whether `<path>/pds.toml` already exists — refuse to clobber a workspace.
-  manifestExists(path: string): Result<bool, IoError>;
+  manifestExists(path: string): Result<bool, cli::IoError>;
 
   /// Create the directory, write `pds.toml`, then the starter module if absent.
-  writeFiles(path: string, name: string): Result<void, IoError>;
+  writeFiles(path: string, name: string): Result<void, cli::IoError>;
 }
 
 /// `pds doc` — the headline command (ADR-017). Load the workspace, check it
@@ -103,24 +103,24 @@ component InitCmd for Cli {
 /// hosts it over HTTP; `--watch` adds a filesystem watcher and browser live
 /// reload.
 /// #headline
-public component DocCmd for Cli {
+public component DocCmd for cli::Cli {
   /// Generate the documentation site for the workspace containing `path`.
   /// Invoked by the Developer (`context::Developer.renderDocs`).
   /// #headline
-  public run(path: string): Result<void, IoError> {
-    root: Result<string, IoError> = Cli::Loader.findRoot(path)
+  public run(path: string): Result<void, cli::IoError> {
+    root = Result<string, IoError> from Cli::Loader.findRoot(path)
     if (root.isErr) {
       return Err(root.error)
     }
-    project: Result<Workspace, IoError> = Cli::Loader.load(root.value)
+    project = Result<Workspace, IoError> from Cli::Loader.load(root.value)
     if (project.isErr) {
       return Err(project.error)
     }
-    diagnostics: syntax::Diagnostic[] = model::Checks.checkWorkspace(project.value.modules)
+    diagnostics = syntax::Diagnostic[] from model::Checks.checkWorkspace(project.value.modules)
     self.report(diagnostics)
-    graph: Graph = model::Builder.graph(project.value.modules)
-    site: Result<Site, RenderError> = doc::SiteBuilder.render(graph, project.value.config)
-    written: Result<void, IoError> = self.write(site, project.value.outDir)
+    graph = Graph from model::Builder.graph(project.value.modules)
+    site = Result<Site, RenderError> from doc::SiteBuilder.render(graph, project.value.config)
+    written = Result<void, IoError> from self.write(site.value, project.value.outDir)
     if (written.isErr) {
       return Err(written.error)
     }
@@ -131,8 +131,8 @@ public component DocCmd for Cli {
   /// Generate once, then optionally serve — with a watcher and live reload when
   /// `watch` is set. `watch` implies `serve`.
   #[manual]
-  public serve(path: string, serve: bool, watch: bool, port: number): Result<void, IoError> {
-    built: Result<void, IoError> = self.run(path)
+  public serve(path: string, serve: bool, watch: bool, port: number): Result<void, cli::IoError> {
+    built = Result<void, IoError> from self.run(path)
     if (built.isErr) {
       return Err(built.error)
     }
@@ -143,7 +143,7 @@ public component DocCmd for Cli {
   }
 
   /// Write each `SiteFile` under the output directory, creating parent dirs.
-  write(site: doc::Site, outDir: string): Result<void, IoError>;
+  write(site: doc::Site, outDir: string): Result<void, cli::IoError>;
 
   /// Print each workspace diagnostic to stderr as `severity: message`; never
   /// fatal — a partial model still documents.
@@ -151,18 +151,18 @@ public component DocCmd for Cli {
 
   /// Copy the configured logo into the output dir, relative to the root. A
   /// missing logo warns but does not fail.
-  copyLogo(root: string, project: Workspace): void;
+  copyLogo(root: string, project: cli::Workspace): void;
 }
 
 /// `pds check` — parse and statically check one file, print each diagnostic as
 /// `path:line:col: severity: message`, and exit non-zero on any error-severity
 /// diagnostic. Emits no diagram.
-component CheckCmd for Cli {
+component CheckCmd for cli::Cli {
   #[manual]
-  public run(text: string): Result<void, IoError> {
-    diagnostics: syntax::Diagnostic[] = model::Checks.check(text)
+  public run(text: string): Result<void, cli::IoError> {
+    diagnostics = syntax::Diagnostic[] from model::Checks.check(text)
     if (self.anyError(diagnostics)) {
-      err: IoError = IoError from { diagnostics }
+      err = IoError from { diagnostics }
       return Err(err)
     }
     return Ok
@@ -176,12 +176,12 @@ component CheckCmd for Cli {
 /// diagnostic as `<stdin>:line:col: severity: message` and exiting non-zero on
 /// any error. The fileless path: an agent pipes a snippet to check it without
 /// writing a file.
-component EvalCmd for Cli {
+component EvalCmd for cli::Cli {
   #[manual]
-  public run(text: string): Result<void, IoError> {
-    diagnostics: syntax::Diagnostic[] = model::Checks.check(text)
+  public run(text: string): Result<void, cli::IoError> {
+    diagnostics = syntax::Diagnostic[] from model::Checks.check(text)
     if (self.anyError(diagnostics)) {
-      err: IoError = IoError from { diagnostics }
+      err = IoError from { diagnostics }
       return Err(err)
     }
     return Ok
@@ -194,10 +194,10 @@ component EvalCmd for Cli {
 /// `pds fmt` — format to canonical PseudoScript; `--write` overwrites the file in
 /// place, otherwise prints to stdout. A parse error is reported and the file is
 /// left untouched.
-component FmtCmd for Cli {
+component FmtCmd for cli::Cli {
   #[manual]
   public run(text: string, write: bool): Result<void, format::FormatError> {
-    out: Result<string, FormatError> = format::Formatter.format(text)
+    out = Result<string, FormatError> from format::Formatter.format(text)
     if (out.isErr) {
       return Err(out.error)
     }
@@ -217,10 +217,10 @@ component FmtCmd for Cli {
 
 /// `pds tokens` — print the conformance token stream (`KIND@line:col "lexeme"`)
 /// to stdout, for debugging the lexer.
-component TokensCmd for Cli {
+component TokensCmd for cli::Cli {
   #[manual]
-  public run(text: string): Result<void, IoError> {
-    stream: string = syntax::Lexer.renderTokens(text)
+  public run(text: string): Result<void, cli::IoError> {
+    stream = string from syntax::Lexer.renderTokens(text)
     self.print(stream)
     return Ok
   }
@@ -231,8 +231,8 @@ component TokensCmd for Cli {
 
 /// `pds lsp` — boot a Tokio runtime and launch the language server over stdio.
 /// Spawned as a child process by an editor (`context::Editor.openDocument`).
-public component LspHost for Cli {
-  public run(): Result<void, IoError> {
+public component LspHost for cli::Cli {
+  public run(): Result<void, cli::IoError> {
     lsp::Server.runStdio()
     return Ok
   }
@@ -242,21 +242,21 @@ public component LspHost for Cli {
 /// `127.0.0.1:port`, maps `/` to `index.html`, rejects paths escaping the output
 /// dir, and on watch injects a live-reload poll and answers `/__livereload` with
 /// the current version. Blocks until the process is stopped.
-component HttpServer for Cli {
+component HttpServer for cli::Cli {
   /// Serve the workspace's output dir until stopped. A browser is the client;
   /// `reload` instruments HTML and serves the version endpoint.
   #[http("GET /")]
-  serve(path: string, port: number, reload: bool): Result<void, IoError>;
+  serve(path: string, port: number, reload: bool): Result<void, cli::IoError>;
 }
 
 /// Filesystem watcher (`--watch`, via `notify`): watches the project root
 /// recursively, debounces each save burst, and on a relevant change rebuilds the
 /// site and bumps the version the browser's live-reload poll reads. Events under
 /// the output dir are ignored so writing the site never re-triggers a build.
-component Watcher for Cli {
+component Watcher for cli::Cli {
   /// Block watching the root, rebuilding and bumping the live-reload version on
   /// each relevant change. Runs on a detached thread.
-  watch(root: string, port: number): Result<void, IoError>;
+  watch(root: string, port: number): Result<void, cli::IoError>;
 
   /// Whether a changed path should trigger a rebuild: a `.pds` file or `pds.toml`
   /// not under the generated output dir.
@@ -264,7 +264,7 @@ component Watcher for Cli {
 }
 
 /// The CLI is the composition root and the only I/O edge.
-feature CompositionRoot for Cli {
+feature CompositionRoot for cli::Cli {
   given "the library crates that are pure over in-memory modules"
   when "the CLI runs any subcommand"
   then "all file reading, writing, HTTP serving, and watching happen in the CLI"
@@ -273,7 +273,7 @@ feature CompositionRoot for Cli {
 }
 
 /// argv is parsed into one subcommand and dispatched.
-feature ParseSubcommand for Cli {
+feature ParseSubcommand for cli::Cli {
   given "a command line for one of init, doc, check, eval, fmt, tokens, or lsp"
   when "the CLI starts"
   then "clap parses argv into the chosen subcommand and its options"
@@ -282,7 +282,7 @@ feature ParseSubcommand for Cli {
 }
 
 /// `pds init` bootstraps a workspace and refuses to clobber an existing one.
-feature InitWorkspace for InitCmd {
+feature InitWorkspace for cli::InitCmd {
   given "a target directory with no pds.toml"
   when "the developer runs `pds init`"
   then "the directory is created if absent"
@@ -292,7 +292,7 @@ feature InitWorkspace for InitCmd {
 }
 
 /// `pds doc` runs the headline pipeline end to end.
-feature DocPipeline for DocCmd {
+feature DocPipeline for cli::DocCmd {
   given "a project rooted at a pds.toml with one or more .pds modules"
   when "the developer runs `pds doc`"
   then "the workspace is loaded and checked"
@@ -302,7 +302,7 @@ feature DocPipeline for DocCmd {
 }
 
 /// The project root is found by walking up to the nearest pds.toml.
-feature ResolveProjectRoot for Loader {
+feature ResolveProjectRoot for cli::Loader {
   given "a path somewhere inside a project tree"
   when "the CLI loads the workspace"
   then "it walks ancestor directories to the nearest pds.toml"
@@ -311,7 +311,7 @@ feature ResolveProjectRoot for Loader {
 }
 
 /// The workspace check is reported but never aborts generation.
-feature CheckIsNonFatal for DocCmd {
+feature CheckIsNonFatal for cli::DocCmd {
   given "a workspace whose model has warnings or errors"
   when "the developer runs `pds doc`"
   then "every diagnostic is printed to stderr"
@@ -320,7 +320,7 @@ feature CheckIsNonFatal for DocCmd {
 }
 
 /// `pds doc --serve` hosts the generated site over HTTP on localhost.
-feature ServeOverHttp for HttpServer {
+feature ServeOverHttp for cli::HttpServer {
   given "a generated documentation site"
   when "the developer runs `pds doc --serve`"
   then "the site is hosted over HTTP on 127.0.0.1 at the chosen port"
@@ -329,7 +329,7 @@ feature ServeOverHttp for HttpServer {
 }
 
 /// `pds doc --watch` rebuilds on change and live-reloads the browser.
-feature WatchAndLiveReload for Watcher {
+feature WatchAndLiveReload for cli::Watcher {
   given "a site served with `--watch`"
   when "a .pds file or pds.toml under the root changes"
   then "the watcher debounces the save burst and rebuilds the site"
@@ -339,7 +339,7 @@ feature WatchAndLiveReload for Watcher {
 }
 
 /// `pds check` exits non-zero when any error diagnostic is produced.
-feature CheckExitCode for CheckCmd {
+feature CheckExitCode for cli::CheckCmd {
   given "a .pds source file"
   when "the developer runs `pds check` on it"
   then "every diagnostic is printed as path:line:col: severity: message"
@@ -348,7 +348,7 @@ feature CheckExitCode for CheckCmd {
 }
 
 /// `pds eval` reads stdin and exits non-zero when any error diagnostic is produced.
-feature EvalExitCode for EvalCmd {
+feature EvalExitCode for cli::EvalCmd {
   given "a model piped to stdin"
   when "the developer or an agent runs `pds eval`"
   then "every diagnostic is printed as <stdin>:line:col: severity: message"
@@ -357,7 +357,7 @@ feature EvalExitCode for EvalCmd {
 }
 
 /// `pds fmt --write` overwrites in place; otherwise it prints.
-feature FormatInPlaceOrStdout for FmtCmd {
+feature FormatInPlaceOrStdout for cli::FmtCmd {
   given "a .pds source file"
   when "the developer runs `pds fmt`"
   then "the source is parsed and pretty-printed to canonical PseudoScript"
@@ -367,14 +367,14 @@ feature FormatInPlaceOrStdout for FmtCmd {
 }
 
 /// `pds tokens` prints the conformance token stream.
-feature PrintTokenStream for TokensCmd {
+feature PrintTokenStream for cli::TokensCmd {
   given "a .pds source file"
   when "the developer runs `pds tokens`"
   then "the lexical token stream is printed as KIND@line:col \"lexeme\""
 }
 
 /// `pds lsp` launches the language server over stdio.
-feature LaunchLanguageServer for LspHost {
+feature LaunchLanguageServer for cli::LspHost {
   given "an editor that speaks the Language Server Protocol"
   when "the editor spawns `pds lsp` as a child process"
   then "a Tokio runtime boots and the server runs over stdio"

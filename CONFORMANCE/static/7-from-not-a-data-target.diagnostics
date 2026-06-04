@@ -1,1 +1,1 @@
-`from` target `string` is not a `data` record or variant
+`from` target `Banking` is a node, not a value

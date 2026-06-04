@@ -1,5 +1,5 @@
 //! Integration tests for local path dependencies and monorepo orchestration
-//! (`LANG.md` §8.4, ADR-026): `pds check` across a local `path` dependency,
+//! (`LANG.md` §8.3, ADR-026): `pds check` across a local `path` dependency,
 //! `pds list` discovery, and `pds check --all` aggregation.
 
 use std::path::Path;

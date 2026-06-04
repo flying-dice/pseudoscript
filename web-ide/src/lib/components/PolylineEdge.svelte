@@ -30,6 +30,7 @@
     label={label as string | undefined}
     labelX={geom.labelX}
     labelY={geom.labelY}
+    labelStyle="white-space: pre-line; text-align: center;"
     style={dash ? `stroke-dasharray: ${dash}` : undefined}
   />
 {/if}

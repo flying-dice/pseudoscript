@@ -82,15 +82,10 @@ pub struct Member {
     /// The `///` summary of a callable member, for hover. Fields carry no doc
     /// (the grammar has no field doc), so this is `None` for them.
     pub doc: Option<String>,
-}
-
-/// A file-local `alias` binding: the target node FQN it expands to (§8.3).
-#[derive(Debug, Clone)]
-pub struct Alias {
-    /// The `::`-joined target path as written.
-    pub target: String,
-    /// Span of the alias name's declaration.
-    pub span: Span,
+    /// Whether the member is `public` (§8.2) — callable-only; a field is always
+    /// reachable once its `data` type is (a private type is unreferenceable
+    /// cross-module). Gates cross-module member completion.
+    pub is_public: bool,
 }
 
 /// One declared, addressable node in the module namespace.
@@ -110,9 +105,10 @@ pub struct Symbol {
 
 /// The resolved symbol table for one module.
 ///
-/// FQNs are file-derived (`LANG.md` §8): a single `.pds` file is one module,
-/// named by its `//!` inner-doc path. Every declared node — and every hoisted
-/// inline union variant (ADR-006) — lives in this module's namespace.
+/// FQNs are file-derived (`LANG.md` §8.1): a single `.pds` file is one module,
+/// named by its file path relative to `pds.toml`. Every declared node — and
+/// every hoisted inline union variant (ADR-006) — lives in this module's
+/// namespace.
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     /// This module's FQN (`banking::core`), or empty for an anonymous module.
@@ -122,44 +118,41 @@ pub struct Model {
     symbols: FxHashMap<String, Symbol>,
     /// Members (callables, fields) keyed by their owner's bare name.
     members: FxHashMap<String, Vec<Member>>,
-    /// `alias` bindings, keyed by the alias name (§8.3).
-    aliases: FxHashMap<String, Alias>,
+    /// Each union's fieldless variant names, keyed by the union's bare name
+    /// (§3.5). Fieldless variants do not hoist to `symbols`; they are addressed
+    /// `module::Union::Variant` (ADR-032), so they index under their union.
+    union_variants: FxHashMap<String, Vec<String>>,
 }
 
 impl Model {
-    /// Builds the symbol table from a parsed module, deriving the module FQN
-    /// from its `//!` inner doc (§8.1).
+    /// Builds the symbol table for a single, *anonymous* module (no module FQN).
+    ///
+    /// A module's identity is its file path relative to `pds.toml` (§8.1); the
+    /// path-less single-file path (`check`/`eval`, an editor snippet) has no
+    /// filename, so it carries no module name. Same-module references resolve;
+    /// cross-module resolution needs the path-keyed [`Workspace`].
     #[must_use]
     pub fn build(module: &Module) -> Self {
-        Model::build_with_path(module, module_path(module))
+        Model::build_with_path(module, String::new())
     }
 
     /// Builds the symbol table with a caller-supplied module FQN.
     ///
     /// The workspace loader derives the FQN from the file path relative to
-    /// `pds.toml`; [`Model::build`] derives it from the `//!` inner doc.
+    /// `pds.toml` (§8.1).
     #[must_use]
     pub fn build_with_path(module: &Module, module_path: String) -> Self {
         let mut model = Model {
             module_path,
             symbols: FxHashMap::default(),
             members: FxHashMap::default(),
-            aliases: FxHashMap::default(),
+            union_variants: FxHashMap::default(),
         };
         for item in &module.items {
             match item {
                 Item::Decl(decl) => model.collect_decl(decl),
-                Item::Alias(alias) => {
-                    model.aliases.insert(
-                        alias.name.name.clone(),
-                        Alias {
-                            target: path_str(&alias.target),
-                            span: alias.name.span,
-                        },
-                    );
-                }
-                // A `feature` adds no symbol, member, or alias; its name lives in
-                // a separate namespace checked in `crate::check` (§5.2, §8.1).
+                // A `feature` adds no symbol or member; its name lives in a
+                // separate namespace checked in `crate::check` (§5.2, §8.1).
                 Item::Feature(_) => {}
             }
         }
@@ -175,6 +168,16 @@ impl Model {
     /// Every declared symbol in this module, in unspecified order.
     pub fn symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.values()
+    }
+
+    /// Whether `union` (a bare data name in this module) declares the fieldless
+    /// variant `variant` (§3.5, ADR-032). Fieldless variants do not hoist, so
+    /// they are not in [`Self::symbol`].
+    #[must_use]
+    pub fn has_fieldless_variant(&self, union: &str, variant: &str) -> bool {
+        self.union_variants
+            .get(union)
+            .is_some_and(|vs| vs.iter().any(|v| v == variant))
     }
 
     /// The members (callables, fields) of the node or record named `owner`.
@@ -195,17 +198,6 @@ impl Model {
                 .find(|m| m.span == span)
                 .map(|m| (owner.as_str(), m))
         })
-    }
-
-    /// Looks up an `alias` by name (§8.3).
-    #[must_use]
-    pub fn alias(&self, name: &str) -> Option<&Alias> {
-        self.aliases.get(name)
-    }
-
-    /// Every `alias` name declared in this module.
-    pub fn aliases(&self) -> impl Iterator<Item = (&str, &Alias)> {
-        self.aliases.iter().map(|(name, a)| (name.as_str(), a))
     }
 
     /// Whether `path` (an FQN or bare name) resolves to a declared node in this
@@ -238,9 +230,17 @@ impl Model {
                 self.insert(&data.name.name, SymbolKind::Data, is_public, data.name.span);
                 match &data.body {
                     pseudoscript_syntax::ast::DataBody::Union(variants) => {
+                        let mut fieldless = Vec::new();
                         for variant in variants {
-                            // A hoisted variant shares the union's visibility (§8.2).
+                            // A hoisted record variant shares the union's visibility (§8.2).
                             self.collect_variant(variant, is_public);
+                            if variant.record.is_none() {
+                                fieldless.push(variant.name.name.clone());
+                            }
+                        }
+                        if !fieldless.is_empty() {
+                            self.union_variants
+                                .insert(data.name.name.clone(), fieldless);
                         }
                     }
                     pseudoscript_syntax::ast::DataBody::Record(fields) => {
@@ -336,13 +336,19 @@ pub struct Workspace {
     /// Each module's parsed AST and resolved model, in input order.
     modules: Vec<ModuleEntry>,
     /// Every resolvable symbol, keyed by its full FQN: all symbols of the local
-    /// modules, plus the `public` symbols of dependency modules (§8.4),
+    /// modules, plus the `public` symbols of dependency modules (§8.3),
     /// dependency-name-prefixed by the loader.
     by_fqn: FxHashMap<String, Symbol>,
     /// FQNs of dependency (external) modules — indexed for resolution but not
     /// themselves checked. Lets a dangling reference into a known dependency
-    /// module be told apart from a local fully-qualified name (§8.5).
+    /// module be told apart from a local fully-qualified name (§8.4).
     external_modules: FxHashSet<String>,
+    /// The resolved [`ModuleEntry`] (AST + model) of each external module, keyed
+    /// by FQN — retained, not just its symbols, so completion, hover, goto, and
+    /// inference can reach a dependency node's members and doc summaries
+    /// (`dep::module::Node.`). External modules are not in `modules`, so this is
+    /// their only member/AST source.
+    external_entries: FxHashMap<String, ModuleEntry>,
 }
 
 /// The outcome of resolving a cross-module reference (`LANG.md` §8.2).
@@ -368,7 +374,7 @@ impl Workspace {
     }
 
     /// Builds a workspace from its `local` modules plus `external` dependency
-    /// modules (§8.4).
+    /// modules (§8.3).
     ///
     /// Local modules are indexed and checked as usual. External modules — the
     /// loader supplies them dependency-name-prefixed (`auth::core`) — are indexed
@@ -377,6 +383,7 @@ impl Workspace {
     /// §8.2 visibility rule enforced unchanged by [`Workspace::resolve_qualified`]
     /// (a private dependency target resolves to `Private` and is rejected).
     #[must_use]
+    #[tracing::instrument(level = "debug", name = "workspace_build", skip_all)]
     pub fn build_with_externals(
         local: impl IntoIterator<Item = (String, Module)>,
         external: impl IntoIterator<Item = (String, Module)>,
@@ -394,11 +401,17 @@ impl Workspace {
             // Index every external symbol, public or not: visibility is enforced
             // by `resolve_qualified` (a private target resolves to `Private` and
             // is rejected), and indexing privates lets a reference to one be
-            // reported as private rather than dangling (§8.4).
+            // reported as private rather than dangling (§8.3).
             for symbol in model.symbols.values() {
                 workspace.by_fqn.insert(symbol.fqn.clone(), symbol.clone());
             }
-            workspace.external_modules.insert(fqn);
+            workspace.external_modules.insert(fqn.clone());
+            let entry = ModuleEntry {
+                fqn: fqn.clone(),
+                ast,
+                model,
+            };
+            workspace.external_entries.insert(fqn, entry);
         }
         workspace
     }
@@ -426,8 +439,43 @@ impl Workspace {
         self.modules.iter().find(|m| m.fqn == fqn)
     }
 
+    /// The module entry named `fqn`, local **or external** (§8.3). Unlike
+    /// [`Self::module`] this also finds dependency modules, so hover and goto can
+    /// reach a `dep::module::Node`'s declaration and doc summary.
+    #[must_use]
+    pub fn module_any(&self, fqn: &str) -> Option<&ModuleEntry> {
+        self.modules
+            .iter()
+            .find(|m| m.fqn == fqn)
+            .or_else(|| self.external_entries.get(fqn))
+    }
+
+    /// The resolved [`Model`] of module `fqn`, local or external (§8.3) — the
+    /// member/symbol source for completion and inference into a dependency node.
+    #[must_use]
+    pub fn module_model(&self, fqn: &str) -> Option<&Model> {
+        self.module_any(fqn).map(|entry| &entry.model)
+    }
+
+    /// The FQNs of the indexed dependency (external) modules (§8.3), in
+    /// unspecified order — the modules a cross-workspace reference can name but
+    /// which carry no local source. Completion offers these alongside local
+    /// modules as cross-module reference starters.
+    pub fn external_module_fqns(&self) -> impl Iterator<Item = &str> {
+        self.external_modules.iter().map(String::as_str)
+    }
+
+    /// Whether `module_fqn` names a dependency (external) module (§8.3) — one
+    /// indexed for resolution but with no local source. A bare cross-workspace
+    /// reference is rejected (§8.3 requires `dep::module::Node`), so the
+    /// bare-name goto/reference leniency excludes these.
+    #[must_use]
+    pub fn is_external_module(&self, module_fqn: &str) -> bool {
+        self.external_modules.contains(module_fqn)
+    }
+
     /// Whether `module_fqn` names a known module — a local one or an indexed
-    /// dependency module (§8.4). Distinguishes a dangling reference into a known
+    /// dependency module (§8.3). Distinguishes a dangling reference into a known
     /// module from a local fully-qualified name the single-module checks own.
     #[must_use]
     pub fn is_known_module(&self, module_fqn: &str) -> bool {
@@ -472,6 +520,7 @@ fn callable_member(callable: &Callable) -> Member {
             .map_or_else(|| "void".to_owned(), render_type),
         param_types: callable.params.iter().map(|p| render_type(&p.ty)).collect(),
         doc: (!callable.doc.summary.is_empty()).then(|| callable.doc.summary.join(" ")),
+        is_public: callable.is_public,
     }
 }
 
@@ -485,6 +534,7 @@ fn field_member(field: &Field) -> Member {
         ty: render_type(&field.ty),
         param_types: Vec::new(),
         doc: None,
+        is_public: true,
     }
 }
 
@@ -532,15 +582,4 @@ fn path_str(path: &pseudoscript_syntax::ast::Path) -> String {
         .map(|id| id.name.as_str())
         .collect::<Vec<_>>()
         .join("::")
-}
-
-/// Extracts the module FQN from the first `//!` inner-doc line: the first
-/// whitespace-delimited token (`//! banking::core — notes` → `banking::core`).
-fn module_path(module: &Module) -> String {
-    module
-        .inner_docs
-        .first()
-        .and_then(|doc| doc.text.split_whitespace().next())
-        .unwrap_or("")
-        .to_owned()
 }

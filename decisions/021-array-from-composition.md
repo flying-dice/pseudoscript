@@ -21,5 +21,5 @@
 - §10: `FromExpr = Path [ "[]" ] "from" "{" … "}"`.
 - AST: `ExprKind::From` carries `is_array`; the formatter prints the `[]`.
 - The checker's return-type and `for`-iterable checks compare array-ness.
-- `alias` is unchanged — it remains a node shorthand (§8.3), not a type alias.
+- `alias` is unchanged — it remains a node shorthand (§8.3), not a type alias. *(`alias` has since been removed — ADR-028; array composition is unaffected.)*
 - Rejected alternative: a general type-alias form (`alias Name = Type[]`). Out of scope — `alias` binds nodes; array composition is the actual need and is expressed directly.

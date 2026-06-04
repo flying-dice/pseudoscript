@@ -1,0 +1,13 @@
+// LANG.md §5.2, §8.1: a feature's `for` target resolves to a node even when the
+// node's name equals the enclosing module's name. `config` names both the module
+// and a container; the same-named node wins over the namespace.
+
+//! config
+
+public system Plugin;
+public container config for Plugin;
+
+feature SettingsShown for config {
+  when "settings open"
+  then "the form shows"
+}

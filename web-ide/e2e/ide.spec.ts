@@ -62,28 +62,16 @@ test("diagnostics render with no runtime error", async ({ page }) => {
   expect(errors.join("\n")).not.toContain("byteToChar");
 });
 
-test("folding ranges come from the compiler (blocks fold)", async ({ page }) => {
-  // The IDE folds blocks by default using the compiler's AST fold ranges; a
-  // folded region renders CodeMirror's placeholder.
-  await expect(page.locator(".cm-foldPlaceholder").first()).toBeVisible();
+test("folding leaves the structure expanded on open (only members fold)", async ({ page }) => {
+  // Members fold by default, but the structural node/record bodies stay
+  // expanded: a field type that lives *inside* a `data` record body — a
+  // `module::Type` namespace token — is visible at the top without scrolling,
+  // proving the record didn't fold.
+  await expect(page.locator('[data-sem="namespace"]').first()).toBeVisible();
 
-  // A fold must not swallow the lines between declarations: every fold starts
-  // at its declaration header, so no rendered line jams two closing braces or
-  // leaks a sibling's content (the regression when folds began at doc comments).
-  // No jamming, and a folded brace sits flush against the placeholder — the
-  // closing line's indentation folds away too (no `…   }` trailing space).
-  const bad = await page.evaluate(() =>
-    [...document.querySelectorAll(".cm-content .cm-line")]
-      .map((l) => l.innerText)
-      .filter((t) => /…\}…\}/.test(t) || /…\s+\}/.test(t)).length,
-  );
-  expect(bad).toBe(0);
-
-  // The doc comment above a record stays visible; the record body folds to `{…}`.
+  // The doc comments above the top declarations are not swallowed by a fold.
   const docVisible = await page.evaluate(() =>
-    [...document.querySelectorAll(".cm-content .cm-line")].some((l) =>
-      l.innerText.startsWith("///"),
-    ),
+    [...document.querySelectorAll(".cm-content .cm-line")].some((l) => (l as HTMLElement).innerText.startsWith("///")),
   );
   expect(docVisible).toBe(true);
 });

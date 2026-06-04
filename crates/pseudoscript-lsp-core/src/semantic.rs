@@ -69,6 +69,7 @@ fn sem_index(kind: SemKind) -> u32 {
 /// drops any spanning more than one line (the protocol requires single-line
 /// tokens) and delta-encodes the rest.
 #[must_use]
+#[tracing::instrument(level = "debug", skip(src), fields(bytes = src.len()))]
 pub fn semantic_tokens(src: &str) -> SemanticTokens {
     let index = LineIndex::new(src);
     let mut data = Vec::new();

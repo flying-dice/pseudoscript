@@ -20,6 +20,10 @@ pub enum Scene {
     C4(C4Scene),
     /// A sequence view (`LANG.md` §9.2).
     Sequence(SequenceScene),
+    /// A `data` entity (ER) view (`LANG.md` §9.4).
+    Data(DataScene),
+    /// A `feature` flow view (`LANG.md` §9.5).
+    Feature(FeatureScene),
 }
 
 /// Which C4 view a [`C4Scene`] is.
@@ -107,6 +111,10 @@ impl C4EdgeKind {
 }
 
 /// An edge routed between two C4 nodes.
+///
+/// Parallel same-direction relationships of one kind collapse to a single edge:
+/// `labels` lists every method (call) name, sorted and de-duplicated. Empty for
+/// a trigger or provenance edge (no method).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutedEdge {
     /// Source endpoint FQN.
@@ -115,8 +123,9 @@ pub struct RoutedEdge {
     pub to: String,
     /// The relationship kind.
     pub kind: C4EdgeKind,
-    /// Edge label (the method name for a call, else empty).
-    pub label: String,
+    /// The merged edge labels (call method names), sorted and de-duplicated;
+    /// empty for a trigger or provenance edge.
+    pub labels: Vec<String>,
 }
 
 /// A laid-out sequence view: lifelines, messages, and nested frames.
@@ -245,6 +254,128 @@ pub struct Rect {
     pub h: i32,
 }
 
+/// A laid-out `data` entity (ER) view (`LANG.md` §9.4): the focal type's card,
+/// the data types its fields reference (one hop), and the reference links
+/// between them. Geometry is filled by [`crate::layout_data_scene`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataScene {
+    /// The focal data type's FQN.
+    pub of: String,
+    /// The entities drawn, focal first, then referenced types in source order.
+    pub entities: Vec<DataEntity>,
+    /// Field-type reference links between entities in view.
+    pub links: Vec<DataLink>,
+    /// Total canvas width (filled by layout).
+    #[serde(default)]
+    pub width: i32,
+    /// Total canvas height (filled by layout).
+    #[serde(default)]
+    pub height: i32,
+}
+
+/// One entity card in a [`DataScene`]: a data type, its disclosed form, and its
+/// rows (record fields, or union variant names).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataEntity {
+    /// The entity's FQN.
+    pub fqn: String,
+    /// The display label (simple name).
+    pub label: String,
+    /// The disclosed form, driving the card's eyebrow and row layout.
+    pub form: EntityForm,
+    /// The card's rows: record fields (`name: ty`) or union variant names.
+    pub rows: Vec<EntityRow>,
+    /// Whether this is the focal (selected) entity.
+    pub focal: bool,
+    /// The card rectangle (filled by layout).
+    #[serde(default)]
+    pub rect: Rect,
+}
+
+/// A `data` type's disclosed form (`LANG.md` §3.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntityForm {
+    /// A record of typed fields.
+    Record,
+    /// A discriminated union of variants.
+    Union,
+    /// An undisclosed black box.
+    BlackBox,
+}
+
+impl EntityForm {
+    /// The keyword this form writes in the golden / card eyebrow.
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
+        match self {
+            EntityForm::Record => "record",
+            EntityForm::Union => "union",
+            EntityForm::BlackBox => "blackbox",
+        }
+    }
+}
+
+/// One row of a [`DataEntity`] card: a record field (`name`, `ty`) or a union
+/// variant (the variant name in `name`, an empty `ty`). `target` is the FQN of
+/// the data type this row references, when it resolves to one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityRow {
+    /// The field or variant name.
+    pub name: String,
+    /// The rendered field type (empty for a union variant row).
+    pub ty: String,
+    /// The referenced data type's FQN, when this row references one.
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+/// A reference link between two entities in a [`DataScene`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataLink {
+    /// The referencing entity FQN.
+    pub from: String,
+    /// The referenced entity FQN.
+    pub to: String,
+    /// The field (or variant) name driving the reference.
+    pub field: String,
+}
+
+/// A laid-out `feature` flow view (`LANG.md` §9.5): a scenario's ordered steps
+/// as connected nodes, top to bottom. Geometry is filled by
+/// [`crate::layout_feature_scene`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureScene {
+    /// The feature's FQN (`module::name`).
+    pub entry: String,
+    /// The FQN of the node the feature describes.
+    pub target_fqn: String,
+    /// The target node's display label (simple name).
+    pub target_label: String,
+    /// The feature's name.
+    pub name: String,
+    /// The ordered given/when/then steps.
+    pub steps: Vec<FeatureStepNode>,
+    /// Total canvas width (filled by layout).
+    #[serde(default)]
+    pub width: i32,
+    /// Total canvas height (filled by layout).
+    #[serde(default)]
+    pub height: i32,
+}
+
+/// One step node in a [`FeatureScene`]: its keyword, prose, and rectangle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeatureStepNode {
+    /// The step keyword (`given`/`when`/`then`/`and`/`but`).
+    pub keyword: String,
+    /// The step's prose.
+    pub text: String,
+    /// The step box rectangle (filled by layout).
+    #[serde(default)]
+    pub rect: Rect,
+}
+
 impl Scene {
     /// Serialises the scene to the `CONFORMANCE/generation/README.md` golden
     /// text format: one element per line, UTF-8, `\n`-terminated, in canonical
@@ -255,8 +386,53 @@ impl Scene {
         match self {
             Scene::C4(scene) => scene.write_golden(&mut out),
             Scene::Sequence(scene) => scene.write_golden(&mut out),
+            Scene::Data(scene) => scene.write_golden(&mut out),
+            Scene::Feature(scene) => scene.write_golden(&mut out),
         }
         out
+    }
+}
+
+impl DataScene {
+    fn write_golden(&self, out: &mut String) {
+        let _ = writeln!(out, "view data");
+        let _ = writeln!(out, "of {}", self.of);
+        for entity in &self.entities {
+            let _ = writeln!(
+                out,
+                "entity {} {} {}",
+                entity.fqn,
+                entity.form.keyword(),
+                quote(&entity.label),
+            );
+            for row in &entity.rows {
+                let _ = write!(out, "  row {} {}", row.name, quote(&row.ty));
+                if let Some(target) = &row.target {
+                    let _ = write!(out, " -> {target}");
+                }
+                out.push('\n');
+            }
+        }
+        for link in &self.links {
+            let _ = writeln!(
+                out,
+                "link {} -> {} {}",
+                link.from,
+                link.to,
+                quote(&link.field),
+            );
+        }
+    }
+}
+
+impl FeatureScene {
+    fn write_golden(&self, out: &mut String) {
+        let _ = writeln!(out, "view feature");
+        let _ = writeln!(out, "entry {}", self.entry);
+        let _ = writeln!(out, "target {}", self.target_fqn);
+        for step in &self.steps {
+            let _ = writeln!(out, "step {} {}", step.keyword, quote(&step.text));
+        }
     }
 }
 
@@ -280,14 +456,17 @@ impl C4Scene {
             out.push('\n');
         }
         for edge in &self.edges {
-            let _ = writeln!(
+            let _ = write!(
                 out,
-                "edge {} -> {} {} {}",
+                "edge {} -> {} {}",
                 edge.from,
                 edge.to,
-                edge.kind.keyword(),
-                quote(&edge.label),
+                edge.kind.keyword()
             );
+            for label in &edge.labels {
+                let _ = write!(out, " {}", quote(label));
+            }
+            out.push('\n');
         }
     }
 }

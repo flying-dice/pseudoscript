@@ -1,11 +1,10 @@
 //! Cursor resolution shared by hover and go-to-definition.
 //!
 //! Works at the token level so it survives partial parses, then consults the
-//! resolved [`Workspace`] for the answer. It understands three reference forms:
+//! resolved [`Workspace`] for the answer. It understands two reference forms:
 //!
 //! - a `::` path (bare name or full FQN) → the node/data it names (§8.2);
-//! - a `.` member after `self` or a node name → that node's callable/field;
-//! - an `alias` name → the node its target expands to (§8.3).
+//! - a `.` member after `self` or a node name → that node's callable/field.
 //!
 //! A caret resting just past an identifier's last character still resolves it.
 
@@ -32,6 +31,7 @@ pub struct Hit {
 
 /// Resolves the identifier under `offset` in module `from_fqn`'s `src`.
 #[must_use]
+#[tracing::instrument(level = "debug", skip(ws, src))]
 pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Option<Hit> {
     let tokens = tokenize(src);
     let idx = ident_index(&tokens, offset)?;
@@ -61,12 +61,8 @@ pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Opt
 
     // Otherwise the clicked token is part of a `::` path (possibly one segment).
     let segments = path_segments(&tokens, idx);
-    resolve_path(ws, from_fqn, &segments, 0).map(|hit| Hit { clicked, ..hit })
+    resolve_path(ws, from_fqn, &segments).map(|hit| Hit { clicked, ..hit })
 }
-
-/// Bound on alias-following, so a cyclic `alias A = B; alias B = A;` cannot
-/// drive resolution into unbounded recursion.
-const MAX_ALIAS_DEPTH: u32 = 32;
 
 /// The index of the identifier token at `offset`, or the one ending exactly at
 /// `offset` (caret just past the word).
@@ -108,47 +104,45 @@ fn path_segments(tokens: &[Token], idx: usize) -> Vec<&str> {
 }
 
 /// Resolves a `::` path to its declared node/data symbol.
-fn resolve_path(ws: &Workspace, from_fqn: &str, segments: &[&str], depth: u32) -> Option<Hit> {
-    let symbol = resolve_node(ws, from_fqn, segments, depth)?;
+fn resolve_path(ws: &Workspace, from_fqn: &str, segments: &[&str]) -> Option<Hit> {
+    let symbol = resolve_node(ws, from_fqn, segments)?;
     Some(symbol_hit(ws, symbol, module_of(&symbol.fqn)))
 }
 
-/// Resolves a `::` path to the node/data [`Symbol`] it names: an alias or local
-/// symbol for a bare name (following alias chains, bounded by
-/// [`MAX_ALIAS_DEPTH`]), the global FQN index for a qualified one.
-fn resolve_node<'a>(
-    ws: &'a Workspace,
-    from_fqn: &str,
-    segments: &[&str],
-    depth: u32,
-) -> Option<&'a Symbol> {
+/// Resolves a `::` path to the node/data [`Symbol`] it names: the local symbol
+/// for a bare name, the global FQN index for a qualified one.
+fn resolve_node<'a>(ws: &'a Workspace, from_fqn: &str, segments: &[&str]) -> Option<&'a Symbol> {
     if let [name] = segments {
         let model = &ws.module(from_fqn)?.model;
-        if let Some(alias) = model.alias(name) {
-            if depth >= MAX_ALIAS_DEPTH {
-                return None; // cyclic alias chain — give up rather than recurse forever
-            }
-            let target: Vec<&str> = alias.target.split("::").collect();
-            return resolve_node(ws, from_fqn, &target, depth + 1);
-        }
         if let Some(symbol) = model.symbol(name) {
             return Some(symbol);
         }
         // Best-effort: a bare name declared in another module — an
-        // under-qualified cross-module reference (§8 wants an FQN or alias) —
-        // navigates to its declaration when exactly one workspace symbol bears
-        // that name. Goto leniency only; the static checker still flags the
-        // missing qualifier, and an ambiguous name is left unresolved.
-        return unique_symbol(ws, name);
+        // under-qualified cross-module reference (§8 wants an FQN) —
+        // navigates to its declaration when exactly one *visible* workspace
+        // symbol bears that name. Goto leniency only; the static checker still
+        // flags the missing qualifier, and an ambiguous name is left unresolved.
+        return unique_symbol(ws, from_fqn, name);
     }
     if let Some(symbol) = ws.symbol(&segments.join("::")) {
-        return Some(symbol);
+        // §8: a private symbol is reachable only within its own module, even by
+        // FQN — a cross-module path resolves only to a `public` symbol. (Don't
+        // fall back to the leaf below: the FQN named a real, just-invisible
+        // symbol, so the reference resolves nowhere, as the checker also reports.)
+        return visible_from(symbol, from_fqn).then_some(symbol);
     }
     // A qualified path whose FQN is not indexed — a wrong or non-module
     // qualifier, e.g. a container name (`Syntax::Lexer` for module `syntax`) —
     // falls back to the unique symbol named by its leaf segment. Same goto
     // leniency as the bare-name case.
-    unique_symbol(ws, segments.last().copied()?)
+    unique_symbol(ws, from_fqn, segments.last().copied()?)
+}
+
+/// Whether `symbol` is reachable from module `from_fqn` (§8.2): a same-module
+/// declaration is always visible within its own file; a cross-module reference
+/// resolves only to a `public` symbol.
+fn visible_from(symbol: &Symbol, from_fqn: &str) -> bool {
+    module_of(&symbol.fqn) == from_fqn || symbol.is_public
 }
 
 /// The `(module, name)` of the node/data a `::` path names, for type inference
@@ -159,20 +153,27 @@ pub fn resolve_owner(
     from_fqn: &str,
     segments: &[&str],
 ) -> Option<(String, String)> {
-    let symbol = resolve_node(ws, from_fqn, segments, 0)?;
+    let symbol = resolve_node(ws, from_fqn, segments)?;
     Some((module_of(&symbol.fqn).to_owned(), symbol.name.clone()))
 }
 
-/// The single workspace symbol named `name`, or `None` if there are zero or
-/// more than one (an ambiguous bare reference is not guessed).
-fn unique_symbol<'a>(ws: &'a Workspace, name: &str) -> Option<&'a Symbol> {
-    let mut matches = ws.symbols().filter(|s| s.name == name);
+/// The single *local* workspace symbol named `name`, or `None` if there are zero
+/// or more than one (an ambiguous bare reference is not guessed).
+///
+/// Dependency (external) symbols are excluded: a cross-workspace reference MUST
+/// be qualified `dep::module::Node` (§8.3), so a bare name never leniently
+/// resolves into a dependency — that would over-resolve common identifiers into
+/// a dependency's symbols (wrong goto, every same-named token highlighted).
+fn unique_symbol<'a>(ws: &'a Workspace, from_fqn: &str, name: &str) -> Option<&'a Symbol> {
+    let mut matches = ws.symbols().filter(|s| {
+        s.name == name && !ws.is_external_module(module_of(&s.fqn)) && visible_from(s, from_fqn)
+    });
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
 
 /// Resolves `.member` after a `self` or node/data base — including a qualified,
-/// cross-module base (`a::Svc.op`) and an alias base.
+/// cross-module base (`a::Svc.op`).
 fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) -> Option<Hit> {
     let member_name = tokens[idx].text.as_str();
     // `idx - 1` is the `.`; the base ends at `idx - 2`.
@@ -186,15 +187,14 @@ fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) 
         }
         TokenKind::Ident => {
             let segments = path_segments(tokens, base_idx);
-            resolve_node(ws, from_fqn, &segments, 0)?
+            resolve_node(ws, from_fqn, &segments)?
         }
         _ => return None,
     };
 
     let owner_module = module_of(&symbol.fqn);
     let member = ws
-        .module(owner_module)?
-        .model
+        .module_model(owner_module)?
         .members(&symbol.name)
         .iter()
         .find(|m| m.name == member_name)?;
@@ -209,7 +209,7 @@ fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) 
 /// Builds a [`Hit`] for a declared node/data symbol, with its doc summary.
 fn symbol_hit(ws: &Workspace, symbol: &Symbol, target_module: &str) -> Hit {
     let body = ws
-        .module(target_module)
+        .module_any(target_module)
         .and_then(|entry| doc_summary(&entry.ast, &symbol.name));
     Hit {
         clicked: Span::new(0, 0),
@@ -312,7 +312,7 @@ fn doc_summary(module: &ast::Module, name: &str) -> Option<String> {
 
     module.items.iter().find_map(|item| match item {
         ast::Item::Decl(decl) => from_decl(decl, name),
-        ast::Item::Alias(_) | ast::Item::Feature(_) => None,
+        ast::Item::Feature(_) => None,
     })
 }
 
@@ -411,6 +411,45 @@ mod tests {
     }
 
     #[test]
+    fn private_node_is_not_reachable_cross_module() {
+        // §8: a private node is reachable only within its own module, even by FQN.
+        // A cross-module reference resolves nowhere (the checker flags it); a
+        // public sibling resolves.
+        let mods = [
+            ("a", "//! a\n\nsystem Hidden;\npublic system Shown;\n"),
+            (
+                "b",
+                "//! b\n\npublic container P for a::Hidden;\npublic container Q for a::Shown;\n",
+            ),
+        ];
+        let ws = workspace(&mods);
+        let b = mods[1].1;
+        let hidden = b.find("a::Hidden").unwrap() + "a::".len();
+        assert!(
+            resolve_at(&ws, "b", b, hidden as u32 + 1).is_none(),
+            "private node leaked across modules"
+        );
+        let shown = b.find("a::Shown").unwrap() + "a::".len();
+        let hit = resolve_at(&ws, "b", b, shown as u32 + 1).expect("public node resolves");
+        assert_eq!(hit.target_module, "a");
+        assert_eq!(slice(&mods, &hit), "Shown");
+    }
+
+    #[test]
+    fn private_node_resolves_within_its_own_module() {
+        // Same-module: a private node IS reachable by its own FQN within its file.
+        let mods = [(
+            "a",
+            "//! a\n\nsystem Hidden;\npublic container C for a::Hidden;\n",
+        )];
+        let ws = workspace(&mods);
+        let a = mods[0].1;
+        let h = a.find("for a::Hidden").unwrap() + "for a::".len();
+        let hit = resolve_at(&ws, "a", a, h as u32 + 1).expect("same-module private resolves");
+        assert_eq!(slice(&mods, &hit), "Hidden");
+    }
+
+    #[test]
     fn member_hover_includes_signature_and_docstring() {
         let src = "//! m\n\nsystem S {\n  /// The token stream a parser consumes.\n  tokenize(text: string): string;\n}\n";
         let mods = [("m", src)];
@@ -485,6 +524,69 @@ mod tests {
     }
 
     #[test]
+    fn bare_name_does_not_leniently_resolve_into_a_dependency() {
+        // A dependency exports `Money`; the consumer uses it *unqualified*. §8.3
+        // requires `dep::core::Money`, so the bare name must NOT resolve into the
+        // dependency (otherwise goto jumps into a dep and every same-named token
+        // is highlighted). A qualified path still resolves.
+        let ws = Workspace::build_with_externals(
+            [("m", "//! m\n\npublic data Rec { x: Money }\n")]
+                .iter()
+                .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+            [(
+                "dep::core",
+                "//! dep::core\n\npublic data Money { amount: number }\n",
+            )]
+            .iter()
+            .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+        );
+        let src = "//! m\n\npublic data Rec { x: Money }\n";
+        let bare = src.find(": Money").unwrap() as u32 + 2;
+        assert!(
+            resolve_at(&ws, "m", src, bare).is_none(),
+            "bare name wrongly resolved into a dependency"
+        );
+
+        // The qualified reference resolves (via the FQN index, unaffected).
+        let qsrc = "//! m\n\npublic data Rec { x: dep::core::Money }\n";
+        let qoff = qsrc.find("core::Money").unwrap() as u32 + "core::".len() as u32 + 1;
+        let hit = resolve_at(&ws, "m", qsrc, qoff).expect("qualified dep ref resolves");
+        assert_eq!(hit.target_module, "dep::core");
+    }
+
+    #[test]
+    fn qualified_dependency_node_and_member_resolve_with_doc() {
+        // `pseudoscript::cli::LspHost.run()` from a consumer: the node hover
+        // carries the dependency's `///` summary, and the member resolves to its
+        // declaration — both reach the external module's retained AST + model.
+        let ws = Workspace::build_with_externals(
+            [("m", "//! m\n")]
+                .iter()
+                .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+            [(
+                "pseudoscript::cli",
+                "//! cli\npublic system Cli;\n/// The stdio language server host.\npublic component LspHost for pseudoscript::cli::Cli {\n  /// Start the server.\n  public run(): void;\n}\n",
+            )]
+            .iter()
+            .map(|(f, s)| ((*f).to_owned(), parse(s).ast)),
+        );
+
+        // Hover the node: title + its doc summary from the dependency's source.
+        let src = "//! m\npublic container X for pseudoscript::cli::LspHost;\n";
+        let off = src.find("LspHost").unwrap() as u32 + 1;
+        let hit = resolve_at(&ws, "m", src, off).expect("dep node resolves");
+        assert_eq!(hit.target_module, "pseudoscript::cli");
+        assert_eq!(hit.target_fqn, "pseudoscript::cli::LspHost");
+        assert_eq!(hit.body.as_deref(), Some("The stdio language server host."));
+
+        // Resolve the member `run` on the dependency node.
+        let msrc = "//! m\npublic container X for pseudoscript::cli::Cli {\n  go(): void {\n    pseudoscript::cli::LspHost.run()\n  }\n}\n";
+        let moff = msrc.find("LspHost.run").unwrap() as u32 + "LspHost.".len() as u32 + 1;
+        let mhit = resolve_at(&ws, "m", msrc, moff).expect("dep member resolves");
+        assert_eq!(mhit.target_fqn, "pseudoscript::cli::LspHost::run");
+    }
+
+    #[test]
     fn ambiguous_bare_type_is_not_guessed() {
         // Two `Module`s in different modules: a bare reference resolves to
         // neither (the FQN is required to disambiguate, §8).
@@ -496,28 +598,6 @@ mod tests {
         let ws = workspace(&mods);
         let offset = mods[2].1.find("ast: Module").unwrap() + "ast: ".len();
         assert!(resolve_at(&ws, "c", mods[2].1, offset as u32 + 1).is_none());
-    }
-
-    #[test]
-    fn alias_follows_to_target_node() {
-        let src = "//! m\n\npublic system Svc;\n\nalias Repo = Svc;\n\ncontainer C for Repo;\n";
-        let mods = [("m", src)];
-        let ws = workspace(&mods);
-        // click `Repo` in `for Repo`
-        let offset = src.rfind("Repo").unwrap() as u32 + 1;
-        let hit = resolve_at(&ws, "m", src, offset).expect("alias resolves");
-        assert_eq!(slice(&mods, &hit), "Svc");
-    }
-
-    #[test]
-    fn cyclic_alias_does_not_overflow() {
-        // `alias A = B; alias B = A;` — resolution must bail, not recurse forever.
-        let src = "//! m\n\nalias A = B;\n\nalias B = A;\n\ncontainer C for A;\n";
-        let mods = [("m", src)];
-        let ws = workspace(&mods);
-        let offset = src.rfind('A').unwrap() as u32; // the `A` in `for A`
-        // Returns None rather than overflowing the stack.
-        assert!(resolve_at(&ws, "m", src, offset).is_none());
     }
 
     #[test]

@@ -1,0 +1,23 @@
+[package]
+name = "pseudoscript-project"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "pseudoscript_project"
+path = "src/lib.rs"
+
+# The native filesystem edge: finds the project root, walks `*.pds` modules
+# (skipping `target/` and `pds_modules/`), and reads git/local dependency
+# modules off disk — delegating the slug/lock/prefix logic to the WASM-safe
+# `pseudoscript-model::deps`. Depended on by the `pds` binary and the stdio LSP.
+[dependencies]
+pseudoscript-model = { path = "../pseudoscript-model" }
+anyhow = "1"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -27,15 +27,6 @@ pub fn document_symbols(src: &str) -> Vec<DocumentSymbol> {
 /// The outline entry for a top-level item.
 fn item_symbol(item: &ast::Item, src: &str, index: &LineIndex) -> DocumentSymbol {
     match item {
-        ast::Item::Alias(alias) => symbol(
-            &alias.name.name,
-            SymbolKind::VARIABLE,
-            alias.span,
-            alias.name.span,
-            Vec::new(),
-            src,
-            index,
-        ),
         ast::Item::Decl(decl) => decl_symbol(decl, src, index),
         ast::Item::Feature(feature) => symbol(
             &feature.name.name,
