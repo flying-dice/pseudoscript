@@ -78,6 +78,10 @@ fn view_of_golden(text: &str) -> View {
         "container" => View::Container { of: target() },
         "component" => View::Component { of: target() },
         "sequence" => View::Sequence { entry: target() },
+        // A `data` golden's second line is `of <FQN>`; a `feature` golden's is
+        // `entry <FQN>` — both read by `target()`.
+        "data" => View::Data { of: target() },
+        "feature" => View::Feature { of: target() },
         other => panic!("unknown view {other:?}"),
     }
 }

@@ -134,13 +134,20 @@ export function nodeTitle(index: ModelIndex, fqn: string): string {
   return n ? `${n.kind} \`${n.name}\`` : `\`${fqn.split("::").at(-1)}\``;
 }
 
+/** The `NodeKind` values a lifeline head can carry — the Rust `NodeKind` enum a
+ *  sequence scene deserialises against. An outline kind outside this set (e.g.
+ *  `feature`, which is not a graph node) would fail that deserialisation and
+ *  crash the layout call, so it is clamped to a neutral `callable`. */
+const LIFELINE_KINDS = new Set(["person", "system", "container", "component", "data", "callable"]);
+
 /** A minimal single-lifeline sequence scene for a symbol with nothing to project. */
 export function singleLifelineScene(index: ModelIndex, fqn: string): Scene {
   const node = index.nodeIndex.get(fqn)?.node;
+  const kind = node && LIFELINE_KINDS.has(node.kind) ? node.kind : "callable";
   return {
     view: "sequence",
     entry: fqn,
-    participants: [{ fqn, label: node?.name ?? fqn.split("::").at(-1), kind: node?.kind ?? "callable" }],
+    participants: [{ fqn, label: node?.name ?? fqn.split("::").at(-1), kind }],
     items: [],
   };
 }

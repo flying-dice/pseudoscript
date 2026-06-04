@@ -449,6 +449,18 @@ items = [
 ]
 ```
 
+### 9.4 Data entity diagrams (shapes)
+A `data` symbol projects an **entity view**: a card for the focal type plus the data types its fields reference, one hop out. The focal type's card is emphasised.
+
+A **record** renders one row per field, `name: type`. A **union** renders one row per variant. A **black box** (§3.5) renders no rows.
+
+A field (or variant) whose rendered type resolves to another `data` type in the workspace MUST draw a reference arrow from that row to the referenced type's card. The referenced type MUST render as a peer card. Type resolution strips a trailing `[]` and any generic arguments, then matches an exact FQN, a name qualified by the declaring module, or any `data` node of that simple name. A built-in type (`string`, `number`, …) resolves to no type and draws no arrow.
+
+### 9.5 Feature flow diagrams
+A `feature` (§5.2) projects a **flow view**: its steps as connected nodes, top to bottom, in source order. The view names the target node the feature describes.
+
+Each step node shows its keyword (`given`/`when`/`then`/`and`/`but`) and its prose. Consecutive steps are joined by a directed connector.
+
 ---
 
 ## 10. Grammar Sketch (EBNF, informal)

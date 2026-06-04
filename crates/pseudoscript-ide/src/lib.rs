@@ -24,7 +24,8 @@ use pseudoscript_doc::{
     try_render_site_with,
 };
 use pseudoscript_emit::{
-    Scene, View, layout_c4_scene, layout_sequence_scene, project, project_symbol,
+    Scene, View, layout_c4_scene, layout_data_scene, layout_feature_scene, layout_sequence_scene,
+    project, project_symbol,
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic};
@@ -1071,6 +1072,12 @@ fn view_of(view: &str, target: &str) -> Result<View, String> {
         "sequence" => Ok(View::Sequence {
             entry: target.to_owned(),
         }),
+        "data" => Ok(View::Data {
+            of: target.to_owned(),
+        }),
+        "feature" => Ok(View::Feature {
+            of: target.to_owned(),
+        }),
         other => Err(format!("unknown view `{other}`")),
     }
 }
@@ -1094,6 +1101,8 @@ fn layout_of(scene_json: &str) -> Result<String, String> {
     match scene {
         Scene::Sequence(seq) => Ok(to_json(&layout_sequence_scene(&seq))),
         Scene::C4(c4) => Ok(to_json(&layout_c4_scene(&c4))),
+        Scene::Data(data) => Ok(to_json(&layout_data_scene(&data))),
+        Scene::Feature(feature) => Ok(to_json(&layout_feature_scene(&feature))),
     }
 }
 
@@ -1516,12 +1525,43 @@ mod tests {
     }
 
     #[test]
-    fn symbol_scene_errors_on_a_non_node_symbol() {
+    fn symbol_scene_projects_a_feature_flow() {
         let modules = mods(&[(
             "m",
             "//! m\npublic system S;\nfeature F for S {\n  given \"a\"\n  when \"b\"\n  then \"c\"\n}",
         )]);
-        assert!(symbol_scene_of(&modules, "m::F").is_err());
+        // A `feature` is not a graph node, but selecting it projects its flow
+        // view — it must not error and crash the canvas.
+        let json = symbol_scene_of(&modules, "m::F").expect("feature projects a flow scene");
+        assert!(json.contains("\"view\":\"feature\""), "feature scene: {json}");
+        assert!(json.contains("\"target_fqn\":\"m::S\""));
+        // A genuinely unknown symbol still errors.
+        assert!(symbol_scene_of(&modules, "m::Nope").is_err());
+    }
+
+    #[test]
+    fn symbol_scene_projects_a_data_entity_view() {
+        let modules = mods(&[(
+            "m",
+            "//! m\npublic data Money { minor: number }\npublic data Order { total: Money }",
+        )]);
+        let json = symbol_scene_of(&modules, "m::Order").expect("data projects an entity scene");
+        assert!(json.contains("\"view\":\"data\""), "data scene: {json}");
+        assert!(json.contains("m::Money"), "referenced type pulled in: {json}");
+    }
+
+    #[test]
+    fn layout_scene_lays_out_data_and_feature_scenes() {
+        let modules = mods(&[(
+            "m",
+            "//! m\npublic system S;\npublic data Order { id: string }\n\
+             feature F for S {\n  given \"a\"\n  then \"b\"\n}",
+        )]);
+        for fqn in ["m::Order", "m::F"] {
+            let scene = symbol_scene_of(&modules, fqn).expect("projects");
+            let laid = layout_of(&scene).expect("lays out");
+            assert!(laid.contains("\"width\":"), "positioned: {laid}");
+        }
     }
 
     #[test]

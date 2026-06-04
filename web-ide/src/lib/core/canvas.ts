@@ -35,17 +35,34 @@ export type ProjectCanvasArgs = {
  */
 export function projectCanvas(args: ProjectCanvasArgs): Canvas {
   const { selected, seqDepth, index, wasm, onError } = args;
+  // The fallback lays out a synthesised scene, which can itself throw (an
+  // unlayoutable scene). Guard it: a throw here must not escape — invoked from
+  // the catch below it would otherwise be uncaught and crash the canvas.
   const lifelineFallback = (): Canvas => {
-    const scene = singleLifelineScene(index, selected!.fqn);
-    return { scene, layout: wasm.layoutScene(scene), error: "" };
+    try {
+      const scene = singleLifelineScene(index, selected!.fqn);
+      return { scene, layout: wasm.layoutScene(scene), error: "" };
+    } catch (e) {
+      const detail = String((e as Error)?.message ?? e);
+      onError("DIAGRAM_RENDER_FAILED", detail);
+      return { scene: null, layout: null, error: detail };
+    }
   };
   try {
     const raw = selected ? wasm.symbolScene(selected.fqn) : wasm.emitScene("context", "");
     const isSeq = !!raw && Array.isArray(raw.participants);
     const shown = (isSeq ? collapseSequence(raw as never, seqDepth, index.nodeInfo) : raw) as Scene | null;
+    // A scene is empty when its discriminating collection is empty: participants
+    // for a sequence, entities for a data ER view, steps for a feature flow, else
+    // nodes for a C4 view. An empty selected symbol falls back to its lifeline.
+    const len = (key: string): number => (shown?.[key] as unknown[] | undefined)?.length ?? 0;
     const isEmpty = isSeq
-      ? !(shown?.participants as unknown[] | undefined)?.length
-      : !(shown?.nodes as unknown[] | undefined)?.length;
+      ? len("participants") === 0
+      : Array.isArray(shown?.entities)
+        ? len("entities") === 0
+        : Array.isArray(shown?.steps)
+          ? len("steps") === 0
+          : len("nodes") === 0;
     if (isEmpty && selected) return lifelineFallback();
     // Both kinds are positioned by the Rust layout engine: a sequence yields a
     // positioned timeline, a C4 scene yields placed cards + routed edges (the

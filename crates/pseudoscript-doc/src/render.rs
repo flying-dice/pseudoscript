@@ -352,7 +352,9 @@ fn build_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> Dia
             layout: layout_sequence_scene(&scene),
             scene,
         },
-        Err(_) => Diagram::Empty {
+        // The doc site never requests data/feature views (it builds C4 and
+        // sequence views explicitly); a placeholder keeps the match total.
+        Ok(Scene::Data(_) | Scene::Feature(_)) | Err(_) => Diagram::Empty {
             caption: caption.to_owned(),
             eyebrow: eyebrow.to_lowercase(),
         },

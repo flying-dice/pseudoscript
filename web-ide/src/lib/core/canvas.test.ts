@@ -57,6 +57,26 @@ describe("projectCanvas", () => {
     expect((r.scene as { view: string }).view).toBe("sequence"); // lifeline fallback
   });
 
+  it("does not let a fallback layout throw escape (no page crash)", () => {
+    // Real-world double throw: symbolScene rejects the symbol, then the lifeline
+    // fallback's layoutScene also throws (an unlayoutable synthesised scene).
+    // The second throw lands in the catch block and must be contained.
+    const onError = vi.fn();
+    expect(() =>
+      projectCanvas({
+        selected: { fqn: "m::C" },
+        seqDepth: "component",
+        index: idx,
+        wasm: wasm({
+          symbolScene: () => { throw new Error("unknown symbol"); },
+          layoutScene: () => { throw new Error("unknown variant `feature`"); },
+        }),
+        onError,
+      }),
+    ).not.toThrow();
+    expect(onError).toHaveBeenCalledWith("DIAGRAM_RENDER_FAILED", expect.stringContaining("feature"));
+  });
+
   it("on a throw with no selection, reports an error result", () => {
     const onError = vi.fn();
     const r = projectCanvas({

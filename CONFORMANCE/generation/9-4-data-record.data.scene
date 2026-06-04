@@ -1,0 +1,8 @@
+view data
+of shop::Order
+entity shop::Order record "Order"
+  row id "string"
+  row total "Money" -> shop::Money
+entity shop::Money record "Money"
+  row minor "number"
+link shop::Order -> shop::Money "total"

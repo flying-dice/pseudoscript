@@ -199,3 +199,9 @@ Read in full for the daemon fieldless-error example and the rejected hoist-field
 §3.5 called a bare `| Name` variant a "reference" to a same-module `data`, which ADR-030 would then require to be an FQN — but the grammar `Variant = Ident [ Record ]` admits only a bare identifier. The variant declaration is a declaration-site binding, not a use-site reference; ADR-030 governs use-site references (§8.1) and does not reach it. A variant names a same-module `data` and stays bare; a qualified variant (`| other::Name`) is rejected. Cross-module composition is a record field, not a variant.
 
 Read in full for the rejected `Variant = Path [ Record ]` alternative and why same-module keeps a union resolvable within one file.
+
+## [034 — A `data` symbol projects an entity view; a `feature` projects a flow view](034-data-entity-and-feature-flow-views.md)
+
+Selecting a `data` symbol fell back to the context overview (no view of the type), and selecting a `feature` — not a graph node (§5.2) — projected nothing and crashed the canvas via a lifeline fallback that could not lay out. Now a `data` symbol projects an **entity view** (§9.4): a card of its fields/variants with reference arrows to the data types they name. A `feature` projects a **flow view** (§9.5): its given/when/then steps as connected nodes. The graph carries each `data` node's disclosed shape for the entity view.
+
+Read in full for the field-resolution rule and the rejected reuse-the-C4-card and generic-lifeline-fallback alternatives.

@@ -42,8 +42,8 @@ pub mod semantic;
 pub use complete::{CompletionItem, CompletionKind, completion};
 pub use fold::{FoldKind, FoldRange, folding_ranges};
 pub use graph::{
-    Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
-    Visibility,
+    DataField, DataShape, DataVariant, Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind,
+    Scenario, ScenarioStep, SigParam, Signature, Step, Trigger, Visibility,
 };
 pub use model::{
     Member, MemberKind, Model, ModuleEntry, Resolution, Symbol, SymbolKind, Workspace,

@@ -41,6 +41,30 @@ frame <alt|loop> "<cond>"                 # opens a frame; nested lines indent t
 - **Messages** in body evaluation order (§7). A chained expression emits one `message` per call, left-to-right; a `self.` call is `self` kind (from owner to owner). A `return` is a `return` message back to the caller. Every call has a matching return: a call to a disclosed callable expands inline and returns through its body; a call to a bodyless callable emits a synthesised `return ""` from callee to caller (the out-and-back response), its label empty and detail the callee's return type.
 - **Frames**: `if`/`else` → `frame alt`; `for`/`while` → `frame loop`. The frame's body messages indent two spaces under it; a closing line is implicit at the dedent. An `else` arm emits a second `frame alt "else <cond>"`. An `if` whose then-arm ends in `return` and has no `else` is a guard clause: the steps following it in the same block run only when the guard is false, so they emit as that second `frame alt "else <cond>"`. A branch (then or else) whose traced body is empty — e.g. its only step is a return suppressed for a triggerless entry — emits no frame.
 
+### Data entity view (`data`)
+
+```
+view data
+of <FQN>                                  # the focal data type
+entity <FQN> <record|union|blackbox> "<label>"   # focal first, then referenced types
+  row <name> "<type>" [-> <FQN>]          # a record field or union variant; `->` names the referenced type
+link <from-FQN> -> <to-FQN> "<field>"     # one per referencing field, after all entities
+```
+
+- **Entities**: the focal type first, then each referenced data type in row order, deduplicated. A record's rows are its fields (`name`, rendered type); a union's rows are its variant names with an empty type; a black box has no rows.
+- A row whose type resolves to another `data` type carries `-> <FQN>` and contributes a `link`. Resolution follows `LANG.md §9.4` (strip `[]`/generics, then exact FQN / module-qualified / any `data` of that simple name); a built-in type resolves to nothing.
+
+### Feature flow view (`feature`)
+
+```
+view feature
+entry <FQN>                               # the feature (`module::name`)
+target <FQN>                              # the node the feature describes
+step <keyword> "<text>"                   # given|when|then|and|but, in source order
+```
+
+- **Steps** in source order, each its keyword and prose (`LANG.md §9.5`).
+
 ## Adding cases
 
 - Goldens are **hand-written from the spec**, never dumped from the emitter — the spec leads (parent `README.md`). Match the canonical order above exactly.
