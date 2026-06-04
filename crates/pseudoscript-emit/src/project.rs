@@ -1124,6 +1124,43 @@ mod tests {
     }
 
     #[test]
+    fn container_view_draws_a_person_caller_edge() {
+        // A person whose disclosed body calls into a container is an external
+        // actor of that system; the call MUST draw a person -> container edge in
+        // the container view (§9.1). Persons own behaviour (ADR-011).
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic person User {\n  Use(): void { m::Api.Run() }\n}\n\
+             public system Sys;\npublic container Api for m::Sys {\n  Run(): void;\n}"
+                .to_owned(),
+        );
+        let scene = c4(project(
+            &graph(&[m]),
+            View::Container {
+                of: "m::Sys".to_owned(),
+            },
+        )
+        .expect("projects"));
+        assert!(
+            scene.nodes.iter().any(|n| n.fqn == "m::User"),
+            "person is an external actor: {:?}",
+            scene.nodes.iter().map(|n| &n.fqn).collect::<Vec<_>>()
+        );
+        assert!(
+            scene
+                .edges
+                .iter()
+                .any(|e| e.from == "m::User" && e.to == "m::Api"),
+            "person -> container edge: {:?}",
+            scene
+                .edges
+                .iter()
+                .map(|e| (e.from.as_str(), e.to.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn parallel_same_direction_calls_merge_into_one_edge() {
         // AWeb makes two distinct calls to BApi (both bubble A->B in the context
         // view); BApi calls back AWeb (B->A). The two A->B calls collapse to one

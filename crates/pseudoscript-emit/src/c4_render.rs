@@ -233,7 +233,10 @@ fn capture_to_layout(capture: &Capture, scene: &C4Scene, boundary: Option<&str>)
     let mut used_arrow = vec![false; capture.arrows.len()];
     let mut used_text = vec![false; capture.texts.len()];
     let mut edges = Vec::new();
-    for edge in acyclic_edges(scene, boundary) {
+    // Draw every in-view edge — not just the acyclic subset used for layering.
+    // A back-edge the layout pass dropped has no routed arrow, so it falls back
+    // to a straight line between card centres (below), but it is still drawn.
+    for edge in drawable_edges(scene, boundary) {
         let (Some(&from_c), Some(&to_c)) =
             (centre.get(edge.from.as_str()), centre.get(edge.to.as_str()))
         else {
@@ -511,13 +514,26 @@ enum Mark {
 /// in-view edges, since the engine panics on a cycle. Self-loops and edges
 /// touching the framed boundary are dropped. Deterministic — nodes and their
 /// out-edges are visited in scene order.
-fn acyclic_edges<'a>(scene: &'a C4Scene, boundary: Option<&str>) -> Vec<&'a RoutedEdge> {
+/// Every edge to draw: both endpoints are non-boundary nodes present in the
+/// scene, and not a self-loop. Cycle-breaking ([`acyclic_edges`]) restricts only
+/// the *layering*, never the drawing — a back-edge is still a real relationship
+/// and must be rendered (else a cyclic C4 graph silently loses arrows).
+fn drawable_edges<'a>(scene: &'a C4Scene, boundary: Option<&str>) -> Vec<&'a RoutedEdge> {
     let in_view = |fqn: &str| Some(fqn) != boundary && scene.nodes.iter().any(|n| n.fqn == fqn);
+    scene
+        .edges
+        .iter()
+        .filter(|e| e.from != e.to && in_view(&e.from) && in_view(&e.to))
+        .collect()
+}
+
+/// The largest acyclic subset of [`drawable_edges`], for the layered layout pass
+/// (Sugiyama needs a DAG). A DFS keeps every edge that does not close a cycle;
+/// back-edges are dropped *from layering only* — they are still drawn.
+fn acyclic_edges<'a>(scene: &'a C4Scene, boundary: Option<&str>) -> Vec<&'a RoutedEdge> {
     let mut adjacency: HashMap<&str, Vec<&RoutedEdge>> = HashMap::new();
-    for edge in &scene.edges {
-        if edge.from != edge.to && in_view(&edge.from) && in_view(&edge.to) {
-            adjacency.entry(edge.from.as_str()).or_default().push(edge);
-        }
+    for edge in drawable_edges(scene, boundary) {
+        adjacency.entry(edge.from.as_str()).or_default().push(edge);
     }
 
     let mut color: HashMap<&str, Mark> = HashMap::new();
@@ -988,6 +1004,56 @@ fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> Strin
     }
     for label in &capture.texts {
         draw_edge_label(&mut out, label);
+    }
+
+    // The layout engine routes only the acyclic subset (it needs a DAG); the
+    // routed arrows above cover those. Draw the remaining in-view edges — the
+    // back-edges that close a cycle — as straight centre-to-centre lines, so a
+    // cyclic C4 graph keeps every arrow (matching the interactive layout).
+    let mut centres: HashMap<&str, Point> = HashMap::new();
+    for rect in &capture.rects {
+        if let Some(fqn) = rect
+            .properties
+            .as_deref()
+            .filter(|f| by_fqn.contains_key(f))
+        {
+            centres.insert(
+                fqn,
+                Point::new(rect.xy.x + rect.size.x / 2.0, rect.xy.y + rect.size.y / 2.0),
+            );
+        }
+    }
+    let routed: std::collections::HashSet<(&str, &str)> = acyclic_edges(scene, boundary)
+        .iter()
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    for edge in drawable_edges(scene, boundary) {
+        if routed.contains(&(edge.from.as_str(), edge.to.as_str())) {
+            continue;
+        }
+        let (Some(&from_c), Some(&to_c)) = (
+            centres.get(edge.from.as_str()),
+            centres.get(edge.to.as_str()),
+        ) else {
+            continue;
+        };
+        draw_arrow(
+            &mut out,
+            &CapturedArrow {
+                points: vec![from_c, to_c],
+                dashed: matches!(edge.kind, C4EdgeKind::Provenance),
+            },
+        );
+        let text = edge_display(&edge.labels);
+        if !text.is_empty() {
+            draw_edge_label(
+                &mut out,
+                &CapturedText {
+                    xy: Point::new((from_c.x + to_c.x) / 2.0, (from_c.y + to_c.y) / 2.0),
+                    text,
+                },
+            );
+        }
     }
 
     crate::render::svg_close(&mut out);
@@ -1506,6 +1572,56 @@ mod tests {
         let layout = layout_c4_scene(&scene);
         assert_eq!(layout.nodes.len(), 2);
         assert_eq!(layout_c4_scene(&scene), layout);
+    }
+
+    #[test]
+    fn layout_c4_scene_draws_every_edge_in_a_cycle() {
+        // Cycle-breaking is for *layering* only. Both directions of a mutual
+        // relationship must still be drawn, or a cyclic C4 graph silently loses
+        // arrows (e.g. a `person -> container` edge that closes a loop).
+        let mut scene = context_scene(); // A -> B
+        scene.edges.push(RoutedEdge {
+            from: "m::B".to_owned(),
+            to: "m::A".to_owned(),
+            kind: C4EdgeKind::Call,
+            labels: vec!["back".to_owned()],
+        });
+        let layout = layout_c4_scene(&scene);
+        assert!(
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::A" && e.to == "m::B"),
+            "forward edge drawn: {:?}",
+            layout.edges
+        );
+        assert!(
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::B" && e.to == "m::A"),
+            "back edge drawn: {:?}",
+            layout.edges
+        );
+    }
+
+    #[test]
+    fn render_c4_draws_a_back_edge() {
+        // The SVG path (`pds doc` / `pds svg`) must also draw a cycle-closing
+        // back-edge, not just the routed acyclic subset.
+        let mut scene = context_scene(); // A -> B "uses"
+        scene.edges.push(RoutedEdge {
+            from: "m::B".to_owned(),
+            to: "m::A".to_owned(),
+            kind: C4EdgeKind::Call,
+            labels: vec!["back".to_owned()],
+        });
+        let svg = render_c4(&scene);
+        assert!(svg.contains(">uses</tspan>"), "forward edge label drawn");
+        assert!(
+            svg.contains(">back</tspan>"),
+            "back-edge label drawn (a cyclic graph keeps every arrow)"
+        );
     }
 
     /// An empty view (only the framed boundary, no children) falls back without
