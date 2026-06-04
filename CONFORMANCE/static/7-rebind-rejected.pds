@@ -9,8 +9,8 @@ public system Banking;
 
 public container Mainframe for Banking {
   Run(): void {
-    r: Info = self.Make()
-    r: Info = self.Make()
+    r = Info from self.Make()
+    r = Info from self.Make()
   }
   Make(): Info;
 }

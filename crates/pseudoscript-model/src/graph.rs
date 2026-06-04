@@ -704,12 +704,13 @@ impl Builder<'_> {
                     }
                 }
             }
-            ExprKind::From { ty, sources, .. } => {
+            ExprKind::From { ty, source } => {
+                let sources = source.sources();
                 for src in sources {
                     self.trace_expr(src, owner_fqn, module, entry, out);
                 }
                 // §7.2 / §9.1: each source derives the composed type.
-                let composed = self.canonicalize(&resolve_path(ty, module), module);
+                let composed = self.canonicalize(&resolve_path(&ty.name, module), module);
                 for src in sources {
                     if let Some(source_fqn) = expr_node_fqn(src, owner_fqn, module) {
                         self.graph.edges.push(Edge {
@@ -1054,7 +1055,7 @@ fn expr_label(expr: &Expr) -> String {
         ExprKind::Paren(expr) => expr_label(expr),
         ExprKind::Literal(_) => "literal".to_owned(),
         ExprKind::Marker { kind, .. } => kind.keyword().to_owned(),
-        ExprKind::From { ty, .. } => format!("{} from", path_str(ty)),
+        ExprKind::From { ty, .. } => format!("{} from", path_str(&ty.name)),
     }
 }
 

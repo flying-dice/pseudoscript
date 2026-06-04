@@ -1,6 +1,6 @@
 # ADR-027 — Bindings state their type
 
-**Status:** Accepted
+**Status:** Accepted (superseded by ADR-035 — the annotation is removed; a binding states its type through `from`)
 **Amends:** ADR-002 (immutable bindings), ADR-022 (inference-based checks)
 **Affects:** LANG.md §7, §7.1, §7.2, §10
 

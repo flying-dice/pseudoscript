@@ -36,7 +36,7 @@ public component Queue for waitingroom::WaitingRoom {
   /// Join the queue for an event. Refuses with `QueueClosed` when the queue is
   /// shedding load — the backpressure valve for a surge that outruns capacity.
   public join(event: shared::EventId, user: shared::UserId): Result<waitingroom::QueueTicket, waitingroom::WaitingError> {
-    open: Result<void, WaitingError> = self.accepting(event)
+    open = Result<void, WaitingError> from self.accepting(event)
     if (open.isErr) {
       return Err(open.error)
     }
@@ -47,7 +47,7 @@ public component Queue for waitingroom::WaitingRoom {
   /// queue snapshot (drain cursor + rate), not live queue state, so millions of
   /// position polls during a hot on-sale never hit the enqueue path.
   public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
-    snap: Option<QueueSnapshot> = WaitingRoom::QueueStore.snapshot(ticket.event)
+    snap = Option<QueueSnapshot> from WaitingRoom::QueueStore.snapshot(ticket.event)
     return self.estimate(ticket, snap)
   }
 
@@ -63,7 +63,7 @@ public component Admission for waitingroom::WaitingRoom {
   /// Verify an admission token is valid and unexpired for its event. The gate
   /// reservation and checkout call before doing anything expensive.
   public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
-    found: Option<AdmissionToken> = WaitingRoom::AdmissionStore.lookup(token)
+    found = Option<AdmissionToken> from WaitingRoom::AdmissionStore.lookup(token)
     if (found.isNone) {
       return Err(waitingroom::WaitingError::AdmissionInvalid)
     }
@@ -83,10 +83,10 @@ public component Gatekeeper for waitingroom::WaitingRoom {
   /// of remaining inventory and in-flight checkouts, so admission never outruns
   /// what the inventory and payment paths can serve.
   public admitNext(event: shared::EventId): void {
-    room: number = self.headroom(event)
-    due: QueueTicket[] = WaitingRoom::QueueStore.dequeue(event, room)
+    room = number from self.headroom(event)
+    due = QueueTicket[] from WaitingRoom::QueueStore.dequeue(event, room)
     for (ticket in due) {
-      token: AdmissionToken = WaitingRoom::AdmissionStore.grant(ticket)
+      token = AdmissionToken from WaitingRoom::AdmissionStore.grant(ticket)
       WaitingRoom::Signals.admitted(Admitted from { ticket.event, token })
     }
   }
@@ -99,11 +99,11 @@ public component Gatekeeper for waitingroom::WaitingRoom {
   /// apart the loop can only ever under-admit, never oversell the path. The
   /// drain interval is an ops knob; this bound holds at any interval.
   headroom(event: shared::EventId): number {
-    seats: Option<CapacitySnapshot> = inventory::Capacity.snapshot(event)
+    seats = Option<CapacitySnapshot> from inventory::Capacity.snapshot(event)
     if (seats.isNone) {
       return self.budget(0, 0)
     }
-    inflight: number = WaitingRoom::AdmissionStore.outstandingAsOf(event, seats.value.version)
+    inflight = number from WaitingRoom::AdmissionStore.outstandingAsOf(event, seats.value.version)
     return self.budget(seats.value.available, inflight)
   }
 

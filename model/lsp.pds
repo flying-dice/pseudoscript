@@ -75,7 +75,7 @@ public component Server for lsp::Lsp {
   /// the editor against its own file. Computed under the store lock, published
   /// without it.
   publishAll(): void {
-    payloads: model::ModuleDiagnostics[] = Lsp::Store.diagnostics()
+    payloads = model::ModuleDiagnostics[] from Lsp::Store.diagnostics()
     for (p in payloads) {
       self.publish(p.fqn, p.diagnostics)
     }
@@ -86,15 +86,15 @@ public component Server for lsp::Lsp {
 
   /// Hover the symbol under the cursor in the active document.
   hover(uri: string, line: number, col: number): string {
-    text: string = Lsp::Store.source(uri)
+    text = string from Lsp::Store.source(uri)
     return Lsp::Analysis.hover(text, line, col)
   }
 
   /// Go-to-definition: resolve the cursor; if it resolves, map the target FQN
   /// back to its file and span. Nothing under the cursor yields no location.
   gotoDefinition(uri: string, line: number, col: number): Option<lsp::Occurrence> {
-    text: string = Lsp::Store.source(uri)
-    target: Option<DefTarget> = Lsp::Analysis.definition(text, line, col)
+    text = string from Lsp::Store.source(uri)
+    target = Option<DefTarget> from Lsp::Analysis.definition(text, line, col)
     if (target.isNone) {
       return None
     }
@@ -103,7 +103,7 @@ public component Server for lsp::Lsp {
 
   /// Whole-document formatting edit, or nothing when the buffer does not parse.
   formatting(uri: string): string {
-    text: string = Lsp::Store.source(uri)
+    text = string from Lsp::Store.source(uri)
     return Lsp::Analysis.formatEdit(text)
   }
 
@@ -135,7 +135,7 @@ component Store for lsp::Lsp {
   /// The memoised resolved workspace, rebuilt from cached parses on first use
   /// after an edit. Backs hover, definition, completion, references.
   workspace(): model::ModuleEntry[] {
-    entries: syntax::Diagnostic[] = model::Checks.checkWorkspace(self.modules())
+    entries = syntax::Diagnostic[] from model::Checks.checkWorkspace(self.modules())
     return self.entries()
   }
 
@@ -177,8 +177,8 @@ component Analysis for lsp::Lsp {
   /// signature plus any `///` summary. Falls back to a local binding's inferred
   /// type when the cursor resolves to no declaration.
   hover(text: string, line: number, col: number): string {
-    offset: number = Lsp::Convert.positionToOffset(text, line, col)
-    hit: Result<Hit, void> = Lsp::Resolve.resolveAt(text, offset)
+    offset = number from Lsp::Convert.positionToOffset(text, line, col)
+    hit = Result<Hit, void> from Lsp::Resolve.resolveAt(text, offset)
     if (hit.isErr) {
       return Lsp::Infer.bindingHover(text, offset)
     }
@@ -189,12 +189,12 @@ component Analysis for lsp::Lsp {
   /// files, through aliases, and into `self.`/node members; `None` when the
   /// cursor rests on nothing resolvable.
   definition(text: string, line: number, col: number): Option<lsp::DefTarget> {
-    offset: number = Lsp::Convert.positionToOffset(text, line, col)
-    hit: Result<Hit, void> = Lsp::Resolve.resolveAt(text, offset)
+    offset = number from Lsp::Convert.positionToOffset(text, line, col)
+    hit = Result<Hit, void> from Lsp::Resolve.resolveAt(text, offset)
     if (hit.isErr) {
       return None
     }
-    target: DefTarget = DefTarget from { hit.value }
+    target = DefTarget from { hit.value }
     return Some(target)
   }
 
@@ -212,8 +212,8 @@ component Resolve for lsp::Lsp {
   /// definition. Tokenizes, picks the identifier (or the one ending at the
   /// caret), then dispatches: a `.member`, a self/field declaration, or a path.
   resolveAt(text: string, offset: number): Result<lsp::Hit, void> {
-    tokens: Token[] = syntax::Lexer.tokenize(text)
-    idx: Result<number, void> = self.identIndex(tokens, offset)
+    tokens = Token[] from syntax::Lexer.tokenize(text)
+    idx = Result<number, void> from self.identIndex(tokens, offset)
     if (idx.isErr) {
       return Err(idx.error)
     }
@@ -282,8 +282,8 @@ component Semantic for lsp::Lsp {
   /// The semantic tokens for the source as a full-document set: run both passes,
   /// then encode.
   semanticTokens(text: string): string {
-    raws: syntax::Token[] = self.tokenPass(text)
-    coloured: syntax::Token[] = self.astPass(text)
+    raws = syntax::Token[] from self.tokenPass(text)
+    coloured = syntax::Token[] from self.astPass(text)
     return self.encode(text, coloured)
   }
 
@@ -350,8 +350,8 @@ component Refs for lsp::Lsp {
 component Complete for lsp::Lsp {
   /// Completion items for the caret position: dispatch on the trigger token.
   completion(text: string, line: number, col: number): string {
-    offset: number = Lsp::Convert.positionToOffset(text, line, col)
-    tokens: Token[] = syntax::Lexer.tokenize(text)
+    offset = number from Lsp::Convert.positionToOffset(text, line, col)
+    tokens = Token[] from syntax::Lexer.tokenize(text)
     return self.dispatch(tokens, offset)
   }
 

@@ -210,7 +210,7 @@ A function-shaped declaration is a callable.
 - It MAY **disclose** its logic with a block, or be a **black box** with `;`.
 - All calls are request/response. A call to a resolvable callable MUST pass one argument per declared parameter, and each inferable argument MUST match its parameter's type; a wrong arity or argument type MUST be rejected (ADR-022, ADR-023).
 - Return type is optional; absence means `void`. A disclosed non-`void` callable MUST return a value on every path.
-- A `return` expression whose type is inferable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `Type from { … }` composition (§7.2), or a parameter/binding reference — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). Calls, field accesses, and `self` are not inferred (ADR-022).
+- A `return` operand whose type is determinable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `from` (§7.2), a typed binding, or a call to a resolvable callable — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). A bare reference resolving to a `data` record or a node is not a value and MUST be rejected (§7.2).
 - A bare name in a body MUST resolve to a parameter, a binding, or a `for` binding; it MUST NOT resolve to a node or union variant (ADR-030) — those are referenced by FQN (§8.1). An unresolved bare name MUST be rejected (ADR-022).
 - A same-node callable is invoked via `self.Name(args)` (`self` = the enclosing node); this also covers recursion.
 - A callable's name and its parameter names MUST NOT be reserved words (§2.3) — `container`, `component`, `data`, and `for` are reserved.
@@ -221,7 +221,7 @@ component AccountService for banking::core::Mainframe {
 
   // disclosed
   GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
-    r = banking::core::Repository.fetch(id)
+    r = Result<BankingInfo, NotFound> from banking::core::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.error)
     }
@@ -267,11 +267,11 @@ Fallibility and absence live in the **type**, and every branch is explicit. The 
 
 ```pds
 OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError> {
-  check = banking::core::Verifier.check(req.owner)
+  check = Result<BankingInfo, OpenError> from banking::core::Verifier.check(req.owner)
   if (check.isErr) {
     return Err(check.error)
   }
-  acc = banking::core::Repository.create(req)
+  acc = Result<BankingInfo, OpenError> from banking::core::Repository.create(req)
   if (acc.isErr) {
     return Err(acc.error)
   }
@@ -285,7 +285,7 @@ OpenAccount(req: OpenRequest): Result<BankingInfo, OpenError> {
 
 ```pds
 FindOwner(id: number): Option<Person> {
-  o = banking::core::Directory.lookup(id)
+  o = Option<Person> from banking::core::Directory.lookup(id)
   if (o.isNone) {
     return None
   }
@@ -303,9 +303,9 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 
 | Construct | Syntax | Sequence mapping |
 |-----------|--------|------------------|
-| Assignment | `x: Type = Expr` | — (binds the name; single-assignment) |
+| Assignment | `x = Expr` | — (binds the name; single-assignment) |
 | Call | `Target.method(args)` | solid request → return arrow |
-| Composition | `x: Type = Type from { a, b }` | — (local; provenance edge in data-flow view) |
+| Composition | `x = Type from { a, b }` | — (local; provenance edge in data-flow view) |
 | Return | `return Expr` | return arrow (`Err` labeled with `E`) |
 | If | `if (C) { } else { }` | `alt` frame |
 | For | `for (x in Expr) { }` | `loop` frame |
@@ -314,19 +314,21 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 An `if`/`while` condition `C` MUST be `bool` where its type is inferable (ADR-023).
 
 ### 7.1 Assignment
-`x: Type = Expr` binds `x` once. The binding MUST state its type; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable — a literal, a `from`, an `Ok`/`Err`/`Some`/`None` marker, or a bare reference — it MUST match the annotation; a call, field access, `self`, or `::` path is not inferred (ADR-022), so there the annotation stands. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
+`x = Expr` binds `x` once. A binding states its type through a `from` right-hand side (§7.2): `x = Type from Expr`. A binding whose right-hand side is not a `from` is `Unknown`-typed, and its later uses are not checked. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
 
-### 7.2 Composition with `from`
-`x` of type `Type` is composed *from* a set of sources. The braces enclose a **source set** (bindings, field accesses, or calls).
+### 7.2 Composition and conversion with `from`
+`from` carries a type onto a value. It takes a brace **source set** or a single expression.
 ```pds
-a: Thing = Foo.getThing()
-b: Other = Bar.getOther()
-c: BankingInfo = BankingInfo from { a, b }
+a = Thing from Foo.getThing()
+b = Other from Bar.getOther()
+c = BankingInfo from { a, b }
 ```
-- `from` composes a `data` record or union variant. The built-in constructors `Ok` / `Err` / `Some` / `None` produce `Result` / `Option` values (§6). No other construction exists.
-- The `from` target MUST resolve to a `data` record or union variant; a primitive, `Result`, `Option`, or node target MUST be rejected.
-- `from` produces a single value of that type; `Type[] from { … }` composes an array `Type[]`. A singular `from` MUST NOT satisfy an array type, and an array `from` MUST NOT satisfy a singular type.
-- The produced value — a record `data` or a union variant — is usable wherever a value of `Type` is expected: a call argument, a `return` operand, or a binding.
+- `Type from { … }` composes a `data` record or union variant from a source set (bindings, field accesses, or calls). The target MUST be a `data` record or union variant. The sources are provenance and are not type-checked.
+- `Type from Expr` carries the type `Type` onto the value `Expr`. Where `Expr`'s type is determinable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `from`, a typed binding, or a call to a resolvable callable — it MUST satisfy `Type`; a mismatch MUST be rejected. A source whose type is not determinable is not checked. `Result`/`Option` match at the constructor; inner type arguments are not compared.
+- A `from` target MAY be any type except a node and `void`: a `data` record, a union variant, `Result<…>`, `Option<…>`, a primitive, or an array `T[]`. A node target MUST be rejected.
+- `Type from …` produces a single value; `Type[] from …` produces an array `T[]`. A singular `from` MUST NOT satisfy an array type, and an array `from` MUST NOT satisfy a singular type.
+- A value-position reference resolving to a `data` record or a node is not a value; `from` produces a `data` value. A fieldless union variant (`module::Union::Variant`, §3.5) is a value.
+- The produced value is usable wherever a value of `Type` is expected: a call argument, a `return` operand, or a binding.
 - Model/C4: records a derivation relationship (data-flow edge).
 - Sequence diagram: the calls producing the sources are the messages; the composition itself is local.
 
@@ -502,7 +504,7 @@ Primitive   = "number" | "string" | "bool" | "datetime" | "uuid" | "void" ;
 
 Block       = "{" { Stmt } "}" ;
 Stmt        = Assign | Return | If | For | While | Postfix ;
-Assign      = Ident ":" Type "=" Expr ;            // binds once (single-assignment), type stated
+Assign      = Ident "=" Expr ;                     // binds once (single-assignment); type via `from`
 Return      = "return" [ Expr ] ;
 If          = "if" "(" Expr ")" Block [ "else" Block ] ;
 For         = "for" "(" Ident "in" Expr ")" Block ; // Expr MUST be an array type
@@ -512,7 +514,7 @@ Expr        = Marker | FromExpr | Postfix | Literal | Unary ;
 Postfix     = Primary { "." Ident [ "(" [ Args ] ")" ] } ;   // field access / call, chained
 Primary     = Ref | "(" Expr ")" ;
 Marker      = ( "Ok" | "Err" | "Some" ) [ "(" Expr ")" ] | "None" ;   // built-in generic constructors
-FromExpr    = Path [ "[]" ] "from" "{" Expr { "," Expr } "}" ;   // "[]" composes an array
+FromExpr    = Type "from" ( "{" [ Expr { "," Expr } ] "}" | Expr ) ;   // brace source set, or a single value; "[]" target composes an array
 Unary       = "!" Expr ;
 Args        = Expr { "," Expr } ;
 Ref         = "self" | Ident | Path ;               // self or an FQN
@@ -554,7 +556,7 @@ public container Mainframe for banking::core::Banking {
 
   /// Fetches current banking info for an account.
   public GetBankingInfo(id: number): Result<banking::core::BankingInfo, banking::core::NotFound> {
-    r = banking::core::Repository.fetch(id)
+    r = Result<banking::core::BankingInfo, banking::core::NotFound> from banking::core::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.error)
     }

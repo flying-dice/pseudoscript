@@ -89,11 +89,11 @@ public component ChargeService for charges::Charges {
   /// the intent saga and the edge idempotency layer.
   /// #headline
   public authorize(intent: shared::PaymentIntentId, amount: shared::Money, instrument: context::NetworkInstrument): Result<charges::AuthResult, charges::ChargeError> {
-    id: shared::ChargeId = Charges::ChargeStore.nextId()
-    charge: Charge = Charge from { id, intent, amount, charges::ChargeStatus::Authorizing }
+    id = shared::ChargeId from Charges::ChargeStore.nextId()
+    charge = Charge from { id, intent, amount, charges::ChargeStatus::Authorizing }
     Charges::ChargeStore.save(charge)
-    key: IdempotencyKey = self.keyFor(id, "authorize")
-    held: Result<context::AuthOutcome, ChargeError> = Charges::Gateway.authorize(amount, instrument, key)
+    key = IdempotencyKey from self.keyFor(id, "authorize")
+    held = Result<context::AuthOutcome, ChargeError> from Charges::Gateway.authorize(amount, instrument, key)
     if (held.isErr) {
       self.onAuthError(charge, held.error)
       return Err(held.error)
@@ -104,12 +104,12 @@ public component ChargeService for charges::Charges {
   /// Complete a 3-D Secure challenge on a charge awaiting action, promoting it to
   /// a usable hold.
   public completeAction(intent: shared::PaymentIntentId, outcome: context::NetworkChallengeResult): Result<charges::AuthResult, charges::ChargeError> {
-    loaded: Result<PendingCharge, ChargeError> = self.loadPending(intent)
+    loaded = Result<PendingCharge, ChargeError> from self.loadPending(intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    key: IdempotencyKey = self.keyFor(loaded.value.charge, "authorize")
-    cleared: Result<context::NetworkAuth, ChargeError> = Charges::Gateway.completeAction(loaded.value.auth, outcome, key)
+    key = IdempotencyKey from self.keyFor(loaded.value.charge, "authorize")
+    cleared = Result<context::NetworkAuth, ChargeError> from Charges::Gateway.completeAction(loaded.value.auth, outcome, key)
     if (cleared.isErr) {
       self.onAuthError(self.chargeOf(loaded.value), cleared.error)
       return Err(cleared.error)
@@ -120,30 +120,30 @@ public component ChargeService for charges::Charges {
   /// Capture (settle) an authorised charge. Idempotent: a second capture returns
   /// the existing receipt without calling the network again.
   public capture(intent: shared::PaymentIntentId): Result<charges::Receipt, charges::ChargeError> {
-    done: Option<Receipt> = self.receiptFor(intent)
+    done = Option<Receipt> from self.receiptFor(intent)
     if (done.isSome) {
       return Ok(done.value)
     }
-    loaded: Result<AuthorizedCharge, ChargeError> = self.loadAuthorized(intent)
+    loaded = Result<AuthorizedCharge, ChargeError> from self.loadAuthorized(intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    key: IdempotencyKey = self.keyFor(loaded.value.charge, "capture")
-    taken: Result<context::NetworkCapture, ChargeError> = Charges::Gateway.capture(loaded.value.auth, loaded.value.amount, key)
+    key = IdempotencyKey from self.keyFor(loaded.value.charge, "capture")
+    taken = Result<context::NetworkCapture, ChargeError> from Charges::Gateway.capture(loaded.value.auth, loaded.value.amount, key)
     if (taken.isErr) {
       self.onCaptureError(self.chargeOfAuthorized(loaded.value), taken.error)
       return Err(taken.error)
     }
-    captured: Charge = self.markCaptured(loaded.value.charge, taken.value)
+    captured = Charge from self.markCaptured(loaded.value.charge, taken.value)
     Charges::ChargeStore.save(captured)
     return Ok(Receipt from { captured.id, taken.value.ref })
   }
 
   /// Void an authorised-but-uncaptured hold, releasing the cardholder's funds.
   public release(intent: shared::PaymentIntentId): void {
-    loaded: Result<AuthorizedCharge, ChargeError> = self.loadAuthorized(intent)
+    loaded = Result<AuthorizedCharge, ChargeError> from self.loadAuthorized(intent)
     if (loaded.isOk) {
-      key: IdempotencyKey = self.keyFor(loaded.value.charge, "void")
+      key = IdempotencyKey from self.keyFor(loaded.value.charge, "void")
       Charges::Gateway.cancelAuth(loaded.value.auth, key)
       Charges::ChargeStore.save(self.markVoided(loaded.value.charge))
     }
@@ -153,12 +153,12 @@ public component ChargeService for charges::Charges {
   /// caller (`refunds`) only after the network acknowledges; a failed refund is
   /// surfaced, never swallowed.
   public refund(intent: shared::PaymentIntentId, amount: shared::Money): Result<context::NetworkRefund, charges::ChargeError> {
-    loaded: Result<CapturedCharge, ChargeError> = self.loadCaptured(intent)
+    loaded = Result<CapturedCharge, ChargeError> from self.loadCaptured(intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    key: IdempotencyKey = self.keyFor(loaded.value.charge, "refund")
-    back: Result<context::NetworkRefund, ChargeError> = Charges::Gateway.refund(loaded.value.capture, amount, key)
+    key = IdempotencyKey from self.keyFor(loaded.value.charge, "refund")
+    back = Result<context::NetworkRefund, ChargeError> from Charges::Gateway.refund(loaded.value.capture, amount, key)
     if (back.isErr) {
       return Err(back.error)
     }
@@ -173,13 +173,13 @@ public component ChargeService for charges::Charges {
   /// still unknown is left for a later sweep, so a captured cardholder is never
   /// wrongly failed.
   public reconcileCapture(intent: shared::PaymentIntentId): void {
-    done: Option<Receipt> = self.receiptFor(intent)
+    done = Option<Receipt> from self.receiptFor(intent)
     if (done.isNone) {
-      truth: Option<Receipt> = Charges::Gateway.lookupCapture(intent)
+      truth = Option<Receipt> from Charges::Gateway.lookupCapture(intent)
       if (truth.isSome) {
         Charges::ChargeStore.save(self.recordCapture(intent, truth.value))
       } else {
-        gone: Result<void, ChargeError> = Charges::Gateway.captureDefinitelyMissing(intent)
+        gone = Result<void, ChargeError> from Charges::Gateway.captureDefinitelyMissing(intent)
         if (gone.isOk) {
           Charges::ChargeStore.save(self.recordFailed(intent))
         }
@@ -199,7 +199,7 @@ public component ChargeService for charges::Charges {
   /// On an authorise failure: a DEFINITE decline marks the charge `Failed`; an
   /// INDETERMINATE outcome leaves it `Authorizing` for `reconcileCapture`.
   onAuthError(charge: charges::Charge, e: charges::ChargeError): void {
-    sure: Result<void, ChargeError> = self.isDefinite(e)
+    sure = Result<void, ChargeError> from self.isDefinite(e)
     if (sure.isOk) {
       Charges::ChargeStore.save(self.markFailed(charge, e))
     }
@@ -209,7 +209,7 @@ public component ChargeService for charges::Charges {
   /// an INDETERMINATE outcome leaves both intact and the charge `Authorized`,
   /// because the capture may actually have settled.
   onCaptureError(charge: charges::Charge, e: charges::ChargeError): void {
-    sure: Result<void, ChargeError> = self.isDefinite(e)
+    sure = Result<void, ChargeError> from self.isDefinite(e)
     if (sure.isOk) {
       Charges::ChargeStore.save(self.markFailed(charge, e))
     }
@@ -254,7 +254,7 @@ public component ChargeService for charges::Charges {
 public component Gateway for charges::Charges {
   /// Place a hold via the network.
   public authorize(amount: shared::Money, instrument: context::NetworkInstrument, key: charges::IdempotencyKey): Result<context::AuthOutcome, charges::ChargeError> {
-    held: Result<AuthOutcome, NetworkError> = context::CardNetwork.authorize(amount, instrument, key)
+    held = Result<AuthOutcome, NetworkError> from context::CardNetwork.authorize(amount, instrument, key)
     if (held.isErr) {
       return Err(self.translate(held.error))
     }
@@ -263,7 +263,7 @@ public component Gateway for charges::Charges {
 
   /// Complete a 3-D Secure challenge via the network.
   public completeAction(auth: context::NetworkAuthRef, outcome: context::NetworkChallengeResult, key: charges::IdempotencyKey): Result<context::NetworkAuth, charges::ChargeError> {
-    cleared: Result<NetworkAuth, NetworkError> = context::CardNetwork.completeAction(auth, outcome, key)
+    cleared = Result<NetworkAuth, NetworkError> from context::CardNetwork.completeAction(auth, outcome, key)
     if (cleared.isErr) {
       return Err(self.translate(cleared.error))
     }
@@ -272,7 +272,7 @@ public component Gateway for charges::Charges {
 
   /// Capture a hold via the network.
   public capture(auth: context::NetworkAuthRef, amount: shared::Money, key: charges::IdempotencyKey): Result<context::NetworkCapture, charges::ChargeError> {
-    taken: Result<NetworkCapture, NetworkError> = context::CardNetwork.capture(auth, amount, key)
+    taken = Result<NetworkCapture, NetworkError> from context::CardNetwork.capture(auth, amount, key)
     if (taken.isErr) {
       return Err(self.translate(taken.error))
     }
@@ -281,7 +281,7 @@ public component Gateway for charges::Charges {
 
   /// Refund a capture via the network.
   public refund(capture: context::NetworkCaptureRef, amount: shared::Money, key: charges::IdempotencyKey): Result<context::NetworkRefund, charges::ChargeError> {
-    back: Result<NetworkRefund, NetworkError> = context::CardNetwork.refund(capture, amount, key)
+    back = Result<NetworkRefund, NetworkError> from context::CardNetwork.refund(capture, amount, key)
     if (back.isErr) {
       return Err(self.translate(back.error))
     }

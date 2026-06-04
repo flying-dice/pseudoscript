@@ -25,7 +25,7 @@ Feature: References in a body resolve (LANG.md §7, §8)
       public system S;
       public container C for S {
         get(x: Item): Item {
-          y: Item = x
+          y = Item from x
           return y
         }
       }

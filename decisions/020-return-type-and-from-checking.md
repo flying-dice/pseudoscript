@@ -1,6 +1,6 @@
 # ADR-020 — Return-type and `from` checking for determinable forms
 
-**Status:** Accepted
+**Status:** Accepted (superseded by ADR-035 — `from` targets any non-node type and checks a single-expression source)
 **Affects:** LANG.md §5.1, §7.2
 
 ## Context

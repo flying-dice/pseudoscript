@@ -238,13 +238,10 @@ fn block_tokens(block: &ast::Block, out: &mut Vec<SemToken>) {
 /// Colours one statement and its sub-expressions.
 fn stmt_tokens(stmt: &ast::Stmt, out: &mut Vec<SemToken>) {
     match &stmt.kind {
-        ast::StmtKind::Assign { name, ty, value } => {
+        ast::StmtKind::Assign { name, value } => {
             push(out, name.span, SemKind::Variable, true);
-            // A placeholder type (untyped-assignment error recovery) is an
-            // empty-named path at the binding span — don't re-colour it.
-            if !ty.name.segments.iter().all(|s| s.name.is_empty()) {
-                type_tokens(ty, out);
-            }
+            // A binding states its type through `from` (ADR-035); the type is
+            // coloured inside the `from` value.
             expr_tokens(value, out);
         }
         ast::StmtKind::Return(value) => {
@@ -288,10 +285,10 @@ fn expr_tokens(expr: &ast::Expr, out: &mut Vec<SemToken>) {
                 expr_tokens(payload, out);
             }
         }
-        ast::ExprKind::From { ty, sources, .. } => {
-            type_path(ty, out);
-            for source in sources {
-                expr_tokens(source, out);
+        ast::ExprKind::From { ty, source } => {
+            type_tokens(ty, out);
+            for src in source.sources() {
+                expr_tokens(src, out);
             }
         }
         ast::ExprKind::Postfix { base, segments } => {

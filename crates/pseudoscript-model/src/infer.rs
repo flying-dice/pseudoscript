@@ -1,11 +1,11 @@
 //! Local-binding types and right-hand-side inference, for hover and completion.
 //!
-//! A binding's type is its explicit annotation (`x: T = expr`, §7.1), so
-//! [`local_types`]/[`binding_type_at`] read the annotation directly. Inference
-//! from the right-hand side is still needed elsewhere: a `for` binding's element
-//! type, the type of a chain receiver mid-expression ([`owner_at_dot`]), and
-//! validating an annotation against its initialiser. Inference is best-effort —
-//! an expression it can't type yields nothing rather than a guess.
+//! A binding states its type through a `from` right-hand side (`x = T from expr`,
+//! §7.1, ADR-035), so [`local_types`]/[`binding_type_at`] read the `from` target.
+//! Right-hand-side inference also types a `for` binding's element and a chain
+//! receiver mid-expression ([`owner_at_dot`]). Inference is best-effort — an
+//! expression it can't type (a bare call, a field access) yields nothing rather
+//! than a guess.
 
 use crate::{Workspace, ast};
 use pseudoscript_syntax::Span;
@@ -68,11 +68,10 @@ fn walk_decl(ws: &Workspace, from_fqn: &str, decl: &ast::Decl, out: &mut Vec<Loc
 fn walk_block(ws: &Workspace, from_fqn: &str, block: &ast::Block, out: &mut Vec<LocalType>) {
     for stmt in &block.stmts {
         match &stmt.kind {
-            ast::StmtKind::Assign { name, ty, .. } => {
-                // A binding's type is its explicit annotation (§7.1). The empty
-                // placeholder of an untyped assignment renders empty — skip it.
-                let rendered = crate::model::render_type(ty);
-                if !rendered.is_empty() {
+            ast::StmtKind::Assign { name, value } => {
+                // A binding's type is its `from` target (§7.1, ADR-035); a
+                // non-`from` RHS is left untyped.
+                if let Some(rendered) = expr_type(ws, from_fqn, value) {
                     out.push(LocalType {
                         name: name.name.clone(),
                         name_span: name.span,
@@ -121,8 +120,8 @@ fn expr_type(ws: &Workspace, from_fqn: &str, expr: &ast::Expr) -> Option<String>
         ast::ExprKind::Literal(ast::Literal::Number { .. }) => Some("number".to_owned()),
         ast::ExprKind::Literal(ast::Literal::Bool { .. }) => Some("bool".to_owned()),
         ast::ExprKind::Paren(inner) => expr_type(ws, from_fqn, inner),
-        // `T from { .. }` produces a value of the named type.
-        ast::ExprKind::From { ty, .. } => ty.segments.last().map(|seg| seg.name.clone()),
+        // `T from …` produces a value of the target type (ADR-035).
+        ast::ExprKind::From { ty, .. } => Some(crate::model::render_type(ty)),
         ast::ExprKind::Postfix { base, segments } => postfix_type(ws, from_fqn, base, segments),
         _ => None,
     }
@@ -306,7 +305,8 @@ fn expr_owner_at(
         ast::ExprKind::Marker {
             payload: Some(p), ..
         } => expr_owner_at(ws, from_fqn, p, dot),
-        ast::ExprKind::From { sources, .. } => sources
+        ast::ExprKind::From { source, .. } => source
+            .sources()
             .iter()
             .find_map(|s| expr_owner_at(ws, from_fqn, s, dot)),
         _ => None,
@@ -339,7 +339,7 @@ mod tests {
         public component Lexer for Syntax {\n  tokenize(text: string): Token[];\n}\n\n\
         public component Parser for Syntax {\n  \
         public parse(text: string): string {\n    \
-        tokens: Token[] = Syntax::Lexer.tokenize(text)\n    return tokens.kind\n  }\n}\n";
+        tokens = Token[] from Syntax::Lexer.tokenize(text)\n    return tokens.kind\n  }\n}\n";
 
     #[test]
     fn local_type_reads_the_annotation() {

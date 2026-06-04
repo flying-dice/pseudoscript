@@ -52,7 +52,7 @@ public container Api for Bank {
   /// #entrypoint
   #[manual]
   public Post(posting: Posting): number {
-    n: number = Ledger.Append(posting)
+    n = number from Ledger.Append(posting)
     return n
   }
 }

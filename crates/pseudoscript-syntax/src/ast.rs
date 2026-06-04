@@ -313,8 +313,9 @@ pub struct Stmt {
 /// The statement forms (§7).
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    /// `x: T = Expr` single-assignment (§7.1): a binding states its type.
-    Assign { name: Ident, ty: Type, value: Expr },
+    /// `x = Expr` single-assignment (§7.1): a binding states its type through a
+    /// `from` right-hand side (ADR-035).
+    Assign { name: Ident, value: Expr },
     /// `return [Expr]` (§7).
     Return(Option<Expr>),
     /// `if (C) { } [else { }]` (§7).
@@ -382,13 +383,11 @@ pub enum ExprKind {
         /// Optional `( Expr )` payload; `None` carries none.
         payload: Option<Box<Expr>>,
     },
-    /// `Type from { a, b }` composition, or `Type[] from { a, b }` composing an
-    /// array (§7.2). `is_array` is set by the `[]` suffix on the target.
-    From {
-        ty: Path,
-        is_array: bool,
-        sources: Vec<Expr>,
-    },
+    /// `Type from …` — carries a type onto a value (§7.2, ADR-035). The target
+    /// `ty` may be any non-node type, including `Result<…>` generics and a `[]`
+    /// array. The source is a brace set (composition) or a single value
+    /// (conversion).
+    From { ty: Type, source: FromSource },
     /// A postfix chain over a primary: `a.b.c`, `Repo.f(x).g()` (ADR-007).
     Postfix {
         base: Box<Expr>,
@@ -402,6 +401,27 @@ pub enum ExprKind {
     Unary { op_span: Span, expr: Box<Expr> },
     /// A `( Expr )` group.
     Paren(Box<Expr>),
+}
+
+/// The source of a `from` expression (§7.2, ADR-035).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FromSource {
+    /// `from { a, b }` — composes a `data` record/variant from a source set.
+    Compose(Vec<Expr>),
+    /// `from expr` — carries the target type onto a single value.
+    Convert(Box<Expr>),
+}
+
+impl FromSource {
+    /// The source expressions, whichever form — for walkers that treat both
+    /// uniformly.
+    #[must_use]
+    pub fn sources(&self) -> &[Expr] {
+        match self {
+            FromSource::Compose(sources) => sources,
+            FromSource::Convert(expr) => std::slice::from_ref(expr),
+        }
+    }
 }
 
 /// One `.name` or `.name(args)` step in a postfix chain (ADR-007).
@@ -459,28 +479,6 @@ pub struct Type {
     pub is_array: bool,
     /// Source span of the whole type.
     pub span: Span,
-}
-
-impl Type {
-    /// A placeholder type at `span` — an empty-named path, mirroring the
-    /// error-recovery [`Ident`] convention. The parser inserts one for an
-    /// untyped assignment so the statement still carries a `ty` while the
-    /// missing-annotation diagnostic stands on its own.
-    #[must_use]
-    pub fn placeholder(span: Span) -> Self {
-        Type {
-            name: Path {
-                segments: vec![Ident {
-                    name: String::new(),
-                    span,
-                }],
-                span,
-            },
-            generics: Vec::new(),
-            is_array: false,
-            span,
-        }
-    }
 }
 
 /// A `::`-separated path of identifiers (§2.2, §10 `Path`).

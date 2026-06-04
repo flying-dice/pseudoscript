@@ -1,0 +1,12 @@
+// LANG.md §5.1 (ADR-035): a node is not a value; returning a node reference is a
+// model error.
+
+//! example
+
+public data Cat;
+
+public system Shelter;
+
+public container Pen for Shelter {
+  Get(): Cat { return Shelter }
+}

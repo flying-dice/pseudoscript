@@ -125,29 +125,29 @@ public component SiteBuilder for doc::Doc {
   /// shared assets. Any failed server-render aborts with its `RenderError`.
   public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
     Doc::Urls.build(graph)
-    modules: string[] = Doc::Pages.sortedModules(graph)
-    index: Result<SiteFile, RenderError> = self.emitPage("index.html", Doc::Pages.index(graph, config, modules))
+    modules = string[] from Doc::Pages.sortedModules(graph)
+    index = Result<SiteFile, RenderError> from self.emitPage("index.html", Doc::Pages.index(graph, config, modules))
     if (index.isErr) {
       return Err(index.error)
     }
     for (m in modules) {
-      page: Result<SiteFile, RenderError> = self.emitPage(Doc::Urls.modulePagePath(m), Doc::Pages.modulePage(graph, config, m, modules))
+      page = Result<SiteFile, RenderError> from self.emitPage(Doc::Urls.modulePagePath(m), Doc::Pages.modulePage(graph, config, m, modules))
       if (page.isErr) {
         return Err(page.error)
       }
     }
-    assets: SiteFile[] = Doc::Assets.shared()
+    assets = SiteFile[] from Doc::Assets.shared()
     return Ok(Site from { index, modules, assets })
   }
 
   /// Render one page: server-render its props through the engine, then wrap the
   /// `{head, body}` result in the document shell. Propagates a `RenderError`.
   emitPage(path: string, props: doc::PageProps): Result<doc::SiteFile, doc::RenderError> {
-    rendered: Result<RenderedPage, RenderError> = Doc::Ssr.renderPage(props)
+    rendered = Result<RenderedPage, RenderError> from Doc::Ssr.renderPage(props)
     if (rendered.isErr) {
       return Err(rendered.error)
     }
-    html: string = Doc::Shell.wrap(path, props, rendered.value)
+    html = string from Doc::Shell.wrap(path, props, rendered.value)
     return Ok(SiteFile from { path, html })
   }
 }
@@ -159,29 +159,29 @@ component Pages for doc::Doc {
   /// The index props: the shared sidebar, a card per module, and the system-context
   /// diagram.
   index(graph: model::Graph, config: doc::DocConfig, modules: string[]): doc::PageProps {
-    sidebar: SidebarModule[] = self.sidebar(graph, modules, "")
-    cards: ModuleCard[] = self.moduleCards(graph, modules)
-    context: Diagram = Doc::Diagrams.context(graph)
-    body: IndexPage = IndexPage from { config, context, cards }
+    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
+    cards = ModuleCard[] from self.moduleCards(graph, modules)
+    context = Diagram from Doc::Diagrams.context(graph)
+    body = IndexPage from { config, context, cards }
     return PageProps from { config, sidebar, body }
   }
 
   /// One module page's props: the sidebar (prefixed `../` for the page's depth) and
   /// a section per non-callable node declared in the module, sorted by FQN.
   modulePage(graph: model::Graph, config: doc::DocConfig, module: string, modules: string[]): doc::PageProps {
-    sidebar: SidebarModule[] = self.sidebar(graph, modules, "../")
-    nodes: model::GraphNode[] = self.moduleNodes(graph, module)
-    sections: NodeSection[] = self.sections(graph, nodes)
-    body: ModulePage = ModulePage from { module, sections }
+    sidebar = SidebarModule[] from self.sidebar(graph, modules, "../")
+    nodes = model::GraphNode[] from self.moduleNodes(graph, module)
+    sections = NodeSection[] from self.sections(graph, nodes)
+    body = ModulePage from { module, sections }
     return PageProps from { config, sidebar, body }
   }
 
   /// One node section: head fields, `///` docs, tags, relationships, scenario cards,
   /// and embedded diagrams.
   section(graph: model::Graph, node: model::GraphNode): doc::NodeSection {
-    rels: RelGroup[] = Doc::Relationships.groups(graph, node)
-    cards: ScenarioCard[] = Doc::Scenarios.cards(graph, node)
-    diagrams: Diagram[] = Doc::Diagrams.forNode(graph, node)
+    rels = RelGroup[] from Doc::Relationships.groups(graph, node)
+    cards = ScenarioCard[] from Doc::Scenarios.cards(graph, node)
+    diagrams = Diagram[] from Doc::Diagrams.forNode(graph, node)
     return NodeSection from { node, rels, cards, diagrams }
   }
 
@@ -228,7 +228,7 @@ component Shell for doc::Doc {
   /// hydration, link the depth-relative `style.css` and `client.js`, and mount the
   /// body into `#app`.
   wrap(path: string, props: doc::PageProps, rendered: doc::RenderedPage): string {
-    title: string = Doc::Escape.text(props.site.name)
+    title = string from Doc::Escape.text(props.site.name)
     return self.document(path, title, props, rendered)
   }
 
@@ -244,9 +244,9 @@ component Relationships for doc::Doc {
   /// The relationship groups for `node`: parent, inbound, then outbound. Empty when
   /// the node has no parent and no edges.
   groups(graph: model::Graph, node: model::GraphNode): doc::RelGroup[] {
-    parent: RelGroup[] = self.parentGroup(graph, node)
-    inbound: RelGroup[] = self.inboundGroup(graph, node)
-    outbound: RelGroup[] = self.outboundGroup(graph, node)
+    parent = RelGroup[] from self.parentGroup(graph, node)
+    inbound = RelGroup[] from self.inboundGroup(graph, node)
+    outbound = RelGroup[] from self.outboundGroup(graph, node)
     return self.collect(parent, inbound, outbound)
   }
 
@@ -268,12 +268,12 @@ component Relationships for doc::Doc {
   /// A `RelItem` for `fqn`: a resolved href when it names a node, absent (rendering
   /// plain text) otherwise (LANG.md §9.3).
   item(fqn: string, kind: model::EdgeKind, arrow: bool, label: string): doc::RelItem {
-    edgeKind: string = self.edgeKindLabel(kind)
-    href: Result<string, void> = Doc::Urls.hrefTo(fqn)
+    edgeKind = string from self.edgeKindLabel(kind)
+    href = Result<string, void> from Doc::Urls.hrefTo(fqn)
     if (href.isErr) {
       return RelItem from { fqn, edgeKind, arrow, label }
     }
-    link: string = href.value
+    link = string from href.value
     return RelItem from { fqn, edgeKind, arrow, label, link }
   }
 
@@ -288,7 +288,7 @@ component Scenarios for doc::Doc {
   /// The scenario cards for `node`: one per feature targeting it, with name, `///`
   /// docs, tags, and ordered steps. Empty when the node has no scenarios.
   cards(graph: model::Graph, node: model::GraphNode): doc::ScenarioCard[] {
-    scenarios: model::Scenario[] = self.scenariosOf(graph, node)
+    scenarios = model::Scenario[] from self.scenariosOf(graph, node)
     return self.toCards(scenarios)
   }
 
@@ -333,7 +333,7 @@ component Diagrams for doc::Doc {
   /// `Empty` placeholder on an `EmitError` (e.g. an empty boundary), so a failed
   /// projection never aborts the build.
   figure(graph: model::Graph, view: emit::View, eyebrow: string, caption: string): doc::Diagram {
-    scene: Result<Scene, EmitError> = emit::Projector.project(graph, view)
+    scene = Result<Scene, EmitError> from emit::Projector.project(graph, view)
     if (scene.isErr) {
       return Empty from { caption, eyebrow }
     }
@@ -387,7 +387,7 @@ component Urls for doc::Doc {
   /// The module-page-relative `href` to `fqn` (`<file>.html#<anchor>`), or an error
   /// when `fqn` resolves to no node.
   hrefTo(fqn: string): Result<string, void> {
-    url: Result<NodeUrl, void> = self.get(fqn)
+    url = Result<NodeUrl, void> from self.get(fqn)
     if (url.isErr) {
       return Err(url.error)
     }

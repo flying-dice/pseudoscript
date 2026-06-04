@@ -49,8 +49,8 @@ public container IdeSession for context::Pseudoscript {
   /// Open a workspace: load it through the file-system port, then check and
   /// publish its diagnostics through the editor port.
   public open(): void {
-    mods: model::WorkspaceModule[] = ide::Workspace.load()
-    deps: model::WorkspaceModule[] = ide::Workspace.dependencies()
+    mods = model::WorkspaceModule[] from ide::Workspace.load()
+    deps = model::WorkspaceModule[] from ide::Workspace.dependencies()
     ide::LanguageSession.refresh(mods, deps)
   }
 
@@ -94,7 +94,7 @@ public component LanguageSession for ide::IdeSession {
   /// Re-check the whole project against its externals and push each module's
   /// problems to the editor.
   public refresh(modules: model::WorkspaceModule[], external: model::WorkspaceModule[]): void {
-    diags: model::ModuleDiagnostics[] = model::Checks.checkWorkspaceModules(modules)
+    diags = model::ModuleDiagnostics[] from model::Checks.checkWorkspaceModules(modules)
     ide::EditorPort.showDiagnostics(diags)
   }
   /// Parse and statically check one buffer — the editor's per-keystroke linter.
@@ -106,7 +106,7 @@ public component LanguageSession for ide::IdeSession {
   complete(moduleFqn: string, offset: number): ide::Completion[];
   /// Markdown hover for the symbol under the caret, pushed to the editor tooltip.
   hover(moduleFqn: string, offset: number): void {
-    markdown: string = ide::EditorPort.hoverText(moduleFqn, offset)
+    markdown = string from ide::EditorPort.hoverText(moduleFqn, offset)
     ide::EditorPort.showHover(markdown)
   }
   /// Go-to-definition: the FQN the identifier under the caret points at.
@@ -125,7 +125,7 @@ public component LanguageSession for ide::IdeSession {
 public component Diagrams for ide::IdeSession {
   /// Project a view of the held workspace to its JSON scene and draw it.
   render(view: emit::View, target: string): void {
-    scene: emit::Scene = ide::Diagrams.project(view, target)
+    scene = emit::Scene from ide::Diagrams.project(view, target)
     ide::EditorPort.showDiagram(scene)
   }
   /// Project a view to the layout-ready JSON `Scene` — the notation-neutral

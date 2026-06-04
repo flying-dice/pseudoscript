@@ -45,7 +45,7 @@ public container Identity for context::AcmePay;
 public component Keys for identity::Identity {
   /// Resolve a secret key to its merchant, or `Err(InvalidKey)`.
   public authenticateSecret(key: identity::SecretKey): Result<identity::Merchant, identity::ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolveSecret(key)
+    merchant = Option<Merchant> from Identity::KeyStore.resolveSecret(key)
     if (merchant.isNone) {
       return Err(identity::ApiKeyError::InvalidKey)
     }
@@ -56,7 +56,7 @@ public component Keys for identity::Identity {
   /// for tokenisation; every other action MUST authenticate a secret or
   /// restricted key.
   public authenticatePublishable(key: identity::PublishableKey): Result<identity::Merchant, identity::ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolvePublishable(key)
+    merchant = Option<Merchant> from Identity::KeyStore.resolvePublishable(key)
     if (merchant.isNone) {
       return Err(identity::ApiKeyError::InvalidKey)
     }
@@ -67,11 +67,11 @@ public component Keys for identity::Identity {
   /// `Err(InsufficientScope)` if the key is valid but lacks the permission — the
   /// disclosed authorisation gate for scoped staff and service keys.
   public authenticateRestricted(key: identity::RestrictedKey, need: identity::Scope): Result<identity::Merchant, identity::ApiKeyError> {
-    merchant: Option<Merchant> = Identity::KeyStore.resolveRestricted(key)
+    merchant = Option<Merchant> from Identity::KeyStore.resolveRestricted(key)
     if (merchant.isNone) {
       return Err(identity::ApiKeyError::InvalidKey)
     }
-    granted: Result<void, ApiKeyError> = self.permits(key, need)
+    granted = Result<void, ApiKeyError> from self.permits(key, need)
     if (granted.isErr) {
       return Err(identity::ApiKeyError::InsufficientScope)
     }

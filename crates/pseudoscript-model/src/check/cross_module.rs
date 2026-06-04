@@ -179,8 +179,8 @@ impl Ctx<'_> {
                     }
                 }
             }
-            ExprKind::From { sources, .. } => {
-                for src in sources {
+            ExprKind::From { source, .. } => {
+                for src in source.sources() {
                     self.check_expr(src);
                 }
             }
@@ -213,9 +213,19 @@ impl Ctx<'_> {
             return;
         }
         let fqn = path_str(path);
-        // A record variant (or any hoisted `data`) resolves directly.
+        // A record variant (or any hoisted `data`) resolves directly — but as a
+        // value it is not one: a `data` value is produced with `from`, and a node
+        // is never a value (ADR-035).
         match self.workspace.resolve_qualified(self.from_module, &fqn) {
-            Resolution::Public(_) => return,
+            Resolution::Public(symbol) => {
+                let leaf = symbol.name.as_str();
+                let message = match symbol.kind {
+                    SymbolKind::Data => format!("`{leaf}` is not a value: compose it with `from`"),
+                    _ => format!("`{leaf}` is a node, not a value"),
+                };
+                self.out.push(Diagnostic::error(path.span, message));
+                return;
+            }
             Resolution::Private(_) => {
                 self.out.push(Diagnostic::error(
                     path.span,
@@ -449,9 +459,10 @@ mod tests {
     }
 
     #[test]
-    fn record_variant_reference_resolves() {
-        // A record variant hoists to `module::Name`, so the two-segment form
-        // resolves directly — no fieldless-variant lookup applies.
+    fn record_variant_value_reference_is_not_a_value() {
+        // A record variant hoists to `module::Name`, but as a bare value it is
+        // not one — it has fields, so `from` produces it (ADR-035). A fieldless
+        // variant referenced through its union stays a value.
         let msgs = errors(&[
             (
                 "a",
@@ -462,7 +473,11 @@ mod tests {
                 "//! b\n\npublic system Sys;\npublic container Box for b::Sys {\n  go(): Result<string, a::E> { return Err(a::Created) }\n}\n",
             ),
         ]);
-        assert!(msgs.is_empty(), "{msgs:?}");
+        assert!(
+            msgs.iter()
+                .any(|m| m == "`Created` is not a value: compose it with `from`"),
+            "{msgs:?}"
+        );
     }
 
     // §6 / ADR-022: the first segment of a chain on a node FQN names a member.

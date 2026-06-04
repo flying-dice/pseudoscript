@@ -34,11 +34,11 @@ public component Idempotency for gateway::Gateway {
   /// than re-execute. `Ok(None)` reserves the key and lets the caller proceed.
   /// `Err(KeyConflict)` means the key was reused with different parameters.
   public begin(key: gateway::IdempotencyKey): Result<Option<gateway::Replay>, gateway::ApiError> {
-    prior: Option<Replay> = Gateway::IdempotencyStore.lookup(key)
+    prior = Option<Replay> from Gateway::IdempotencyStore.lookup(key)
     if (prior.isSome) {
       return Ok(prior)
     }
-    reserved: Result<void, ApiError> = Gateway::IdempotencyStore.reserve(key)
+    reserved = Result<void, ApiError> from Gateway::IdempotencyStore.reserve(key)
     if (reserved.isErr) {
       return Err(gateway::ApiError::KeyConflict)
     }
@@ -68,11 +68,11 @@ public component TokenApi for gateway::Gateway {
   /// Tokenise a card into a reusable payment method.
   #[http("POST /v1/payment_methods")]
   public tokenize(key: identity::PublishableKey, card: vault::CardEntry): Result<vault::PaymentMethod, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticatePublishable(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticatePublishable(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    method: Result<PaymentMethod, TokenizeError> = vault::Tokenizer.tokenize(merchant.value.id, card)
+    method = Result<PaymentMethod, TokenizeError> from vault::Tokenizer.tokenize(merchant.value.id, card)
     if (method.isErr) {
       return Err(self.rejectTokenize(method.error))
     }
@@ -91,18 +91,18 @@ public component IntentApi for gateway::Gateway {
   /// than a duplicate (the recommended key derives from the cart/session id).
   #[http("POST /v1/payment_intents")]
   public create(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: intents::CreateIntent): Result<intents::PaymentIntent, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    guard: Result<Option<Replay>, ApiError> = Gateway::Idempotency.begin(idem)
+    guard = Result<Option<Replay>, ApiError> from Gateway::Idempotency.begin(idem)
     if (guard.isErr) {
       return Err(guard.error)
     }
     if (guard.value.isSome) {
       return self.reloadIntent(guard.value.value)
     }
-    created: PaymentIntent = intents::PaymentIntents.create(merchant.value.id, req)
+    created = PaymentIntent from intents::PaymentIntents.create(merchant.value.id, req)
     Gateway::Idempotency.record(idem, self.intentId(created))
     return Ok(created)
   }
@@ -110,11 +110,11 @@ public component IntentApi for gateway::Gateway {
   /// Confirm a PaymentIntent with a payment method.
   #[http("POST /v1/payment_intents/{intent}/confirm")]
   public confirm(key: identity::SecretKey, req: intents::ConfirmIntent): Result<intents::PaymentIntent, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.confirm(merchant.value.id, req)
+    done = Result<PaymentIntent, IntentError> from intents::PaymentIntents.confirm(merchant.value.id, req)
     if (done.isErr) {
       return Err(self.rejectIntent(done.error))
     }
@@ -125,7 +125,7 @@ public component IntentApi for gateway::Gateway {
   /// secret authorises it, which the edge verifies as plumbing).
   #[http("POST /v1/payment_intents/{intent}/confirm_action")]
   public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, gateway::ApiError> {
-    done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.confirmAction(intent, outcome)
+    done = Result<PaymentIntent, IntentError> from intents::PaymentIntents.confirmAction(intent, outcome)
     if (done.isErr) {
       return Err(self.rejectIntent(done.error))
     }
@@ -135,11 +135,11 @@ public component IntentApi for gateway::Gateway {
   /// Capture a manually-captured PaymentIntent.
   #[http("POST /v1/payment_intents/{intent}/capture")]
   public capture(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.capture(merchant.value.id, intent)
+    done = Result<PaymentIntent, IntentError> from intents::PaymentIntents.capture(merchant.value.id, intent)
     if (done.isErr) {
       return Err(self.rejectIntent(done.error))
     }
@@ -149,11 +149,11 @@ public component IntentApi for gateway::Gateway {
   /// Cancel a PaymentIntent before capture.
   #[http("POST /v1/payment_intents/{intent}/cancel")]
   public cancel(key: identity::SecretKey, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    done: Result<PaymentIntent, IntentError> = intents::PaymentIntents.cancel(merchant.value.id, intent)
+    done = Result<PaymentIntent, IntentError> from intents::PaymentIntents.cancel(merchant.value.id, intent)
     if (done.isErr) {
       return Err(self.rejectIntent(done.error))
     }
@@ -174,18 +174,18 @@ public component RefundApi for gateway::Gateway {
   /// same refund rather than reversing twice.
   #[http("POST /v1/refunds")]
   public create(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: refunds::RefundRequest): Result<refunds::Refund, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    guard: Result<Option<Replay>, ApiError> = Gateway::Idempotency.begin(idem)
+    guard = Result<Option<Replay>, ApiError> from Gateway::Idempotency.begin(idem)
     if (guard.isErr) {
       return Err(guard.error)
     }
     if (guard.value.isSome) {
       return self.reloadRefund(guard.value.value)
     }
-    done: Result<Refund, RefundError> = refunds::RefundService.create(merchant.value.id, req)
+    done = Result<Refund, RefundError> from refunds::RefundService.create(merchant.value.id, req)
     if (done.isErr) {
       return Err(self.rejectRefund(done.error))
     }
@@ -206,11 +206,11 @@ public component DisputeApi for gateway::Gateway {
   /// Submit evidence contesting a chargeback.
   #[http("POST /v1/disputes/{dispute}/evidence")]
   public submitEvidence(key: identity::SecretKey, req: disputes::EvidenceSubmission): Result<disputes::Dispute, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    done: Result<Dispute, DisputeError> = disputes::DisputeService.submitEvidence(merchant.value.id, req)
+    done = Result<Dispute, DisputeError> from disputes::DisputeService.submitEvidence(merchant.value.id, req)
     if (done.isErr) {
       return Err(self.rejectDispute(done.error))
     }
@@ -226,7 +226,7 @@ public component BalanceApi for gateway::Gateway {
   /// Read the authenticated merchant's balance.
   #[http("GET /v1/balance")]
   public balance(key: identity::SecretKey): Result<ledger::Balance, gateway::ApiError> {
-    merchant: Result<Merchant, ApiKeyError> = identity::Keys.authenticateSecret(key)
+    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateSecret(key)
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }

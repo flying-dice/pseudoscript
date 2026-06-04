@@ -118,7 +118,7 @@ Read in full for the construction rule, the accessor-only surface, and the rejec
 
 ## [020 — Return-type and `from` checking for determinable forms](020-return-type-and-from-checking.md)
 
-A `return` of a literal, an `Ok`/`Err`/`Some`/`None` marker, or a `Type from { … }` composition MUST match the declared return type (a union variant satisfies its union); a `from` target MUST be a `data` record or union variant. Bindings/calls/field accesses stay uninferred (shape hints, §1).
+A `return` of a literal, an `Ok`/`Err`/`Some`/`None` marker, or a `Type from { … }` composition MUST match the declared return type (a union variant satisfies its union); a `from` target MUST be a `data` record or union variant. Bindings/calls/field accesses stay uninferred (shape hints, §1). **Superseded by ADR-035** — `from` targets any non-node type and checks a single-expression source.
 
 Read in full for the determinable-forms scope, the variant-satisfies-union rule, and the rejected full-static-typing alternative.
 
@@ -160,7 +160,7 @@ Read in full for the source-selection rule, the no-lock rationale, and the rejec
 
 ## [027 — Bindings state their type](027-explicit-binding-types.md)
 
-A binding is `x: Type = Expr`; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable (literal, `from`, marker, bare reference) it MUST match the annotation; a call/field/`self`/`::` path is not inferred, so the annotation stands. The rule is uniform — a composition repeats its type in the annotation. The binding's type now reads from the source, not an inlay. Amends ADR-002 and ADR-022.
+A binding is `x: Type = Expr`; an unannotated `x = Expr` is rejected. Where the initialiser's type is determinable (literal, `from`, marker, bare reference) it MUST match the annotation; a call/field/`self`/`::` path is not inferred, so the annotation stands. The rule is uniform — a composition repeats its type in the annotation. The binding's type now reads from the source, not an inlay. Amends ADR-002 and ADR-022. **Superseded by ADR-035** — the annotation is removed; a binding states its type through `from` (`x = Type from Expr`).
 
 Read in full for the uniform-annotation choice and the rejected self-typed-exemption / inlay-hint alternatives.
 
@@ -205,3 +205,9 @@ Read in full for the rejected `Variant = Path [ Record ]` alternative and why sa
 Selecting a `data` symbol fell back to the context overview (no view of the type), and selecting a `feature` — not a graph node (§5.2) — projected nothing and crashed the canvas via a lifeline fallback that could not lay out. Now a `data` symbol projects an **entity view** (§9.4): a card of its fields/variants with reference arrows to the data types they name. A `feature` projects a **flow view** (§9.5): its given/when/then steps as connected nodes. The graph carries each `data` node's disclosed shape for the entity view.
 
 Read in full for the field-resolution rule and the rejected reuse-the-C4-card and generic-lifeline-fallback alternatives.
+
+## [035 — `from` is the universal typed value-producer](035-from-universal-value-producer.md)
+
+`from` carries a type onto a value and is the only way a binding states one. A target MAY be any non-node type (`data`, variant, `Result`, `Option`, primitive, array); `T from { … }` composes a `data` record/variant, `T from expr` carries `T` onto a single value and checks the source's type where determinable — including a resolvable call's declared return. The `x: Type = Expr` annotation is removed (`x = Type from Expr`). A bare `data`/node FQN in value position is not a value; a fieldless variant stays one. Supersedes ADR-020 and ADR-027; amends ADR-003, ADR-021, ADR-022, ADR-032.
+
+Read in full for the one-producer rationale, the determinable-source rule (call-return reads), and the rejected keep-annotations / permissive-`from` / structural-check alternatives.

@@ -19,14 +19,14 @@ A `data` field is a shape hint, not a faithful port of the host type: a count is
 
 ### Produce values with `from`
 
-`from` composes a record `data` or a union variant (LANG.md §7.2), and the result is usable as a call argument, a `return` operand, or a binding:
+`from` carries a type onto a value (LANG.md §7.2): `Type from { … }` composes a record `data` or union variant from a source set; `Type from expr` carries a type onto a single value. It is how a binding states its type, and the result is usable as a call argument, a `return` operand, or a binding:
 
 ```pds
-view = Sequence from { entry }            // construct a View variant
-scene = Emit::Projector.project(graph, view)
+view = Sequence from { entry }                       // compose a View variant
+scene = Scene from Emit::Projector.project(graph, view)   // carry the type onto a call result
 ```
 
-`Ok`/`Err`/`Some`/`None` construct the built-in generics (LANG.md §6): `Ok(v)`/`Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` is empty. `from` composes everything else.
+`Ok`/`Err`/`Some`/`None` construct the built-in generics (LANG.md §6): `Ok(v)`/`Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` is empty. A bare `data`-record or node reference is not a value — `from` produces it.
 
 ### Model fallibility by the operation's nature
 

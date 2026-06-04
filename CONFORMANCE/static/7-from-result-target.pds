@@ -1,5 +1,5 @@
-// LANG.md §5.1 (ADR-016): a disclosed non-void callable must return on every
-// path. The branch where `r.isErr` is false falls through with no return.
+// LANG.md §7.2 (ADR-035): a `from` target MAY be `Result<…>`. Carrying the
+// declared `Result` of a call is well-formed; the binding is typed and returned.
 
 //! example
 
@@ -11,9 +11,7 @@ public system Banking;
 public container Mainframe for Banking {
   Get(): Result<Info, Missing> {
     r = Result<Info, Missing> from self.Fetch()
-    if (r.isErr) {
-      return Err(r.error)
-    }
+    return r
   }
   Fetch(): Result<Info, Missing>;
 }
