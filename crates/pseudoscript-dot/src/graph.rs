@@ -88,6 +88,9 @@ pub struct Cluster {
     pub members: Vec<String>,
     /// Padding in points between the cluster's contents and its bounding box.
     pub margin: f64,
+    /// Extra padding in points on the top (title) side, reserving a header band
+    /// for the cluster's label so it and any controls clear the member nodes.
+    pub header: f64,
 }
 
 /// The input graph handed to [`crate::layout`].

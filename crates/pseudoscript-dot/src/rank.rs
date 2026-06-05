@@ -346,6 +346,7 @@ mod tests {
             id: "box".to_owned(),
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 8.0,
+            header: 0.0,
         });
         let r = ranks_by_id(&g);
         // Band = ranks of m1, m2.

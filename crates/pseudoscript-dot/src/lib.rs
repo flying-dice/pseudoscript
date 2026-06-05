@@ -40,12 +40,13 @@ const VIRTUAL_WIDTH: f64 = 1.0;
 /// Clearance kept between an edge label and the nodes its edge connects.
 const LABEL_CLEARANCE: f64 = 8.0;
 
-/// Extra room each rank gap needs to hold the labels of adjacent-rank edges
-/// crossing it. `gap_extra[r]` is added below rank `r`; it's the amount by which
-/// the tallest (rank-axis) label exceeds the base `ranksep`, or 0.
-fn label_gaps(graph: &Graph, ordered: &mincross::Ordered, lr: bool) -> Vec<f64> {
-    let rows = ordered.ranks.len();
-    let mut extra = vec![0.0_f64; rows];
+/// Extra room each rank gap needs beyond the base `ranksep`. `gap_extra[r]` is
+/// added below rank `r`: enough to hold an adjacent-rank edge's label, and —
+/// above a cluster's top rank (TB only) — enough for the cluster's header band.
+fn rank_gap_extra(graph: &Graph, ordered: &mincross::Ordered, lr: bool) -> Vec<f64> {
+    let mut extra = vec![0.0_f64; ordered.ranks.len()];
+
+    // Adjacent-rank edge labels (multi-rank edges already span ≥2 gaps).
     for e in &graph.edges {
         let Some((lw, lh)) = e.label else { continue };
         let (Some(t), Some(h)) = (graph.node_index(&e.tail), graph.node_index(&e.head)) else {
@@ -54,7 +55,7 @@ fn label_gaps(graph: &Graph, ordered: &mincross::Ordered, lr: bool) -> Vec<f64> 
         let (a, b) = (ordered.vnodes[t].rank, ordered.vnodes[h].rank);
         let (lo, hi) = (a.min(b), a.max(b));
         if hi - lo != 1 {
-            continue; // multi-rank edges already have room across their gaps
+            continue;
         }
         let need = if lr { lw } else { lh } + 2.0 * LABEL_CLEARANCE;
         let gi = usize::try_from(lo).unwrap_or(0);
@@ -62,6 +63,31 @@ fn label_gaps(graph: &Graph, ordered: &mincross::Ordered, lr: bool) -> Vec<f64> 
             *slot = slot.max((need - graph.ranksep).max(0.0));
         }
     }
+
+    // Cluster header band: in TB it extends the frame top along the rank axis, so
+    // the gap above the cluster's top rank must fit `margin + header` (plus a
+    // little clearance) or the frame top would cross into the node above. (In LR
+    // the header extends the within-rank axis, not a rank gap.)
+    if !lr {
+        for c in &graph.clusters {
+            let top_rank = c
+                .members
+                .iter()
+                .filter_map(|id| graph.node_index(id))
+                .map(|v| ordered.vnodes[v].rank)
+                .min();
+            if let Some(tr) = top_rank
+                && tr > 0
+            {
+                let need = (c.margin + c.header + 8.0 - graph.ranksep).max(0.0);
+                let gi = usize::try_from(tr - 1).unwrap_or(0);
+                if let Some(slot) = extra.get_mut(gi) {
+                    *slot = slot.max(need);
+                }
+            }
+        }
+    }
+
     extra
 }
 
@@ -103,10 +129,9 @@ pub fn layout(graph: &Graph) -> Layout {
         })
         .collect();
 
-    // Extra room each rank gap needs so an adjacent-rank edge is long enough to
-    // hold its label (the label's size along the rank axis). Multi-rank edges
-    // already span ≥2 gaps, so only adjacent edges are widened.
-    let gap_extra = label_gaps(graph, &ordered, lr);
+    // Extra room each rank gap needs: enough for an adjacent edge's label, and
+    // enough above a cluster's top rank for its header band.
+    let gap_extra = rank_gap_extra(graph, &ordered, lr);
 
     // Major-axis centre per rank: stack rank thicknesses with ranksep, plus any
     // label room for the gap below each rank.
@@ -277,9 +302,10 @@ fn cluster_boxes(graph: &Graph, nodes: &[NodePos]) -> Vec<ClusterBox> {
                 id: c.id.clone(),
                 bbox: Box2::new(
                     min_x - c.margin,
-                    min_y - c.margin,
+                    // Extra room on the top (title) side for the cluster header.
+                    min_y - c.margin - c.header,
                     (max_x - min_x) + 2.0 * c.margin,
-                    (max_y - min_y) + 2.0 * c.margin,
+                    (max_y - min_y) + 2.0 * c.margin + c.header,
                 ),
             })
         })
@@ -409,6 +435,7 @@ mod tests {
             id: "k".to_owned(),
             members: vec!["b".to_owned()],
             margin: 16.0,
+            header: 0.0,
         });
         let l = layout(&g);
         for n in &l.nodes {
@@ -498,6 +525,7 @@ mod tests {
             id: "c".to_owned(),
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 12.0,
+            header: 0.0,
         });
         g.same_rank = vec![vec!["m1".to_owned(), "sys".to_owned()]]; // pull sys into the band
 
@@ -544,6 +572,60 @@ mod tests {
     }
 
     #[test]
+    fn cluster_header_reserves_top_room() {
+        // The frame top sits `margin + header` above the topmost member, leaving a
+        // header band for the title/controls clear of the nodes.
+        let mut g = Graph::new();
+        for id in ["top", "m1", "m2"] {
+            g.nodes.push(Node::new(id, 80.0, 40.0));
+        }
+        g.edges.push(Edge::new("top", "m1"));
+        g.edges.push(Edge::new("m1", "m2"));
+        g.clusters.push(Cluster {
+            id: "c".to_owned(),
+            members: vec!["m1".to_owned(), "m2".to_owned()],
+            margin: 10.0,
+            header: 30.0,
+        });
+        let l = layout(&g);
+        let cbox = l.clusters.iter().find(|c| c.id == "c").unwrap().bbox;
+        let m1 = l.nodes.iter().find(|n| n.id == "m1").unwrap();
+        let member_top = m1.center.y - m1.height / 2.0; // m1 is the topmost member
+        assert!(
+            (member_top - cbox.y - 40.0).abs() < 0.5,
+            "top room = margin+header: member_top={member_top} box_top={}",
+            cbox.y
+        );
+    }
+
+    #[test]
+    fn cluster_header_does_not_overlap_the_node_above_at_tight_ranksep() {
+        // Even with a tiny ranksep, the header band must not push the frame top
+        // over the bottom of the caller on the rank above.
+        let mut g = Graph::new();
+        g.ranksep = 10.0; // very tight — would overlap without header reservation
+        for id in ["caller", "m1", "m2"] {
+            g.nodes.push(Node::new(id, 80.0, 40.0));
+        }
+        g.edges.push(Edge::new("caller", "m1"));
+        g.edges.push(Edge::new("m1", "m2"));
+        g.clusters.push(Cluster {
+            id: "c".to_owned(),
+            members: vec!["m1".to_owned(), "m2".to_owned()],
+            margin: 12.0,
+            header: 28.0,
+        });
+        let l = layout(&g);
+        let frame_top = l.clusters.iter().find(|c| c.id == "c").unwrap().bbox.y;
+        let caller = l.nodes.iter().find(|n| n.id == "caller").unwrap();
+        let caller_bottom = caller.center.y + caller.height / 2.0;
+        assert!(
+            frame_top > caller_bottom,
+            "frame top clears the caller above: caller_bottom={caller_bottom} frame_top={frame_top}"
+        );
+    }
+
+    #[test]
     fn cluster_box_frames_members_and_excludes_externals() {
         // The C4 shape: a cluster (system boundary) with two members, a caller
         // above and a callee below. The cluster box must enclose its members and
@@ -559,6 +641,7 @@ mod tests {
             id: "boundary".to_owned(),
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 12.0,
+            header: 0.0,
         });
 
         let l = layout(&g);

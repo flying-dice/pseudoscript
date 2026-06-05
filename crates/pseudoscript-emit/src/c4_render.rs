@@ -36,6 +36,9 @@ const NODESEP: f64 = 40.0;
 const RANKSEP: f64 = 72.0;
 /// Padding between a boundary cluster's contents and its frame.
 const CLUSTER_MARGIN: f64 = 16.0;
+/// Extra top padding inside a boundary frame, reserving a header band so the
+/// frame's title (and the canvas close button) clear the member nodes.
+const CLUSTER_HEADER: f64 = 28.0;
 /// Card corner radius.
 const CARD_RADIUS: i32 = 8;
 /// Width of the coloured left rule.
@@ -273,6 +276,7 @@ fn to_dot_graph(
                 id: of.to_owned(),
                 members,
                 margin: CLUSTER_MARGIN,
+                header: CLUSTER_HEADER,
             });
         }
     }
