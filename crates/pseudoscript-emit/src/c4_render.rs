@@ -269,9 +269,11 @@ fn to_dot_graph(
     }
 
     for edge in drawable {
-        graph
-            .edges
-            .push(dot::Edge::new(edge.from.clone(), edge.to.clone()));
+        let mut e = dot::Edge::new(edge.from.clone(), edge.to.clone());
+        // Reserve space for the edge label so the engine makes the edge long
+        // enough to hold it (no cramping against the cards).
+        e.label = label_size(&edge.labels);
+        graph.edges.push(e);
     }
 
     if tweaks.minimize_long_edges {
@@ -854,10 +856,31 @@ fn edge_display(labels: &[String]) -> String {
     labels.join(LABEL_SEP)
 }
 
+/// The `(width, height)` of an edge's label plate, matching [`draw_edge_label`]'s
+/// geometry, so the layout engine can reserve room for it. `None` for an
+/// unlabelled (trigger/provenance) edge.
+fn label_size(labels: &[String]) -> Option<(f64, f64)> {
+    if labels.is_empty() {
+        return None;
+    }
+    let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let w = f64::from(u32::try_from(widest).unwrap_or(0)) * f64::from(EDGE_CHAR_W)
+        + f64::from(EDGE_PLATE_PAD_X);
+    let h = f64::from(u32::try_from(labels.len()).unwrap_or(1)) * f64::from(EDGE_LINE_H)
+        + f64::from(EDGE_PLATE_PAD);
+    Some((w, h))
+}
+
 /// The line height (px) of a stacked edge label, sized for the 11.5px label font.
 const EDGE_LINE_H: i32 = 14;
 /// The vertical padding (px) added to an edge-label plate's text block.
 const EDGE_PLATE_PAD: i32 = 2;
+/// Approximate width (px) per character of an edge label.
+const EDGE_CHAR_W: i32 = 7;
+/// Horizontal padding (px) of an edge-label plate. Shared by the label drawing
+/// ([`draw_edge_label`]) and the layout reservation ([`label_size`]) so the space
+/// reserved matches the plate drawn.
+const EDGE_PLATE_PAD_X: i32 = 8;
 
 /// Draws an edge label on a small light plate so it never reads against a routed
 /// line. A merged edge carries its labels `\n`-joined; each becomes a stacked
@@ -876,7 +899,7 @@ fn draw_edge_label(out: &mut String, pos: PointI, text: &str) {
 
     let lx = pos.x;
     let ly = pos.y;
-    let plate_w = widest * 7 + 8;
+    let plate_w = widest * EDGE_CHAR_W + EDGE_PLATE_PAD_X;
     let plate_h = n * EDGE_LINE_H + EDGE_PLATE_PAD;
     let top = ly - plate_h / 2;
     // First baseline sits 12px below the plate top — the single-line plate's
@@ -1111,13 +1134,21 @@ mod tests {
     #[test]
     fn layout_c4_scene_frames_a_container_view() {
         let layout = layout_c4_scene(&container_scene());
-        let frame = layout.boundary.expect("container view has a boundary frame");
+        let frame = layout
+            .boundary
+            .expect("container view has a boundary frame");
         assert_eq!(frame.title, "Sys");
         // The frame encloses the two children, which are the only laid-out cards.
         assert_eq!(layout.nodes.len(), 2, "boundary itself is not a card");
         for node in &layout.nodes {
-            assert!(node.rect.x >= frame.rect.x, "child inside frame x: {node:?}");
-            assert!(node.rect.y >= frame.rect.y, "child inside frame y: {node:?}");
+            assert!(
+                node.rect.x >= frame.rect.x,
+                "child inside frame x: {node:?}"
+            );
+            assert!(
+                node.rect.y >= frame.rect.y,
+                "child inside frame y: {node:?}"
+            );
         }
     }
 
@@ -1149,12 +1180,18 @@ mod tests {
         });
         let layout = layout_c4_scene(&scene);
         assert!(
-            layout.edges.iter().any(|e| e.from == "m::A" && e.to == "m::B"),
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::A" && e.to == "m::B"),
             "forward edge drawn: {:?}",
             layout.edges
         );
         assert!(
-            layout.edges.iter().any(|e| e.from == "m::B" && e.to == "m::A"),
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::B" && e.to == "m::A"),
             "back edge drawn: {:?}",
             layout.edges
         );

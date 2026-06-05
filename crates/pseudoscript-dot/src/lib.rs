@@ -37,6 +37,34 @@ pub use layout::{Box2, ClusterBox, EdgeRoute, Layout, NodePos, Pt};
 /// axis — a thin lane between real nodes.
 const VIRTUAL_WIDTH: f64 = 1.0;
 
+/// Clearance kept between an edge label and the nodes its edge connects.
+const LABEL_CLEARANCE: f64 = 8.0;
+
+/// Extra room each rank gap needs to hold the labels of adjacent-rank edges
+/// crossing it. `gap_extra[r]` is added below rank `r`; it's the amount by which
+/// the tallest (rank-axis) label exceeds the base `ranksep`, or 0.
+fn label_gaps(graph: &Graph, ordered: &mincross::Ordered, lr: bool) -> Vec<f64> {
+    let rows = ordered.ranks.len();
+    let mut extra = vec![0.0_f64; rows];
+    for e in &graph.edges {
+        let Some((lw, lh)) = e.label else { continue };
+        let (Some(t), Some(h)) = (graph.node_index(&e.tail), graph.node_index(&e.head)) else {
+            continue;
+        };
+        let (a, b) = (ordered.vnodes[t].rank, ordered.vnodes[h].rank);
+        let (lo, hi) = (a.min(b), a.max(b));
+        if hi - lo != 1 {
+            continue; // multi-rank edges already have room across their gaps
+        }
+        let need = if lr { lw } else { lh } + 2.0 * LABEL_CLEARANCE;
+        let gi = usize::try_from(lo).unwrap_or(0);
+        if let Some(slot) = extra.get_mut(gi) {
+            *slot = slot.max((need - graph.ranksep).max(0.0));
+        }
+    }
+    extra
+}
+
 /// Lay `graph` out, returning placed nodes, routed edges, cluster boxes, and the
 /// overall bounding box.
 ///
@@ -75,13 +103,19 @@ pub fn layout(graph: &Graph) -> Layout {
         })
         .collect();
 
-    // Major-axis centre per rank: stack rank thicknesses with ranksep.
+    // Extra room each rank gap needs so an adjacent-rank edge is long enough to
+    // hold its label (the label's size along the rank axis). Multi-rank edges
+    // already span ≥2 gaps, so only adjacent edges are widened.
+    let gap_extra = label_gaps(graph, &ordered, lr);
+
+    // Major-axis centre per rank: stack rank thicknesses with ranksep, plus any
+    // label room for the gap below each rank.
     let mut row_major: Vec<f64> = vec![0.0; ordered.ranks.len()];
     let mut major = graph.ranksep;
     for (r, row) in ordered.ranks.iter().enumerate() {
         let thick = row.iter().map(|&v| major_size(v)).fold(0.0_f64, f64::max);
         row_major[r] = major + thick / 2.0;
-        major += thick + graph.ranksep;
+        major += thick + graph.ranksep + gap_extra.get(r).copied().unwrap_or(0.0);
     }
 
     // Minor axis: network-simplex x-coordinates (alignment + straight long edges).
@@ -481,6 +515,32 @@ mod tests {
             left || right,
             "sys is clear of the cluster x-span: sys={sys:?} frame={frame:?}"
         );
+    }
+
+    #[test]
+    fn a_tall_label_lengthens_its_edge() {
+        // An adjacent-rank edge whose label is taller than ranksep gets a wider
+        // gap so the label fits; a small label leaves the gap at ranksep.
+        let mk = |label_h: f64| {
+            let mut g = Graph::new();
+            g.ranksep = 36.0;
+            g.nodes.push(Node::new("a", 80.0, 40.0));
+            g.nodes.push(Node::new("b", 80.0, 40.0));
+            let mut e = Edge::new("a", "b");
+            e.label = Some((60.0, label_h));
+            g.edges.push(e);
+            let l = layout(&g);
+            let y = |id: &str| l.nodes.iter().find(|n| n.id == id).unwrap().center.y;
+            y("b") - y("a")
+        };
+        let small = mk(20.0); // < ranksep: gap stays at ranksep
+        let tall = mk(120.0); // > ranksep: gap widens to hold the label
+        assert!(
+            tall > small + 50.0,
+            "tall label lengthens the edge: {small} -> {tall}"
+        );
+        // The tall gap clears the label plus margins on both sides.
+        assert!(tall >= 120.0, "edge is at least the label height: {tall}");
     }
 
     #[test]
