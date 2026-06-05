@@ -16,7 +16,7 @@
 //! A container/component view draws the boundary (`of`) node as an enclosing
 //! dashed frame — the cluster box the engine returns — with its label as a title.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use pseudoscript_dot as dot;
@@ -73,10 +73,14 @@ const NO_DESC_H: i32 = 64;
 /// scene's own simple coordinates ([`fallback_svg`]); otherwise the view is laid
 /// out by [`layout_c4_scene`] and drawn from that [`C4Layout`].
 pub(crate) fn render_c4(scene: &C4Scene) -> String {
-    let boundary = scene.of.as_deref();
-    let laid_out = scene.nodes.iter().any(|n| Some(n.fqn.as_str()) != boundary);
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
+    let laid_out = scene
+        .nodes
+        .iter()
+        .any(|n| !is_frame(&frames, n.fqn.as_str()));
     if !laid_out {
-        return fallback_svg(scene, boundary);
+        return fallback_svg(scene);
     }
     emit_svg(&layout_c4_scene(scene))
 }
@@ -98,8 +102,11 @@ pub struct C4Layout {
     pub nodes: Vec<LaidOutNode>,
     /// Routed edges between cards.
     pub edges: Vec<LaidOutEdge>,
-    /// The enclosing frame of a container/component view; `None` for context.
-    pub boundary: Option<BoundaryFrame>,
+    /// The enclosing frames of a boundary view, outermost first: one for a
+    /// container view (the system), two nested for a component view (the system
+    /// then the container). Empty for a context view. Draw in order so an inner
+    /// frame sits atop its outer one.
+    pub boundaries: Vec<BoundaryFrame>,
 }
 
 /// A node card placed by the layout engine: its content (for the card chrome)
@@ -147,6 +154,9 @@ pub struct LaidOutEdge {
 /// boundary node's title and kind (for the frame's accent).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundaryFrame {
+    /// The boundary node's fully-qualified name (so the canvas can act on the
+    /// frame — drill into it, or pop up from the view's own anchor).
+    pub fqn: String,
     /// The boundary node's display label.
     pub title: String,
     /// The boundary node's C4 kind (system for a container view, container for a
@@ -207,25 +217,29 @@ pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks) -> C4Layout {
         left_to_right = tweaks.left_to_right,
         "c4 layout_c4_scene"
     );
-    let boundary = scene.of.as_deref();
-    let laid_out = scene.nodes.iter().any(|n| Some(n.fqn.as_str()) != boundary);
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
+    let laid_out = scene
+        .nodes
+        .iter()
+        .any(|n| !is_frame(&frames, n.fqn.as_str()));
     if !laid_out {
-        return fallback_layout(scene, boundary);
+        return fallback_layout(scene, &frames, &frame_list);
     }
 
-    let drawable = drawable_edges(scene, boundary);
-    let graph = to_dot_graph(scene, boundary, &drawable, tweaks);
+    let drawable = drawable_edges(scene, &frames);
+    let graph = to_dot_graph(scene, &frames, &drawable, tweaks);
     let positioned = dot::layout(&graph);
-    from_dot_layout(&positioned, scene, boundary, &drawable)
+    from_dot_layout(&positioned, scene, &frame_list, &drawable)
 }
 
-/// Builds the engine input from a scene: one box per non-boundary node (sized
-/// from its card content), one cluster for a boundary view's children, and one
-/// edge per drawable relationship. The boundary anchor is not a box — it becomes
-/// the cluster frame.
+/// Builds the engine input from a scene: one box per card (non-frame) node (sized
+/// from its card content), one cluster per frame node — nested via the frame's
+/// own `boundary`, so a component view yields a container cluster inside a system
+/// cluster — and one edge per drawable relationship. A frame anchor is not a box.
 fn to_dot_graph(
     scene: &C4Scene,
-    boundary: Option<&str>,
+    frames: &HashSet<&str>,
     drawable: &[&RoutedEdge],
     tweaks: &C4Tweaks,
 ) -> dot::Graph {
@@ -256,7 +270,7 @@ fn to_dot_graph(
     let mut ordered: Vec<&PlacedNode> = scene
         .nodes
         .iter()
-        .filter(|n| Some(n.fqn.as_str()) != boundary)
+        .filter(|n| !is_frame(frames, n.fqn.as_str()))
         .collect();
     ordered.sort_by_key(|n| u8::from(n.kind != NodeKind::Person));
     for node in ordered {
@@ -264,22 +278,31 @@ fn to_dot_graph(
         graph.nodes.push(dot::Node::new(node.fqn.clone(), w, h));
     }
 
-    if let Some(of) = boundary {
+    // One cluster per frame node. Its direct members are the cards it encloses;
+    // its `parent` is its own enclosing frame (a container frame nests in its
+    // system frame). A frame with only a nested child and no direct cards still
+    // gets a cluster, so the engine frames the child.
+    for fnode in scene.nodes.iter().filter(|n| is_frame(frames, &n.fqn)) {
         let members: Vec<String> = scene
             .nodes
             .iter()
-            .filter(|n| n.boundary.as_deref() == Some(of))
+            .filter(|n| {
+                !is_frame(frames, &n.fqn) && n.boundary.as_deref() == Some(fnode.fqn.as_str())
+            })
             .map(|n| n.fqn.clone())
             .collect();
-        if !members.is_empty() {
-            graph.clusters.push(dot::Cluster {
-                id: of.to_owned(),
-                parent: None,
-                members,
-                margin: CLUSTER_MARGIN,
-                header: CLUSTER_HEADER,
-            });
-        }
+        let parent = fnode
+            .boundary
+            .as_deref()
+            .filter(|b| is_frame(frames, b))
+            .map(str::to_owned);
+        graph.clusters.push(dot::Cluster {
+            id: fnode.fqn.clone(),
+            parent,
+            members,
+            margin: CLUSTER_MARGIN,
+            header: CLUSTER_HEADER,
+        });
     }
 
     for edge in drawable {
@@ -303,7 +326,7 @@ fn to_dot_graph(
 fn from_dot_layout(
     positioned: &dot::Layout,
     scene: &C4Scene,
-    boundary: Option<&str>,
+    frame_list: &[String],
     drawable: &[&RoutedEdge],
 ) -> C4Layout {
     let by_fqn: HashMap<&str, &PlacedNode> =
@@ -362,31 +385,86 @@ fn from_dot_layout(
         });
     }
 
-    let frame = boundary.and_then(|of| {
-        let cluster = positioned.clusters.iter().find(|c| c.id == of)?;
-        let rect = Rect {
-            x: round(cluster.bbox.x) + pad,
-            y: round(cluster.bbox.y) + pad,
-            w: round(cluster.bbox.w),
-            h: round(cluster.bbox.h),
-        };
-        boundary_frame(scene, of, rect)
-    });
+    // One frame per cluster box, outermost first (the order in `frame_list`).
+    let boundaries: Vec<BoundaryFrame> = frame_list
+        .iter()
+        .filter_map(|of| {
+            let cluster = positioned.clusters.iter().find(|c| &c.id == of)?;
+            let rect = Rect {
+                x: round(cluster.bbox.x) + pad,
+                y: round(cluster.bbox.y) + pad,
+                w: round(cluster.bbox.w),
+                h: round(cluster.bbox.h),
+            };
+            boundary_frame(scene, of, rect)
+        })
+        .collect();
 
     C4Layout {
         width: round(positioned.bbox.w) + 2 * pad,
         height: round(positioned.bbox.h) + 2 * pad,
         nodes,
         edges,
-        boundary: frame,
+        boundaries,
     }
 }
 
-/// Every edge to draw: both endpoints are non-boundary nodes present in the
+/// The frame anchors of a scene, outermost first: every node named as some
+/// node's `boundary` (so it is drawn as an enclosing frame, not a card). A
+/// container view yields one (the system); a component view two (system, then
+/// container); a context view none. Ordered by nesting depth so a consumer draws
+/// outer frames before the inner ones they contain.
+fn frame_fqns(scene: &C4Scene) -> Vec<String> {
+    let is_node: HashSet<&str> = scene.nodes.iter().map(|n| n.fqn.as_str()).collect();
+    let mut frames: Vec<String> = scene
+        .nodes
+        .iter()
+        .filter_map(|n| n.boundary.clone())
+        .filter(|b| is_node.contains(b.as_str()))
+        .collect();
+    // The view anchor is always a frame, even when it has no children to enclose
+    // (an empty container view still draws its system frame).
+    if let Some(of) = scene.of.as_deref().filter(|of| is_node.contains(of)) {
+        frames.push(of.to_owned());
+    }
+    frames.sort();
+    frames.dedup();
+    frames.sort_by_key(|f| frame_depth(scene, f));
+    frames
+}
+
+/// How deeply a frame nests: the number of `boundary` links from it up to an
+/// outermost frame (0 for the outer frame). Bounded by the node count.
+fn frame_depth(scene: &C4Scene, fqn: &str) -> usize {
+    let boundary_of = |f: &str| {
+        scene
+            .nodes
+            .iter()
+            .find(|n| n.fqn == f)
+            .and_then(|n| n.boundary.clone())
+    };
+    let mut depth = 0;
+    let mut cur = boundary_of(fqn);
+    while let Some(b) = cur {
+        depth += 1;
+        if depth > scene.nodes.len() {
+            break;
+        }
+        cur = boundary_of(&b);
+    }
+    depth
+}
+
+/// Whether `fqn` is a frame anchor (drawn as a frame, not a card).
+fn is_frame(frames: &HashSet<&str>, fqn: &str) -> bool {
+    frames.contains(fqn)
+}
+
+/// Every edge to draw: both endpoints are card (non-frame) nodes present in the
 /// scene, and not a self-loop. (Cycle breaking is the engine's job; it draws
 /// every relationship, so a cyclic C4 graph keeps all its arrows.)
-fn drawable_edges<'a>(scene: &'a C4Scene, boundary: Option<&str>) -> Vec<&'a RoutedEdge> {
-    let in_view = |fqn: &str| Some(fqn) != boundary && scene.nodes.iter().any(|n| n.fqn == fqn);
+fn drawable_edges<'a>(scene: &'a C4Scene, frames: &HashSet<&str>) -> Vec<&'a RoutedEdge> {
+    let in_view = |fqn: &str| !is_frame(frames, fqn) && scene.nodes.iter().any(|n| n.fqn == fqn);
     scene
         .edges
         .iter()
@@ -419,21 +497,22 @@ fn laid_out_node(node: &PlacedNode, rect: Rect) -> LaidOutNode {
 fn boundary_frame(scene: &C4Scene, of: &str, rect: Rect) -> Option<BoundaryFrame> {
     let node = scene.nodes.iter().find(|n| n.fqn == of)?;
     Some(BoundaryFrame {
+        fqn: of.to_owned(),
         title: node.label.clone(),
         kind: node.kind,
         rect,
     })
 }
 
-/// The two endpoint nodes of an in-view edge, or `None` when the edge touches
-/// the framed boundary or an endpoint is absent. Shared by the SVG fallback and
-/// the layout fallback so the two agree on which edges a fallback draws.
+/// The two endpoint nodes of an in-view edge, or `None` when the edge touches a
+/// frame anchor or an endpoint is absent. Shared by the SVG fallback and the
+/// layout fallback so the two agree on which edges a fallback draws.
 fn view_edge_endpoints<'a>(
     scene: &'a C4Scene,
     edge: &RoutedEdge,
-    boundary: Option<&str>,
+    frames: &HashSet<&str>,
 ) -> Option<(&'a PlacedNode, &'a PlacedNode)> {
-    if Some(edge.from.as_str()) == boundary || Some(edge.to.as_str()) == boundary {
+    if is_frame(frames, &edge.from) || is_frame(frames, &edge.to) {
         return None;
     }
     let from = scene.nodes.iter().find(|n| n.fqn == edge.from)?;
@@ -441,10 +520,10 @@ fn view_edge_endpoints<'a>(
     Some((from, to))
 }
 
-/// A fallback mirroring [`fallback_svg`]: each node at its own scene-assigned
-/// rect, straight centre-to-centre edges, and the boundary frame from the
-/// boundary node's rect. Used for an empty view (no children to lay out).
-fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
+/// A fallback mirroring [`fallback_svg`]: each card at its own scene-assigned
+/// rect, straight centre-to-centre edges, and the frames from the frame nodes'
+/// rects. Used for an empty view (no children to lay out).
+fn fallback_layout(scene: &C4Scene, frames: &HashSet<&str>, frame_list: &[String]) -> C4Layout {
     let pad = 20;
     let extent =
         |f: fn(&Rect) -> i32| scene.nodes.iter().map(|n| f(&n.rect)).max().unwrap_or(0) + pad;
@@ -454,7 +533,7 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
     let nodes = scene
         .nodes
         .iter()
-        .filter(|n| Some(n.fqn.as_str()) != boundary)
+        .filter(|n| !is_frame(frames, n.fqn.as_str()))
         .map(|n| laid_out_node(n, n.rect))
         .collect();
 
@@ -462,7 +541,7 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
         .edges
         .iter()
         .filter_map(|e| {
-            let (from, to) = view_edge_endpoints(scene, e, boundary)?;
+            let (from, to) = view_edge_endpoints(scene, e, frames)?;
             Some(LaidOutEdge {
                 from: e.from.clone(),
                 to: e.to.clone(),
@@ -475,22 +554,26 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
         })
         .collect();
 
-    let boundary = boundary
-        .and_then(|of| boundary_frame(scene, of, scene.nodes.iter().find(|n| n.fqn == of)?.rect));
+    let boundaries = frame_list
+        .iter()
+        .filter_map(|of| boundary_frame(scene, of, scene.nodes.iter().find(|n| &n.fqn == of)?.rect))
+        .collect();
 
     C4Layout {
         width,
         height,
         nodes,
         edges,
-        boundary,
+        boundaries,
     }
 }
 
 /// A panic-proof SVG fallback: draws each node card at its scene-assigned rect
 /// with a straight edge between centres. Used for an empty view, so `pds doc`
 /// never crashes on a model.
-fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
+fn fallback_svg(scene: &C4Scene) -> String {
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
     let pad = 20;
     let w = scene
         .nodes
@@ -513,10 +596,10 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
     #[allow(non_snake_case)]
     let (CARD_BORDER, TITLE_FILL, STROKE) = (pal().hairline, pal().ink, pal().ink);
 
-    for node in &scene.nodes {
-        if Some(node.fqn.as_str()) != boundary {
+    for of in &frame_list {
+        let Some(node) = scene.nodes.iter().find(|n| &n.fqn == of) else {
             continue;
-        }
+        };
         let _ = write!(
             out,
             "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" fill=\"{boundary_fill}\" \
@@ -534,7 +617,7 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         );
     }
     for node in &scene.nodes {
-        if Some(node.fqn.as_str()) == boundary {
+        if is_frame(&frames, &node.fqn) {
             continue;
         }
         draw_card(
@@ -549,7 +632,7 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         );
     }
     for edge in &scene.edges {
-        let Some((from, to)) = view_edge_endpoints(scene, edge, boundary) else {
+        let Some((from, to)) = view_edge_endpoints(scene, edge, &frames) else {
             continue;
         };
         let _ = write!(
@@ -681,7 +764,8 @@ fn emit_svg(layout: &C4Layout) -> String {
     let mut out = String::new();
     svg_open(&mut out, layout.width, layout.height);
 
-    if let Some(frame) = &layout.boundary {
+    // Frames outermost first, so an inner frame's border draws over its outer one.
+    for frame in &layout.boundaries {
         #[allow(non_snake_case)]
         let (CARD_BORDER, TITLE_FILL) = (pal().hairline, pal().ink);
         let _ = write!(
@@ -1172,9 +1256,8 @@ mod tests {
     #[test]
     fn layout_c4_scene_frames_a_container_view() {
         let layout = layout_c4_scene(&container_scene());
-        let frame = layout
-            .boundary
-            .expect("container view has a boundary frame");
+        assert_eq!(layout.boundaries.len(), 1, "a container view has one frame");
+        let frame = &layout.boundaries[0];
         assert_eq!(frame.title, "Sys");
         // The frame encloses the two children, which are the only laid-out cards.
         assert_eq!(layout.nodes.len(), 2, "boundary itself is not a card");
@@ -1267,8 +1350,12 @@ mod tests {
         let layout = layout_c4_scene(&scene);
         assert!(layout.nodes.is_empty(), "no children to draw");
         assert_eq!(
-            layout.boundary.map(|b| b.title),
-            Some("Sys".to_owned()),
+            layout
+                .boundaries
+                .iter()
+                .map(|b| b.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Sys"],
             "fallback still frames the boundary"
         );
     }

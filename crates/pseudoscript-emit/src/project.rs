@@ -377,7 +377,18 @@ fn project_boundary(
 ) -> Result<C4Scene, EmitError> {
     let anchor = require_kind(graph, of, boundary)?;
 
-    let mut nodes = vec![placed(anchor, None)];
+    // The anchor's own parent node, if any, becomes an enclosing **outer** frame:
+    // a component view (anchor = container) nests inside its system, so the system
+    // frame holds the container frame and the container's sibling containers. A
+    // container view (anchor = system, no parent node) keeps a single frame.
+    let outer = anchor
+        .parent
+        .as_deref()
+        .filter(|p| graph.node(p).is_some())
+        .map(str::to_owned);
+
+    // In-frame nodes: the anchor (inside the outer frame, if any) and its children.
+    let mut nodes = vec![placed(anchor, outer.clone())];
     nodes.extend(
         graph
             .children_of(of)
@@ -386,12 +397,26 @@ fn project_boundary(
     );
 
     // External actors that interact with the boundary's nodes — the persons and
-    // other systems (and, for a component view, other containers) that call in
-    // or are called out to. Drawn outside the frame (`boundary: None`), as a C4
-    // boundary diagram does (`LANG.md` §9.1).
+    // other systems (and, for a component view, other containers) that call in or
+    // are called out to (`LANG.md` §9.1). A sibling container of the anchor (same
+    // parent system) sits **inside** the outer frame; everything else is drawn
+    // outside every frame (`boundary: None`).
     let inside: Vec<String> = nodes.iter().map(|n| n.fqn.clone()).collect();
     let inside_refs: Vec<&str> = inside.iter().map(String::as_str).collect();
-    nodes.extend(external_actors(graph, of, child, &inside_refs));
+    if let Some(o) = &outer
+        && let Some(onode) = graph.node(o)
+    {
+        nodes.push(placed(onode, None));
+    }
+    for mut ext in external_actors(graph, of, child, &inside_refs) {
+        let in_outer = outer
+            .as_deref()
+            .is_some_and(|o| graph.node(&ext.fqn).and_then(|n| n.parent.as_deref()) == Some(o));
+        if in_outer {
+            ext.boundary.clone_from(&outer);
+        }
+        nodes.push(ext);
+    }
 
     // Edges among nodes in view, lifting each endpoint to the contained child it
     // belongs to (a call from a component bubbles to its owning container, etc.).
@@ -1142,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn component_view_includes_external_container_and_system() {
+    fn component_view_nests_container_in_its_system() {
         let scene = c4(project(
             &workspace(),
             View::Component {
@@ -1150,19 +1175,31 @@ mod tests {
             },
         )
         .expect("projects"));
-        let fqns: Vec<&str> = scene.nodes.iter().map(|n| n.fqn.as_str()).collect();
-        // The calling container is shown as a peer, lifted no further than itself.
-        assert!(fqns.contains(&"shop::Web"), "caller container: {fqns:?}");
-        // The downstream system is shown directly.
+        let boundary = |fqn: &str| {
+            scene
+                .nodes
+                .iter()
+                .find(|n| n.fqn == fqn)
+                .unwrap_or_else(|| panic!("{fqn} present"))
+                .boundary
+                .clone()
+        };
+        // The anchor container nests inside its system frame, which is itself an
+        // outermost frame.
+        assert_eq!(boundary("shop::Api").as_deref(), Some("shop::Shop"));
+        assert_eq!(boundary("shop::Shop"), None, "system is the outer frame");
+        // Its component sits inside the container frame.
         assert!(
-            fqns.contains(&"warehouse::Stock"),
-            "callee system: {fqns:?}"
+            scene
+                .nodes
+                .iter()
+                .any(|n| n.boundary.as_deref() == Some("shop::Api")),
+            "a component sits inside the container frame"
         );
-        // Neither is enclosed by the frame.
-        for ext in ["shop::Web", "warehouse::Stock"] {
-            let node = scene.nodes.iter().find(|n| n.fqn == ext).unwrap();
-            assert_eq!(node.boundary, None);
-        }
+        // A sibling container sits inside the system frame; a downstream system
+        // stays outside every frame.
+        assert_eq!(boundary("shop::Web").as_deref(), Some("shop::Shop"));
+        assert_eq!(boundary("warehouse::Stock"), None);
     }
 
     #[test]

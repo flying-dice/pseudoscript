@@ -19,16 +19,18 @@
 <Handle type="target" position={Position.Top} class="boundary-handle" />
 <div class="boundary-head">
   <span class="boundary-title">{data.label}</span>
-  <button
-    class="boundary-close"
-    title="Close — go up a level"
-    aria-label="Close and go up a level"
-    onpointerdown={(e) => e.stopPropagation()}
-    onclick={(e) => {
-      e.stopPropagation();
-      data.onclose?.();
-    }}
-  >✕</button>
+  {#if data.onclose}
+    <button
+      class="boundary-close"
+      title="Close — go up a level"
+      aria-label="Close and go up a level"
+      onpointerdown={(e) => e.stopPropagation()}
+      onclick={(e) => {
+        e.stopPropagation();
+        data.onclose?.();
+      }}
+    >✕</button>
+  {/if}
 </div>
 <Handle type="source" position={Position.Bottom} class="boundary-handle" />
 

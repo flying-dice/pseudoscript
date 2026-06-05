@@ -37,12 +37,15 @@
     label_pos?: Pt | null;
     dashed: boolean;
   };
+  type BoundaryFrame = { fqn: string; title: string; kind: string; rect: Rect };
   type Layout = {
     width: number;
     height: number;
     nodes: LaidOutNode[];
     edges: LaidOutEdge[];
-    boundary?: { title: string; kind: string; rect: Rect } | null;
+    // Enclosing frames, outermost first: one for a container view, two nested
+    // (system then container) for a component view.
+    boundaries?: BoundaryFrame[];
   };
   // The `data` payload carried by every Svelte Flow node (card or boundary).
   type NodeData = {
@@ -102,23 +105,29 @@
   function build(l: Layout | null): { nodes: Node[]; edges: Edge[] } {
     if (!l || !Array.isArray(l.nodes)) return { nodes: [], edges: [] };
 
-    const frame: Node[] = l.boundary
-      ? [
-          {
-            id: "__boundary",
-            type: "boundary",
-            position: { x: l.boundary.rect.x, y: l.boundary.rect.y },
-            width: l.boundary.rect.w,
-            height: l.boundary.rect.h,
-            data: { label: l.boundary.title, kind: l.boundary.kind, summary: "", fqn: scene.of ?? "", boundary: true, onclose: onup ?? undefined } as NodeData,
-            class: `c4-boundary ${l.boundary.kind}`,
-            draggable: false,
-            connectable: false,
-            selectable: true,
-            zIndex: 0,
-          },
-        ]
-      : [];
+    // Frames sit behind the cards (zIndex 0), outermost first so a nested inner
+    // frame draws over its outer one. Only the view's own anchor frame
+    // (`fqn === scene.of`) carries the close button that pops up one level.
+    const frame: Node[] = (l.boundaries ?? []).map((b, i) => ({
+      id: `__boundary_${i}`,
+      type: "boundary",
+      position: { x: b.rect.x, y: b.rect.y },
+      width: b.rect.w,
+      height: b.rect.h,
+      data: {
+        label: b.title,
+        kind: b.kind,
+        summary: "",
+        fqn: b.fqn,
+        boundary: true,
+        onclose: b.fqn === scene.of ? (onup ?? undefined) : undefined,
+      } as NodeData,
+      class: `c4-boundary ${b.kind}`,
+      draggable: false,
+      connectable: false,
+      selectable: true,
+      zIndex: 0,
+    }));
 
     const cards: Node[] = l.nodes.map((n) => ({
       id: n.fqn,
