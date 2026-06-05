@@ -45,8 +45,10 @@ pub(crate) struct Ordered {
     /// included), in increasing-rank order. Empty for a dropped edge (self-loop
     /// or unknown endpoint).
     pub chains: Vec<Vec<usize>>,
-    /// Per input edge: whether it was reversed for layering (chain runs in
-    /// increasing-rank order, which is head→tail for a reversed edge).
+    /// Per input edge: whether the chain (built shallow→deep) runs head→tail and
+    /// so its polyline must be flipped to draw tail→head. Derived from final
+    /// ranks (`rank[tail] > rank[head]`), covering both cycle back-edges and
+    /// backward edges induced by same-rank moves.
     pub reversed: Vec<bool>,
 }
 
@@ -71,6 +73,11 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
 
     // Build virtual chains for every effective (post-acyclic) edge.
     let mut chains: Vec<Vec<usize>> = vec![Vec::new(); graph.edges.len()];
+    // Per edge: does the chain (built in increasing-rank order) run head→tail, so
+    // its polyline must be flipped to draw tail→head? Derived from final ranks —
+    // not the cycle-break flags — so a backward edge induced by a same-rank move
+    // still draws its arrowhead at the true head.
+    let mut flip: Vec<bool> = vec![false; graph.edges.len()];
     let mut segments: Vec<Segment> = Vec::new();
     for (i, e) in graph.edges.iter().enumerate() {
         let (Some(t), Some(h)) = (graph.node_index(&e.tail), graph.node_index(&e.head)) else {
@@ -79,7 +86,8 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
         if t == h {
             continue;
         }
-        // Increasing-rank endpoints (reversed edges already flipped in ranking).
+        flip[i] = ranking.rank[t] > ranking.rank[h];
+        // Increasing-rank endpoints; the chain always runs shallow→deep.
         let (lo, hi) = if ranking.rank[t] <= ranking.rank[h] {
             (t, h)
         } else {
@@ -102,10 +110,16 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
             chain.push(vid);
             prev = vid;
         }
-        segments.push(Segment {
-            upper: prev,
-            lower: hi,
-        });
+        // A flat edge (both endpoints on one rank, from a same-rank move) is kept
+        // in the chain for routing but contributes no inter-rank segment — it must
+        // not enter crossing minimisation, where an intra-rank "segment" makes
+        // `transpose` oscillate and never terminate.
+        if r_lo != r_hi {
+            segments.push(Segment {
+                upper: prev,
+                lower: hi,
+            });
+        }
         chain.push(hi);
         chains[i] = chain;
     }
@@ -152,7 +166,7 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
         ranks: state.ranks,
         order: state.order,
         chains,
-        reversed: ranking.reversed.clone(),
+        reversed: flip,
     }
 }
 

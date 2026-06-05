@@ -22,6 +22,7 @@ pub mod graph;
 pub mod layout;
 mod mincross;
 mod ns;
+pub mod optimize;
 mod position;
 mod rank;
 mod splines;
@@ -95,6 +96,7 @@ pub fn layout(graph: &Graph) -> Layout {
             };
         }
     }
+    contain_externals(graph, &ordered, lr, &mut center);
 
     let nodes: Vec<NodePos> = graph
         .nodes
@@ -147,6 +149,71 @@ pub fn layout(graph: &Graph) -> Layout {
 
     let clusters = cluster_boxes(graph, &nodes);
     finish(nodes, edges, clusters)
+}
+
+/// Keep a non-member node that a same-rank move placed within a cluster's rank
+/// band clear of that cluster's cross-axis span, so an external (e.g. a system
+/// pulled up beside a container) still renders outside the boundary frame. Shifts
+/// the node just past the nearer edge of the span along the within-rank axis.
+fn contain_externals(graph: &Graph, ordered: &mincross::Ordered, lr: bool, center: &mut [Pt]) {
+    let n = graph.nodes.len();
+    let minor = |c: Pt| if lr { c.y } else { c.x };
+    let size = |i: usize| {
+        if lr {
+            graph.nodes[i].height
+        } else {
+            graph.nodes[i].width
+        }
+    };
+    for cluster in &graph.clusters {
+        let members: Vec<usize> = cluster
+            .members
+            .iter()
+            .filter_map(|id| graph.node_index(id))
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let ranks: Vec<i32> = members.iter().map(|&m| ordered.vnodes[m].rank).collect();
+        let (rmin, rmax) = (
+            ranks.iter().copied().min().unwrap_or(0),
+            ranks.iter().copied().max().unwrap_or(0),
+        );
+        let lo = members
+            .iter()
+            .map(|&m| minor(center[m]) - size(m) / 2.0)
+            .fold(f64::INFINITY, f64::min);
+        let hi = members
+            .iter()
+            .map(|&m| minor(center[m]) + size(m) / 2.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // `j` indexes nodes across `vnodes`/`center`/`graph.nodes`, not a cursor.
+        #[allow(clippy::needless_range_loop)]
+        for j in 0..n {
+            if members.contains(&j) {
+                continue;
+            }
+            let rj = ordered.vnodes[j].rank;
+            if rj < rmin || rj > rmax {
+                continue; // above or below the band — already outside the frame
+            }
+            let m = minor(center[j]);
+            if m + size(j) / 2.0 <= lo || m - size(j) / 2.0 >= hi {
+                continue; // already clear of the span
+            }
+            let new_minor = if hi - m <= m - lo {
+                hi + graph.nodesep + size(j) / 2.0
+            } else {
+                lo - graph.nodesep - size(j) / 2.0
+            };
+            if lr {
+                center[j].y = new_minor;
+            } else {
+                center[j].x = new_minor;
+            }
+        }
+    }
 }
 
 /// The bounding box of each cluster: its members' rectangles grown by the
@@ -338,6 +405,82 @@ mod tests {
                 assert!(p.x >= -0.01 && p.y >= -0.01, "edge point within bbox");
             }
         }
+    }
+
+    #[test]
+    fn same_rank_pulls_a_member_onto_a_shared_rank_and_keeps_arrowheads() {
+        // a -> b -> c -> d (a chain). Force `d` onto `b`'s rank. Then c -> d points
+        // backward (rank c > rank d), but its polyline must still run c -> d so the
+        // arrowhead lands on d.
+        let mut g = Graph::new();
+        for id in ["a", "b", "c", "d"] {
+            g.nodes.push(Node::new(id, 60.0, 30.0));
+        }
+        g.edges.push(Edge::new("a", "b"));
+        g.edges.push(Edge::new("b", "c"));
+        g.edges.push(Edge::new("c", "d"));
+        g.same_rank = vec![vec!["b".to_owned(), "d".to_owned()]];
+
+        let l = layout(&g);
+        let cy = |id: &str| l.nodes.iter().find(|n| n.id == id).unwrap().center.y;
+        assert!((cy("b") - cy("d")).abs() < 0.5, "b and d share a rank");
+        assert!(cy("c") > cy("b"), "c is deeper than the b/d rank");
+
+        // The c -> d edge's polyline runs tail(c) -> head(d): first point near c,
+        // last near d.
+        let cd = l
+            .edges
+            .iter()
+            .find(|e| e.tail == "c" && e.head == "d")
+            .unwrap();
+        let near = |p: &Pt, id: &str| {
+            let n = l.nodes.iter().find(|n| n.id == id).unwrap();
+            (p.x - n.center.x).abs() < n.width && (p.y - n.center.y).abs() < n.height
+        };
+        assert!(
+            near(cd.polyline.first().unwrap(), "c"),
+            "starts at tail c: {cd:?}"
+        );
+        assert!(
+            near(cd.polyline.last().unwrap(), "d"),
+            "ends at head d: {cd:?}"
+        );
+    }
+
+    #[test]
+    fn same_ranked_external_is_kept_outside_the_cluster_frame() {
+        // The banking shape: a cluster {m1, m2} and an external `sys` that a
+        // same-rank move pulls up onto m1's rank, inside the band. Containment
+        // must push `sys` clear of the cluster's x-span so it stays outside the
+        // frame.
+        let mut g = Graph::new();
+        for id in ["top", "m1", "m2", "sys"] {
+            g.nodes.push(Node::new(id, 120.0, 40.0));
+        }
+        g.edges.push(Edge::new("top", "m1"));
+        g.edges.push(Edge::new("m1", "m2"));
+        g.edges.push(Edge::new("m2", "sys")); // sys is naturally below the band
+        g.clusters.push(Cluster {
+            id: "c".to_owned(),
+            members: vec!["m1".to_owned(), "m2".to_owned()],
+            margin: 12.0,
+        });
+        g.same_rank = vec![vec!["m1".to_owned(), "sys".to_owned()]]; // pull sys into the band
+
+        let l = layout(&g);
+        let sys = l.nodes.iter().find(|n| n.id == "sys").unwrap();
+        let m1 = l.nodes.iter().find(|n| n.id == "m1").unwrap();
+        assert!(
+            (sys.center.y - m1.center.y).abs() < 0.5,
+            "sys shares m1's rank"
+        );
+        let frame = l.clusters.iter().find(|c| c.id == "c").unwrap().bbox;
+        let left = sys.center.x + sys.width / 2.0 <= frame.x + 0.01;
+        let right = sys.center.x - sys.width / 2.0 >= frame.x + frame.w - 0.01;
+        assert!(
+            left || right,
+            "sys is clear of the cluster x-span: sys={sys:?} frame={frame:?}"
+        );
     }
 
     #[test]

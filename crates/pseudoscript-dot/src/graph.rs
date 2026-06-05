@@ -100,6 +100,9 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     /// Clusters (may be empty).
     pub clusters: Vec<Cluster>,
+    /// Groups of node ids forced onto the same rank (`dot`'s `rank=same`).
+    /// Applied after the base ranking, across cluster boundaries.
+    pub same_rank: Vec<Vec<String>>,
     /// Rank direction.
     pub rankdir: RankDir,
     /// Minimum gap between adjacent nodes within a rank, in points (`dot`
@@ -116,6 +119,7 @@ impl Default for Graph {
             nodes: Vec::new(),
             edges: Vec::new(),
             clusters: Vec::new(),
+            same_rank: Vec::new(),
             rankdir: RankDir::default(),
             nodesep: 18.0,
             ranksep: 36.0,

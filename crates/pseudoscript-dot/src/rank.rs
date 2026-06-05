@@ -70,16 +70,39 @@ pub(crate) fn assign_ranks(graph: &Graph) -> Ranking {
     }
 
     let cluster_of = cluster_membership(graph, n);
-    let rank_vec = if graph.clusters.is_empty() {
+    let mut rank_vec = if graph.clusters.is_empty() {
         let cs: Vec<Constraint> = eff.iter().map(Edge::constraint).collect();
         rank(n, &cs, Balance::TopBottom)
     } else {
         rank_with_clusters(graph, n, &eff, &cluster_of)
     };
 
+    apply_same_rank(graph, &mut rank_vec);
+
     Ranking {
         rank: rank_vec,
         reversed,
+    }
+}
+
+/// Pull each same-rank group onto one rank — the shallowest (smallest) member
+/// rank — then renormalise. Applied as a post-pass over final ranks, so it works
+/// across cluster boundaries; the forcing edges it makes point backward are
+/// handled at draw time (direction is read from final ranks, [`crate::mincross`]).
+fn apply_same_rank(graph: &Graph, rank: &mut [i32]) {
+    for group in &graph.same_rank {
+        let members: Vec<usize> = group.iter().filter_map(|id| graph.node_index(id)).collect();
+        let Some(target) = members.iter().map(|&v| rank[v]).min() else {
+            continue;
+        };
+        for v in members {
+            rank[v] = target;
+        }
+    }
+    if let Some(&min) = rank.iter().min() {
+        for r in rank.iter_mut() {
+            *r -= min;
+        }
     }
 }
 
