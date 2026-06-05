@@ -73,6 +73,21 @@ pub struct ClusterBox {
     pub bbox: Box2,
 }
 
+/// The grid the experimental placement laid nodes on — enough for a client to map
+/// a pixel position back to a cell (drag-to-pin). `Some` only for a grid layout.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GridMeta {
+    /// Columns and rows in the grid.
+    pub cols: usize,
+    pub rows: usize,
+    /// Cell pitch in points (centre-to-centre spacing).
+    pub cell_w: f64,
+    pub cell_h: f64,
+    /// Pixel centre of cell `(row 0, col 0)`; cell `(r, c)` centres at
+    /// `origin + (c·cell_w, r·cell_h)`.
+    pub origin: Pt,
+}
+
 /// The full positioned layout.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Layout {
@@ -84,4 +99,7 @@ pub struct Layout {
     pub edges: Vec<EdgeRoute>,
     /// Cluster boxes, in input order.
     pub clusters: Vec<ClusterBox>,
+    /// The grid geometry, when this came from [`crate::grid_layout`]; else `None`.
+    #[serde(default)]
+    pub grid: Option<GridMeta>,
 }

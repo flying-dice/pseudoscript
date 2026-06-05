@@ -145,8 +145,12 @@ fn cluster_keepout(
             });
         }
 
-        // Each immediate outside neighbour on a band rank is held beyond the
-        // border (and thus beyond every member, on every rank).
+        // Each immediate outside **real** neighbour on a band rank is held beyond
+        // the border (and thus beyond every member, on every rank). Routing
+        // virtuals of an edge passing the cluster are *not* pushed out — they
+        // route freely past the frame (the straightening pass keeps a long edge's
+        // chain beside the frame rather than zig-zagging it around the members).
+        let real_external = |vid: usize| vid < n && !effective[ci][vid];
         for row in &ordered.ranks {
             let len = row.len();
             let first = row.iter().position(|&vid| vid < n && effective[ci][vid]);
@@ -154,29 +158,25 @@ fn cluster_keepout(
             let (Some(pmin), Some(pmax)) = (first, last) else {
                 continue;
             };
-            if pmin > 0 {
+            if pmin > 0 && real_external(row[pmin - 1]) {
                 let e = row[pmin - 1];
-                if e >= n || !effective[ci][e] {
-                    let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
-                    cs.push(Constraint {
-                        tail: e,
-                        head: ln,
-                        minlen: gap,
-                        weight: 0,
-                    });
-                }
+                let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
+                cs.push(Constraint {
+                    tail: e,
+                    head: ln,
+                    minlen: gap,
+                    weight: 0,
+                });
             }
-            if pmax + 1 < len {
+            if pmax + 1 < len && real_external(row[pmax + 1]) {
                 let e = row[pmax + 1];
-                if e >= n || !effective[ci][e] {
-                    let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
-                    cs.push(Constraint {
-                        tail: rn,
-                        head: e,
-                        minlen: gap,
-                        weight: 0,
-                    });
-                }
+                let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
+                cs.push(Constraint {
+                    tail: rn,
+                    head: e,
+                    minlen: gap,
+                    weight: 0,
+                });
             }
         }
     }

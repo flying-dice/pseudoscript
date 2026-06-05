@@ -2,7 +2,7 @@
 # `.pds` file under this directory; module FQNs derive from each file's path
 # (LANG.md §8.1, ADR-017).
 [doc]
-name  = "Internet Banking — C4 to the Container Level"
+name  = "Internet Banking — C4 to the Component Level"
 out   = "target/doc"
 theme = "light"
 

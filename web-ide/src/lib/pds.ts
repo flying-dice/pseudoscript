@@ -179,6 +179,12 @@ export function ideLayoutScene(scene: Scene, tweaks?: LayoutTweaks): Scene {
         minimize_long_edges: tweaks.minimizeLongEdges,
         orientation: tweaks.orientation,
         spacing: tweaks.spacing,
+        experimental_grid: tweaks.experimentalGrid,
+        grid_crossing_cost: tweaks.gridCrossingCost,
+        grid_distance_cost: tweaks.gridDistanceCost,
+        grid_flow_cost: tweaks.gridFlowCost,
+        grid_search: tweaks.gridSearch,
+        grid_pins: (tweaks.gridPins ?? []).map((p) => ({ fqn: p.fqn, row: p.row, col: p.col })),
       }
     : undefined;
   return callWasm(

@@ -20,10 +20,12 @@
 mod acyclic;
 mod cluster;
 pub mod graph;
+pub mod grid;
 pub mod layout;
 mod mincross;
 mod ns;
 pub mod optimize;
+pub mod pipeline;
 mod position;
 mod rank;
 mod splines;
@@ -32,7 +34,10 @@ mod splines;
 mod oracle;
 
 pub use graph::{Cluster, Edge, Graph, Node, RankDir};
-pub use layout::{Box2, ClusterBox, EdgeRoute, Layout, NodePos, Pt};
+pub use grid::{GridParams, GridPlacement, Pin, SearchMode, grid_layout};
+pub use layout::{Box2, ClusterBox, EdgeRoute, GridMeta, Layout, NodePos, Pt};
+pub use optimize::ShortenLongEdges;
+pub use pipeline::{LayoutState, Pass, run_pipeline};
 
 /// Width reserved for a virtual (long-edge routing) node along the within-rank
 /// axis — a thin lane between real nodes.
@@ -216,7 +221,11 @@ pub fn layout(graph: &Graph) -> Layout {
 /// members — `dot`'s recursive `rec_bb` (`lib/dotgen/position.c`). The outer box
 /// therefore sits a clean margin outside the inner one. Emitted in input order;
 /// a cluster with no contents yields no box.
-fn cluster_boxes(graph: &Graph, tree: &cluster::ClusterTree, nodes: &[NodePos]) -> Vec<ClusterBox> {
+pub(crate) fn cluster_boxes(
+    graph: &Graph,
+    tree: &cluster::ClusterTree,
+    nodes: &[NodePos],
+) -> Vec<ClusterBox> {
     let nc = graph.clusters.len();
     let mut box_of: Vec<Option<Box2>> = vec![None; nc];
 
@@ -264,7 +273,7 @@ fn cluster_boxes(graph: &Graph, tree: &cluster::ClusterTree, nodes: &[NodePos]) 
 /// report the tight bounding box over every node rectangle, edge point, and
 /// cluster box. (Node centres minus half-widths, and cluster margins, can be
 /// negative before this shift.)
-fn finish(
+pub(crate) fn finish(
     mut nodes: Vec<NodePos>,
     mut edges: Vec<EdgeRoute>,
     mut clusters: Vec<ClusterBox>,
@@ -315,6 +324,7 @@ fn finish(
         nodes,
         edges,
         clusters,
+        grid: None,
     }
 }
 
@@ -341,7 +351,7 @@ impl Extent {
 }
 
 /// The midpoint of a polyline by arc-length — where an edge label sits.
-fn midpoint(poly: &[Pt]) -> Pt {
+pub(crate) fn midpoint(poly: &[Pt]) -> Pt {
     if poly.is_empty() {
         return Pt::new(0.0, 0.0);
     }

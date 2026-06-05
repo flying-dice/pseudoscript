@@ -1,15 +1,17 @@
-//! Internet Banking System — the C4 *container* view, after Simon Brown's
-//! canonical example (c4model.com, CC BY 4.0). Each container-diagram
-//! relationship is modelled as a call between nodes, so the container view
-//! draws every edge; nothing is taken below the container level.
+//! Internet Banking System — C4 down to the *component* level, after Simon
+//! Brown's canonical example (c4model.com, CC BY 4.0). Each diagram relationship
+//! is modelled as a call between nodes, so every view draws its edges: select a
+//! system for its container view, or the `Backend` container for the component
+//! view of its seven Spring components.
 
 /// A customer of the bank with one or more personal bank accounts.
 person Customer {
-  /// Views account balances and makes payments using Internet banking.
+  /// Signs in, views balances, and reads statements via Internet banking.
   UseInternetBanking() {
     banking::StaticContent.LoadApp()
+    banking::SinglePageApp.SignIn()
     banking::SinglePageApp.ViewAccounts()
-    banking::SinglePageApp.MakePayment()
+    banking::SinglePageApp.ViewStatement()
   }
 
   /// Receives transactional e-mail from the bank.
@@ -35,43 +37,105 @@ container SinglePageApp for banking::InternetBanking {
   /// The app shell, delivered by the static content.
   Deliver();
 
-  /// Show the customer's account summary.
-  ViewAccounts() {
-    banking::Backend.AccountsSummary()
+  /// Make a sign-in request to the backend (JSON/HTTP).
+  SignIn() {
+    banking::SigninApi.SignIn()
   }
 
-  /// Submit a payment.
-  MakePayment() {
-    banking::Backend.MakePayment()
+  /// Request the customer's account summary (JSON/HTTP).
+  ViewAccounts() {
+    banking::AccountsSummaryApi.ListAccounts()
+  }
+
+  /// Request a PDF statement (JSON/HTTP).
+  ViewStatement() {
+    banking::StatementApi.GetStatement()
   }
 }
 
-/// Provides Internet banking functionality via a JSON/HTTP API (Java / Spring Boot).
-container Backend for banking::InternetBanking {
-  /// Sign a customer in; credentials are checked against the database.
+// --- the Backend container and its components --------------------------------
+
+/// Provides Internet banking functionality via a JSON/HTTP API (Java / Spring
+/// Boot). Its component view shows the seven Spring components below.
+container Backend for banking::InternetBanking;
+
+/// API endpoint for customer sign in. Spring MVC.
+component SigninApi for banking::Backend {
+  /// Validate the customer's credentials.
   SignIn() {
+    banking::SecurityComponent.ValidateCredentials()
+  }
+}
+
+/// API endpoint for bank-accounts summary information. Spring MVC.
+component AccountsSummaryApi for banking::Backend {
+  /// List the customer's bank accounts.
+  ListAccounts() {
+    banking::SecurityComponent.ValidateToken()
+    banking::CoreBankingSystemAdapter.GetAccounts()
+  }
+}
+
+/// API endpoint for access to PDF statements. Spring MVC.
+component StatementApi for banking::Backend {
+  /// Return a PDF statement.
+  GetStatement() {
+    banking::SecurityComponent.ValidateToken()
+    banking::StatementComponent.GetStatements()
+  }
+}
+
+/// Provides access to PDF statements. Spring Bean.
+component StatementComponent for banking::Backend {
+  /// Read statements and the information that indexes them.
+  GetStatements() {
+    banking::StatementStore.Fetch()
+    banking::CoreBankingSystemAdapter.GetStatementInfo()
+  }
+}
+
+/// Provides functionality related to signing in, changing passwords, etc.
+/// Spring Bean.
+component SecurityComponent for banking::Backend {
+  /// Validate sign-in credentials against the database.
+  ValidateCredentials() {
     banking::Database.ReadUser()
   }
 
-  /// A summary of the customer's bank accounts.
-  AccountsSummary() {
+  /// Validate an authentication token against the database.
+  ValidateToken() {
     banking::Database.ReadUser()
+  }
+
+  /// Change a password, then e-mail the customer a confirmation.
+  ChangePassword() {
+    banking::Database.ReadUser()
+    banking::EmailComponent.SendEmail()
+  }
+}
+
+/// A Java wrapper around the API provided by the Core Banking System. Spring Bean.
+component CoreBankingSystemAdapter for banking::Backend {
+  /// Request the customer's list of bank accounts (XML/HTTPS).
+  GetAccounts() {
     banking::CoreBanking.FetchAccounts()
   }
 
-  /// Make a payment, then e-mail a receipt.
-  MakePayment() {
-    banking::Database.ReadUser()
-    banking::CoreBanking.Transfer()
-    banking::Email.SendReceipt()
-  }
-
-  /// Fetch a rendered PDF statement.
-  GetStatement() {
-    banking::StatementStore.Fetch()
+  /// Request the information backing a statement (XML/HTTPS).
+  GetStatementInfo() {
     banking::CoreBanking.FetchStatement()
   }
 }
+
+/// Sends e-mails to users. Spring Bean.
+component EmailComponent for banking::Backend {
+  /// Send an e-mail to the customer (AWS SES API/HTTP).
+  SendEmail() {
+    banking::Email.SendReceipt()
+  }
+}
+
+// --- the data stores the Backend reads and writes ---------------------------
 
 /// User account information, hashed credentials, access logs, etc. (MySQL).
 /// #critical
@@ -92,7 +156,6 @@ container StatementStore for banking::InternetBanking {
 system CoreBanking {
   FetchAccounts();
   FetchStatement();
-  Transfer();
 }
 
 /// Cloud-based e-mail service (AWS Simple Email Service).

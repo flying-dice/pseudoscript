@@ -24,8 +24,8 @@ use pseudoscript_doc::{
     try_render_site_with,
 };
 use pseudoscript_emit::{
-    C4Tweaks, Scene, View, layout_c4_scene_with, layout_data_scene, layout_feature_scene,
-    layout_sequence_scene, project, project_symbol,
+    C4Tweaks, GridPin as EmitGridPin, GridSearch, Scene, View, layout_c4_scene_with,
+    layout_data_scene, layout_feature_scene, layout_sequence_scene, project, project_symbol,
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic};
@@ -257,11 +257,42 @@ pub struct LayoutTweaks {
     /// Spacing preset: `"compact"`, `"comfortable"` (default), or `"roomy"`.
     #[serde(default)]
     pub spacing: Option<String>,
+    /// **Experimental**: brute-force grid placement instead of the layered engine.
+    #[serde(default)]
+    pub experimental_grid: bool,
+    /// Grid-placement cost dials (used only when `experimental_grid`). Absent → the
+    /// engine default. Each is the weight of: a crossing, a cell of edge length,
+    /// and a cell travelled against the reading direction (directionality).
+    #[serde(default)]
+    pub grid_crossing_cost: Option<u32>,
+    #[serde(default)]
+    pub grid_distance_cost: Option<u32>,
+    #[serde(default)]
+    pub grid_flow_cost: Option<u32>,
+    /// Grid search mode: `"auto"` (default), `"heuristic"`, or `"exhaustive"` — the
+    /// heuristic-vs-brute-force toggle, for checking the heuristic against exact.
+    #[serde(default)]
+    pub grid_search: Option<String>,
+    /// Nodes pinned to grid cells (drag-to-pin). Used only when `experimental_grid`;
+    /// the engine fixes these and searches only the rest. Pins for nodes not in the
+    /// current view are ignored.
+    #[serde(default)]
+    pub grid_pins: Vec<GridPin>,
+}
+
+/// A node pinned to a grid cell, by FQN. Crosses the wasm boundary as an object.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+pub struct GridPin {
+    pub fqn: String,
+    pub row: u32,
+    pub col: u32,
 }
 
 impl LayoutTweaks {
-    /// Translate to the emit-layer tweaks (orientation/spacing words → values).
+    /// Translate to the emit-layer tweaks (orientation/spacing words → values, grid
+    /// dials → weights, each falling back to the engine default when unset).
     fn to_c4(&self) -> C4Tweaks {
+        let base = C4Tweaks::default();
         C4Tweaks {
             minimize_long_edges: self.minimize_long_edges,
             left_to_right: self.orientation.as_deref() == Some("lr"),
@@ -269,6 +300,19 @@ impl LayoutTweaks {
                 Some("compact") => 0.7,
                 Some("roomy") => 1.4,
                 _ => 1.0,
+            },
+            experimental_grid: self.experimental_grid,
+            grid_crossing_cost: self
+                .grid_crossing_cost
+                .map_or(base.grid_crossing_cost, |v| v as usize),
+            grid_distance_cost: self
+                .grid_distance_cost
+                .map_or(base.grid_distance_cost, |v| v as usize),
+            grid_flow_cost: self.grid_flow_cost.map_or(base.grid_flow_cost, |v| v as usize),
+            grid_search: match self.grid_search.as_deref() {
+                Some("heuristic") => GridSearch::Heuristic,
+                Some("exhaustive") => GridSearch::Exhaustive,
+                _ => GridSearch::Auto,
             },
         }
     }
@@ -648,8 +692,18 @@ impl IdeSession {
         scene_json: &str,
         tweaks: Option<LayoutTweaks>,
     ) -> Result<String, JsError> {
-        let c4 = tweaks.unwrap_or_default().to_c4();
-        layout_of(scene_json, &c4).map_err(|e| JsError::new(&e))
+        let lt = tweaks.unwrap_or_default();
+        let pins: Vec<EmitGridPin> = lt
+            .grid_pins
+            .iter()
+            .map(|p| EmitGridPin {
+                fqn: p.fqn.clone(),
+                row: p.row as usize,
+                col: p.col as usize,
+            })
+            .collect();
+        let c4 = lt.to_c4();
+        layout_of(scene_json, &c4, &pins).map_err(|e| JsError::new(&e))
     }
 
     // ---- project + docs ----------------------------------------------------
@@ -1133,11 +1187,11 @@ fn symbol_scene_of(modules: &[WorkspaceModule], fqn: &str) -> Result<String, Str
     Ok(to_json(&scene))
 }
 
-fn layout_of(scene_json: &str, tweaks: &C4Tweaks) -> Result<String, String> {
+fn layout_of(scene_json: &str, tweaks: &C4Tweaks, pins: &[EmitGridPin]) -> Result<String, String> {
     let scene: Scene = serde_json::from_str(scene_json).map_err(|e| e.to_string())?;
     match scene {
         Scene::Sequence(seq) => Ok(to_json(&layout_sequence_scene(&seq))),
-        Scene::C4(c4) => Ok(to_json(&layout_c4_scene_with(&c4, tweaks))),
+        Scene::C4(c4) => Ok(to_json(&layout_c4_scene_with(&c4, tweaks, pins))),
         Scene::Data(data) => Ok(to_json(&layout_data_scene(&data))),
         Scene::Feature(feature) => Ok(to_json(&layout_feature_scene(&feature))),
     }
@@ -1607,7 +1661,7 @@ mod tests {
         )]);
         for fqn in ["m::Order", "m::F"] {
             let scene = symbol_scene_of(&modules, fqn).expect("projects");
-            let laid = layout_of(&scene, &C4Tweaks::default()).expect("lays out");
+            let laid = layout_of(&scene, &C4Tweaks::default(), &[]).expect("lays out");
             assert!(laid.contains("\"width\":"), "positioned: {laid}");
         }
     }
@@ -1620,7 +1674,7 @@ mod tests {
             "participants":[{"fqn":"m::F","kind":"callable"}],
             "items":[]
         }"#;
-        let out = layout_of(fallback, &C4Tweaks::default()).expect("fallback scene lays out");
+        let out = layout_of(fallback, &C4Tweaks::default(), &[]).expect("fallback scene lays out");
         assert!(out.contains("m::F"), "{out}");
     }
 
@@ -1632,7 +1686,7 @@ mod tests {
             "",
         )
         .expect("context projects");
-        let out = layout_of(&scene, &C4Tweaks::default()).expect("c4 scene lays out");
+        let out = layout_of(&scene, &C4Tweaks::default(), &[]).expect("c4 scene lays out");
         assert!(out.contains(r#""nodes""#), "{out}");
         assert!(out.contains("m::P") && out.contains("m::S"), "{out}");
     }
@@ -1643,6 +1697,8 @@ mod tests {
             minimize_long_edges: true,
             orientation: Some("lr".to_owned()),
             spacing: Some("roomy".to_owned()),
+            experimental_grid: false,
+            ..Default::default()
         }
         .to_c4();
         assert!(lr.minimize_long_edges && lr.left_to_right);
@@ -1662,12 +1718,33 @@ mod tests {
         }
         .to_c4();
         assert!(!dflt.left_to_right && (dflt.spacing - 1.0).abs() < f64::EPSILON);
+
+        // Grid dials pass through; absent ones fall back to the engine default.
+        let base = C4Tweaks::default();
+        let dialed = LayoutTweaks {
+            grid_crossing_cost: Some(25),
+            grid_flow_cost: Some(0),
+            ..Default::default()
+        }
+        .to_c4();
+        assert_eq!(dialed.grid_crossing_cost, 25);
+        assert_eq!(dialed.grid_flow_cost, 0);
+        assert_eq!(dialed.grid_distance_cost, base.grid_distance_cost);
+
+        // Search mode maps by word; anything else (or absent) is Auto.
+        let forced = LayoutTweaks {
+            grid_search: Some("exhaustive".to_owned()),
+            ..Default::default()
+        }
+        .to_c4();
+        assert_eq!(forced.grid_search, GridSearch::Exhaustive);
+        assert_eq!(dialed.grid_search, GridSearch::Auto);
     }
 
     #[test]
     fn layout_scene_rejects_a_scene_missing_the_view_tag() {
         let untagged = r#"{"participants":[{"fqn":"m::F","kind":"callable"}],"items":[]}"#;
-        assert!(layout_of(untagged, &C4Tweaks::default()).is_err());
+        assert!(layout_of(untagged, &C4Tweaks::default(), &[]).is_err());
     }
 
     #[test]

@@ -329,7 +329,10 @@ async function getDir(
 }
 
 /** Reads the file at `path` under `root`, or `null` if it does not exist. */
-async function readFileAt(root: FileSystemDirectoryHandle, path: string): Promise<string | null> {
+export async function readFileAt(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<string | null> {
   try {
     const { dir, name } = await parentDirFor(root, path);
     return await readFile(await dir.getFileHandle(name));

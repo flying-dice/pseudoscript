@@ -11,6 +11,15 @@ export interface FoldingRange {
 }
 
 /**
+ * A node pinned to a grid cell, by FQN. Crosses the wasm boundary as an object.
+ */
+export interface GridPin {
+    fqn: string;
+    row: number;
+    col: number;
+}
+
+/**
  * AST-aware semantic tokens: the delta-encoded flat `data` array over UTF-16
  * positions, identical to the stdio server\'s `semanticTokens/full` response.
  */
@@ -199,6 +208,29 @@ export interface LayoutTweaks {
      * Spacing preset: `\"compact\"`, `\"comfortable\"` (default), or `\"roomy\"`.
      */
     spacing?: string | undefined;
+    /**
+     * **Experimental**: brute-force grid placement instead of the layered engine.
+     */
+    experimental_grid?: boolean;
+    /**
+     * Grid-placement cost dials (used only when `experimental_grid`). Absent → the
+     * engine default. Each is the weight of: a crossing, a cell of edge length,
+     * and a cell travelled against the reading direction (directionality).
+     */
+    grid_crossing_cost?: number | undefined;
+    grid_distance_cost?: number | undefined;
+    grid_flow_cost?: number | undefined;
+    /**
+     * Grid search mode: `\"auto\"` (default), `\"heuristic\"`, or `\"exhaustive\"` — the
+     * heuristic-vs-brute-force toggle, for checking the heuristic against exact.
+     */
+    grid_search?: string | undefined;
+    /**
+     * Nodes pinned to grid cells (drag-to-pin). Used only when `experimental_grid`;
+     * the engine fixes these and searches only the rest. Pins for nodes not in the
+     * current view are ignored.
+     */
+    grid_pins?: GridPin[];
 }
 
 /**

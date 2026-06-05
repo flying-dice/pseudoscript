@@ -7,7 +7,9 @@
   import "../app.css";
   import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, initWasm, mountIde, renderDocSite, setIdeSource } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
-  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, writeFile, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
+  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
+  import { pins as pinStore } from "$lib/stores/pins.svelte.js";
+  import { viewKey, getPins, serializeLayoutDoc, cellAt, type GridGeom } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
@@ -367,7 +369,13 @@
   // sequence scene is then collapsed to the chosen depth in the IDE.
   // The C4 layout tweaks (the canvas "Layout" control) — one config applied to
   // every diagram, persisted in the ui store.
-  const canvasTweaks = $derived(ui.layoutTweaks);
+  // The current diagram's pin key: the selected symbol's view, or the whole-model
+  // overview. Derived from `selected` (not the scene) to avoid a layout cycle —
+  // each diagram has a unique target FQN, so this keys the `.layout` document.
+  const currentViewKey = $derived(viewKey(selected ? "view" : "context", selected?.fqn ?? null));
+  // The global layout tweaks plus this view's pins (reactive on the pin store, so a
+  // drag re-derives the canvas → re-layout with the node fixed).
+  const canvasTweaks = $derived({ ...ui.layoutTweaks, gridPins: getPins(pinStore.doc, currentViewKey) });
   const canvas = $derived(
     ready && workspace
       ? projectCanvas({
@@ -380,6 +388,63 @@
         })
       : { scene: null, error: "" },
   );
+
+  // Drag-to-pin: pin a node to a grid cell, then persist the `.layout` file. The
+  // re-layout is automatic (canvasTweaks reads the pin store).
+  function pinNode(fqn: string, row: number, col: number): void {
+    pinStore.pin(currentViewKey, { fqn, row, col });
+    void persistPins();
+  }
+
+  // Entering edit mode freezes the current arrangement: every node is pinned at the
+  // cell it currently occupies, so dragging one box leaves the rest exactly where
+  // they are (no auto-reshuffle). Locking again keeps the manual arrangement.
+  function toggleUnlock(next: boolean): void {
+    if (next && !pinStore.unlocked) freezeCurrentView();
+    pinStore.unlocked = next;
+  }
+
+  function freezeCurrentView(): void {
+    const l = canvas.layout as {
+      nodes?: { fqn: string; rect: { x: number; y: number; w: number; h: number } }[];
+      grid?: GridGeom;
+    } | null;
+    const g = l?.grid;
+    if (!g || !Array.isArray(l?.nodes)) return; // not a grid layout — nothing to freeze
+    const list = l.nodes.map((n) => ({
+      fqn: n.fqn,
+      ...cellAt(g, n.rect.x + n.rect.w / 2, n.rect.y + n.rect.h / 2),
+    }));
+    pinStore.freeze(currentViewKey, list);
+    void persistPins();
+  }
+
+  // Load the workspace's manual placements from `pds.layout`. Folder-backed only;
+  // in-memory samples/shares keep pins session-only.
+  async function loadPins(ws: PageWorkspace): Promise<void> {
+    if (!ws.root) {
+      pinStore.reset();
+      return;
+    }
+    const path = ws.base ? `${ws.base}/pds.layout` : "pds.layout";
+    const text = (await readFileAt(ws.root, path)) ?? "";
+    pinStore.load(text, null); // the handle is created lazily on first write
+  }
+
+  // Write `pds.layout` to disk (creating it on first pin). No-op for in-memory
+  // workspaces, which have no root to write to.
+  async function persistPins(): Promise<void> {
+    const ws = workspace;
+    if (!ws?.root) return;
+    const path = ws.base ? `${ws.base}/pds.layout` : "pds.layout";
+    try {
+      const handle = pinStore.handle ?? (await fileHandleAt(ws.root, path));
+      pinStore.handle = handle;
+      await writeFile(handle, serializeLayoutDoc(pinStore.doc));
+    } catch (e) {
+      notify("error", "Could not save layout", String((e as Error)?.message ?? e));
+    }
+  }
   const canvasHint = $derived(canvasHintOf(selected));
 
   // Canvas interaction mirrors the C4 graph: right-clicking a symbol opens its
@@ -623,6 +688,7 @@
   async function mountWorkspace(ws: PageWorkspace, landing?: string | null) {
     wsStore.workspace = ws;
     void resolveDependencyModules(ws);
+    void loadPins(ws);
     // An explicit landing FQN (meta.json) resolves to its module immediately;
     // otherwise tentatively open the first module and revisit once docs load.
     const explicit = landing ? ws.files.find((f) => f.fqn === landing) : null;
@@ -2494,7 +2560,7 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} />
             </div>
           {/if}
         </div>

@@ -7,7 +7,6 @@
   import DataModel from "./DataModel.svelte";
   import FeatureFlow from "./FeatureFlow.svelte";
   import FlowTimeline from "./FlowTimeline.svelte";
-  import { DEPTHS } from "$lib/sequence.js";
   import type { Depth } from "$lib/sequence.js";
   import type { LayoutTweaks } from "$lib/core/types.js";
   import type { ComponentProps } from "svelte";
@@ -44,6 +43,9 @@
     typeFqn?: string | null;
     tweaks?: LayoutTweaks | null;
     onlayoutchange?: ((tweaks: LayoutTweaks) => void) | null;
+    unlocked?: boolean;
+    onpin?: ((fqn: string, row: number, col: number) => void) | null;
+    onunlock?: ((next: boolean) => void) | null;
   };
 
   let {
@@ -61,6 +63,9 @@
     typeFqn = null,
     tweaks = null,
     onlayoutchange = null,
+    unlocked = false,
+    onpin = null,
+    onunlock = null,
   }: Props = $props();
 
   const isFlow = $derived(!!scene && Array.isArray(scene.participants));
@@ -71,9 +76,25 @@
   const hasData = $derived(isData && (scene?.entities?.length ?? 0) > 0);
   const hasFeature = $derived(isFeature && (scene?.steps?.length ?? 0) > 0);
   const ready = $derived(hasFlow || hasData || hasFeature || hasC4);
-  // Remount the flow when the rendered content changes so the view resets. Both
-  // kinds are now positioned by the layout engine, so key off the layout.
-  const sig = $derived(layout ? JSON.stringify(layout) : scene ? JSON.stringify(scene) : "");
+  // Remount the flow when the *diagram* changes so the view resets — but not on a
+  // mere re-layout of the same C4 view (a pin drag or a dial change repositions
+  // nodes reactively, keeping zoom/pan). So for C4, key on the view subject + node
+  // set, not the geometry; other diagram kinds keep the geometry key.
+  const c4NodeKey = $derived.by(() => {
+    if (!scene || !Array.isArray(scene.nodes)) return null;
+    const ln = (layout as { nodes?: { fqn?: string }[] } | null)?.nodes;
+    if (!Array.isArray(ln)) return null;
+    return ln.map((n) => n.fqn ?? "").join(",");
+  });
+  const sig = $derived(
+    c4NodeKey !== null
+      ? `c4|${(scene?.of as string | undefined) ?? ""}|${c4NodeKey}`
+      : layout
+        ? JSON.stringify(layout)
+        : scene
+          ? JSON.stringify(scene)
+          : "",
+  );
 </script>
 
 <div class="stage" class:framed={ready}>
@@ -83,15 +104,8 @@
       <p>{error}</p>
     </div>
   {:else if ready}
-    {#if isFlow && ondepth}
-      <div class="depth" role="group" aria-label="Sequence depth">
-        {#each DEPTHS as d (d.id)}
-          <button class:active={depth === d.id} onclick={() => ondepth(d.id)}>{d.label}</button>
-        {/each}
-      </div>
-    {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} {tweaks} {onlayoutchange} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} {depth} {ondepth} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} {tweaks} {onlayoutchange} {unlocked} {onpin} {onunlock} />{/if}
     {/key}
   {:else}
     <div class="note">
@@ -114,36 +128,6 @@
     place-items: center;
     padding: 1.6rem;
   }
-  /* depth selector: a segmented control floating over the sequence canvas */
-  .depth {
-    position: absolute;
-    top: 0.7rem;
-    right: 0.7rem;
-    z-index: 5;
-    display: flex;
-    gap: 1px;
-    padding: 2px;
-    background: var(--surface-2);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-md);
-  }
-  .depth button {
-    padding: 0.28rem 0.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--ink-soft);
-    background: transparent;
-    border: 0;
-    border-radius: calc(var(--radius-sm) - 2px);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .depth button:hover { color: var(--ink); }
-  .depth button.active { background: var(--accent); color: var(--accent-ink); }
-
   .note { max-width: 30rem; text-align: center; color: var(--ink-soft); }
   .note .kicker {
     display: inline-block;

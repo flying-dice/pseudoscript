@@ -978,8 +978,9 @@ fn ancestry_path(graph: &Graph, node: &GraphNode) -> Option<String> {
     Some(names.join("::"))
 }
 
-/// A call's type detail: `(name: ty, …): Ret`, the return type omitted when
-/// `void`. Shown dimmed after the method name on a call message (`LANG.md` §9.2).
+/// A call's parameter detail: `(name: ty, …)`. Shown dimmed after the method
+/// name on a call message (`LANG.md` §9.2). The return type is carried by the
+/// return message (`return_detail`), not the call.
 fn call_detail(sig: &Signature) -> String {
     let params = sig
         .params
@@ -987,11 +988,7 @@ fn call_detail(sig: &Signature) -> String {
         .map(|p| format!("{}: {}", p.name, p.ty))
         .collect::<Vec<_>>()
         .join(", ");
-    if sig.ret == "void" {
-        format!("({params})")
-    } else {
-        format!("({params}): {}", sig.ret)
-    }
+    format!("({params})")
 }
 
 /// The concrete type a `return` carries, given the executing callable's return

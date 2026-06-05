@@ -58,6 +58,10 @@ const DESC_CHAR_W_I32: i32 = 6;
 /// Card width is clamped to this range.
 const CARD_MIN_W: f64 = 180.0;
 const CARD_MAX_W: f64 = 300.0;
+/// Fixed card size for grid placement: every box is the same so the grid reads as
+/// a clean lattice (content-derived sizing is kept for the layered/SVG views).
+const GRID_CARD_W: f64 = 260.0;
+const GRID_CARD_H: f64 = 120.0;
 /// Vertical band holding the eyebrow and title.
 const HEAD_BAND: i32 = 52;
 /// Vertical advance per description line.
@@ -107,6 +111,21 @@ pub struct C4Layout {
     /// then the container). Empty for a context view. Draw in order so an inner
     /// frame sits atop its outer one.
     pub boundaries: Vec<BoundaryFrame>,
+    /// The grid geometry, present only for an experimental-grid layout — it lets
+    /// the canvas map a dragged node's pixel position back to a cell (drag-to-pin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridInfo>,
+}
+
+/// The grid the experimental placement used, in absolute canvas coordinates. Cell
+/// `(r, c)` is centred at `origin + (c·cell_w, r·cell_h)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridInfo {
+    pub cols: i32,
+    pub rows: i32,
+    pub cell_w: i32,
+    pub cell_h: i32,
+    pub origin: PointI,
 }
 
 /// A node card placed by the layout engine: its content (for the card chrome)
@@ -175,6 +194,19 @@ pub struct PointI {
     pub y: i32,
 }
 
+/// Which grid search to run — the UI's heuristic-vs-brute-force toggle. Mirrors
+/// [`dot::SearchMode`] so the IDE layer need not depend on `dot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridSearch {
+    /// Exact for a tiny placement space, the bounded heuristic otherwise.
+    #[default]
+    Auto,
+    /// Always the bounded heuristic.
+    Heuristic,
+    /// Brute force where feasible (small graphs), else the heuristic.
+    Exhaustive,
+}
+
 /// Per-diagram layout tweaks (the UI's "Layout" toggles): whether to run the
 /// long-edge optimiser, the reading direction, and a spacing multiplier.
 #[derive(Debug, Clone, Copy)]
@@ -185,30 +217,57 @@ pub struct C4Tweaks {
     pub left_to_right: bool,
     /// Multiplier on the base node/rank spacing (1.0 = default).
     pub spacing: f64,
+    /// **Experimental**: place nodes by brute-force grid search
+    /// ([`dot::grid_layout`]) instead of the layered engine.
+    pub experimental_grid: bool,
+    /// Grid-placement cost dials (used only when `experimental_grid`): the weight
+    /// of a crossing, a cell of edge length, and a cell of against-the-flow travel.
+    pub grid_crossing_cost: usize,
+    pub grid_distance_cost: usize,
+    pub grid_flow_cost: usize,
+    /// Which grid search to run.
+    pub grid_search: GridSearch,
 }
 
 impl Default for C4Tweaks {
     fn default() -> Self {
+        // The grid dials default to the engine's own defaults — one source of truth.
+        let grid = dot::GridParams::default();
         Self {
             minimize_long_edges: false,
             left_to_right: false,
             spacing: 1.0,
+            experimental_grid: false,
+            grid_crossing_cost: grid.crossing_cost,
+            grid_distance_cost: grid.distance_cost,
+            grid_flow_cost: grid.flow_cost,
+            grid_search: GridSearch::Auto,
         }
     }
 }
 
-/// Positions a [`C4Scene`] into a [`C4Layout`] via the [`pseudoscript_dot`]
-/// engine, with default tweaks. See [`layout_c4_scene_with`].
-#[must_use]
-pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
-    layout_c4_scene_with(scene, &C4Tweaks::default())
+/// A node the user has pinned to a grid cell (drag-to-pin). Identified by FQN; the
+/// emit layer resolves it to a `dot` node index for the current view.
+#[derive(Debug, Clone)]
+pub struct GridPin {
+    pub fqn: String,
+    pub row: usize,
+    pub col: usize,
 }
 
-/// Positions a [`C4Scene`] into a [`C4Layout`] under `tweaks`. An empty view
-/// (only the framed boundary) falls back to the scene's own simple coordinates
+/// Positions a [`C4Scene`] into a [`C4Layout`] via the [`pseudoscript_dot`]
+/// engine, with default tweaks and no pins. See [`layout_c4_scene_with`].
+#[must_use]
+pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
+    layout_c4_scene_with(scene, &C4Tweaks::default(), &[])
+}
+
+/// Positions a [`C4Scene`] into a [`C4Layout`] under `tweaks`. `pins` fix nodes to
+/// grid cells (grid placement only; ignored otherwise). An empty view (only the
+/// framed boundary) falls back to the scene's own simple coordinates
 /// ([`fallback_layout`]); the engine itself never panics.
 #[must_use]
-pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks) -> C4Layout {
+pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks, pins: &[GridPin]) -> C4Layout {
     tracing::debug!(
         of = ?scene.of,
         nodes = scene.nodes.len(),
@@ -229,8 +288,50 @@ pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks) -> C4Layout {
 
     let drawable = drawable_edges(scene, &frames);
     let graph = to_dot_graph(scene, &frames, &drawable, tweaks);
-    let positioned = dot::layout(&graph);
+    let positioned = if tweaks.experimental_grid {
+        // Experimental: brute-force grid placement instead of the layered engine.
+        // Resolve pins to node indices for this view; a pin whose node is not in the
+        // view (the `.pds` changed, or it's another view's pin) is silently dropped.
+        let dot_pins: Vec<dot::Pin> = pins
+            .iter()
+            .filter_map(|p| {
+                graph.node_index(&p.fqn).map(|node| dot::Pin {
+                    node,
+                    row: p.row,
+                    col: p.col,
+                })
+            })
+            .collect();
+        dot::grid_layout(
+            &graph,
+            dot::GridParams {
+                crossing_cost: tweaks.grid_crossing_cost,
+                distance_cost: tweaks.grid_distance_cost,
+                flow_cost: tweaks.grid_flow_cost,
+                spacing: tweaks.spacing,
+                search: match tweaks.grid_search {
+                    GridSearch::Auto => dot::SearchMode::Auto,
+                    GridSearch::Heuristic => dot::SearchMode::Heuristic,
+                    GridSearch::Exhaustive => dot::SearchMode::Exhaustive,
+                },
+            },
+            &dot_pins,
+        )
+    } else {
+        // Base `dot` layout, then the post-processing passes the tweaks select.
+        dot::run_pipeline(&graph, &layout_passes(tweaks))
+    };
     from_dot_layout(&positioned, scene, &frame_list, &drawable)
+}
+
+/// The post-layout passes a set of tweaks enables, in pipeline order. Add a tweak
+/// and its pass here; the engine stays a plain `dot::layout` otherwise.
+fn layout_passes(tweaks: &C4Tweaks) -> Vec<&'static dyn dot::Pass> {
+    let mut passes: Vec<&'static dyn dot::Pass> = Vec::new();
+    if tweaks.minimize_long_edges {
+        passes.push(&dot::ShortenLongEdges);
+    }
+    passes
 }
 
 /// Builds the engine input from a scene: one box per card (non-frame) node (sized
@@ -262,19 +363,17 @@ fn to_dot_graph(
     };
     graph.ranksep = (RANKSEP * rank_scale).max(24.0);
 
-    // Feed persons (actors) first. Node order is the engine's cycle-breaking
-    // tie-break — the first node in a cycle becomes the DFS root and ranks at the
-    // top — so leading with actors reverses the inbound "notify" edges that close
-    // a loop (e.g. `Email -> Customer`) and keeps people at the top, the C4
-    // reading convention.
-    let mut ordered: Vec<&PlacedNode> = scene
-        .nodes
-        .iter()
-        .filter(|n| !is_frame(frames, n.fqn.as_str()))
-        .collect();
-    ordered.sort_by_key(|n| u8::from(n.kind != NodeKind::Person));
-    for node in ordered {
-        let (w, h) = card_size(node);
+    // Feed cards in scene-declaration order — no node kind is privileged. (We used
+    // to float persons to the front so the cycle-breaker pinned actors at the top;
+    // that anchor is removed, so the engine ranks people like anything else.)
+    for node in scene.nodes.iter().filter(|n| !is_frame(frames, n.fqn.as_str())) {
+        // Grid placement uses uniform boxes (a clean lattice); the layered engine
+        // keeps content-derived sizing so cards fit their text.
+        let (w, h) = if tweaks.experimental_grid {
+            (GRID_CARD_W, GRID_CARD_H)
+        } else {
+            card_size(node)
+        };
         graph.nodes.push(dot::Node::new(node.fqn.clone(), w, h));
     }
 
@@ -313,9 +412,6 @@ fn to_dot_graph(
         graph.edges.push(e);
     }
 
-    if tweaks.minimize_long_edges {
-        graph.same_rank = dot::optimize::minimize_long_edges(&graph);
-    }
     graph
 }
 
@@ -400,12 +496,21 @@ fn from_dot_layout(
         })
         .collect();
 
+    let grid = positioned.grid.map(|g| GridInfo {
+        cols: i32::try_from(g.cols).unwrap_or(0),
+        rows: i32::try_from(g.rows).unwrap_or(0),
+        cell_w: round(g.cell_w),
+        cell_h: round(g.cell_h),
+        origin: off(g.origin),
+    });
+
     C4Layout {
         width: round(positioned.bbox.w) + 2 * pad,
         height: round(positioned.bbox.h) + 2 * pad,
         nodes,
         edges,
         boundaries,
+        grid,
     }
 }
 
@@ -565,6 +670,7 @@ fn fallback_layout(scene: &C4Scene, frames: &HashSet<&str>, frame_list: &[String
         nodes,
         edges,
         boundaries,
+        grid: None,
     }
 }
 
@@ -1225,7 +1331,10 @@ mod tests {
                     minimize_long_edges: false,
                     left_to_right: true,
                     spacing,
+                    experimental_grid: false,
+                    ..C4Tweaks::default()
                 },
+                &[],
             )
             .width
         };

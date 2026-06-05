@@ -107,12 +107,30 @@ export type LayoutTweaks = {
   minimizeLongEdges: boolean;
   orientation: "tb" | "lr";
   spacing: "compact" | "comfortable" | "roomy";
+  /** Brute-force grid placement instead of dot. */
+  experimentalGrid: boolean;
+  /** Grid cost dials (apply when {@link experimentalGrid}): the weight of a
+   *  crossing, a cell of edge length, and a cell of against-the-flow travel. */
+  gridCrossingCost: number;
+  gridDistanceCost: number;
+  gridFlowCost: number;
+  /** Grid search: `"auto"`, `"heuristic"`, or `"exhaustive"` (brute force where
+   *  feasible) — the toggle for checking the heuristic against exact. */
+  gridSearch: "auto" | "heuristic" | "exhaustive";
+  /** Grid pins for the current view (drag-to-pin). Not persisted in the global
+   *  tweaks blob — supplied per-view from the pin store at layout time. */
+  gridPins?: import("$lib/core/pins.js").Pin[];
 };
 
 export const DEFAULT_LAYOUT_TWEAKS: LayoutTweaks = {
   minimizeLongEdges: false,
   orientation: "tb",
   spacing: "comfortable",
+  experimentalGrid: false,
+  gridCrossingCost: 10,
+  gridDistanceCost: 1,
+  gridFlowCost: 5,
+  gridSearch: "auto",
 };
 
 // The canvas find-usages popover: a reference list anchored at the pointer.
