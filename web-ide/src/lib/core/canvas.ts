@@ -8,14 +8,14 @@
 
 import { collapseSequence } from "../sequence.js";
 import { singleLifelineScene, type ModelIndex } from "./model.js";
-import type { Canvas, Depth, Scene } from "./types.js";
+import type { Canvas, Depth, LayoutTweaks, Scene } from "./types.js";
 
 // The scene functions the projection needs. The session holds the workspace, so
 // these take only the view/symbol — no modules argument.
 export type CanvasWasm = {
   symbolScene: (fqn: string) => Scene;
   emitScene: (view: string, target?: string) => Scene;
-  layoutScene: (scene: Scene) => Scene;
+  layoutScene: (scene: Scene, tweaks?: LayoutTweaks) => Scene;
 };
 
 export type ProjectCanvasArgs = {
@@ -23,6 +23,9 @@ export type ProjectCanvasArgs = {
   seqDepth: Depth;
   index: ModelIndex;
   wasm: CanvasWasm;
+  // C4 layout tweaks for the current diagram (the "Layout" control). Optional;
+  // omitted = engine defaults.
+  tweaks?: LayoutTweaks;
   onError: (code: "DIAGRAM_PROJECTION_FAILED" | "DIAGRAM_RENDER_FAILED", detail: string) => void;
 };
 
@@ -34,14 +37,14 @@ export type ProjectCanvasArgs = {
  * unprojectable context is an error. Both error paths report via `onError`.
  */
 export function projectCanvas(args: ProjectCanvasArgs): Canvas {
-  const { selected, seqDepth, index, wasm, onError } = args;
+  const { selected, seqDepth, index, wasm, tweaks, onError } = args;
   // The fallback lays out a synthesised scene, which can itself throw (an
   // unlayoutable scene). Guard it: a throw here must not escape — invoked from
   // the catch below it would otherwise be uncaught and crash the canvas.
   const lifelineFallback = (): Canvas => {
     try {
       const scene = singleLifelineScene(index, selected!.fqn);
-      return { scene, layout: wasm.layoutScene(scene), error: "" };
+      return { scene, layout: wasm.layoutScene(scene, tweaks), error: "" };
     } catch (e) {
       const detail = String((e as Error)?.message ?? e);
       onError("DIAGRAM_RENDER_FAILED", detail);
@@ -67,7 +70,7 @@ export function projectCanvas(args: ProjectCanvasArgs): Canvas {
     // Both kinds are positioned by the Rust layout engine: a sequence yields a
     // positioned timeline, a C4 scene yields placed cards + routed edges (the
     // same geometry the static SVG draws).
-    const layout = shown ? wasm.layoutScene(shown) : null;
+    const layout = shown ? wasm.layoutScene(shown, tweaks) : null;
     return { scene: shown, layout, error: "" };
   } catch (e) {
     const detail = String((e as Error)?.message ?? e);

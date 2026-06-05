@@ -101,6 +101,20 @@ export type EditorApi = {
 // A laid-out diagram scene + its positioned layout, or an error to show instead.
 export type Canvas = { scene: Scene | null; layout?: Scene | null; error: string };
 
+// Per-diagram C4 layout tweaks (the canvas "Layout" control). Applies to C4
+// views only; the layout engine ignores it for other scene kinds.
+export type LayoutTweaks = {
+  minimizeLongEdges: boolean;
+  orientation: "tb" | "lr";
+  spacing: "compact" | "comfortable" | "roomy";
+};
+
+export const DEFAULT_LAYOUT_TWEAKS: LayoutTweaks = {
+  minimizeLongEdges: false,
+  orientation: "tb",
+  spacing: "comfortable",
+};
+
 // The canvas find-usages popover: a reference list anchored at the pointer.
 export type CanvasUsages = { name: string; items: Occurrence[]; x: number; y: number };
 

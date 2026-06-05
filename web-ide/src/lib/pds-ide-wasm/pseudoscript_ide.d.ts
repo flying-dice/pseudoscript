@@ -183,6 +183,25 @@ export interface VendoredInput {
 }
 
 /**
+ * Per-diagram layout tweaks from the IDE\'s \"Layout\" toggles. Applies only to C4
+ * views; other scene kinds ignore it.
+ */
+export interface LayoutTweaks {
+    /**
+     * Run the long-edge optimiser (same-rank moves minimising Σ edge-length²).
+     */
+    minimize_long_edges?: boolean;
+    /**
+     * Reading direction: `\"tb\"` (default) or `\"lr\"`.
+     */
+    orientation?: string | undefined;
+    /**
+     * Spacing preset: `\"compact\"`, `\"comfortable\"` (default), or `\"roomy\"`.
+     */
+    spacing?: string | undefined;
+}
+
+/**
  * The `[doc]` table parsed from a `pds.toml` for the host: the sidebar groups
  * and their page entries (no content — the host loads the files the manifest
  * names, then hands the assembled config to `render_doc_site`).
@@ -319,12 +338,13 @@ export class IdeSession {
     /**
      * Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
      * layout as JSON. The two layout shapes are distinguishable by their fields
-     * (`participants` vs `nodes`).
+     * (`participants` vs `nodes`). `tweaks` (optional) applies the C4 "Layout"
+     * toggles; other scene kinds ignore it.
      *
      * # Errors
      * Returns an error for invalid JSON.
      */
-    layout_scene(scene_json: string): string;
+    layout_scene(scene_json: string, tweaks?: LayoutTweaks | null): string;
     /**
      * Load the workspace: re-parse every module, replace the externals, and
      * invalidate the built workspace/graph.
@@ -402,7 +422,7 @@ export interface InitOutput {
     readonly idesession_folding_ranges: (a: number, b: number, c: number) => [number, number];
     readonly idesession_format: (a: number, b: number, c: number) => [number, number, number, number];
     readonly idesession_hover: (a: number, b: number, c: number, d: number) => any;
-    readonly idesession_layout_scene: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly idesession_layout_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly idesession_mount: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly idesession_new: () => number;
     readonly idesession_outline: (a: number) => [number, number];

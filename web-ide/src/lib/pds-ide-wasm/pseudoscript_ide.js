@@ -236,20 +236,22 @@ export class IdeSession {
     /**
      * Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
      * layout as JSON. The two layout shapes are distinguishable by their fields
-     * (`participants` vs `nodes`).
+     * (`participants` vs `nodes`). `tweaks` (optional) applies the C4 "Layout"
+     * toggles; other scene kinds ignore it.
      *
      * # Errors
      * Returns an error for invalid JSON.
      * @param {string} scene_json
+     * @param {LayoutTweaks | null} [tweaks]
      * @returns {string}
      */
-    layout_scene(scene_json) {
+    layout_scene(scene_json, tweaks) {
         let deferred3_0;
         let deferred3_1;
         try {
             const ptr0 = passStringToWasm0(scene_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
             const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.idesession_layout_scene(this.__wbg_ptr, ptr0, len0);
+            const ret = wasm.idesession_layout_scene(this.__wbg_ptr, ptr0, len0, isLikeNone(tweaks) ? 0 : addToExternrefTable0(tweaks));
             var ptr2 = ret[0];
             var len2 = ret[1];
             if (ret[3]) {

@@ -14,9 +14,10 @@
   import C4Node from "./C4Node.svelte";
   import CanvasMenu from "./CanvasMenu.svelte";
   import DiagramExport from "./DiagramExport.svelte";
+  import LayoutControl from "./LayoutControl.svelte";
   import PolylineEdge from "./PolylineEdge.svelte";
   import { theme } from "$lib/theme.svelte.js";
-  import type { MenuItem, MenuSection } from "$lib/core/types.js";
+  import type { LayoutTweaks, MenuItem, MenuSection } from "$lib/core/types.js";
 
   // A scene only contributes its boundary subject here (the export name); all
   // geometry comes from the layout.
@@ -63,9 +64,21 @@
     flows?: Map<string, Flow[]> | null;
     onsource?: ((fqn: string) => void) | null;
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
+    tweaks?: LayoutTweaks | null;
+    onlayoutchange?: ((tweaks: LayoutTweaks) => void) | null;
   };
 
-  let { scene, layout, onpick, onup, flows = null, onsource = null, onusages = null }: Props = $props();
+  let {
+    scene,
+    layout,
+    onpick,
+    onup,
+    flows = null,
+    onsource = null,
+    onusages = null,
+    tweaks = null,
+    onlayoutchange = null,
+  }: Props = $props();
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
@@ -208,8 +221,11 @@
     <Controls showLock={false} />
   </SvelteFlow>
 
-  <!-- Top-right toolbar: export the diagram. -->
+  <!-- Top-right toolbar: layout tweaks + export the diagram. -->
   <div class="customise">
+    {#if tweaks && onlayoutchange}
+      <LayoutControl {tweaks} onchange={onlayoutchange} />
+    {/if}
     <DiagramExport container={flowEl} {nodes} filename={exportName} />
   </div>
 

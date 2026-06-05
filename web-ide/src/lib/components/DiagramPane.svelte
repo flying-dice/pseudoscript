@@ -9,6 +9,7 @@
   import FlowTimeline from "./FlowTimeline.svelte";
   import { DEPTHS } from "$lib/sequence.js";
   import type { Depth } from "$lib/sequence.js";
+  import type { LayoutTweaks } from "$lib/core/types.js";
   import type { ComponentProps } from "svelte";
 
   // The pane reads only the discriminating arrays off the scene (`participants`
@@ -41,6 +42,8 @@
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
     onsource?: ((fqn: string) => void) | null;
     typeFqn?: string | null;
+    tweaks?: LayoutTweaks | null;
+    onlayoutchange?: ((tweaks: LayoutTweaks) => void) | null;
   };
 
   let {
@@ -56,6 +59,8 @@
     onusages = null,
     onsource = null,
     typeFqn = null,
+    tweaks = null,
+    onlayoutchange = null,
   }: Props = $props();
 
   const isFlow = $derived(!!scene && Array.isArray(scene.participants));
@@ -86,7 +91,7 @@
       </div>
     {/if}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} {tweaks} {onlayoutchange} />{/if}
     {/key}
   {:else}
     <div class="note">

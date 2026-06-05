@@ -13,7 +13,7 @@ export const idesession_emit_scene: (a: number, b: number, c: number, d: number,
 export const idesession_folding_ranges: (a: number, b: number, c: number) => [number, number];
 export const idesession_format: (a: number, b: number, c: number) => [number, number, number, number];
 export const idesession_hover: (a: number, b: number, c: number, d: number) => any;
-export const idesession_layout_scene: (a: number, b: number, c: number) => [number, number, number, number];
+export const idesession_layout_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const idesession_mount: (a: number, b: number, c: number, d: number, e: number) => void;
 export const idesession_new: () => number;
 export const idesession_outline: (a: number) => [number, number];

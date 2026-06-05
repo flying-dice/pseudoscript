@@ -24,8 +24,8 @@ use pseudoscript_doc::{
     try_render_site_with,
 };
 use pseudoscript_emit::{
-    Scene, View, layout_c4_scene, layout_data_scene, layout_feature_scene, layout_sequence_scene,
-    project, project_symbol,
+    C4Tweaks, Scene, View, layout_c4_scene_with, layout_data_scene, layout_feature_scene,
+    layout_sequence_scene, project, project_symbol,
 };
 use pseudoscript_format::format as format_source;
 use pseudoscript_lsp_core::{analysis, complete, convert, refs, semantic};
@@ -241,6 +241,37 @@ pub struct DocManifestItem {
 pub struct RenderedFile {
     pub path: String,
     pub contents: String,
+}
+
+/// Per-diagram layout tweaks from the IDE's "Layout" toggles. Applies only to C4
+/// views; other scene kinds ignore it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct LayoutTweaks {
+    /// Run the long-edge optimiser (same-rank moves minimising Σ edge-length²).
+    #[serde(default)]
+    pub minimize_long_edges: bool,
+    /// Reading direction: `"tb"` (default) or `"lr"`.
+    #[serde(default)]
+    pub orientation: Option<String>,
+    /// Spacing preset: `"compact"`, `"comfortable"` (default), or `"roomy"`.
+    #[serde(default)]
+    pub spacing: Option<String>,
+}
+
+impl LayoutTweaks {
+    /// Translate to the emit-layer tweaks (orientation/spacing words → values).
+    fn to_c4(&self) -> C4Tweaks {
+        C4Tweaks {
+            minimize_long_edges: self.minimize_long_edges,
+            left_to_right: self.orientation.as_deref() == Some("lr"),
+            spacing: match self.spacing.as_deref() {
+                Some("compact") => 0.7,
+                Some("roomy") => 1.4,
+                _ => 1.0,
+            },
+        }
+    }
 }
 
 /// The host's documentation config for `render_doc_site`: site name, optional
@@ -606,13 +637,19 @@ impl IdeSession {
 
     /// Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
     /// layout as JSON. The two layout shapes are distinguishable by their fields
-    /// (`participants` vs `nodes`).
+    /// (`participants` vs `nodes`). `tweaks` (optional) applies the C4 "Layout"
+    /// toggles; other scene kinds ignore it.
     ///
     /// # Errors
     /// Returns an error for invalid JSON.
     #[allow(clippy::unused_self)]
-    pub fn layout_scene(&self, scene_json: &str) -> Result<String, JsError> {
-        layout_of(scene_json).map_err(|e| JsError::new(&e))
+    pub fn layout_scene(
+        &self,
+        scene_json: &str,
+        tweaks: Option<LayoutTweaks>,
+    ) -> Result<String, JsError> {
+        let c4 = tweaks.unwrap_or_default().to_c4();
+        layout_of(scene_json, &c4).map_err(|e| JsError::new(&e))
     }
 
     // ---- project + docs ----------------------------------------------------
@@ -1096,11 +1133,11 @@ fn symbol_scene_of(modules: &[WorkspaceModule], fqn: &str) -> Result<String, Str
     Ok(to_json(&scene))
 }
 
-fn layout_of(scene_json: &str) -> Result<String, String> {
+fn layout_of(scene_json: &str, tweaks: &C4Tweaks) -> Result<String, String> {
     let scene: Scene = serde_json::from_str(scene_json).map_err(|e| e.to_string())?;
     match scene {
         Scene::Sequence(seq) => Ok(to_json(&layout_sequence_scene(&seq))),
-        Scene::C4(c4) => Ok(to_json(&layout_c4_scene(&c4))),
+        Scene::C4(c4) => Ok(to_json(&layout_c4_scene_with(&c4, tweaks))),
         Scene::Data(data) => Ok(to_json(&layout_data_scene(&data))),
         Scene::Feature(feature) => Ok(to_json(&layout_feature_scene(&feature))),
     }
@@ -1570,7 +1607,7 @@ mod tests {
         )]);
         for fqn in ["m::Order", "m::F"] {
             let scene = symbol_scene_of(&modules, fqn).expect("projects");
-            let laid = layout_of(&scene).expect("lays out");
+            let laid = layout_of(&scene, &C4Tweaks::default()).expect("lays out");
             assert!(laid.contains("\"width\":"), "positioned: {laid}");
         }
     }
@@ -1583,7 +1620,7 @@ mod tests {
             "participants":[{"fqn":"m::F","kind":"callable"}],
             "items":[]
         }"#;
-        let out = layout_of(fallback).expect("fallback scene lays out");
+        let out = layout_of(fallback, &C4Tweaks::default()).expect("fallback scene lays out");
         assert!(out.contains("m::F"), "{out}");
     }
 
@@ -1595,15 +1632,42 @@ mod tests {
             "",
         )
         .expect("context projects");
-        let out = layout_of(&scene).expect("c4 scene lays out");
+        let out = layout_of(&scene, &C4Tweaks::default()).expect("c4 scene lays out");
         assert!(out.contains(r#""nodes""#), "{out}");
         assert!(out.contains("m::P") && out.contains("m::S"), "{out}");
     }
 
     #[test]
+    fn layout_tweaks_map_orientation_and_spacing_words() {
+        let lr = LayoutTweaks {
+            minimize_long_edges: true,
+            orientation: Some("lr".to_owned()),
+            spacing: Some("roomy".to_owned()),
+        }
+        .to_c4();
+        assert!(lr.minimize_long_edges && lr.left_to_right);
+        assert!(lr.spacing > 1.0, "roomy widens: {}", lr.spacing);
+
+        let compact = LayoutTweaks {
+            spacing: Some("compact".to_owned()),
+            ..Default::default()
+        }
+        .to_c4();
+        assert!(compact.spacing < 1.0 && !compact.left_to_right);
+
+        // Unknown / absent words fall back to the defaults (tb, 1.0).
+        let dflt = LayoutTweaks {
+            orientation: Some("diagonal".to_owned()),
+            ..Default::default()
+        }
+        .to_c4();
+        assert!(!dflt.left_to_right && (dflt.spacing - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn layout_scene_rejects_a_scene_missing_the_view_tag() {
         let untagged = r#"{"participants":[{"fqn":"m::F","kind":"callable"}],"items":[]}"#;
-        assert!(layout_of(untagged).is_err());
+        assert!(layout_of(untagged, &C4Tweaks::default()).is_err());
     }
 
     #[test]

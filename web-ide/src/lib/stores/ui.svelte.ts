@@ -5,7 +5,8 @@
 // that open these (showCanvasUsages, the dialog `run` callbacks, refreshRecents)
 // stay in the view; this store just owns the state.
 
-import type { CanvasUsages, ConfirmDialog, Dialog } from "$lib/core/types.js";
+import { DEFAULT_LAYOUT_TWEAKS } from "$lib/core/types.js";
+import type { CanvasUsages, ConfirmDialog, Dialog, LayoutTweaks } from "$lib/core/types.js";
 import type { Recent } from "$lib/recents.js";
 
 function readDocWidth(): string {
@@ -13,6 +14,15 @@ function readDocWidth(): string {
     return localStorage.getItem("pds-doc-width") || "narrow";
   } catch {
     return "narrow";
+  }
+}
+
+function readLayoutTweaks(): Record<string, LayoutTweaks> {
+  try {
+    const raw = localStorage.getItem("pds-layout-tweaks");
+    return raw ? (JSON.parse(raw) as Record<string, LayoutTweaks>) : {};
+  } catch {
+    return {};
   }
 }
 
@@ -32,6 +42,9 @@ class UiStore {
   commandOpen = $state(false);
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   docWidth = $state(readDocWidth());
+  // Per-diagram C4 layout tweaks, keyed by the diagram's subject FQN (or
+  // "__context__"), persisted across sessions.
+  layoutTweaksMap = $state<Record<string, LayoutTweaks>>(readLayoutTweaks());
   // Doc-build progress + the example-vs-folder modal.
   building = $state(false);
   buildNotice = $state(false);
@@ -48,6 +61,22 @@ class UiStore {
     this.docWidth = w;
     try {
       localStorage.setItem("pds-doc-width", w);
+    } catch {
+      /* storage unavailable — session-only */
+    }
+  }
+
+  /** The layout tweaks for diagram `key`, defaults filling any absent field
+   * (forward-compatible with older persisted entries). */
+  layoutTweaks(key: string): LayoutTweaks {
+    return { ...DEFAULT_LAYOUT_TWEAKS, ...this.layoutTweaksMap[key] };
+  }
+
+  /** Set and persist the layout tweaks for diagram `key`. */
+  setLayoutTweaks(key: string, tweaks: LayoutTweaks): void {
+    this.layoutTweaksMap = { ...this.layoutTweaksMap, [key]: tweaks };
+    try {
+      localStorage.setItem("pds-layout-tweaks", JSON.stringify(this.layoutTweaksMap));
     } catch {
       /* storage unavailable — session-only */
     }

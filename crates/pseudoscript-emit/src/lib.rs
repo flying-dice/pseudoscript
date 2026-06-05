@@ -40,7 +40,10 @@ mod project;
 mod render;
 mod scene;
 
-pub use c4_render::{BoundaryFrame, C4Layout, LaidOutEdge, LaidOutNode, PointI, layout_c4_scene};
+pub use c4_render::{
+    BoundaryFrame, C4Layout, C4Tweaks, LaidOutEdge, LaidOutNode, PointI, layout_c4_scene,
+    layout_c4_scene_with,
+};
 pub use project::{EmitError, View, project, project_symbol};
 pub use render::{
     Theme, layout_data_scene, layout_feature_scene, layout_sequence_scene, render_svg,

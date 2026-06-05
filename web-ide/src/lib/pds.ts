@@ -35,6 +35,7 @@ import type {
   DocManifest as WasmDocManifest,
 } from "./pds-ide-wasm/pseudoscript_ide.js";
 import { reportError } from "./errors.js";
+import type { LayoutTweaks } from "./core/types.js";
 
 // Re-export the generated DTOs so the rest of the app types against one source of
 // truth — the Rust shapes — instead of hand-written interfaces that drift.
@@ -170,11 +171,19 @@ export function ideSymbolScene(fqn: string): Scene {
   return JSON.parse(ide().symbol_scene(fqn)) as Scene;
 }
 
-/** Position a scene into absolute coordinates with the layout engine. */
-export function ideLayoutScene(scene: Scene): Scene {
+/** Position a scene into absolute coordinates with the layout engine. `tweaks`
+ * (optional) applies the C4 "Layout" toggles; ignored for other scene kinds. */
+export function ideLayoutScene(scene: Scene, tweaks?: LayoutTweaks): Scene {
+  const t = tweaks
+    ? {
+        minimize_long_edges: tweaks.minimizeLongEdges,
+        orientation: tweaks.orientation,
+        spacing: tweaks.spacing,
+      }
+    : undefined;
   return callWasm(
     "layoutScene",
-    () => JSON.parse(ide().layout_scene(JSON.stringify(scene))) as Scene,
+    () => JSON.parse(ide().layout_scene(JSON.stringify(scene), t)) as Scene,
   );
 }
 

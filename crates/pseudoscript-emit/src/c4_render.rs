@@ -162,15 +162,46 @@ pub struct PointI {
     pub y: i32,
 }
 
+/// Per-diagram layout tweaks (the UI's "Layout" toggles): whether to run the
+/// long-edge optimiser, the reading direction, and a spacing multiplier.
+#[derive(Debug, Clone, Copy)]
+pub struct C4Tweaks {
+    /// Run the [`dot::optimize::minimize_long_edges`] search.
+    pub minimize_long_edges: bool,
+    /// Lay out left-to-right instead of top-to-bottom.
+    pub left_to_right: bool,
+    /// Multiplier on the base node/rank spacing (1.0 = default).
+    pub spacing: f64,
+}
+
+impl Default for C4Tweaks {
+    fn default() -> Self {
+        Self {
+            minimize_long_edges: false,
+            left_to_right: false,
+            spacing: 1.0,
+        }
+    }
+}
+
 /// Positions a [`C4Scene`] into a [`C4Layout`] via the [`pseudoscript_dot`]
-/// engine. An empty view (only the framed boundary) falls back to the scene's
-/// own simple coordinates ([`fallback_layout`]); the engine itself never panics.
+/// engine, with default tweaks. See [`layout_c4_scene_with`].
 #[must_use]
 pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
+    layout_c4_scene_with(scene, &C4Tweaks::default())
+}
+
+/// Positions a [`C4Scene`] into a [`C4Layout`] under `tweaks`. An empty view
+/// (only the framed boundary) falls back to the scene's own simple coordinates
+/// ([`fallback_layout`]); the engine itself never panics.
+#[must_use]
+pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks) -> C4Layout {
     tracing::debug!(
         of = ?scene.of,
         nodes = scene.nodes.len(),
         edges = scene.edges.len(),
+        minimize_long_edges = tweaks.minimize_long_edges,
+        left_to_right = tweaks.left_to_right,
         "c4 layout_c4_scene"
     );
     let boundary = scene.of.as_deref();
@@ -180,7 +211,7 @@ pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
     }
 
     let drawable = drawable_edges(scene, boundary);
-    let graph = to_dot_graph(scene, boundary, &drawable);
+    let graph = to_dot_graph(scene, boundary, &drawable, tweaks);
     let positioned = dot::layout(&graph);
     from_dot_layout(&positioned, scene, boundary, &drawable)
 }
@@ -189,11 +220,21 @@ pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
 /// from its card content), one cluster for a boundary view's children, and one
 /// edge per drawable relationship. The boundary anchor is not a box — it becomes
 /// the cluster frame.
-fn to_dot_graph(scene: &C4Scene, boundary: Option<&str>, drawable: &[&RoutedEdge]) -> dot::Graph {
+fn to_dot_graph(
+    scene: &C4Scene,
+    boundary: Option<&str>,
+    drawable: &[&RoutedEdge],
+    tweaks: &C4Tweaks,
+) -> dot::Graph {
     let mut graph = dot::Graph::new();
-    graph.rankdir = dot::RankDir::TopBottom;
-    graph.nodesep = NODESEP;
-    graph.ranksep = RANKSEP;
+    graph.rankdir = if tweaks.left_to_right {
+        dot::RankDir::LeftRight
+    } else {
+        dot::RankDir::TopBottom
+    };
+    let scale = tweaks.spacing.max(0.1);
+    graph.nodesep = NODESEP * scale;
+    graph.ranksep = RANKSEP * scale;
 
     // Feed persons (actors) first. Node order is the engine's cycle-breaking
     // tie-break — the first node in a cycle becomes the DFS root and ranks at the
@@ -231,6 +272,10 @@ fn to_dot_graph(scene: &C4Scene, boundary: Option<&str>, drawable: &[&RoutedEdge
         graph
             .edges
             .push(dot::Edge::new(edge.from.clone(), edge.to.clone()));
+    }
+
+    if tweaks.minimize_long_edges {
+        graph.same_rank = dot::optimize::minimize_long_edges(&graph);
     }
     graph
 }
