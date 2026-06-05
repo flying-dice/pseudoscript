@@ -1275,7 +1275,12 @@ fn install_tracing() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         console_error_panic_hook::set_once();
-        tracing_wasm::set_as_global_default();
+        // Aggressive by default: report every level (down to TRACE) to the
+        // browser console, so the whole wasm stack is observable in dev. Vite
+        // forwards the console to the dev terminal.
+        let mut builder = tracing_wasm::WASMLayerConfigBuilder::new();
+        builder.set_max_level(tracing::Level::TRACE);
+        tracing_wasm::set_as_global_default_with_config(builder.build());
     });
 }
 

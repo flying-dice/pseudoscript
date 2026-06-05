@@ -95,6 +95,7 @@ impl std::error::Error for EmitError {}
 /// required node kind.
 #[tracing::instrument(level = "debug", skip(graph))]
 pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
+    tracing::debug!(?view, edges = graph.edges().len(), "emit: project view");
     project_view(graph, view)
 }
 
@@ -132,20 +133,36 @@ pub fn project_symbol(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
 /// The structural boundary view for a node: a system's containers, a
 /// container's components, a component's sibling components (its parent
 /// container's view). Persons and `data` fall back to the context overview.
+///
+/// A boundary with no children of its drill-down kind has no diagram of its
+/// own — drilling into it would draw an empty frame ringed by externals. Such a
+/// node falls back to the view that frames it as a peer: a childless container
+/// shows its parent system's container view; a childless system shows the
+/// context overview.
 fn structural_view(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
     let node = graph
         .node(fqn)
         .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
+    let has_child = |kind: NodeKind| graph.children_of(fqn).any(|n| n.kind == kind);
     let view = match node.kind {
-        NodeKind::System => View::Container { of: fqn.to_owned() },
-        NodeKind::Container => View::Component { of: fqn.to_owned() },
+        NodeKind::System if has_child(NodeKind::Container) => {
+            View::Container { of: fqn.to_owned() }
+        }
+        NodeKind::Container if has_child(NodeKind::Component) => {
+            View::Component { of: fqn.to_owned() }
+        }
+        NodeKind::Container => node
+            .parent
+            .clone()
+            .map_or(View::Context, |of| View::Container { of }),
         NodeKind::Component => View::Component {
             of: node.parent.clone().unwrap_or_else(|| fqn.to_owned()),
         },
         // A `data` symbol shows its entity (ER) view (`LANG.md` §9.4); a person
-        // has no boundary, so the context overview stands in.
+        // has no boundary, and a childless system has no containers to frame, so
+        // the context overview stands in.
         NodeKind::Data => View::Data { of: fqn.to_owned() },
-        NodeKind::Person | NodeKind::Callable => View::Context,
+        NodeKind::System | NodeKind::Person | NodeKind::Callable => View::Context,
     };
     project_view(graph, view)
 }
@@ -380,6 +397,16 @@ fn project_boundary(
     // belongs to (a call from a component bubbles to its owning container, etc.).
     let in_view: Vec<&str> = nodes.iter().map(|n| n.fqn.as_str()).collect();
     let edges = collect_edges(graph, &in_view, |fqn| lift_to_view(graph, fqn, &in_view));
+
+    tracing::debug!(
+        of,
+        nodes = nodes.len(),
+        edges = edges.len(),
+        "c4 boundary view"
+    );
+    for e in &edges {
+        tracing::trace!(from = %e.from, to = %e.to, kind = ?e.kind, "c4 boundary edge");
+    }
 
     Ok(laid_out_c4(view, Some(of.to_owned()), nodes, edges))
 }
@@ -1061,6 +1088,21 @@ mod tests {
         let scene = c4(project_symbol(&workspace(), "shop::Shop").expect("projects"));
         assert_eq!(scene.of.as_deref(), Some("shop::Shop"));
         assert!(scene.nodes.iter().any(|n| n.fqn == "shop::Web"));
+    }
+
+    #[test]
+    fn project_symbol_falls_back_when_a_container_has_no_components() {
+        // `shop::Web` is a container with a body but no `component` children.
+        // Drilling into it would draw an empty frame, so it falls back to its
+        // parent system's container view, framing Web among its sibling
+        // containers rather than showing a broken empty diagram.
+        let scene = c4(project_symbol(&workspace(), "shop::Web").expect("projects"));
+        assert_eq!(scene.of.as_deref(), Some("shop::Shop"));
+        assert!(
+            scene.nodes.iter().any(|n| n.fqn == "shop::Web"),
+            "Web is framed as a container of its system: {:?}",
+            scene.nodes.iter().map(|n| &n.fqn).collect::<Vec<_>>()
+        );
     }
 
     #[test]
