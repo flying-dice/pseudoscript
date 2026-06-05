@@ -79,13 +79,22 @@ impl Edge {
 
 /// A cluster: a set of nodes laid out together within a bounding box, kept on
 /// contiguous ranks and separated from the rest of the graph (`dot`'s
-/// `subgraph cluster_*`). C4 uses exactly one cluster (the boundary).
+/// `subgraph cluster_*`). Clusters may nest: a cluster names its enclosing
+/// cluster with [`Cluster::parent`], forming a tree (`dot`'s `GD_clust` /
+/// `ND_clust`). `members` lists only the nodes directly inside this cluster —
+/// nodes in a nested child belong to the child, not repeated here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cluster {
     /// Unique cluster id.
     pub id: String,
-    /// Ids of the member nodes.
+    /// Ids of the nodes directly inside this cluster (not those owned by a
+    /// nested child cluster).
     pub members: Vec<String>,
+    /// Id of the enclosing cluster, or `None` when this cluster sits directly
+    /// under the root graph. The referenced cluster must appear in
+    /// [`Graph::clusters`]; a missing or cyclic parent is treated as `None`.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// Padding in points between the cluster's contents and its bounding box.
     pub margin: f64,
     /// Extra padding in points on the top (title) side, reserving a header band

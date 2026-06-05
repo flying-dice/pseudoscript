@@ -274,6 +274,7 @@ fn to_dot_graph(
         if !members.is_empty() {
             graph.clusters.push(dot::Cluster {
                 id: of.to_owned(),
+                parent: None,
                 members,
                 margin: CLUSTER_MARGIN,
                 header: CLUSTER_HEADER,

@@ -10,6 +10,8 @@
 //! Left-to-right separation edges within each rank enforce ordering and minimum
 //! gaps.
 
+use crate::cluster::ClusterTree;
+use crate::graph::Graph;
 use crate::mincross::Ordered;
 use crate::ns::{Balance, Constraint, rank};
 
@@ -17,8 +19,15 @@ use crate::ns::{Balance, Constraint, rank};
 ///
 /// `minor_width[v]` is the node's size along the within-rank axis; `nodesep` the
 /// minimum gap between neighbours. Returns one coordinate per vnode, normalised
-/// so the leftmost node sits at `nodesep`.
-pub(crate) fn assign_minor(ordered: &Ordered, minor_width: &[f64], nodesep: f64) -> Vec<f64> {
+/// so the leftmost node sits at `nodesep`. Cluster boundaries reserve their
+/// margin against the nearest outside node on each rank (`dot`'s cluster keepout,
+/// `lib/dotgen/position.c`), so a frame never overlaps an external node.
+pub(crate) fn assign_minor(
+    ordered: &Ordered,
+    minor_width: &[f64],
+    nodesep: f64,
+    graph: &Graph,
+) -> Vec<f64> {
     let v = ordered.vnodes.len();
     let mut cs: Vec<Constraint> = Vec::new();
 
@@ -37,10 +46,14 @@ pub(crate) fn assign_minor(ordered: &Ordered, minor_width: &[f64], nodesep: f64)
         }
     }
 
+    // Cluster border nodes are allocated first (from `v` upward), then the
+    // edge-slack nodes continue the numbering.
+    let mut aux = v;
+    cluster_keepout(ordered, minor_width, nodesep, graph, &mut cs, &mut aux);
+
     // One slack node per layout-edge segment, with weighted edges to both
     // endpoints; the simplex pulls the slack node up to `min(x_u, x_v)`, so its
     // two edges cost `Ω·|x_u − x_v|`.
-    let mut aux = v;
     for chain in &ordered.chains {
         for seg in chain.windows(2) {
             let (a, b) = (seg[0], seg[1]);
@@ -69,6 +82,104 @@ pub(crate) fn assign_minor(ordered: &Ordered, minor_width: &[f64], nodesep: f64)
     (0..v)
         .map(|i| f64::from(solved[i] - min_x) + nodesep)
         .collect()
+}
+
+/// Keep every cluster's frame clear of the nodes outside it, faithful to `dot`'s
+/// left/right cluster border nodes (`make_lrvn`/`keepout_othernodes`,
+/// `lib/dotgen/position.c`). Each cluster gets two auxiliary border nodes `ln`,
+/// `rn` (allocated from `*aux`) constrained to sit a margin outside every member
+/// on **every** rank of the band, and each immediate outside neighbour on any
+/// band rank is held beyond the matching border. Because `ln`/`rn` span the whole
+/// band, an external on one rank is pushed clear of members on *other* ranks too,
+/// so a multi-rank frame never encloses it. Nested clusters each carry their own
+/// border, so an inner frame clears its siblings and the outer frame clears the
+/// true externals.
+fn cluster_keepout(
+    ordered: &Ordered,
+    minor_width: &[f64],
+    nodesep: f64,
+    graph: &Graph,
+    cs: &mut Vec<Constraint>,
+    aux: &mut usize,
+) {
+    let n = graph.nodes.len();
+    if graph.clusters.is_empty() {
+        return;
+    }
+    let tree = ClusterTree::build(graph, n);
+    let nc = graph.clusters.len();
+
+    // Effective membership: a node belongs to a cluster's subtree if the cluster
+    // is on its owner ancestry. `v` is a node id used as both the ancestry query
+    // and the column index, so a range loop is the clear form.
+    let mut effective = vec![vec![false; n]; nc];
+    #[allow(clippy::needless_range_loop)]
+    for v in 0..n {
+        for ci in tree.ancestry(v) {
+            effective[ci][v] = true;
+        }
+    }
+
+    for (ci, cluster) in graph.clusters.iter().enumerate() {
+        let margin = cluster.margin;
+        let (ln, rn) = (*aux, *aux + 1);
+        *aux += 2;
+
+        // The border sits a margin outside every member, across all ranks.
+        for (vm, &is_member) in effective[ci].iter().enumerate() {
+            if !is_member {
+                continue;
+            }
+            let reach = i32_of((margin + minor_width[vm] / 2.0).round()).max(1);
+            cs.push(Constraint {
+                tail: ln,
+                head: vm,
+                minlen: reach,
+                weight: 0,
+            });
+            cs.push(Constraint {
+                tail: vm,
+                head: rn,
+                minlen: reach,
+                weight: 0,
+            });
+        }
+
+        // Each immediate outside neighbour on a band rank is held beyond the
+        // border (and thus beyond every member, on every rank).
+        for row in &ordered.ranks {
+            let len = row.len();
+            let first = row.iter().position(|&vid| vid < n && effective[ci][vid]);
+            let last = row.iter().rposition(|&vid| vid < n && effective[ci][vid]);
+            let (Some(pmin), Some(pmax)) = (first, last) else {
+                continue;
+            };
+            if pmin > 0 {
+                let e = row[pmin - 1];
+                if e >= n || !effective[ci][e] {
+                    let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
+                    cs.push(Constraint {
+                        tail: e,
+                        head: ln,
+                        minlen: gap,
+                        weight: 0,
+                    });
+                }
+            }
+            if pmax + 1 < len {
+                let e = row[pmax + 1];
+                if e >= n || !effective[ci][e] {
+                    let gap = i32_of((minor_width[e] / 2.0 + nodesep).round()).max(1);
+                    cs.push(Constraint {
+                        tail: rn,
+                        head: e,
+                        minlen: gap,
+                        weight: 0,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// The `Ω` straightness weight for an edge by endpoint kind (TSE 1993 §4.2):
@@ -117,7 +228,7 @@ mod tests {
         );
         let r = assign_ranks(&g);
         let o = order(&g, &r, 1.0);
-        let x = assign_minor(&o, &widths(&o, &g), 18.0);
+        let x = assign_minor(&o, &widths(&o, &g), 18.0, &g);
         for row in &o.ranks {
             for pair in row.windows(2) {
                 assert!(x[pair[0]] < x[pair[1]], "x increases along the rank order");
@@ -131,7 +242,7 @@ mod tests {
         let g = graph(&["root", "a", "b"], &[("root", "a"), ("root", "b")]);
         let ranking = assign_ranks(&g);
         let ord = order(&g, &ranking, 1.0);
-        let xs = assign_minor(&ord, &widths(&ord, &g), 18.0);
+        let xs = assign_minor(&ord, &widths(&ord, &g), 18.0, &g);
         let ai = g.node_index("a").unwrap();
         let bi = g.node_index("b").unwrap();
         let gap = (xs[ai] - xs[bi]).abs();
@@ -145,7 +256,7 @@ mod tests {
         let g = graph(&["a", "b", "c"], &[("a", "b"), ("b", "c"), ("a", "c")]);
         let r = assign_ranks(&g);
         let o = order(&g, &r, 1.0);
-        let x = assign_minor(&o, &widths(&o, &g), 18.0);
+        let x = assign_minor(&o, &widths(&o, &g), 18.0, &g);
         let virt = o.chains[2][1]; // a -> virtual -> c
         let ai = g.node_index("a").unwrap();
         let ci = g.node_index("c").unwrap();
@@ -162,6 +273,9 @@ mod tests {
         let r = assign_ranks(&g);
         let o = order(&g, &r, 1.0);
         let w = widths(&o, &g);
-        assert_eq!(assign_minor(&o, &w, 18.0), assign_minor(&o, &w, 18.0));
+        assert_eq!(
+            assign_minor(&o, &w, 18.0, &g),
+            assign_minor(&o, &w, 18.0, &g)
+        );
     }
 }

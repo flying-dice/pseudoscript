@@ -139,7 +139,7 @@ impl Ns {
             let mut r = 0;
             for &e in &self.in_adj[v] {
                 let ed = &self.edges[e];
-                r = r.max(self.rank[ed.tail] + ed.minlen);
+                r = r.max(self.rank[ed.tail].saturating_add(ed.minlen));
             }
             self.rank[v] = r;
             for &e in &self.out_adj[v] {
@@ -420,9 +420,9 @@ impl Ns {
                 visited[child] = true;
                 let ed = &self.edges[e];
                 self.rank[child] = if ed.tail == v {
-                    self.rank[v] + ed.minlen // v -> child
+                    self.rank[v].saturating_add(ed.minlen) // v -> child
                 } else {
-                    self.rank[v] - ed.minlen // child -> v
+                    self.rank[v].saturating_sub(ed.minlen) // child -> v
                 };
                 stack.push(child);
             }
@@ -461,12 +461,12 @@ impl Ns {
             for &e in &self.in_adj[v] {
                 let ed = &self.edges[e];
                 inw += ed.weight;
-                low = low.max(self.rank[ed.tail] + ed.minlen);
+                low = low.max(self.rank[ed.tail].saturating_add(ed.minlen));
             }
             for &e in &self.out_adj[v] {
                 let ed = &self.edges[e];
                 outw += ed.weight;
-                high = high.min(self.rank[ed.head] - ed.minlen);
+                high = high.min(self.rank[ed.head].saturating_sub(ed.minlen));
             }
             if inw == outw && low <= high {
                 let mut choice = low;

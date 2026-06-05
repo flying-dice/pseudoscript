@@ -44,6 +44,14 @@ pub(crate) struct OracleEdge {
     pub points: Vec<(f64, f64)>,
 }
 
+/// A cluster bounding box as `dot` computed it (points, y-down, top-left origin).
+#[derive(Debug, Clone)]
+pub(crate) struct OracleCluster {
+    /// The cluster id (the `cluster_` prefix stripped).
+    pub id: String,
+    pub bbox: crate::layout::Box2,
+}
+
 /// A parsed `dot` layout, in the engine's coordinate convention.
 #[derive(Debug, Clone)]
 pub(crate) struct Oracle {
@@ -51,6 +59,14 @@ pub(crate) struct Oracle {
     pub height: f64,
     pub nodes: Vec<OracleNode>,
     pub edges: Vec<OracleEdge>,
+    pub clusters: Vec<OracleCluster>,
+}
+
+impl Oracle {
+    /// The bounding box `dot` gave the cluster with this id, if present.
+    pub(crate) fn cluster_bb(&self, id: &str) -> Option<crate::layout::Box2> {
+        self.clusters.iter().find(|c| c.id == id).map(|c| c.bbox)
+    }
 }
 
 impl Oracle {
@@ -131,12 +147,9 @@ pub(crate) fn to_dot(graph: &Graph) -> String {
             n.height / PT_PER_IN
         );
     }
-    for c in &graph.clusters {
-        let _ = writeln!(s, "  subgraph {} {{", quote(&format!("cluster_{}", c.id)));
-        for m in &c.members {
-            let _ = writeln!(s, "    {};", quote(m));
-        }
-        s.push_str("  }\n");
+    let tree = crate::cluster::ClusterTree::build(graph, graph.nodes.len());
+    for &root in &tree.roots {
+        emit_cluster(&mut s, graph, &tree, root, 1);
     }
     for e in &graph.edges {
         let _ = writeln!(
@@ -150,6 +163,30 @@ pub(crate) fn to_dot(graph: &Graph) -> String {
     }
     s.push_str("}\n");
     s
+}
+
+/// Emit one cluster as a nested `subgraph cluster_<id>`, recursing into child
+/// clusters first so `dot` sees true nesting, then declaring direct members.
+fn emit_cluster(
+    s: &mut String,
+    graph: &Graph,
+    tree: &crate::cluster::ClusterTree,
+    ci: usize,
+    depth: usize,
+) {
+    let pad = "  ".repeat(depth);
+    let _ = writeln!(
+        s,
+        "{pad}subgraph {} {{",
+        quote(&format!("cluster_{}", graph.clusters[ci].id))
+    );
+    for &child in &tree.children[ci] {
+        emit_cluster(s, graph, tree, child, depth + 1);
+    }
+    for m in &graph.clusters[ci].members {
+        let _ = writeln!(s, "{pad}  {};", quote(m));
+    }
+    let _ = writeln!(s, "{pad}}}");
 }
 
 /// Run `dot -Tjson` on `graph` and parse the result, or `None` if `dot` is
@@ -183,13 +220,26 @@ fn parse(json: &Value) -> Option<Oracle> {
     // gvid -> node name, for resolving edge endpoints.
     let mut by_gvid: HashMap<u64, String> = HashMap::new();
     let mut nodes = Vec::new();
+    let mut clusters = Vec::new();
     for obj in json.get("objects")?.as_array()? {
         let name = obj.get("name")?.as_str()?.to_owned();
         if let Some(gvid) = obj.get("_gvid").and_then(Value::as_u64) {
             by_gvid.insert(gvid, name.clone());
         }
-        // Clusters have no `pos`; skip them as nodes.
+        // Clusters have a `bb` (llx,lly,urx,ury) but no `pos`; record their box.
         let Some(pos) = obj.get("pos").and_then(Value::as_str) else {
+            if let (Some(id), Some(cbb)) = (
+                name.strip_prefix("cluster_"),
+                obj.get("bb").and_then(Value::as_str).map(parse_floats),
+            ) && cbb.len() == 4
+            {
+                let (llx, lly, urx, ury) = (cbb[0], cbb[1], cbb[2], cbb[3]);
+                clusters.push(OracleCluster {
+                    id: id.to_owned(),
+                    // Flip y: dot's upper-right y becomes the top in y-down.
+                    bbox: crate::layout::Box2::new(llx, flip(ury), urx - llx, ury - lly),
+                });
+            }
             continue;
         };
         let p = parse_floats(pos);
@@ -240,6 +290,7 @@ fn parse(json: &Value) -> Option<Oracle> {
         height,
         nodes,
         edges,
+        clusters,
     })
 }
 
@@ -278,6 +329,77 @@ mod tests {
         assert!(dot.contains("rankdir=TB"));
         assert!(dot.contains("\"a\" -> \"b\""));
         assert!(dot.contains("width=1.0000")); // 72pt / 72 = 1in
+    }
+
+    #[test]
+    fn to_dot_nests_subgraphs() {
+        use crate::graph::Cluster;
+        let mut g = diamond();
+        g.clusters.push(Cluster {
+            id: "outer".to_owned(),
+            parent: None,
+            members: vec!["d".to_owned()],
+            margin: 8.0,
+            header: 0.0,
+        });
+        g.clusters.push(Cluster {
+            id: "inner".to_owned(),
+            parent: Some("outer".to_owned()),
+            members: vec!["b".to_owned(), "c".to_owned()],
+            margin: 8.0,
+            header: 0.0,
+        });
+        let dot = to_dot(&g);
+        // The inner subgraph opens before it closes, inside the outer's braces.
+        let outer_at = dot.find("cluster_outer").expect("outer emitted");
+        let inner_at = dot.find("cluster_inner").expect("inner emitted");
+        assert!(inner_at > outer_at, "inner nested after outer opens");
+    }
+
+    #[test]
+    fn oracle_parses_nested_cluster_boxes() {
+        use crate::graph::Cluster;
+        // outer { inner { a -> b } ; c }, with b -> c so c sits below.
+        let mut g = Graph::new();
+        for id in ["a", "b", "c"] {
+            g.nodes.push(Node::new(id, 72.0, 36.0));
+        }
+        g.edges.push(Edge::new("a", "b"));
+        g.edges.push(Edge::new("b", "c"));
+        g.clusters.push(Cluster {
+            id: "outer".to_owned(),
+            parent: None,
+            members: vec!["c".to_owned()],
+            margin: 8.0,
+            header: 0.0,
+        });
+        g.clusters.push(Cluster {
+            id: "inner".to_owned(),
+            parent: Some("outer".to_owned()),
+            members: vec!["a".to_owned(), "b".to_owned()],
+            margin: 8.0,
+            header: 0.0,
+        });
+        let Some(o) = run(&g) else {
+            eprintln!("dot not installed — skipping oracle test");
+            return;
+        };
+        let outer = o.cluster_bb("outer").expect("outer bb");
+        let inner = o.cluster_bb("inner").expect("inner bb");
+        // The outer box strictly encloses the inner box (y-down).
+        assert!(
+            outer.x <= inner.x + 0.5,
+            "outer left of inner: {outer:?} {inner:?}"
+        );
+        assert!(outer.y <= inner.y + 0.5, "outer above inner");
+        assert!(
+            outer.x + outer.w >= inner.x + inner.w - 0.5,
+            "outer right of inner"
+        );
+        assert!(
+            outer.y + outer.h >= inner.y + inner.h - 0.5,
+            "outer below inner"
+        );
     }
 
     #[test]

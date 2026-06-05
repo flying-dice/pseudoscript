@@ -13,6 +13,9 @@
 //! comparison breaks ties by node index, so the same input yields the same order
 //! (verified against `dot`'s crossing count in the oracle tests).
 
+use std::collections::HashMap;
+
+use crate::cluster::ClusterTree;
 use crate::graph::Graph;
 use crate::rank::Ranking;
 
@@ -127,6 +130,11 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
     let max_rank = vnodes.iter().map(|v| v.rank).max().unwrap_or(0);
     let row_count = usize::try_from(max_rank).unwrap_or(0) + 1;
 
+    // Cluster nesting path per vnode (empty when free), so ordering keeps each
+    // cluster's nodes a contiguous, properly nested block within every rank.
+    let tree = ClusterTree::build(graph, n);
+    let vpath = cluster_paths(graph, &tree, &vnodes, &chains);
+
     // Adjacency between ranks, both directions, for median computation.
     let mut down: Vec<Vec<usize>> = vec![Vec::new(); vnodes.len()]; // upper -> lowers
     let mut up: Vec<Vec<usize>> = vec![Vec::new(); vnodes.len()]; // lower -> uppers
@@ -136,11 +144,12 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
     }
 
     let mut state = OrderState {
-        ranks: init_order(&vnodes, row_count),
+        ranks: init_order(&vnodes, &vpath, row_count),
         order: vec![0; vnodes.len()],
         down,
         up,
         segments,
+        vpath,
     };
     state.sync_order();
 
@@ -170,14 +179,89 @@ pub(crate) fn order(graph: &Graph, ranking: &Ranking, virtual_width: f64) -> Ord
     }
 }
 
-/// Initial per-rank order: a stable breadth-first walk so connected nodes start
-/// near each other. Falls back to index order within each rank.
-fn init_order(vnodes: &[VNode], row_count: usize) -> Vec<Vec<usize>> {
+/// The cluster nesting path (outermost-first) of every vnode. A real node
+/// follows its owner's ancestry. A virtual (long-edge) node joins the deepest
+/// cluster that both contains its edge's endpoints and whose rank band spans the
+/// virtual's rank — `dot`'s marking of a cluster's skeleton vnodes (`cluster.c`
+/// `mark_clusters`). A node outside every cluster has an empty path.
+// `a`/`b` (an edge's endpoints), `n` (node count) and `r` (a rank) are the
+// engine's standard short index names.
+#[allow(clippy::many_single_char_names)]
+fn cluster_paths(
+    graph: &Graph,
+    tree: &ClusterTree,
+    vnodes: &[VNode],
+    chains: &[Vec<usize>],
+) -> Vec<Vec<usize>> {
+    let n = graph.nodes.len();
+    let nc = tree.parent.len();
+
+    // Each cluster's rank band, from the ranks of every node in its subtree.
+    let mut lo = vec![i32::MAX; nc];
+    let mut hi = vec![i32::MIN; nc];
+    for (v, node) in vnodes.iter().enumerate().take(n) {
+        for ci in tree.ancestry(v) {
+            lo[ci] = lo[ci].min(node.rank);
+            hi[ci] = hi[ci].max(node.rank);
+        }
+    }
+
+    // Outermost-first ancestry of a cluster.
+    let path_of = |ci: usize| -> Vec<usize> {
+        let mut p = tree.cluster_ancestry(ci);
+        p.reverse();
+        p
+    };
+
+    let mut vpath = vec![Vec::new(); vnodes.len()];
+    for (v, owner) in tree.owner.iter().enumerate() {
+        if let Some(ci) = owner {
+            vpath[v] = path_of(*ci);
+        }
+    }
+    for (i, chain) in chains.iter().enumerate() {
+        if chain.len() <= 2 {
+            continue; // no interior virtual nodes
+        }
+        let e = &graph.edges[i];
+        let (Some(a), Some(b)) = (graph.node_index(&e.tail), graph.node_index(&e.head)) else {
+            continue;
+        };
+        let Some(common) = tree.common(a, b) else {
+            continue; // edge leaves every shared cluster: its virtuals stay free
+        };
+        // `common` and its ancestors, deepest first.
+        let anc = tree.cluster_ancestry(common);
+        for &vid in &chain[1..chain.len() - 1] {
+            let r = vnodes[vid].rank;
+            if let Some(&c) = anc.iter().find(|&&c| lo[c] <= r && r <= hi[c]) {
+                vpath[vid] = path_of(c);
+            }
+        }
+    }
+    vpath
+}
+
+/// Initial per-rank order, grouped so every cluster's nodes start contiguous and
+/// nested clusters nest (free nodes first, then clusters in id order). Ties break
+/// by node index for determinism. Crossing minimisation refines this while the
+/// hierarchical sweeps preserve the cluster blocks.
+fn init_order(vnodes: &[VNode], vpath: &[Vec<usize>], row_count: usize) -> Vec<Vec<usize>> {
     let mut ranks: Vec<Vec<usize>> = vec![Vec::new(); row_count];
     for (v, node) in vnodes.iter().enumerate() {
         ranks[usize::try_from(node.rank).unwrap_or(0)].push(v);
     }
+    for row in &mut ranks {
+        row.sort_by(|&a, &b| vpath[a].cmp(&vpath[b]).then(a.cmp(&b)));
+    }
     ranks
+}
+
+/// One orderable unit at a nesting level: a free node, or a cluster whose members
+/// move together as a contiguous block.
+enum Unit {
+    Loose(usize),
+    Cluster(Vec<usize>),
 }
 
 struct OrderState {
@@ -186,6 +270,8 @@ struct OrderState {
     down: Vec<Vec<usize>>,
     up: Vec<Vec<usize>>,
     segments: Vec<Segment>,
+    /// Cluster nesting path (outermost-first) per vnode; empty when free.
+    vpath: Vec<Vec<usize>>,
 }
 
 impl OrderState {
@@ -241,7 +327,11 @@ impl OrderState {
     }
 
     /// One weighted-median sweep. `down_sweep` orders each rank by the median of
-    /// its neighbours in the preceding (upper) rank; otherwise by the following.
+    /// its neighbours in the preceding (upper) rank; otherwise the following. The
+    /// sort is **hierarchical**: cluster blocks are ordered as units by their
+    /// members' average median, then each block is ordered internally, so a
+    /// cluster's nodes stay contiguous and nested clusters nest (`dot`'s collapse/
+    /// expand ordering, `lib/dotgen/mincross.c`).
     fn wmedian(&mut self, down_sweep: bool) {
         let rows = self.ranks.len();
         let order_range: Vec<usize> = if down_sweep {
@@ -251,17 +341,73 @@ impl OrderState {
         };
         for r in order_range {
             let adj = if down_sweep { &self.up } else { &self.down };
-            let medians: Vec<f64> = self.ranks[r]
+            // Effective median: a node with no neighbours keeps its place.
+            let med: HashMap<usize, f64> = self.ranks[r]
                 .iter()
-                .map(|&v| median_value(&adj[v], &self.order))
+                .map(|&v| {
+                    let m = median_value(&adj[v], &self.order);
+                    (v, if m >= 0.0 { m } else { pos_f(self.order[v]) })
+                })
                 .collect();
-            sort_by_median(&mut self.ranks[r], &medians);
+            let row = self.ranks[r].clone();
+            self.ranks[r] = self.arrange(&row, 0, &med);
         }
         self.sync_order();
     }
 
+    /// Order `items` (all sharing a cluster prefix of length `depth`) by median,
+    /// treating each deeper cluster as one block placed by its members' average
+    /// median, then arranging each block's contents recursively.
+    fn arrange(&self, items: &[usize], depth: usize, med: &HashMap<usize, f64>) -> Vec<usize> {
+        let mut units: Vec<Unit> = Vec::new();
+        let mut cluster_at: HashMap<usize, usize> = HashMap::new();
+        for &v in items {
+            match self.vpath[v].get(depth).copied() {
+                None => units.push(Unit::Loose(v)),
+                Some(c) => {
+                    if let Some(&idx) = cluster_at.get(&c) {
+                        if let Unit::Cluster(members) = &mut units[idx] {
+                            members.push(v);
+                        }
+                    } else {
+                        cluster_at.insert(c, units.len());
+                        units.push(Unit::Cluster(vec![v]));
+                    }
+                }
+            }
+        }
+        let key = |u: &Unit| -> (f64, usize) {
+            match u {
+                Unit::Loose(v) => (med[v], *v),
+                Unit::Cluster(ms) => {
+                    let sum: f64 = ms.iter().map(|v| med[v]).sum();
+                    (
+                        sum / pos_f(ms.len()),
+                        ms.iter().copied().min().unwrap_or(usize::MAX),
+                    )
+                }
+            }
+        };
+        units.sort_by(|a, b| {
+            let (ma, ta) = key(a);
+            let (mb, tb) = key(b);
+            ma.partial_cmp(&mb)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(ta.cmp(&tb))
+        });
+        let mut out = Vec::with_capacity(items.len());
+        for u in units {
+            match u {
+                Unit::Loose(v) => out.push(v),
+                Unit::Cluster(members) => out.extend(self.arrange(&members, depth + 1, med)),
+            }
+        }
+        out
+    }
+
     /// Adjacent-swap improvement: while swapping a neighbouring pair reduces local
-    /// crossings, do it. Runs to a fixed point.
+    /// crossings, do it. Only swaps nodes in the same cluster block (equal nesting
+    /// path), so a cluster's contiguity is never broken. Runs to a fixed point.
     fn transpose(&mut self) {
         let mut improved = true;
         while improved {
@@ -270,6 +416,9 @@ impl OrderState {
                 for i in 0..self.ranks[r].len().saturating_sub(1) {
                     let v = self.ranks[r][i];
                     let w = self.ranks[r][i + 1];
+                    if self.vpath[v] != self.vpath[w] {
+                        continue; // crossing a cluster boundary would split a block
+                    }
                     let before = self.local_crossings(v, w);
                     self.ranks[r].swap(i, i + 1);
                     self.order[v] = i + 1;
@@ -337,28 +486,6 @@ fn median_value(neighbours: &[usize], order: &[usize]) -> f64 {
     (pos_f(p[mid - 1]) * right + pos_f(p[mid]) * left) / (left + right)
 }
 
-/// Reorder `row` by `medians` (parallel to `row`), keeping nodes whose median is
-/// `< 0` fixed in their current slots — graphviz's stable median sort.
-fn sort_by_median(row: &mut [usize], medians: &[f64]) {
-    // Movable items (median >= 0), sorted by (median, original index).
-    let mut movable: Vec<usize> = (0..row.len()).filter(|&i| medians[i] >= 0.0).collect();
-    movable.sort_by(|&a, &b| {
-        medians[a]
-            .partial_cmp(&medians[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
-    let originals: Vec<usize> = row.to_vec();
-    let mut feed = movable.into_iter().map(|i| originals[i]);
-    for (i, slot) in row.iter_mut().enumerate() {
-        if medians[i] >= 0.0
-            && let Some(next) = feed.next()
-        {
-            *slot = next;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +523,7 @@ mod tests {
             down,
             up,
             segments,
+            vpath: vec![Vec::new(); o.vnodes.len()],
         };
         st.crossings()
     }

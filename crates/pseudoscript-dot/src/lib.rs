@@ -18,6 +18,7 @@
 //! `oracle` module); those tests are skipped when `dot` is not installed.
 
 mod acyclic;
+mod cluster;
 pub mod graph;
 pub mod layout;
 mod mincross;
@@ -144,7 +145,7 @@ pub fn layout(graph: &Graph) -> Layout {
     }
 
     // Minor axis: network-simplex x-coordinates (alignment + straight long edges).
-    let minor = position::assign_minor(&ordered, &minor_width, graph.nodesep);
+    let minor = position::assign_minor(&ordered, &minor_width, graph.nodesep, graph);
     let mut center = vec![Pt::new(0.0, 0.0); ordered.vnodes.len()];
     for (r, row) in ordered.ranks.iter().enumerate() {
         for &v in row {
@@ -155,7 +156,6 @@ pub fn layout(graph: &Graph) -> Layout {
             };
         }
     }
-    contain_externals(graph, &ordered, lr, &mut center);
 
     let nodes: Vec<NodePos> = graph
         .nodes
@@ -206,107 +206,55 @@ pub fn layout(graph: &Graph) -> Layout {
         })
         .collect();
 
-    let clusters = cluster_boxes(graph, &nodes);
+    let tree = cluster::ClusterTree::build(graph, graph.nodes.len());
+    let clusters = cluster_boxes(graph, &tree, &nodes);
     finish(nodes, edges, clusters)
 }
 
-/// Keep a non-member node that a same-rank move placed within a cluster's rank
-/// band clear of that cluster's cross-axis span, so an external (e.g. a system
-/// pulled up beside a container) still renders outside the boundary frame. Shifts
-/// the node just past the nearer edge of the span along the within-rank axis.
-fn contain_externals(graph: &Graph, ordered: &mincross::Ordered, lr: bool, center: &mut [Pt]) {
-    let n = graph.nodes.len();
-    let minor = |c: Pt| if lr { c.y } else { c.x };
-    let size = |i: usize| {
-        if lr {
-            graph.nodes[i].height
-        } else {
-            graph.nodes[i].width
-        }
-    };
-    for cluster in &graph.clusters {
-        let members: Vec<usize> = cluster
-            .members
-            .iter()
-            .filter_map(|id| graph.node_index(id))
-            .collect();
-        if members.is_empty() {
-            continue;
-        }
-        let ranks: Vec<i32> = members.iter().map(|&m| ordered.vnodes[m].rank).collect();
-        let (rmin, rmax) = (
-            ranks.iter().copied().min().unwrap_or(0),
-            ranks.iter().copied().max().unwrap_or(0),
-        );
-        let lo = members
-            .iter()
-            .map(|&m| minor(center[m]) - size(m) / 2.0)
-            .fold(f64::INFINITY, f64::min);
-        let hi = members
-            .iter()
-            .map(|&m| minor(center[m]) + size(m) / 2.0)
-            .fold(f64::NEG_INFINITY, f64::max);
+/// The bounding box of each cluster, computed bottom-up so a nested cluster's box
+/// encloses its child boxes (grown by their own margins) as well as its direct
+/// members — `dot`'s recursive `rec_bb` (`lib/dotgen/position.c`). The outer box
+/// therefore sits a clean margin outside the inner one. Emitted in input order;
+/// a cluster with no contents yields no box.
+fn cluster_boxes(graph: &Graph, tree: &cluster::ClusterTree, nodes: &[NodePos]) -> Vec<ClusterBox> {
+    let nc = graph.clusters.len();
+    let mut box_of: Vec<Option<Box2>> = vec![None; nc];
 
-        // `j` indexes nodes across `vnodes`/`center`/`graph.nodes`, not a cursor.
-        #[allow(clippy::needless_range_loop)]
-        for j in 0..n {
-            if members.contains(&j) {
-                continue;
-            }
-            let rj = ordered.vnodes[j].rank;
-            if rj < rmin || rj > rmax {
-                continue; // above or below the band — already outside the frame
-            }
-            let m = minor(center[j]);
-            if m + size(j) / 2.0 <= lo || m - size(j) / 2.0 >= hi {
-                continue; // already clear of the span
-            }
-            let new_minor = if hi - m <= m - lo {
-                hi + graph.nodesep + size(j) / 2.0
-            } else {
-                lo - graph.nodesep - size(j) / 2.0
-            };
-            if lr {
-                center[j].y = new_minor;
-            } else {
-                center[j].x = new_minor;
+    // Leaves first, so a parent folds in its children's already-grown boxes.
+    for &ci in &tree.post_order {
+        let c = &graph.clusters[ci];
+        let mut ext = Extent::new();
+        // Direct member node rectangles.
+        for (v, np) in nodes.iter().enumerate() {
+            if tree.owner[v] == Some(ci) {
+                ext.include(np.center.x - np.width / 2.0, np.center.y - np.height / 2.0);
+                ext.include(np.center.x + np.width / 2.0, np.center.y + np.height / 2.0);
             }
         }
+        // Child cluster boxes (already grown by their own margins).
+        for &child in &tree.children[ci] {
+            if let Some(b) = box_of[child] {
+                ext.include(b.x, b.y);
+                ext.include(b.x + b.w, b.y + b.h);
+            }
+        }
+        let Some((min_x, min_y, max_x, max_y)) = ext.bounds() else {
+            continue; // empty cluster
+        };
+        box_of[ci] = Some(Box2::new(
+            min_x - c.margin,
+            // Extra room on the top (title) side for the cluster header.
+            min_y - c.margin - c.header,
+            (max_x - min_x) + 2.0 * c.margin,
+            (max_y - min_y) + 2.0 * c.margin + c.header,
+        ));
     }
-}
 
-/// The bounding box of each cluster: its members' rectangles grown by the
-/// cluster margin. Empty members yield no box.
-fn cluster_boxes(graph: &Graph, nodes: &[NodePos]) -> Vec<ClusterBox> {
-    graph
-        .clusters
-        .iter()
-        .filter_map(|c| {
-            let mut min_x = f64::INFINITY;
-            let mut min_y = f64::INFINITY;
-            let mut max_x = f64::NEG_INFINITY;
-            let mut max_y = f64::NEG_INFINITY;
-            for m in &c.members {
-                let Some(np) = nodes.iter().find(|n| &n.id == m) else {
-                    continue;
-                };
-                min_x = min_x.min(np.center.x - np.width / 2.0);
-                min_y = min_y.min(np.center.y - np.height / 2.0);
-                max_x = max_x.max(np.center.x + np.width / 2.0);
-                max_y = max_y.max(np.center.y + np.height / 2.0);
-            }
-            if !min_x.is_finite() {
-                return None;
-            }
-            Some(ClusterBox {
-                id: c.id.clone(),
-                bbox: Box2::new(
-                    min_x - c.margin,
-                    // Extra room on the top (title) side for the cluster header.
-                    min_y - c.margin - c.header,
-                    (max_x - min_x) + 2.0 * c.margin,
-                    (max_y - min_y) + 2.0 * c.margin + c.header,
-                ),
+    (0..nc)
+        .filter_map(|ci| {
+            box_of[ci].map(|bbox| ClusterBox {
+                id: graph.clusters[ci].id.clone(),
+                bbox,
             })
         })
         .collect()
@@ -433,6 +381,7 @@ mod tests {
         g.edges.push(Edge::new("b", "c"));
         g.clusters.push(Cluster {
             id: "k".to_owned(),
+            parent: None,
             members: vec!["b".to_owned()],
             margin: 16.0,
             header: 0.0,
@@ -523,6 +472,7 @@ mod tests {
         g.edges.push(Edge::new("m2", "sys")); // sys is naturally below the band
         g.clusters.push(Cluster {
             id: "c".to_owned(),
+            parent: None,
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 12.0,
             header: 0.0,
@@ -583,6 +533,7 @@ mod tests {
         g.edges.push(Edge::new("m1", "m2"));
         g.clusters.push(Cluster {
             id: "c".to_owned(),
+            parent: None,
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 10.0,
             header: 30.0,
@@ -611,6 +562,7 @@ mod tests {
         g.edges.push(Edge::new("m1", "m2"));
         g.clusters.push(Cluster {
             id: "c".to_owned(),
+            parent: None,
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 12.0,
             header: 28.0,
@@ -639,6 +591,7 @@ mod tests {
         g.edges.push(Edge::new("m2", "callee"));
         g.clusters.push(Cluster {
             id: "boundary".to_owned(),
+            parent: None,
             members: vec!["m1".to_owned(), "m2".to_owned()],
             margin: 12.0,
             header: 0.0,
@@ -660,5 +613,115 @@ mod tests {
         // The caller sits above the band, the callee below (TB reading order).
         assert!(center("caller").y < cbox.y);
         assert!(center("callee").y > cbox.y + cbox.h);
+    }
+
+    /// A banking-shaped nested graph: outer `O ⊇ inner I{m1,m2}` + sibling `sib`;
+    /// `top` above, externals `core`/`email` outside.
+    fn nested_layout_graph() -> Graph {
+        let mut g = Graph::new();
+        for id in ["top", "m1", "m2", "sib", "core", "email"] {
+            g.nodes.push(Node::new(id, 100.0, 40.0));
+        }
+        g.edges.push(Edge::new("top", "m1"));
+        g.edges.push(Edge::new("m1", "m2"));
+        g.edges.push(Edge::new("top", "sib"));
+        g.edges.push(Edge::new("m2", "core"));
+        g.edges.push(Edge::new("sib", "email"));
+        g.clusters.push(Cluster {
+            id: "O".to_owned(),
+            parent: None,
+            members: vec!["sib".to_owned()],
+            margin: 16.0,
+            header: 0.0,
+        });
+        g.clusters.push(Cluster {
+            id: "I".to_owned(),
+            parent: Some("O".to_owned()),
+            members: vec!["m1".to_owned(), "m2".to_owned()],
+            margin: 16.0,
+            header: 0.0,
+        });
+        g
+    }
+
+    fn contains(outer: Box2, inner: Box2) -> bool {
+        outer.x <= inner.x + 0.5
+            && outer.y <= inner.y + 0.5
+            && outer.x + outer.w >= inner.x + inner.w - 0.5
+            && outer.y + outer.h >= inner.y + inner.h - 0.5
+    }
+
+    #[test]
+    fn nested_cluster_boxes_outer_frames_inner_and_excludes_externals() {
+        let g = nested_layout_graph();
+        let l = layout(&g);
+        let bbox = |id: &str| l.clusters.iter().find(|c| c.id == id).unwrap().bbox;
+        let center = |id: &str| l.nodes.iter().find(|n| n.id == id).unwrap().center;
+        let inside =
+            |b: Box2, p: Pt| p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+        let (outer, inner) = (bbox("O"), bbox("I"));
+        // Inner frames its members; outer strictly contains the inner frame.
+        assert!(
+            inside(inner, center("m1")) && inside(inner, center("m2")),
+            "inner frames m1,m2"
+        );
+        assert!(
+            contains(outer, inner),
+            "outer ⊇ inner: outer={outer:?} inner={inner:?}"
+        );
+        assert!(
+            outer.w > inner.w + 1.0 || outer.h > inner.h + 1.0,
+            "outer is strictly larger (a margin gap): outer={outer:?} inner={inner:?}"
+        );
+        // The sibling sits inside the outer frame but never inside the inner one.
+        assert!(inside(outer, center("sib")), "sib inside outer frame");
+        assert!(
+            !inside(inner, center("sib")),
+            "inner frame does not engulf the sibling"
+        );
+        // True externals are outside both frames.
+        for ext in ["core", "email"] {
+            assert!(!inside(outer, center(ext)), "{ext} outside the outer frame");
+        }
+    }
+
+    #[test]
+    fn extreme_minlen_is_bounded_not_panicking() {
+        // An absurd per-edge rank span must not overflow or allocate an
+        // unbounded number of ranks — the wasm-safe contract.
+        let mut g = Graph::new();
+        for id in ["a", "b", "c"] {
+            g.nodes.push(Node::new(id, 60.0, 30.0));
+        }
+        let mut e1 = Edge::new("a", "b");
+        e1.minlen = i32::MAX - 1;
+        let mut e2 = Edge::new("b", "c");
+        e2.minlen = i32::MAX - 1;
+        g.edges.push(e1);
+        g.edges.push(e2);
+        g.clusters.push(Cluster {
+            id: "C".to_owned(),
+            parent: None,
+            members: vec!["b".to_owned()],
+            margin: 8.0,
+            header: 0.0,
+        });
+        let l = layout(&g);
+        assert_eq!(l.nodes.len(), 3, "lays out without panic or hang");
+    }
+
+    #[test]
+    fn nested_cluster_boxes_nest_like_dot() {
+        let g = nested_layout_graph();
+        let l = layout(&g);
+        let bbox = |id: &str| l.clusters.iter().find(|c| c.id == id).unwrap().bbox;
+        assert!(contains(bbox("O"), bbox("I")), "ours nests");
+        let Some(o) = crate::oracle::run(&g) else {
+            eprintln!("dot not installed — skipping oracle comparison");
+            return;
+        };
+        // dot also nests the inner cluster bb inside the outer one.
+        let (od, id) = (o.cluster_bb("O").unwrap(), o.cluster_bb("I").unwrap());
+        assert!(contains(od, id), "dot nests: outer={od:?} inner={id:?}");
     }
 }
