@@ -17,12 +17,15 @@ function readDocWidth(): string {
   }
 }
 
-function readLayoutTweaks(): Record<string, LayoutTweaks> {
+function readLayoutTweaks(): LayoutTweaks {
   try {
-    const raw = localStorage.getItem("pds-layout-tweaks");
-    return raw ? (JSON.parse(raw) as Record<string, LayoutTweaks>) : {};
+    const raw = localStorage.getItem("pds-layout");
+    // Always a fresh object (never the shared default by reference) and defaults
+    // fill any absent field (forward-compatible with older entries).
+    const stored = raw ? (JSON.parse(raw) as Partial<LayoutTweaks>) : {};
+    return { ...DEFAULT_LAYOUT_TWEAKS, ...stored };
   } catch {
-    return {};
+    return { ...DEFAULT_LAYOUT_TWEAKS };
   }
 }
 
@@ -42,9 +45,9 @@ class UiStore {
   commandOpen = $state(false);
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   docWidth = $state(readDocWidth());
-  // Per-diagram C4 layout tweaks, keyed by the diagram's subject FQN (or
-  // "__context__"), persisted across sessions.
-  layoutTweaksMap = $state<Record<string, LayoutTweaks>>(readLayoutTweaks());
+  // The C4 layout tweaks (the canvas "Layout" control), one config applied to
+  // every diagram and persisted across sessions.
+  layoutTweaks = $state<LayoutTweaks>(readLayoutTweaks());
   // Doc-build progress + the example-vs-folder modal.
   building = $state(false);
   buildNotice = $state(false);
@@ -66,17 +69,11 @@ class UiStore {
     }
   }
 
-  /** The layout tweaks for diagram `key`, defaults filling any absent field
-   * (forward-compatible with older persisted entries). */
-  layoutTweaks(key: string): LayoutTweaks {
-    return { ...DEFAULT_LAYOUT_TWEAKS, ...this.layoutTweaksMap[key] };
-  }
-
-  /** Set and persist the layout tweaks for diagram `key`. */
-  setLayoutTweaks(key: string, tweaks: LayoutTweaks): void {
-    this.layoutTweaksMap = { ...this.layoutTweaksMap, [key]: tweaks };
+  /** Set and persist the layout tweaks (applied to every diagram). */
+  setLayoutTweaks(tweaks: LayoutTweaks): void {
+    this.layoutTweaks = tweaks;
     try {
-      localStorage.setItem("pds-layout-tweaks", JSON.stringify(this.layoutTweaksMap));
+      localStorage.setItem("pds-layout", JSON.stringify(tweaks));
     } catch {
       /* storage unavailable — session-only */
     }

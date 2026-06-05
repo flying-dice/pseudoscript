@@ -365,10 +365,9 @@
   // The CANVAS diagram: the selected node's fitting view, or the whole-model
   // context overview when nothing is selected. The compiler picks the view; a
   // sequence scene is then collapsed to the chosen depth in the IDE.
-  // Per-diagram layout tweaks (the canvas "Layout" control), keyed by the
-  // selected symbol (or the context overview), persisted in the ui store.
-  const diagramKey = $derived(selected?.fqn ?? "__context__");
-  const canvasTweaks = $derived(ui.layoutTweaks(diagramKey));
+  // The C4 layout tweaks (the canvas "Layout" control) — one config applied to
+  // every diagram, persisted in the ui store.
+  const canvasTweaks = $derived(ui.layoutTweaks);
   const canvas = $derived(
     ready && workspace
       ? projectCanvas({
@@ -2495,7 +2494,7 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(diagramKey, t)} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} />
             </div>
           {/if}
         </div>

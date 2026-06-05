@@ -232,9 +232,18 @@ fn to_dot_graph(
     } else {
         dot::RankDir::TopBottom
     };
+    // Spacing scales the node and rank gaps. The rank gap is the axis the diagram
+    // flows along — vertical in TB, horizontal in LR — and in LR it competes with
+    // the wide C4 cards, so the same multiplier reads as a smaller change. Amplify
+    // the rank-gap response in LR so roomy/compact visibly move the X spacing.
     let scale = tweaks.spacing.max(0.1);
     graph.nodesep = NODESEP * scale;
-    graph.ranksep = RANKSEP * scale;
+    let rank_scale = if tweaks.left_to_right {
+        1.0 + (scale - 1.0) * 3.0
+    } else {
+        scale
+    };
+    graph.ranksep = (RANKSEP * rank_scale).max(24.0);
 
     // Feed persons (actors) first. Node order is the engine's cycle-breaking
     // tie-break — the first node in a cycle becomes the DFS root and ranks at the
@@ -1113,6 +1122,30 @@ mod tests {
         for node in &layout.nodes {
             assert!(node.rect.w > 0 && node.rect.h > 0, "card sized: {node:?}");
         }
+    }
+
+    #[test]
+    fn lr_spacing_has_strong_x_impact() {
+        // In left-to-right, spacing must visibly move the X (rank) axis: roomy
+        // should be markedly wider than compact.
+        let scene = context_scene(); // m::A -> m::B (two ranks)
+        let lr = |spacing: f64| {
+            layout_c4_scene_with(
+                &scene,
+                &C4Tweaks {
+                    minimize_long_edges: false,
+                    left_to_right: true,
+                    spacing,
+                },
+            )
+            .width
+        };
+        let compact = lr(0.7);
+        let roomy = lr(1.4);
+        assert!(
+            roomy > compact + 80,
+            "roomy LR widens X over compact: {compact} -> {roomy}"
+        );
     }
 
     #[test]
