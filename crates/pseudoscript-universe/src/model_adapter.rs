@@ -1,11 +1,11 @@
-//! Adapt the resolved `PseudoScript` C4 model into the universe's internal graph.
+//! Adapt the resolved `PseudoScript` C4 model into the relationship graph.
 //!
-//! The universe places only the **structural** nodes — systems, containers,
-//! components. Persons, data, and callables are not placed; a relationship that
-//! runs through them is *lifted* to the nearest enclosing structural node, so the
-//! graph carries node-to-node relationships at any level (spec §4, §7). Containment
-//! lives on each node (`parent`/`children`); relationships are the petgraph edges.
-//! All positions are engine outputs — zero here, filled by the simulation later.
+//! Keeps only the **structural** nodes — systems, containers, components, people.
+//! Data and callables are not nodes; a relationship that runs through them is
+//! *lifted* to the nearest enclosing structural node, so the graph carries
+//! node-to-node relationships at any level (spec §4, §7). Containment lives on each
+//! node (`parent`/`children`); relationships are the petgraph edges. No positions —
+//! the renderer lays the graph out client-side.
 
 use std::collections::HashMap;
 
@@ -51,7 +51,13 @@ pub struct LayoutNode {
 
 impl LayoutNode {
     fn new(id: String, level: C4Level) -> Self {
-        Self { id, level, parent: None, children: Vec::new(), planet: Planet::default() }
+        Self {
+            id,
+            level,
+            parent: None,
+            children: Vec::new(),
+            planet: Planet::default(),
+        }
     }
 }
 
@@ -128,16 +134,15 @@ pub fn from_model_with(model: &Model, freshness: Option<&Freshness>) -> Universe
         if edge.kind != EdgeKind::Call {
             continue;
         }
-        let (Some(a), Some(b)) = (lift(model, &edge.from, &ix), lift(model, &edge.to, &ix))
-        else {
+        let (Some(a), Some(b)) = (lift(model, &edge.from, &ix), lift(model, &edge.to, &ix)) else {
             continue;
         };
         if a != b {
             *traffic.entry((a, b)).or_default() += 1;
         }
     }
-    // Add edges in a stable order (HashMap iteration is randomised) so the force
-    // sim's float accumulation is identical every run — determinism (spec §8).
+    // Add edges in a stable order (HashMap iteration is randomised) so the snapshot
+    // is identical every run — determinism (spec §8).
     let mut pairs: Vec<((NodeIx, NodeIx), u32)> = traffic.iter().map(|(&k, &v)| (k, v)).collect();
     pairs.sort_by_key(|((a, b), _)| (a.index(), b.index()));
     for ((a, b), weight) in pairs {
@@ -164,7 +169,9 @@ fn collect_signals(
     graph: &Graph<LayoutNode, u32>,
     freshness: Option<&Freshness>,
 ) -> Vec<Signals> {
-    let mut signals: Vec<Signals> = (0..graph.node_count()).map(|_| Signals::default()).collect();
+    let mut signals: Vec<Signals> = (0..graph.node_count())
+        .map(|_| Signals::default())
+        .collect();
 
     for node in model.nodes() {
         match node.kind {
@@ -307,8 +314,16 @@ container Lonely for m::Sys { Idle(); }
         };
 
         assert_eq!(planet("Sys").archetype, Archetype::Star);
-        assert_eq!(planet("Hands").archetype, Archetype::Forge, "#[manual] lifts to a Forge");
-        assert_eq!(planet("Crown").archetype, Archetype::Beacon, "#headline → Beacon");
+        assert_eq!(
+            planet("Hands").archetype,
+            Archetype::Forge,
+            "#[manual] lifts to a Forge"
+        );
+        assert_eq!(
+            planet("Crown").archetype,
+            Archetype::Beacon,
+            "#headline → Beacon"
+        );
         // Hub receives traffic but runs no macros — an ordinary, living World.
         assert_eq!(planet("Hub").archetype, Archetype::World);
         assert!(planet("Hub").vitality > 0.0);

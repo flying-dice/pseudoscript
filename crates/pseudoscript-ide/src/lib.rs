@@ -308,7 +308,9 @@ impl LayoutTweaks {
             grid_distance_cost: self
                 .grid_distance_cost
                 .map_or(base.grid_distance_cost, |v| v as usize),
-            grid_flow_cost: self.grid_flow_cost.map_or(base.grid_flow_cost, |v| v as usize),
+            grid_flow_cost: self
+                .grid_flow_cost
+                .map_or(base.grid_flow_cost, |v| v as usize),
             grid_search: match self.grid_search.as_deref() {
                 Some("heuristic") => GridSearch::Heuristic,
                 Some("exhaustive") => GridSearch::Exhaustive,

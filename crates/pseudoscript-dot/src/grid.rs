@@ -273,7 +273,9 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
     } else {
         let e = u64::try_from(ctx.edges.len()).unwrap_or(u64::MAX);
         let nn = u64::try_from(n).unwrap_or(u64::MAX);
-        let unit = e.saturating_mul(e.saturating_add(nn)).saturating_add(nn + 1);
+        let unit = e
+            .saturating_mul(e.saturating_add(nn))
+            .saturating_add(nn + 1);
         let mut budget = (WORK_BUDGET / unit).max(MIN_EVALS);
         local_search(&ctx, seed_perm(n, m, &fixed), &mut budget)
     };
@@ -1042,8 +1044,14 @@ mod tests {
         let l = grid_layout(&g, GridParams::default(), &[pin(0, 0, 0), pin(1, 0, 0)]);
         assert_eq!(l.nodes.len(), 4);
         distinct_cells(&l);
-        let occupants = ["a", "b"].into_iter().filter(|id| cell_of(&l, id) == (0, 0));
-        assert_eq!(occupants.count(), 1, "exactly one node holds the contested cell");
+        let occupants = ["a", "b"]
+            .into_iter()
+            .filter(|id| cell_of(&l, id) == (0, 0));
+        assert_eq!(
+            occupants.count(),
+            1,
+            "exactly one node holds the contested cell"
+        );
     }
 
     #[test]

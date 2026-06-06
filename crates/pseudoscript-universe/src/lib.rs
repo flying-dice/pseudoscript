@@ -12,7 +12,8 @@ mod personality;
 mod snapshot;
 
 pub use model_adapter::{
-    C4Level, Freshness, LayoutNode, NodeIx, Universe, build, build_with, from_model, from_model_with,
+    C4Level, Freshness, LayoutNode, NodeIx, Universe, build, build_with, from_model,
+    from_model_with,
 };
 pub use personality::{Archetype, Planet};
 pub use snapshot::{EdgeOut, NodeOut, Snapshot, snapshot};

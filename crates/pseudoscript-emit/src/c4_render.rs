@@ -366,7 +366,11 @@ fn to_dot_graph(
     // Feed cards in scene-declaration order — no node kind is privileged. (We used
     // to float persons to the front so the cycle-breaker pinned actors at the top;
     // that anchor is removed, so the engine ranks people like anything else.)
-    for node in scene.nodes.iter().filter(|n| !is_frame(frames, n.fqn.as_str())) {
+    for node in scene
+        .nodes
+        .iter()
+        .filter(|n| !is_frame(frames, n.fqn.as_str()))
+    {
         // Grid placement uses uniform boxes (a clean lattice); the layered engine
         // keeps content-derived sizing so cards fit their text.
         let (w, h) = if tweaks.experimental_grid {

@@ -47,7 +47,11 @@ pub fn snapshot(universe: &Universe) -> Snapshot {
         .node_indices()
         .map(|nx| {
             let n = &universe.graph[nx];
-            NodeOut { id: n.id.clone(), level: level_str(n.level), parent: n.parent.map(id_of) }
+            NodeOut {
+                id: n.id.clone(),
+                level: level_str(n.level),
+                parent: n.parent.map(id_of),
+            }
         })
         .collect();
 

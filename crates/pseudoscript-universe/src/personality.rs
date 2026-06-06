@@ -166,7 +166,10 @@ mod tests {
 
     #[test]
     fn a_system_is_a_star() {
-        assert_eq!(classify(NodeKind::System, &sig()).archetype, Archetype::Star);
+        assert_eq!(
+            classify(NodeKind::System, &sig()).archetype,
+            Archetype::Star
+        );
     }
 
     #[test]
@@ -177,7 +180,10 @@ mod tests {
             traffic: 2,
             ..sig()
         };
-        assert_eq!(classify(NodeKind::Component, &s).archetype, Archetype::Storm);
+        assert_eq!(
+            classify(NodeKind::Component, &s).archetype,
+            Archetype::Storm
+        );
     }
 
     #[test]
@@ -187,7 +193,10 @@ mod tests {
             tags: vec!["headline".into()],
             ..sig()
         };
-        assert_eq!(classify(NodeKind::Container, &s).archetype, Archetype::Beacon);
+        assert_eq!(
+            classify(NodeKind::Container, &s).archetype,
+            Archetype::Beacon
+        );
     }
 
     #[test]
@@ -209,7 +218,10 @@ mod tests {
             freshness: Some(1.0),
             ..cold_clone(&cold)
         };
-        assert!(classify(NodeKind::Container, &warm).vitality > classify(NodeKind::Container, &cold).vitality);
+        assert!(
+            classify(NodeKind::Container, &warm).vitality
+                > classify(NodeKind::Container, &cold).vitality
+        );
     }
 
     fn cold_clone(s: &Signals) -> Signals {
