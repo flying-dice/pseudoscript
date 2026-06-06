@@ -17,16 +17,19 @@
   type Edge = { from: string; to: string; traffic: number; kind: string };
   type Snapshot = { nodes: Node[]; edges: Edge[] };
 
-  // Traffic flows take the colour of the world they feed — its archetype (macro-
-  // derived, as in the universe): pulsar=#[schedule], storm=#[onevent], gateway=#[http],
-  // forge=#[manual], beacon=#headline, world=service, tomb=decaying, star=system.
-  const PATTERN_HEX: Record<string, string> = {
-    star: "#fff2cc", beacon: "#7cf6ff", pulsar: "#ffd166", storm: "#c084fc",
-    gateway: "#38bdf8", forge: "#fb923c", world: "#9fdcb0", tomb: "#9aa0b4",
-  };
-  const PATTERN_LABEL: Record<string, string> = {
-    star: "system", beacon: "headline", pulsar: "scheduled", storm: "event",
-    gateway: "http", forge: "manual", world: "service", tomb: "idle",
+  // Traffic flows take a colour keyed by their *destination node*, from a varied
+  // categorical palette — so flows converging on a node share a hue while the graph
+  // as a whole reads in many colours (archetype alone clusters to one "service" green).
+  const FLOW_PALETTE = [
+    "#ff6b6b", "#ffa94d", "#ffd43b", "#a9e34b", "#69db7c", "#38d9a9", "#3bc9db",
+    "#4dabf7", "#748ffc", "#9775fa", "#da77f2", "#f783ac", "#ff8787", "#ffc078",
+    "#94d82d", "#20c997",
+  ];
+  // FNV-1a (32-bit) over a node id → a stable palette index.
+  const flowHash = (s: string) => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return h >>> 0;
   };
   // `onclose` present → rendered as a full-screen overlay (show a close button);
   // absent → embedded as a panel view (the activity bar switches away from it).
@@ -72,9 +75,6 @@
   });
   // Manual stepping: pop the request across the selected step.
   $effect(() => { const s = flowStep; if (popToStep && s >= 0) popToStep(s); });
-
-  // The traffic patterns present, for the flow legend.
-  const flowKinds = $derived([...new Set(snapshot.edges.map((e) => e.kind))].sort());
 
   const SIZE: Record<string, number> = { system: 6, container: 3.4, component: 1.9, person: 3, data: 2.2 };
   const REL_OPACITY = 0.3;
@@ -264,7 +264,7 @@
       const total = cum[cum.length - 1];
       if (total < 1e-3) continue;
       const ri = flowRoutes.length;
-      const color = new THREE.Color(PATTERN_HEX[r.kind] ?? PATTERN_HEX.world);
+      const color = new THREE.Color(FLOW_PALETTE[flowHash(r.to) % FLOW_PALETTE.length]);
       flowRoutes.push({ from: r.from, to: r.to, pts, cum, total, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
       for (let i = 0; i < count; i++) particles.push({ route: ri, off: i / count });
@@ -598,11 +598,6 @@
     <span><i style="background:var(--k-component)"></i>component</span>
     <span><i style="background:var(--k-person)"></i>person</span>
   </div>
-  <div class="legend flow">
-    {#each flowKinds as kind (kind)}
-      <span><i style="background:{PATTERN_HEX[kind] ?? PATTERN_HEX.world}"></i>{PATTERN_LABEL[kind] ?? kind}</span>
-    {/each}
-  </div>
   {#if flowSteps.length}
     <div class="timeline">
       <div class="tl-head">
@@ -636,7 +631,6 @@
   .hint { position: absolute; top: 16px; left: 18px; font: 12px/1.6 var(--font-mono); color: var(--ink-faint); pointer-events: none; }
   .hint b { color: var(--ink-soft); }
   .legend { position: absolute; left: 18px; bottom: 16px; display: flex; gap: 14px; font: 12px/1.5 var(--font-sans); color: var(--ink-soft); pointer-events: none; }
-  .legend.flow { bottom: 40px; font-family: var(--font-mono); font-size: 11px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
   .timeline {
