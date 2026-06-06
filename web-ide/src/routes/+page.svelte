@@ -5,13 +5,13 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, initWasm, mountIde, renderDocSite, setIdeSource } from "$lib/pds.js";
+  import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, ideUniverse, initWasm, mountIde, renderDocSite, setIdeSource, type UniverseSnapshot } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
   import { viewKey, getPins, serializeLayoutDoc, cellAt, type GridGeom } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
-  import type { Depth } from "$lib/sequence.js";
+  import type { Depth, SceneItem } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
   import { SAMPLES, sampleSeed } from "$lib/samples.js";
   import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
@@ -49,6 +49,7 @@
   import CommandPalette from "$lib/components/shell/CommandPalette.svelte";
   import TabBar from "$lib/components/shell/TabBar.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
+  import ForceGraph from "$lib/components/ForceGraph.svelte";
   import ProblemsPane from "$lib/components/ProblemsPane.svelte";
   import Notifications from "$lib/components/Notifications.svelte";
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
@@ -394,6 +395,96 @@
   function pinNode(fqn: string, row: number, col: number): void {
     pinStore.pin(currentViewKey, { fqn, row, col });
     void persistPins();
+  }
+
+  // The 3D relationship graph view (activity-bar "3D graph"). Rebuilt from the held
+  // workspace whenever that view is entered, the workspace switches, or the model is
+  // edited — `allModules` is the per-edit / per-workspace signal. `spaceRev` bumps on
+  // each rebuild so the (otherwise mount-once) ForceGraph remounts on fresh data.
+  let spaceSnapshot = $state<UniverseSnapshot | null>(null);
+  let spaceRev = $state(0);
+  // The node the 3D view should fly to (set by "Show in 3D graph"); null = no focus.
+  let spaceFocus = $state<string | null>(null);
+  // A flow's participant chain to light end-to-end in the 3D view; null = no flow.
+  let spacePath = $state<string[] | null>(null);
+  // The flow's ordered call hops (caller→callee node ids + the call label), so the 3D
+  // traffic follows the sequence and can name the current step; null = no flow.
+  let spaceFlow = $state<{ from: string; to: string; label: string }[] | null>(null);
+  $effect(() => {
+    void allModules; // track edits + workspace switches
+    if (view !== "space" || !ready || !workspace) return;
+    try {
+      spaceSnapshot = ideUniverse();
+      // untracked: reading spaceRev to increment it would make this effect depend on
+      // its own write (effect_update_depth_exceeded).
+      spaceRev = untrack(() => spaceRev) + 1;
+    } catch (e) {
+      spaceSnapshot = null;
+      notify("error", "Could not build the 3D graph", String((e as Error)?.message ?? e));
+    }
+  });
+  // Remount the graph on a rebuild *or* a theme change (it reads brand colours off the
+  // active theme at mount, so a live theme switch needs a fresh build).
+  const spaceKey = $derived(`${spaceRev}|${theme.resolved}`);
+
+  // Reveal a node in the 3D graph: switch to that view. A flow (an entry-point with a
+  // sequence) lights its whole chain and streams traffic along it in call order;
+  // anything else flies to the node. Also records the shared selection so it persists
+  // when you switch to the canvas or code views.
+  function openUniverse(fqn: string | null): void {
+    const flow = fqn ? flowOf(fqn) : null;
+    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFocus = null; }
+    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; }
+    selection.view = "space";
+    if (fqn) selectNode(fqn, { goto: false, origin: false });
+  }
+  // Clear the 3D graph's selection (highlight + flow), back to the resting view.
+  function resetSpace(): void {
+    spaceFocus = null;
+    spacePath = null;
+    spaceFlow = null;
+  }
+  // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
+  // to 3D-graph node ids, or null if it isn't a flow. The sequence and the universe use
+  // different FQN forms, so we bridge them by node simple-name (last `::` segment).
+  function flowOf(fqn: string): { participants: string[]; hops: { from: string; to: string; label: string }[] } | null {
+    // The view's snapshot is built lazily on entering the view, so when this is invoked
+    // from the canvas it may not exist yet — resolve against a fresh build then.
+    let snap = spaceSnapshot;
+    if (!snap) {
+      try { snap = ideUniverse(); } catch { return null; }
+    }
+    let scene: { participants?: { fqn: string }[]; items?: SceneItem[] };
+    try {
+      scene = ideSymbolScene(fqn) as typeof scene;
+    } catch {
+      return null; // not a projectable flow
+    }
+    if (!Array.isArray(scene.participants) || scene.participants.length <= 1) return null;
+    const simple = (id: string) => id.split("::").at(-1) ?? id;
+    const byName = new Map<string, string[]>();
+    for (const n of snap.nodes) {
+      const s = simple(n.id);
+      (byName.get(s) ?? byName.set(s, []).get(s)!).push(n.id);
+    }
+    const mapId = (f: string) => {
+      const m = byName.get(simple(f));
+      return m && m.length === 1 ? m[0] : null; // unambiguous only
+    };
+    const participants = [...new Set(scene.participants.map((p) => mapId(p.fqn)).filter((x): x is string => !!x))];
+    if (participants.length <= 1) return null;
+    // Flatten the ordered call messages (recursing into loop/alt frames) into hops.
+    const hops: { from: string; to: string; label: string }[] = [];
+    const walk = (items: SceneItem[]) => {
+      for (const it of items) {
+        if (it.Message && it.Message.kind !== "return") {
+          const a = mapId(it.Message.from), b = mapId(it.Message.to);
+          if (a && b && a !== b) hops.push({ from: a, to: b, label: it.Message.label ?? "" });
+        } else if (it.Frame) walk(it.Frame.body);
+      }
+    };
+    walk(scene.items ?? []);
+    return { participants, hops };
   }
 
   // Entering edit mode freezes the current arrangement: every node is pinned at the
@@ -2424,10 +2515,10 @@ show('index.html');
   <div
     class="body"
     class:loaded={ready && !!workspace && !wasmError && fsSupported}
-    style="--explorer-w:{panelSizes.explorerW}px; --structure-w:{panelSizes.structureW}px; --problems-h:{panelSizes.problemsH}px; --explorer-track:{view !== 'canvas' && explorerOpen ? panelSizes.explorerW + 'px' : '0px'}; --structure-track:{structureOpen ? panelSizes.structureW + 'px' : '0px'}; --problems-track:{problemsOpen ? panelSizes.problemsH + 'px' : '0px'}"
+    style="--explorer-w:{panelSizes.explorerW}px; --structure-w:{panelSizes.structureW}px; --problems-h:{panelSizes.problemsH}px; --explorer-track:{view === 'code' && explorerOpen ? panelSizes.explorerW + 'px' : '0px'}; --structure-track:{structureOpen ? panelSizes.structureW + 'px' : '0px'}; --problems-track:{problemsOpen ? panelSizes.problemsH + 'px' : '0px'}"
   >
     <ActivityBar
-      active={view === "canvas" ? "canvas" : "explorer"}
+      active={view === "canvas" ? "canvas" : view === "space" ? "space" : "explorer"}
       {explorerOpen}
       {problemsOpen}
       problemCount={problems.length}
@@ -2439,6 +2530,7 @@ show('index.html');
         } else ui.explorerOpen = !ui.explorerOpen;
       }}
       oncanvas={() => (selection.view = "canvas")}
+      onspace={() => (selection.view = "space")}
       ontoggleproblems={() => (ui.problemsOpen = !ui.problemsOpen)}
     />
 
@@ -2458,7 +2550,7 @@ show('index.html');
         </p>
       </div>
     {:else if ready && workspace}
-      {#if view !== "canvas" && explorerOpen}
+      {#if view === "code" && explorerOpen}
       <section class="explorer island reveal r1">
         <FileTree
           entries={fileEntries}
@@ -2560,7 +2652,17 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} onuniverse={openUniverse} />
+            </div>
+          {:else if view === "space"}
+            <div class="layer space-layer">
+              {#if spaceSnapshot}
+                {#key spaceKey}
+                  <ForceGraph snapshot={spaceSnapshot} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} ondeselect={resetSpace} />
+                {/key}
+              {:else}
+                <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -2579,7 +2681,7 @@ show('index.html');
         <StructurePanel
           symbols={symbols as never}
           selectedFqn={selected?.fqn ?? null}
-          onpicknode={(fqn) => selectNode(fqn, { goto: true })}
+          onpicknode={(fqn) => (view === "space" ? openUniverse(fqn) : selectNode(fqn, { goto: true }))}
           onreveal={revealSymbol}
         />
       {/if}
@@ -2617,6 +2719,7 @@ show('index.html');
     {#if ready && workspace}{@render breadcrumb()}{/if}
   </StatusBar>
 </div>
+
 
 <style>
   /* The island shell: top bar / body / status, with a fixed activity rail and
@@ -2798,6 +2901,25 @@ show('index.html');
   .canvas-layer {
     background: var(--island-bg);
   }
+  /* positioned so ForceGraph's absolutely-filled canvas resolves to this cell */
+  .space-layer {
+    position: relative;
+    background: var(--island-bg);
+    display: grid;
+    place-items: center;
+  }
+  .space-layer .note { max-width: 30rem; text-align: center; color: var(--ink-soft); }
+  .space-layer .note .kicker {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 0.6rem;
+  }
+  .space-layer .note p { margin: 0; font-family: var(--font-mono); font-size: 0.82rem; }
 
   /* CODE | CANVAS | Problems toggle */
   .bar-actions {

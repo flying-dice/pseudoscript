@@ -234,7 +234,7 @@ public component Workspace for model::Model {
   public build(modules: model::WorkspaceModule[]): model::ModuleEntry[] {
     for (m in modules) {
       parsed = Parsed from syntax::Parser.parse(m.text)
-      Model::Resolver.buildWithPath(parsed.ast, m.fqn)
+      model::Resolver.buildWithPath(parsed.ast, m.fqn)
     }
     return self.collect(modules)
   }
@@ -281,7 +281,7 @@ public component Checks for model::Model {
   /// parse across diagnostics, hover, and definition. Returns only static
   /// diagnostics; the caller supplies the parse diagnostics.
   public analyze(ast: syntax::Module): syntax::Diagnostic[] {
-    model = SymbolTable from Model::Resolver.build(ast)
+    model = SymbolTable from model::Resolver.build(ast)
     return self.run(ast, model)
   }
 
@@ -289,7 +289,7 @@ public component Checks for model::Model {
   /// static errors, then the cross-module visibility pass. Parses each module
   /// before resolving the workspace.
   public checkWorkspace(modules: model::WorkspaceModule[]): syntax::Diagnostic[] {
-    entries = ModuleEntry[] from Model::Workspace.build(modules)
+    entries = ModuleEntry[] from model::Workspace.build(modules)
     return self.runWorkspace(entries)
   }
 
@@ -301,8 +301,8 @@ public component Checks for model::Model {
   /// Runs every per-module check against a parsed module and its resolved model:
   /// variant collisions, feature collisions, then each item's checks.
   run(ast: syntax::Module, model: model::SymbolTable): syntax::Diagnostic[] {
-    variants = syntax::Diagnostic[] from Model::VariantCollision.check(ast)
-    features = syntax::Diagnostic[] from Model::FeatureCheck.check(ast, model)
+    variants = syntax::Diagnostic[] from model::VariantCollision.check(ast)
+    features = syntax::Diagnostic[] from model::FeatureCheck.check(ast, model)
     return syntax::Diagnostic[] from { variants, features }
   }
 
@@ -311,7 +311,7 @@ public component Checks for model::Model {
     for (e in entries) {
       self.run(e.ast, e.model)
     }
-    return Model::CrossModule.check(entries)
+    return model::CrossModule.check(entries)
   }
 }
 
@@ -408,7 +408,7 @@ public component Builder for model::Model {
   /// Builds the resolved graph: collect every node, derive its edges, and trace
   /// each disclosed callable body into an ordered step list.
   public graph(modules: model::WorkspaceModule[]): model::Graph {
-    entries = ModuleEntry[] from Model::Workspace.build(modules)
+    entries = ModuleEntry[] from model::Workspace.build(modules)
     for (e in entries) {
       self.collectModule(e)
     }

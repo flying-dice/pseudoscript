@@ -431,6 +431,13 @@ export class IdeSession {
      * Returns an error for an unknown symbol or one that cannot be projected.
      */
     symbol_scene(fqn: string): string;
+    /**
+     * The whole workspace as a software graph for the 3D relationship view: nodes
+     * (systems, containers, components, people) with containment, and directed
+     * relationships weighted by traffic and coloured by the destination's
+     * macro-derived archetype. The renderer lays it out (d3-force-3d) client-side.
+     */
+    universe(): string;
 }
 
 /**
@@ -464,6 +471,7 @@ export interface InitOutput {
     readonly idesession_semantic_tokens: (a: number, b: number, c: number) => any;
     readonly idesession_set_source: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly idesession_symbol_scene: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly idesession_universe: (a: number) => [number, number, number, number];
     readonly version: () => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

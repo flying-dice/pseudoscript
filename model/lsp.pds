@@ -53,21 +53,21 @@ public component Server for lsp::Lsp {
   /// Initialize: discover the workspace root from the editor's folders, load
   /// every `.pds` file under it, and advertise the supported capabilities.
   initialize(rootUri: string): void {
-    Lsp::Store.discover(rootUri)
+    lsp::Store.discover(rootUri)
   }
 
   /// On `didOpen`/`didChange`/`didClose`: re-converge the store, then publish
   /// every module's diagnostics so a cross-file issue surfaces in the file that
   /// causes it. Driven by the editor (`context::Editor.openDocument`).
   public onChange(doc: model::WorkspaceModule): void {
-    Lsp::Store.change(doc)
+    lsp::Store.change(doc)
     self.publishAll()
   }
 
   /// `didClose`: drop the unsaved overlay and re-sync to disk so other files
   /// stop seeing the closed buffer's edits, then republish.
   onClose(uri: string): void {
-    Lsp::Store.close(uri)
+    lsp::Store.close(uri)
     self.publishAll()
   }
 
@@ -75,7 +75,7 @@ public component Server for lsp::Lsp {
   /// the editor against its own file. Computed under the store lock, published
   /// without it.
   publishAll(): void {
-    payloads = model::ModuleDiagnostics[] from Lsp::Store.diagnostics()
+    payloads = model::ModuleDiagnostics[] from lsp::Store.diagnostics()
     for (p in payloads) {
       self.publish(p.fqn, p.diagnostics)
     }
@@ -86,15 +86,15 @@ public component Server for lsp::Lsp {
 
   /// Hover the symbol under the cursor in the active document.
   hover(uri: string, line: number, col: number): string {
-    text = string from Lsp::Store.source(uri)
-    return Lsp::Analysis.hover(text, line, col)
+    text = string from lsp::Store.source(uri)
+    return lsp::Analysis.hover(text, line, col)
   }
 
   /// Go-to-definition: resolve the cursor; if it resolves, map the target FQN
   /// back to its file and span. Nothing under the cursor yields no location.
   gotoDefinition(uri: string, line: number, col: number): Option<lsp::Occurrence> {
-    text = string from Lsp::Store.source(uri)
-    target = Option<DefTarget> from Lsp::Analysis.definition(text, line, col)
+    text = string from lsp::Store.source(uri)
+    target = Option<DefTarget> from lsp::Analysis.definition(text, line, col)
     if (target.isNone) {
       return None
     }
@@ -103,8 +103,8 @@ public component Server for lsp::Lsp {
 
   /// Whole-document formatting edit, or nothing when the buffer does not parse.
   formatting(uri: string): string {
-    text = string from Lsp::Store.source(uri)
-    return Lsp::Analysis.formatEdit(text)
+    text = string from lsp::Store.source(uri)
+    return lsp::Analysis.formatEdit(text)
   }
 
   /// Map a resolved `(targetFqn, span)` to an editor `Location` via the target
@@ -177,10 +177,10 @@ component Analysis for lsp::Lsp {
   /// signature plus any `///` summary. Falls back to a local binding's inferred
   /// type when the cursor resolves to no declaration.
   hover(text: string, line: number, col: number): string {
-    offset = number from Lsp::Convert.positionToOffset(text, line, col)
-    hit = Result<Hit, void> from Lsp::Resolve.resolveAt(text, offset)
+    offset = number from lsp::Convert.positionToOffset(text, line, col)
+    hit = Result<Hit, void> from lsp::Resolve.resolveAt(text, offset)
     if (hit.isErr) {
-      return Lsp::Infer.bindingHover(text, offset)
+      return lsp::Infer.bindingHover(text, offset)
     }
     return self.renderHover(hit.value)
   }
@@ -189,8 +189,8 @@ component Analysis for lsp::Lsp {
   /// files, through aliases, and into `self.`/node members; `None` when the
   /// cursor rests on nothing resolvable.
   definition(text: string, line: number, col: number): Option<lsp::DefTarget> {
-    offset = number from Lsp::Convert.positionToOffset(text, line, col)
-    hit = Result<Hit, void> from Lsp::Resolve.resolveAt(text, offset)
+    offset = number from lsp::Convert.positionToOffset(text, line, col)
+    hit = Result<Hit, void> from lsp::Resolve.resolveAt(text, offset)
     if (hit.isErr) {
       return None
     }
@@ -350,7 +350,7 @@ component Refs for lsp::Lsp {
 component Complete for lsp::Lsp {
   /// Completion items for the caret position: dispatch on the trigger token.
   completion(text: string, line: number, col: number): string {
-    offset = number from Lsp::Convert.positionToOffset(text, line, col)
+    offset = number from lsp::Convert.positionToOffset(text, line, col)
     tokens = Token[] from syntax::Lexer.tokenize(text)
     return self.dispatch(tokens, offset)
   }

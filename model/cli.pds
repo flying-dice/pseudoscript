@@ -108,11 +108,11 @@ public component DocCmd for cli::Cli {
   /// Invoked by the Developer (`context::Developer.renderDocs`).
   /// #headline
   public run(path: string): Result<void, cli::IoError> {
-    root = Result<string, IoError> from Cli::Loader.findRoot(path)
+    root = Result<string, IoError> from cli::Loader.findRoot(path)
     if (root.isErr) {
       return Err(root.error)
     }
-    project = Result<Workspace, IoError> from Cli::Loader.load(root.value)
+    project = Result<Workspace, IoError> from cli::Loader.load(root.value)
     if (project.isErr) {
       return Err(project.error)
     }
@@ -137,9 +137,9 @@ public component DocCmd for cli::Cli {
       return Err(built.error)
     }
     if (watch) {
-      Cli::Watcher.watch(path, port)
+      cli::Watcher.watch(path, port)
     }
-    return Cli::HttpServer.serve(path, port, watch)
+    return cli::HttpServer.serve(path, port, watch)
   }
 
   /// Write each `SiteFile` under the output directory, creating parent dirs.

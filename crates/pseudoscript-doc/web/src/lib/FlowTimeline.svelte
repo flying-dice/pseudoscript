@@ -101,7 +101,6 @@
       <span class="kicker">flow</span>
       <span class="name">{leaf(scene?.entry)}</span>
     </div>
-    <span class="hint">sequence diagram — scroll to zoom · drag to pan</span>
   </header>
 
   <div class="flow">

@@ -21,6 +21,9 @@ pseudoscript-model = { path = "../pseudoscript-model" }
 pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core" }
 pseudoscript-emit = { path = "../pseudoscript-emit" }
 pseudoscript-doc = { path = "../pseudoscript-doc" }
+# The 3D "software universe" layout — pure, wasm-safe, permissive. Builds the whole
+# universe (positions + planet personalities) the in-app WebGL view renders.
+pseudoscript-universe = { path = "../pseudoscript-universe" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Parses a `pds.toml` string into the doc manifest for the host (`doc_manifest`).

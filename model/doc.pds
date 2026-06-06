@@ -124,30 +124,30 @@ public component SiteBuilder for doc::Doc {
   /// map, render the index and a page per module (sorted by FQN), then add the
   /// shared assets. Any failed server-render aborts with its `RenderError`.
   public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
-    Doc::Urls.build(graph)
-    modules = string[] from Doc::Pages.sortedModules(graph)
-    index = Result<SiteFile, RenderError> from self.emitPage("index.html", Doc::Pages.index(graph, config, modules))
+    doc::Urls.build(graph)
+    modules = string[] from doc::Pages.sortedModules(graph)
+    index = Result<SiteFile, RenderError> from self.emitPage("index.html", doc::Pages.index(graph, config, modules))
     if (index.isErr) {
       return Err(index.error)
     }
     for (m in modules) {
-      page = Result<SiteFile, RenderError> from self.emitPage(Doc::Urls.modulePagePath(m), Doc::Pages.modulePage(graph, config, m, modules))
+      page = Result<SiteFile, RenderError> from self.emitPage(doc::Urls.modulePagePath(m), doc::Pages.modulePage(graph, config, m, modules))
       if (page.isErr) {
         return Err(page.error)
       }
     }
-    assets = SiteFile[] from Doc::Assets.shared()
+    assets = SiteFile[] from doc::Assets.shared()
     return Ok(Site from { index, modules, assets })
   }
 
   /// Render one page: server-render its props through the engine, then wrap the
   /// `{head, body}` result in the document shell. Propagates a `RenderError`.
   emitPage(path: string, props: doc::PageProps): Result<doc::SiteFile, doc::RenderError> {
-    rendered = Result<RenderedPage, RenderError> from Doc::Ssr.renderPage(props)
+    rendered = Result<RenderedPage, RenderError> from doc::Ssr.renderPage(props)
     if (rendered.isErr) {
       return Err(rendered.error)
     }
-    html = string from Doc::Shell.wrap(path, props, rendered.value)
+    html = string from doc::Shell.wrap(path, props, rendered.value)
     return Ok(SiteFile from { path, html })
   }
 }
@@ -161,7 +161,7 @@ component Pages for doc::Doc {
   index(graph: model::Graph, config: doc::DocConfig, modules: string[]): doc::PageProps {
     sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
     cards = ModuleCard[] from self.moduleCards(graph, modules)
-    context = Diagram from Doc::Diagrams.context(graph)
+    context = Diagram from doc::Diagrams.context(graph)
     body = IndexPage from { config, context, cards }
     return PageProps from { config, sidebar, body }
   }
@@ -179,9 +179,9 @@ component Pages for doc::Doc {
   /// One node section: head fields, `///` docs, tags, relationships, scenario cards,
   /// and embedded diagrams.
   section(graph: model::Graph, node: model::GraphNode): doc::NodeSection {
-    rels = RelGroup[] from Doc::Relationships.groups(graph, node)
-    cards = ScenarioCard[] from Doc::Scenarios.cards(graph, node)
-    diagrams = Diagram[] from Doc::Diagrams.forNode(graph, node)
+    rels = RelGroup[] from doc::Relationships.groups(graph, node)
+    cards = ScenarioCard[] from doc::Scenarios.cards(graph, node)
+    diagrams = Diagram[] from doc::Diagrams.forNode(graph, node)
     return NodeSection from { node, rels, cards, diagrams }
   }
 
@@ -228,7 +228,7 @@ component Shell for doc::Doc {
   /// hydration, link the depth-relative `style.css` and `client.js`, and mount the
   /// body into `#app`.
   wrap(path: string, props: doc::PageProps, rendered: doc::RenderedPage): string {
-    title = string from Doc::Escape.text(props.site.name)
+    title = string from doc::Escape.text(props.site.name)
     return self.document(path, title, props, rendered)
   }
 
@@ -269,7 +269,7 @@ component Relationships for doc::Doc {
   /// plain text) otherwise (LANG.md §9.3).
   item(fqn: string, kind: model::EdgeKind, arrow: bool, label: string): doc::RelItem {
     edgeKind = string from self.edgeKindLabel(kind)
-    href = Result<string, void> from Doc::Urls.hrefTo(fqn)
+    href = Result<string, void> from doc::Urls.hrefTo(fqn)
     if (href.isErr) {
       return RelItem from { fqn, edgeKind, arrow, label }
     }

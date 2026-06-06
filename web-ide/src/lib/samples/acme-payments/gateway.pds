@@ -34,11 +34,11 @@ public component Idempotency for gateway::Gateway {
   /// than re-execute. `Ok(None)` reserves the key and lets the caller proceed.
   /// `Err(KeyConflict)` means the key was reused with different parameters.
   public begin(key: gateway::IdempotencyKey): Result<Option<gateway::Replay>, gateway::ApiError> {
-    prior = Option<Replay> from Gateway::IdempotencyStore.lookup(key)
+    prior = Option<Replay> from gateway::IdempotencyStore.lookup(key)
     if (prior.isSome) {
       return Ok(prior)
     }
-    reserved = Result<void, ApiError> from Gateway::IdempotencyStore.reserve(key)
+    reserved = Result<void, ApiError> from gateway::IdempotencyStore.reserve(key)
     if (reserved.isErr) {
       return Err(gateway::ApiError::KeyConflict)
     }
@@ -47,7 +47,7 @@ public component Idempotency for gateway::Gateway {
 
   /// Cache the resource a keyed operation created, so a later replay returns it.
   public record(key: gateway::IdempotencyKey, resource: string): void {
-    Gateway::IdempotencyStore.save(key, resource)
+    gateway::IdempotencyStore.save(key, resource)
   }
 }
 
@@ -95,7 +95,7 @@ public component IntentApi for gateway::Gateway {
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    guard = Result<Option<Replay>, ApiError> from Gateway::Idempotency.begin(idem)
+    guard = Result<Option<Replay>, ApiError> from gateway::Idempotency.begin(idem)
     if (guard.isErr) {
       return Err(guard.error)
     }
@@ -103,7 +103,7 @@ public component IntentApi for gateway::Gateway {
       return self.reloadIntent(guard.value.value)
     }
     created = PaymentIntent from intents::PaymentIntents.create(merchant.value.id, req)
-    Gateway::Idempotency.record(idem, self.intentId(created))
+    gateway::Idempotency.record(idem, self.intentId(created))
     return Ok(created)
   }
 
@@ -178,7 +178,7 @@ public component RefundApi for gateway::Gateway {
     if (merchant.isErr) {
       return Err(gateway::ApiError::Unauthorized)
     }
-    guard = Result<Option<Replay>, ApiError> from Gateway::Idempotency.begin(idem)
+    guard = Result<Option<Replay>, ApiError> from gateway::Idempotency.begin(idem)
     if (guard.isErr) {
       return Err(guard.error)
     }
@@ -189,7 +189,7 @@ public component RefundApi for gateway::Gateway {
     if (done.isErr) {
       return Err(self.rejectRefund(done.error))
     }
-    Gateway::Idempotency.record(idem, self.refundId(done.value))
+    gateway::Idempotency.record(idem, self.refundId(done.value))
     return Ok(done.value)
   }
 

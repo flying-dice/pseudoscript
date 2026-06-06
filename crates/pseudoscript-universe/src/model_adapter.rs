@@ -7,79 +7,90 @@
 //! lives on each node (`parent`/`children`); relationships are the petgraph edges.
 //! All positions are engine outputs — zero here, filled by the simulation later.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use petgraph::graph::{Graph, NodeIndex};
 use pseudoscript_model::{
-    EdgeKind, Graph as Model, NodeKind, WorkspaceModule, graph as build_model,
+    EdgeKind, Graph as Model, NodeKind, Trigger, WorkspaceModule, graph as build_model,
 };
+
+use crate::personality::{Planet, Signals, classify};
+
+/// Per-module recency in `[0, 1]` (1 = just modified), keyed by module FQN — the
+/// host supplies it (file mtimes / git) to drive thriving-vs-decaying vitality.
+pub type Freshness = HashMap<String, f32>;
 
 /// An index into the universe graph (petgraph's node index).
 pub type NodeIx = NodeIndex<u32>;
 
-/// The C4 abstraction level a placed node sits at. Only these enter the universe.
+/// The C4 abstraction level a placed node sits at. Systems, containers, components,
+/// and the people (actors) who use them enter the universe; data and callables do not
+/// (relationships through them are lifted to the nearest of these).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum C4Level {
     System,
     Container,
     Component,
+    Person,
 }
 
-/// A placed node: a system, container, or component, plus its place in the
-/// containment tree. Positions/sizes are engine **outputs**, zero until computed.
+/// A node in the software graph: a system, container, component, or person, with its
+/// place in the containment tree and its macro-derived personality. Positions are not
+/// here — the renderer lays the graph out client-side.
 #[derive(Debug, Clone)]
 pub struct LayoutNode {
-    /// Stable model FQN — the layout caches and seeds its RNG from this.
+    /// Stable model FQN.
     pub id: String,
     pub level: C4Level,
     /// Enclosing node in the containment tree (`None` for a top-level system).
     pub parent: Option<NodeIx>,
     pub children: Vec<NodeIx>,
-    /// World position (computed in placement).
-    pub pos: [f32; 3],
-    /// Bounding-sphere radius after sizing.
-    pub radius: f32,
-    /// Position relative to the parent (intermediate, computed in sizing).
-    pub rel_pos: [f32; 3],
-    /// Honoured as a fixed constraint by the simulation.
-    pub pinned: bool,
+    /// The node's character — archetype, vitality, mass, heat (see [`Planet`]).
+    pub planet: Planet,
 }
 
 impl LayoutNode {
     fn new(id: String, level: C4Level) -> Self {
-        Self {
-            id,
-            level,
-            parent: None,
-            children: Vec::new(),
-            pos: [0.0; 3],
-            radius: 0.0,
-            rel_pos: [0.0; 3],
-            pinned: false,
-        }
+        Self { id, level, parent: None, children: Vec::new(), planet: Planet::default() }
     }
 }
 
-/// The universe: structural nodes (petgraph weights) with the containment tree on
-/// each node, relationship edges between them, and the top-level systems.
+/// The software graph: structural nodes (petgraph weights) with the containment tree
+/// on each node, directed relationship edges (weighted by traffic) between them, and
+/// the top-level systems.
 pub struct Universe {
-    /// Nodes are [`LayoutNode`]; edges are lifted relationships (no weight).
-    pub graph: Graph<LayoutNode, ()>,
+    /// Nodes are [`LayoutNode`]; each edge weight is its **traffic** — the number
+    /// of underlying calls between the two nodes.
+    pub graph: Graph<LayoutNode, u32>,
     /// Top-level systems (containment roots), in model declaration order.
     pub roots: Vec<NodeIx>,
 }
 
 /// Build the universe from module sources — the same `(fqn, source)` input the IDE
-/// feeds [`pseudoscript_model::graph`].
+/// feeds [`pseudoscript_model::graph`]. No freshness, so vitality is activity-only.
 #[must_use]
 pub fn build(modules: &[WorkspaceModule]) -> Universe {
-    from_model(&build_model(modules))
+    from_model_with(&build_model(modules), None)
 }
 
-/// Adapt an already-resolved model into the universe graph.
+/// As [`build`], with per-module `freshness` driving thriving-vs-decaying vitality.
+#[must_use]
+pub fn build_with(modules: &[WorkspaceModule], freshness: &Freshness) -> Universe {
+    from_model_with(&build_model(modules), Some(freshness))
+}
+
+/// Adapt an already-resolved model into the universe graph (activity-only vitality).
 #[must_use]
 pub fn from_model(model: &Model) -> Universe {
-    let mut graph: Graph<LayoutNode, ()> = Graph::new();
+    from_model_with(model, None)
+}
+
+/// Adapt a resolved model into the universe graph, computing each node's
+/// personality from the language's macros, its tags, traffic, and (optionally)
+/// recency.
+#[must_use]
+pub fn from_model_with(model: &Model, freshness: Option<&Freshness>) -> Universe {
+    let mut graph: Graph<LayoutNode, u32> = Graph::new();
 
     // 1. Each structural model node becomes a universe node; remember its index.
     let mut ix: HashMap<&str, NodeIx> = HashMap::new();
@@ -109,9 +120,10 @@ pub fn from_model(model: &Model) -> Universe {
         }
     }
 
-    // 3. Relationships: lift every call to the structural level and add one edge
-    //    per distinct unordered pair (the macro sim wants clusters drawn together).
-    let mut seen: HashSet<(NodeIx, NodeIx)> = HashSet::new();
+    // 3. Relationships: lift every call to the structural level and tally traffic per
+    //    *directed* pair (caller → callee), so the edge carries direction — the flow
+    //    animation in the renderer streams along it. The count becomes the weight.
+    let mut traffic: HashMap<(NodeIx, NodeIx), u32> = HashMap::new();
     for edge in model.edges() {
         if edge.kind != EdgeKind::Call {
             continue;
@@ -120,16 +132,77 @@ pub fn from_model(model: &Model) -> Universe {
         else {
             continue;
         };
-        if a == b {
-            continue;
+        if a != b {
+            *traffic.entry((a, b)).or_default() += 1;
         }
-        let pair = if a.index() < b.index() { (a, b) } else { (b, a) };
-        if seen.insert(pair) {
-            graph.add_edge(a, b, ());
+    }
+    // Add edges in a stable order (HashMap iteration is randomised) so the force
+    // sim's float accumulation is identical every run — determinism (spec §8).
+    let mut pairs: Vec<((NodeIx, NodeIx), u32)> = traffic.iter().map(|(&k, &v)| (k, v)).collect();
+    pairs.sort_by_key(|((a, b), _)| (a.index(), b.index()));
+    for ((a, b), weight) in pairs {
+        graph.add_edge(a, b, weight);
+    }
+
+    // 4. Personality: aggregate each node's signals, then classify it into a planet.
+    let signals = collect_signals(model, &ix, &graph, freshness);
+    for node in model.nodes() {
+        if let Some(&nx) = ix.get(node.fqn.as_str()) {
+            graph[nx].planet = classify(node.kind, &signals[nx.index()]);
         }
     }
 
     Universe { graph, roots }
+}
+
+/// Gather, per universe node, what classifies its personality: its own tags and
+/// children, the trigger macros of every callable it contains (lifted up), the
+/// traffic on its edges, and its module's freshness.
+fn collect_signals(
+    model: &Model,
+    ix: &HashMap<&str, NodeIx>,
+    graph: &Graph<LayoutNode, u32>,
+    freshness: Option<&Freshness>,
+) -> Vec<Signals> {
+    let mut signals: Vec<Signals> = (0..graph.node_count()).map(|_| Signals::default()).collect();
+
+    for node in model.nodes() {
+        match node.kind {
+            // A structural node contributes its own tags, children, and freshness.
+            NodeKind::System | NodeKind::Container | NodeKind::Component => {
+                if let Some(&nx) = ix.get(node.fqn.as_str()) {
+                    let s = &mut signals[nx.index()];
+                    s.tags.clone_from(&node.doc.tags);
+                    s.children = u32::try_from(graph[nx].children.len()).unwrap_or(u32::MAX);
+                    s.freshness = freshness.and_then(|f| f.get(&node.module).copied());
+                }
+            }
+            // A callable's triggers belong to the structural node enclosing it.
+            NodeKind::Callable if !node.triggers.is_empty() => {
+                if let Some(anc) = lift(model, &node.fqn, ix) {
+                    let s = &mut signals[anc.index()];
+                    for trigger in &node.triggers {
+                        match trigger {
+                            Trigger::Schedule => s.scheduled += 1,
+                            Trigger::OnEvent { .. } => s.events += 1,
+                            Trigger::Http => s.http += 1,
+                            Trigger::Manual => s.manual += 1,
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for e in graph.edge_indices() {
+        if let Some((a, b)) = graph.edge_endpoints(e) {
+            let w = graph[e];
+            signals[a.index()].traffic += w;
+            signals[b.index()].traffic += w;
+        }
+    }
+    signals
 }
 
 /// The structural level of a model kind, or `None` for the kinds the universe does
@@ -139,7 +212,8 @@ fn level_of(kind: NodeKind) -> Option<C4Level> {
         NodeKind::System => Some(C4Level::System),
         NodeKind::Container => Some(C4Level::Container),
         NodeKind::Component => Some(C4Level::Component),
-        NodeKind::Person | NodeKind::Data | NodeKind::Callable => None,
+        NodeKind::Person => Some(C4Level::Person),
+        NodeKind::Data | NodeKind::Callable => None,
     }
 }
 
@@ -158,6 +232,7 @@ fn lift(model: &Model, fqn: &str, ix: &HashMap<&str, NodeIx>) -> Option<NodeIx> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::personality::Archetype;
 
     fn module(src: &str) -> Vec<WorkspaceModule> {
         vec![WorkspaceModule::new("m", src)]
@@ -204,5 +279,46 @@ container Svc for m::Sys {
         let u = build(&[]);
         assert_eq!(u.graph.node_count(), 0);
         assert!(u.roots.is_empty());
+    }
+
+    #[test]
+    fn personality_flows_from_macros_tags_and_traffic() {
+        // A hand-driven container calls a hub; one container is a headline; one is
+        // never touched. The macros/tags/connectivity become planet personalities.
+        let src = "\
+system Sys;
+container Hands for m::Sys {
+  #[manual]
+  Do() { m::Hub.Take() }
+}
+container Hub for m::Sys { Take(); }
+/// #headline
+container Crown for m::Sys { Shine(); }
+container Lonely for m::Sys { Idle(); }
+";
+        let u = build(&module(src));
+        let planet = |name: &str| {
+            let nx = u
+                .graph
+                .node_indices()
+                .find(|&nx| u.graph[nx].id.ends_with(name))
+                .unwrap_or_else(|| panic!("missing {name}"));
+            u.graph[nx].planet.clone()
+        };
+
+        assert_eq!(planet("Sys").archetype, Archetype::Star);
+        assert_eq!(planet("Hands").archetype, Archetype::Forge, "#[manual] lifts to a Forge");
+        assert_eq!(planet("Crown").archetype, Archetype::Beacon, "#headline → Beacon");
+        // Hub receives traffic but runs no macros — an ordinary, living World.
+        assert_eq!(planet("Hub").archetype, Archetype::World);
+        assert!(planet("Hub").vitality > 0.0);
+        // Lonely is idle and unreachable — a decaying Tomb.
+        let lonely = planet("Lonely");
+        assert_eq!(lonely.archetype, Archetype::Tomb);
+        assert!(lonely.vitality < 0.2, "a tomb decays: {}", lonely.vitality);
+
+        // The Hands → Hub call is the only relationship; weight 1 (one call).
+        assert_eq!(u.graph.edge_count(), 1);
+        assert_eq!(u.graph.edge_weights().copied().max(), Some(1));
     }
 }

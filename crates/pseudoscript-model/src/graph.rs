@@ -822,12 +822,12 @@ impl Builder<'_> {
 
     /// Canonicalises a node reference written in `module` to a full FQN.
     ///
-    /// References inside a model are module-relative (`for Pseudoscript`,
-    /// `Syntax::Parser`): they omit the module prefix the declaration carries.
-    /// Resolution tries the path as-written first (an alias-expanded or genuine
-    /// cross-module FQN already resolves), then `module::<path>`. An
-    /// unresolvable reference is returned as written, so the emit crate sees
-    /// what the model named.
+    /// A reference is its flat FQN `module::Name` (§8.1, ADR-030). Resolution
+    /// tries the path as written (an alias-expanded or cross-module FQN already
+    /// resolves), then `module::<path>` for a bare local name. A structural
+    /// drill (`Syntax::Parser` — container `Syntax`, component `Parser`) is not
+    /// an FQN: it does not resolve and is returned as written, so the checker
+    /// rejects it (§8.1) rather than the model silently building a phantom edge.
     fn canonicalize(&self, reference: &str, module: &str) -> String {
         if self.workspace.symbol(reference).is_some() {
             return reference.to_owned();
@@ -835,20 +835,6 @@ impl Builder<'_> {
         let prefixed = qualify(module, reference);
         if self.workspace.symbol(&prefixed).is_some() {
             return prefixed;
-        }
-        // The model addresses nodes flat per module (§8.1): names are unique
-        // within a module, so a call written through a structural qualifier
-        // (`Syntax::Parser` — container `Syntax`, component `Parser`) resolves
-        // by its leaf against this module. Only do this when the qualifier does
-        // not name another module, so a genuine cross-module FQN is never
-        // collapsed onto a same-named local node.
-        if let Some((prefix, leaf)) = reference.rsplit_once("::")
-            && !self.workspace.modules().iter().any(|m| m.fqn == prefix)
-        {
-            let by_leaf = qualify(module, leaf);
-            if self.workspace.symbol(&by_leaf).is_some() {
-                return by_leaf;
-            }
         }
         reference.to_owned()
     }

@@ -679,6 +679,17 @@ impl IdeSession {
         Ok(to_json(&scene))
     }
 
+    /// The whole workspace as a software graph for the 3D relationship view: nodes
+    /// (systems, containers, components, people) with containment, and directed
+    /// relationships weighted by traffic and coloured by the destination's
+    /// macro-derived archetype. The renderer lays it out (d3-force-3d) client-side.
+    #[allow(clippy::missing_errors_doc)]
+    pub fn universe(&mut self) -> Result<String, JsError> {
+        self.ensure_built();
+        let u = pseudoscript_universe::from_model(self.graph());
+        Ok(to_json(&pseudoscript_universe::snapshot(&u)))
+    }
+
     /// Positions a [`Scene`] (as JSON) into absolute coordinates, returning the
     /// layout as JSON. The two layout shapes are distinguishable by their fields
     /// (`participants` vs `nodes`). `tweaks` (optional) applies the C4 "Layout"

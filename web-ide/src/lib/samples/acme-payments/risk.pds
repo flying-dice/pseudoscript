@@ -32,7 +32,7 @@ public component Engine for risk::Risk {
   /// Screen a confirmation. The score-to-outcome thresholds are the disclosed
   /// rule; the weighting of signals into a score is the black box behind it.
   public screen(input: risk::RiskInput): risk::RiskOutcome {
-    return Risk::Scorer.classify(input)
+    return risk::Scorer.classify(input)
   }
 
   /// `Ok` only if the outcome blocks the payment outright.
@@ -45,17 +45,17 @@ public component Engine for risk::Risk {
 public component ReviewQueue for risk::Risk {
   /// Flag a (proceeding) payment for human review.
   public flag(intent: shared::PaymentIntentId, reason: string): void {
-    Risk::ReviewStore.add(intent, reason)
+    risk::ReviewStore.add(intent, reason)
   }
 
   /// Remove a payment from the queue once it has been ruled on.
   public clear(intent: shared::PaymentIntentId): void {
-    Risk::ReviewStore.remove(intent)
+    risk::ReviewStore.remove(intent)
   }
 
   /// Payments awaiting an analyst's decision.
   public pending(): shared::PaymentIntentId[] {
-    return Risk::ReviewStore.pending()
+    return risk::ReviewStore.pending()
   }
 }
 

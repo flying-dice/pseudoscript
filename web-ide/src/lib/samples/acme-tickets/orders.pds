@@ -137,7 +137,7 @@ public component OrderService for orders::Orders {
     if (buyer.isErr) {
       return Err(orders::CheckoutError::NotAuthenticated)
     }
-    prior = Option<Order> from Orders::OrderStore.byHold(req.hold)
+    prior = Option<Order> from orders::OrderStore.byHold(req.hold)
     if (prior.isSome) {
       return Ok(prior.value)
     }
@@ -156,15 +156,15 @@ public component OrderService for orders::Orders {
     if (committed.isErr) {
       return Err(orders::CheckoutError::HoldInvalid)
     }
-    id = shared::OrderId from Orders::OrderStore.idFor(req.hold)
+    id = shared::OrderId from orders::OrderStore.idFor(req.hold)
     order = Order from { id, hold.value, buyer.value.id, locked.value.total, orders::OrderStatus::Pending }
-    Orders::OrderStore.save(order)
+    orders::OrderStore.save(order)
     charged = Result<Receipt, PaymentError> from payments::PaymentService.charge(id, locked.value.total, req.method)
     if (charged.isErr) {
       return Err(self.afterChargeFailure(order, charged.error))
     }
     paid = Order from self.mark(order, orders::OrderStatus::Charged)
-    Orders::OrderStore.save(paid)
+    orders::OrderStore.save(paid)
     allocated = Result<Allocation, InventoryError> from inventory::Holds.confirm(req.hold)
     if (allocated.isErr) {
       reversal = Result<Payment, PaymentError> from payments::PaymentService.refund(id)
@@ -172,13 +172,13 @@ public component OrderService for orders::Orders {
         return Err(RefundFailed from { id })
       }
       inventory::Holds.release(req.hold)
-      Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Refunded))
+      orders::OrderStore.save(self.mark(order, orders::OrderStatus::Refunded))
       return Err(orders::CheckoutError::AllocationFailed)
     }
     confirmed = Order from self.mark(paid, orders::OrderStatus::Confirmed)
-    Orders::OrderStore.save(confirmed)
+    orders::OrderStore.save(confirmed)
     done = OrderConfirmed from { confirmed, buyer.value.id, allocated.value }
-    Orders::Events.confirmed(done)
+    orders::Events.confirmed(done)
     return Ok(confirmed)
   }
 
@@ -194,7 +194,7 @@ public component OrderService for orders::Orders {
       return orders::CheckoutError::PaymentUncertain
     }
     inventory::Holds.release(order.hold)
-    Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
+    orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
     return self.declined(e)
   }
 
@@ -217,9 +217,9 @@ public component OrderService for orders::Orders {
     }
     inventory::Holds.releaseSold(order.value.hold)
     refunded = Order from self.mark(order.value, orders::OrderStatus::Refunded)
-    Orders::OrderStore.save(refunded)
+    orders::OrderStore.save(refunded)
     event = OrderRefunded from { refunded }
-    Orders::Events.refunded(event)
+    orders::Events.refunded(event)
     return Ok(refunded)
   }
 
@@ -228,7 +228,7 @@ public component OrderService for orders::Orders {
   /// precondition), so a partial run resumes cleanly on the next delivery.
   #[onevent(catalog::EventCancelled)]
   public onEventCancelled(event: catalog::EventCancelled): void {
-    affected = Order[] from Orders::OrderStore.confirmedFor(event.event)
+    affected = Order[] from orders::OrderStore.confirmedFor(event.event)
     for (order in affected) {
       self.refund(order.id)
     }
@@ -260,7 +260,7 @@ public component OrderService for orders::Orders {
 
   /// Orders left mid-saga (`Pending`/`Charged`) past their recovery threshold.
   public stuck(): orders::Order[] {
-    return Orders::OrderStore.stuck()
+    return orders::OrderStore.stuck()
   }
 
   /// Drive a charged order to `Confirmed`: idempotently confirm its hold and
@@ -269,21 +269,21 @@ public component OrderService for orders::Orders {
     allocated = Result<Allocation, InventoryError> from inventory::Holds.confirm(order.hold)
     if (allocated.isOk) {
       confirmed = Order from self.mark(order, orders::OrderStatus::Confirmed)
-      Orders::OrderStore.save(confirmed)
+      orders::OrderStore.save(confirmed)
       done = OrderConfirmed from { confirmed, confirmed.buyer, allocated.value }
-      Orders::Events.confirmed(done)
+      orders::Events.confirmed(done)
     }
   }
 
   /// Abandon an order whose charge never completed: release the hold, fail it.
   abandon(order: orders::Order): void {
     inventory::Holds.release(order.hold)
-    Orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
+    orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
   }
 
   /// Read an order, or `OrderNotFound`.
   public get(id: shared::OrderId): Result<orders::Order, orders::CheckoutError> {
-    found = Option<Order> from Orders::OrderStore.fetch(id)
+    found = Option<Order> from orders::OrderStore.fetch(id)
     if (found.isNone) {
       return Err(OrderNotFound from { id })
     }
@@ -307,7 +307,7 @@ public component OrderService for orders::Orders {
   /// Confirmed orders whose provider settlement is still pending (drives the
   /// reconciler).
   public unsettled(): orders::Order[] {
-    return Orders::OrderStore.unsettled()
+    return orders::OrderStore.unsettled()
   }
 
   /// A copy of `order` in a new saga state.

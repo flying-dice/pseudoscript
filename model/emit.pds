@@ -123,8 +123,8 @@ public component Projector for emit::Emit {
   /// triggers. A cross-container call bubbles to a single system → system edge.
   projectContext(graph: model::Graph): emit::Scene {
     nodes = PlacedNode[] from self.collectKinds(graph, "person", "system")
-    edges = RoutedEdge[] from Emit::Edges.collect(graph, nodes)
-    return Emit::Layout.solveC4(C4Scene from { nodes, edges })
+    edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
+    return emit::Layout.solveC4(C4Scene from { nodes, edges })
   }
 
   /// A boundary view: the `of` node plus its `for`-children of `child` kind,
@@ -136,8 +136,8 @@ public component Projector for emit::Emit {
       return Err(anchor.error)
     }
     nodes = PlacedNode[] from self.childrenOf(graph, of, child)
-    edges = RoutedEdge[] from Emit::Edges.collect(graph, nodes)
-    return Ok(Emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
+    edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
+    return Ok(emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
   }
 
   /// The sequence view: a callable's body trace as lifelines, messages, and
@@ -152,8 +152,8 @@ public component Projector for emit::Emit {
     if (body.isErr) {
       return Err(NoBody from { entry })
     }
-    scene = Scene from Emit::Trace.walk(graph, entry, body.value)
-    return Ok(Emit::Layout.solveSequence(scene))
+    scene = Scene from emit::Trace.walk(graph, entry, body.value)
+    return Ok(emit::Layout.solveSequence(scene))
   }
 
   /// Looks a node up and asserts its C4 kind, mapping a miss to `UnknownNode`

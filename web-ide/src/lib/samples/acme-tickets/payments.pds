@@ -87,19 +87,19 @@ public component PaymentService for payments::Payments {
     }
     key = IdempotencyKey from self.keyFor(order, "charge")
     payment = Payment from { order, amount, payments::PaymentStatus::Charging }
-    Payments::PaymentStore.save(payment)
-    held = Result<context::ProviderAuth, PaymentError> from Payments::Gateway.authorize(amount, method, key)
+    payments::PaymentStore.save(payment)
+    held = Result<context::ProviderAuth, PaymentError> from payments::Gateway.authorize(amount, method, key)
     if (held.isErr) {
       self.onChargeError(payment, held.error)
       return Err(held.error)
     }
-    taken = Result<context::ProviderCapture, PaymentError> from Payments::Gateway.capture(held.value.ref, amount, key)
+    taken = Result<context::ProviderCapture, PaymentError> from payments::Gateway.capture(held.value.ref, amount, key)
     if (taken.isErr) {
       self.onCaptureError(payment, held.value.ref, key, taken.error)
       return Err(taken.error)
     }
     charged = Payment from self.markCharged(payment, held.value, taken.value)
-    Payments::PaymentStore.save(charged)
+    payments::PaymentStore.save(charged)
     return Ok(Receipt from { charged.id, taken.value.ref })
   }
 
@@ -115,12 +115,12 @@ public component PaymentService for payments::Payments {
       return Err(loaded.error)
     }
     key = IdempotencyKey from self.keyFor(order, "refund")
-    back = Result<context::ProviderRefund, PaymentError> from Payments::Gateway.refund(loaded.value.capture, loaded.value.amount, key)
+    back = Result<context::ProviderRefund, PaymentError> from payments::Gateway.refund(loaded.value.capture, loaded.value.amount, key)
     if (back.isErr) {
       return Err(back.error)
     }
     refunded = Payment from self.recordRefund(order)
-    Payments::PaymentStore.save(refunded)
+    payments::PaymentStore.save(refunded)
     return Ok(refunded)
   }
 
@@ -129,11 +129,11 @@ public component PaymentService for payments::Payments {
   /// already settled, refunded, or failed) is left untouched, so a late webhook
   /// can never resurrect a reversed payment.
   public settle(order: shared::OrderId, ref: context::ProviderCaptureRef): void {
-    payment = Option<Payment> from Payments::PaymentStore.byOrder(order)
+    payment = Option<Payment> from payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
       awaiting = Result<void, PaymentError> from self.awaitingSettlement(payment.value)
       if (awaiting.isOk) {
-        Payments::PaymentStore.save(self.applySettlement(payment.value, ref))
+        payments::PaymentStore.save(self.applySettlement(payment.value, ref))
       }
     }
   }
@@ -143,13 +143,13 @@ public component PaymentService for payments::Payments {
   /// and settle it. Complements the push webhook so a lost callback still
   /// converges the ledger.
   public reconcile(order: shared::OrderId): void {
-    payment = Option<Payment> from Payments::PaymentStore.byOrder(order)
+    payment = Option<Payment> from payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
       awaiting = Result<void, PaymentError> from self.awaitingSettlement(payment.value)
       if (awaiting.isOk) {
-        truth = Option<context::ProviderCaptureRef> from Payments::Gateway.lookup(order)
+        truth = Option<context::ProviderCaptureRef> from payments::Gateway.lookup(order)
         if (truth.isSome) {
-          Payments::PaymentStore.save(self.applySettlement(payment.value, truth.value))
+          payments::PaymentStore.save(self.applySettlement(payment.value, truth.value))
         }
       }
     }
@@ -164,13 +164,13 @@ public component PaymentService for payments::Payments {
   public reconcileCharge(order: shared::OrderId): void {
     done = Option<Receipt> from self.receiptFor(order)
     if (done.isNone) {
-      truth = Option<Receipt> from Payments::Gateway.lookupCharge(order)
+      truth = Option<Receipt> from payments::Gateway.lookupCharge(order)
       if (truth.isSome) {
-        Payments::PaymentStore.save(self.recordCharge(order, truth.value))
+        payments::PaymentStore.save(self.recordCharge(order, truth.value))
       } else {
-        gone = Result<void, PaymentError> from Payments::Gateway.chargeDefinitelyMissing(order)
+        gone = Result<void, PaymentError> from payments::Gateway.chargeDefinitelyMissing(order)
         if (gone.isOk) {
-          Payments::PaymentStore.save(self.recordChargeFailed(order))
+          payments::PaymentStore.save(self.recordChargeFailed(order))
         }
       }
     }
@@ -189,7 +189,7 @@ public component PaymentService for payments::Payments {
   onChargeError(payment: payments::Payment, e: payments::PaymentError): void {
     sure = Result<void, PaymentError> from self.isDefinite(e)
     if (sure.isOk) {
-      Payments::PaymentStore.save(self.markFailed(payment, e))
+      payments::PaymentStore.save(self.markFailed(payment, e))
     }
   }
 
@@ -199,8 +199,8 @@ public component PaymentService for payments::Payments {
   onCaptureError(payment: payments::Payment, auth: context::ProviderAuthRef, key: payments::IdempotencyKey, e: payments::PaymentError): void {
     sure = Result<void, PaymentError> from self.isDefinite(e)
     if (sure.isOk) {
-      Payments::Gateway.cancelAuth(auth, key)
-      Payments::PaymentStore.save(self.markFailed(payment, e))
+      payments::Gateway.cancelAuth(auth, key)
+      payments::PaymentStore.save(self.markFailed(payment, e))
     }
   }
 
@@ -294,12 +294,12 @@ public component WebhookHandler for payments::Payments {
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen = Result<void, WebhookError> from Payments::EventLog.seen(event.eventId)
+    seen = Result<void, WebhookError> from payments::EventLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
-    Payments::PaymentService.settle(event.order, event.capture)
-    Payments::EventLog.record(event.eventId)
+    payments::PaymentService.settle(event.order, event.capture)
+    payments::EventLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
   }
 

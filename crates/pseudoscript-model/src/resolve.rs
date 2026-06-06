@@ -124,18 +124,14 @@ fn resolve_node<'a>(ws: &'a Workspace, from_fqn: &str, segments: &[&str]) -> Opt
         // flags the missing qualifier, and an ambiguous name is left unresolved.
         return unique_symbol(ws, from_fqn, name);
     }
-    if let Some(symbol) = ws.symbol(&segments.join("::")) {
-        // §8: a private symbol is reachable only within its own module, even by
-        // FQN — a cross-module path resolves only to a `public` symbol. (Don't
-        // fall back to the leaf below: the FQN named a real, just-invisible
-        // symbol, so the reference resolves nowhere, as the checker also reports.)
-        return visible_from(symbol, from_fqn).then_some(symbol);
-    }
-    // A qualified path whose FQN is not indexed — a wrong or non-module
-    // qualifier, e.g. a container name (`Syntax::Lexer` for module `syntax`) —
-    // falls back to the unique symbol named by its leaf segment. Same goto
-    // leniency as the bare-name case.
-    unique_symbol(ws, from_fqn, segments.last().copied()?)
+    // A multi-segment path must be the flat FQN `module::Name` (§8.1, ADR-030):
+    // it resolves only as an exact, visible symbol. A wrong or structural-drill
+    // qualifier (`Syntax::Lexer` for module `syntax`) names no symbol and
+    // resolves nowhere — the checker reports it; goto does not paper over it by
+    // guessing the leaf.
+    let symbol = ws.symbol(&segments.join("::"))?;
+    // §8: a private symbol is reachable only within its own module, even by FQN.
+    visible_from(symbol, from_fqn).then_some(symbol)
 }
 
 /// Whether `symbol` is reachable from module `from_fqn` (§8.2): a same-module
@@ -487,15 +483,25 @@ mod tests {
     }
 
     #[test]
-    fn container_qualified_member_resolves_via_leaf() {
-        // `Syntax::Lexer.tokenize` where `Syntax` is the container name, not the
-        // module (`syntax`): the leaf fallback still reaches `Lexer.tokenize`.
-        let src = "//! syntax\n\npublic component Lexer for Syntax {\n  tokenize(text: string): string;\n}\n\npublic component Parser for Syntax {\n  public parse(text: string): string {\n    return Syntax::Lexer.tokenize(text)\n  }\n}\n";
-        let mods = [("syntax", src)];
+    fn structural_drill_member_does_not_resolve_but_flat_does() {
+        // `Syntax::Lexer.tokenize` is a structural drill (container `Syntax`,
+        // component `Lexer`), not the flat FQN `syntax::Lexer` (§8.1, ADR-030):
+        // it resolves nowhere. The flat form resolves.
+        let drill = "//! syntax\n\npublic container Syntax;\npublic component Lexer for syntax::Syntax {\n  tokenize(t: string): string;\n}\n\npublic component Parser for syntax::Syntax {\n  go(): void { Syntax::Lexer.tokenize(\"x\") }\n}\n";
+        let dmods = [("syntax", drill)];
+        let dws = workspace(&dmods);
+        let dcall = drill.find("Syntax::Lexer.tokenize").unwrap() + "Syntax::Lexer.".len();
+        assert!(
+            resolve_at(&dws, "syntax", drill, dcall as u32 + 1).is_none(),
+            "a structural drill must not resolve"
+        );
+
+        let flat = "//! syntax\n\npublic container Syntax;\npublic component Lexer for syntax::Syntax {\n  tokenize(t: string): string;\n}\n\npublic component Parser for syntax::Syntax {\n  go(): void { syntax::Lexer.tokenize(\"x\") }\n}\n";
+        let mods = [("syntax", flat)];
         let ws = workspace(&mods);
-        let call = src.find("Syntax::Lexer.tokenize").unwrap() + "Syntax::Lexer.".len();
+        let call = flat.find("syntax::Lexer.tokenize").unwrap() + "syntax::Lexer.".len();
         let hit =
-            resolve_at(&ws, "syntax", src, call as u32 + 1).expect("member resolves via leaf");
+            resolve_at(&ws, "syntax", flat, call as u32 + 1).expect("flat FQN member resolves");
         assert_eq!(slice(&mods, &hit), "tokenize");
         assert!(
             hit.title.contains("callable `Lexer.tokenize`"),

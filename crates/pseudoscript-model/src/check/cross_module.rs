@@ -331,31 +331,89 @@ impl Ctx<'_> {
                 format!("{what} `{fqn}` is private to its module"),
             )),
             Resolution::Missing => {
-                // A multi-segment path that is not in the global index is a
-                // cross-module reference only when its module portion names a
-                // module other than this one. Same-module multi-segment paths
-                // (an FQN written in full to a local node) are the single-module
-                // checks' concern; an unknown leaf in a *known other* module is
-                // a dangling cross-module reference.
-                if references_other_module(&fqn, self.from_module, self.workspace) {
+                // A multi-segment path that names no symbol must be the flat FQN
+                // `module::Name` (§8.1, ADR-030). If its leaf names a real,
+                // visible node, the path is a structural drill — suggest the flat
+                // FQN. Otherwise it is a dangling cross-module reference, or a
+                // same-module FQN that resolves nowhere.
+                if let Some(flat) = self.flat_fqn_suggestion(&fqn) {
+                    self.out.push(Diagnostic::error(
+                        path.span,
+                        format!("{what} `{fqn}` is not a fully-qualified name; use `{flat}`"),
+                    ));
+                } else if references_other_module(&fqn, self.from_module, self.workspace) {
                     self.out.push(Diagnostic::error(
                         path.span,
                         format!("dangling cross-module reference `{fqn}`: target does not resolve"),
+                    ));
+                } else {
+                    self.out.push(Diagnostic::error(
+                        path.span,
+                        format!("{what} `{fqn}` does not resolve"),
                     ));
                 }
             }
         }
     }
+
+    /// The flat FQN that a structural drill (`Syntax::Parser` → `syntax::Parser`)
+    /// means. A drill's qualifier is a local container/system, so the target is
+    /// preferentially in this module; a same-module node bearing the leaf wins.
+    /// Failing that, the unique `public` node named by the leaf elsewhere in the
+    /// workspace. `None` when neither resolves a single node.
+    fn flat_fqn_suggestion(&self, fqn: &str) -> Option<String> {
+        let leaf = fqn.rsplit("::").next()?;
+        let local = if self.from_module.is_empty() {
+            leaf.to_owned()
+        } else {
+            format!("{}::{leaf}", self.from_module)
+        };
+        if self.workspace.symbol(&local).is_some() {
+            return Some(local);
+        }
+        let mut matches = self.workspace.symbols().filter(|s| {
+            s.name == leaf
+                && !self.workspace.is_external_module(module_portion(&s.fqn))
+                && s.is_public
+        });
+        let first = matches.next()?;
+        matches.next().is_none().then(|| first.fqn.clone())
+    }
+}
+
+/// The module portion of an FQN (`a::b::C` → `a::b`); empty for a bare name.
+fn module_portion(fqn: &str) -> &str {
+    fqn.rsplit_once("::").map_or("", |(module, _)| module)
 }
 
 /// Whether `fqn`'s module portion names a known module (local or a dependency,
 /// §8.3) other than `from_module` — i.e. the reference points across a module or
 /// workspace boundary.
 fn references_other_module(fqn: &str, from_module: &str, workspace: &Workspace) -> bool {
-    let Some((module, _)) = fqn.rsplit_once("::") else {
-        return false;
-    };
-    module != from_module && workspace.is_known_module(module)
+    matches!(known_module_prefix(fqn, workspace), Some(module) if module != from_module)
+}
+
+/// The longest `::`-delimited prefix of `fqn` that names a known module, if any.
+///
+/// A node FQN is flat — `module::Name` (§8.1, ADR-030) — so the module is `fqn`'s
+/// prefix. A malformed reference may carry extra *structural* segments
+/// (`module::System::Container::Component`); the module is still the prefix, and
+/// detecting it by the longest match (not the last `::` split) both finds it
+/// through the trailing junk and recognises a multi-segment module path
+/// (`banking::core`) over its own leading segment.
+fn known_module_prefix<'a>(fqn: &'a str, workspace: &Workspace) -> Option<&'a str> {
+    let mut module = None;
+    let mut end = 0;
+    // Walk each `::` boundary left to right; the text before it is a candidate
+    // module prefix. The last (longest) one that resolves wins.
+    while let Some(rel) = fqn[end..].find("::") {
+        let boundary = end + rel;
+        if workspace.is_known_module(&fqn[..boundary]) {
+            module = Some(&fqn[..boundary]);
+        }
+        end = boundary + 2;
+    }
+    module
 }
 
 /// Renders a `Path` as its `::`-joined source form.
@@ -529,5 +587,78 @@ mod tests {
             ),
         ]);
         assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    // §8.1 (ADR-030): a node FQN is flat (`module::Name`). A C4-structural drill
+    // path (`module::System::Container::Component`) names no node; its leaf does,
+    // so the checker rejects the drill and suggests the flat FQN.
+
+    #[test]
+    fn nested_structural_call_target_suggests_flat_fqn() {
+        let msgs = errors(&[
+            (
+                "a",
+                "//! a\n\npublic system Sys;\npublic container Box for a::Sys;\npublic component Comp for a::Box {\n  run(): void;\n}\n",
+            ),
+            (
+                "b",
+                "//! b\n\npublic system Other;\npublic container Caller for b::Other {\n  go(): void { a::Sys::Box::Comp.run() }\n}\n",
+            ),
+        ]);
+        assert!(
+            msgs.iter().any(|m| m
+                == "call target `a::Sys::Box::Comp` is not a fully-qualified name; use `a::Comp`"),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn same_module_structural_drill_suggests_flat_fqn() {
+        // The same-module twin: a container::component drill within one module is
+        // no longer silent — it suggests the flat FQN.
+        let msgs = errors(&[(
+            "shop",
+            "//! shop\n\npublic system App;\npublic container Box for shop::App;\npublic component Repo for shop::Box {\n  run(): void;\n}\npublic container Caller for shop::App {\n  go(): void { Box::Repo.run() }\n}\n",
+        )]);
+        assert!(
+            msgs.iter()
+                .any(|m| m
+                    == "call target `Box::Repo` is not a fully-qualified name; use `shop::Repo`"),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn flat_cross_module_component_call_resolves() {
+        // The flat FQN of the same component resolves — the check must not flag it.
+        let msgs = errors(&[
+            (
+                "a",
+                "//! a\n\npublic system Sys;\npublic container Box for a::Sys;\npublic component Comp for a::Box {\n  run(): void;\n}\n",
+            ),
+            (
+                "b",
+                "//! b\n\npublic system Other;\npublic container Caller for b::Other {\n  go(): void { a::Comp.run() }\n}\n",
+            ),
+        ]);
+        assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    #[test]
+    fn dangling_multi_segment_reference_does_not_resolve() {
+        // A multi-segment path whose leaf names no node is flagged, not silent.
+        let msgs = errors(&[
+            ("a", "//! a\n\npublic system Sys;\n"),
+            (
+                "b",
+                "//! b\n\npublic system Other;\npublic container Caller for b::Other {\n  go(): void { a::Sys::Ghost.run() }\n}\n",
+            ),
+        ]);
+        assert!(
+            msgs.iter()
+                .any(|m| m
+                    == "dangling cross-module reference `a::Sys::Ghost`: target does not resolve"),
+            "{msgs:?}"
+        );
     }
 }

@@ -1430,6 +1430,7 @@ dependencies = [
  "pseudoscript-lsp-core",
  "pseudoscript-model",
  "pseudoscript-syntax",
+ "pseudoscript-universe",
  "serde",
  "serde_json",
  "toml",
@@ -1520,6 +1521,7 @@ version = "0.1.0"
 dependencies = [
  "petgraph",
  "pseudoscript-model",
+ "serde",
 ]
 
 [[package]]

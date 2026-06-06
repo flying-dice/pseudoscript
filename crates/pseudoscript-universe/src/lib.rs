@@ -1,17 +1,18 @@
-//! The 3D **software universe** layout engine.
+//! The **software graph** model for the 3D relationship view.
 //!
-//! Positions every C4 element in 3D space for the exploratory universe view. The
-//! work is a *compound* (nested) graph layout — Systems contain Containers contain
-//! Components — solved recursively per cluster level, NOT a flat force simulation
-//! (handover spec §3). This crate is deliberately isolated and pure: no rendering,
-//! no threading assumptions, and its public API never leaks the force-engine's
-//! types, so the (future, AGPL) simulation dependency stays confined here (§12) and
-//! the whole crate compiles to both native and `wasm32`.
-//!
-//! **Phase 1 (this code):** the model adapter only — map the existing resolved C4
-//! model into the universe's internal graph ([`Universe`]). No simulation yet; the
-//! `pos`/`radius` outputs are computed in later phases.
+//! Maps the resolved C4 model into a graph the web IDE's `ForceGraph` renders:
+//! structural nodes (systems, containers, components, people) with the containment
+//! tree, directed relationship edges weighted by traffic, and each node's
+//! macro-derived personality ([`Archetype`]) — which colours the traffic. Positions
+//! are NOT computed here: the renderer lays the graph out with d3-force-3d in the
+//! browser. Pure and wasm-safe; no rendering, no layout.
 
 mod model_adapter;
+mod personality;
+mod snapshot;
 
-pub use model_adapter::{C4Level, LayoutNode, NodeIx, Universe, build, from_model};
+pub use model_adapter::{
+    C4Level, Freshness, LayoutNode, NodeIx, Universe, build, build_with, from_model, from_model_with,
+};
+pub use personality::{Archetype, Planet};
+pub use snapshot::{EdgeOut, NodeOut, Snapshot, snapshot};

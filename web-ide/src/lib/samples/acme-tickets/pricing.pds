@@ -47,7 +47,7 @@ public component Quotes for pricing::Pricing {
   /// quote falls back to a neutral (no-surge) factor and checkout proceeds,
   /// rather than blocking a sale on a non-critical signal.
   surgeFor(event: shared::EventId, tier: shared::TierId): pricing::SurgeFactor {
-    snap = Option<DemandSnapshot> from Pricing::Demand.snapshot(event, tier)
+    snap = Option<DemandSnapshot> from pricing::Demand.snapshot(event, tier)
     if (snap.isNone) {
       return self.neutral()
     }
@@ -91,10 +91,10 @@ public component Demand for pricing::Pricing {
   /// consumer owns its own idempotency rather than trusting the producer.
   #[onevent(orders::OrderConfirmed)]
   public onConfirmed(event: orders::OrderConfirmed): void {
-    fresh = Option<shared::OrderId> from Pricing::DemandLog.seen(event.order.id)
+    fresh = Option<shared::OrderId> from pricing::DemandLog.seen(event.order.id)
     if (fresh.isNone) {
       self.record(event.order.event, event.order.tier, event.order.quantity)
-      Pricing::DemandLog.mark(event.order.id)
+      pricing::DemandLog.mark(event.order.id)
     }
   }
 

@@ -35,13 +35,13 @@ public container Identity for context::AcmeTickets;
 public component Users for identity::Identity {
   /// Register a new attendee account; the email must not already be in use.
   public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
-    existing = Option<User> from Identity::UserStore.find(form.email)
+    existing = Option<User> from identity::UserStore.find(form.email)
     if (existing.isSome) {
       return Err(EmailTaken from { form.email })
     }
-    id = shared::UserId from Identity::UserStore.nextId()
+    id = shared::UserId from identity::UserStore.nextId()
     user = User from { id, form, identity::Role::Attendee }
-    Identity::UserStore.save(user)
+    identity::UserStore.save(user)
     return Ok(user)
   }
 }
@@ -50,7 +50,7 @@ public component Users for identity::Identity {
 public component Sessions for identity::Identity {
   /// Sign in with credentials, issuing a session token.
   public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
-    user = Option<User> from Identity::UserStore.find(creds.email)
+    user = Option<User> from identity::UserStore.find(creds.email)
     if (user.isNone) {
       return Err(identity::AuthError::BadCredentials)
     }
@@ -58,17 +58,17 @@ public component Sessions for identity::Identity {
     if (ok.isErr) {
       return Err(identity::AuthError::BadCredentials)
     }
-    return Ok(Identity::SessionStore.issue(user.value))
+    return Ok(identity::SessionStore.issue(user.value))
   }
 
   /// Sign out, revoking the session token.
   public logout(token: identity::SessionToken): void {
-    Identity::SessionStore.revoke(token)
+    identity::SessionStore.revoke(token)
   }
 
   /// Resolve a session token to its user, or `Err(NoSession)`.
   public authenticate(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
-    user = Option<User> from Identity::SessionStore.resolve(token)
+    user = Option<User> from identity::SessionStore.resolve(token)
     if (user.isNone) {
       return Err(identity::AuthError::NoSession)
     }

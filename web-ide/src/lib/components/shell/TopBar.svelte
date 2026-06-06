@@ -6,7 +6,7 @@
   type Props = {
     workspaceName?: string | null;
     building?: boolean;
-    view?: "code" | "canvas";
+    view?: "code" | "canvas" | "space";
     structureOpen?: boolean;
     canBack?: boolean;
     canForward?: boolean;
@@ -24,7 +24,7 @@
     onimport?: () => void;
     onbuilddocs?: () => void;
     onshortcuts?: () => void;
-    onview?: (view: "code" | "canvas") => void;
+    onview?: (view: "code" | "canvas" | "space") => void;
     ontogglestructure?: () => void;
   };
 

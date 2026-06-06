@@ -40,7 +40,7 @@
 
   let { data }: Props = $props();
 
-  const labelW = (s: string | undefined): number => (s ? s.length * 7.8 + 14 : 0);
+  const labelW = (s: string | undefined): number => (s ? s.length * 7.8 + 8 : 0);
 
   // A return's colour + glyph, by marker.
   function ret(marker: string | undefined): Return {
@@ -86,7 +86,7 @@
       {#if m.label}
         {@const mx = (m.from_x + m.to_x) / 2}
         {@const full = m.label + (m.detail ?? "")}
-        <rect class="seq-pill" x={mx - labelW(full) / 2} y={m.y - 21} width={labelW(full)} height="16" rx="4" />
+        <rect class="seq-pill" x={mx - labelW(full) / 2} y={m.y - 19} width={labelW(full)} height="14" rx="4" />
         <text class="seq-call-text" x={mx} y={m.y - 9} text-anchor="middle"><tspan
             class="seq-hit"
             role="button"
@@ -117,7 +117,7 @@
       {@const full = r.text + type}
       <line class="seq-ret-line" x1={m.from_x} y1={m.y} x2={m.to_x} y2={m.y} stroke={r.color} />
       <path class="seq-ret-head" d="M{m.to_x - m.dir * 7},{m.y - 4} L{m.to_x},{m.y} L{m.to_x - m.dir * 7},{m.y + 4}" stroke={r.color} />
-      <rect class="seq-pill" x={mx - labelW(full) / 2} y={m.y - 21} width={labelW(full)} height="16" rx="4" />
+      <rect class="seq-pill" x={mx - labelW(full) / 2} y={m.y - 19} width={labelW(full)} height="14" rx="4" />
       <text class="seq-ret-text" x={mx} y={m.y - 9} text-anchor="middle" fill={r.color}
         >{r.text}{#each typeParts(type) as part, pi (pi)}{#if part.fqn}<tspan class="seq-type seq-type-link" role="button" tabindex="-1" oncontextmenu={(e) => onTypeMenu(part, e)}>{part.text}</tspan>{:else}<tspan class="seq-type">{part.text}</tspan>{/if}{/each}</text>
     {/if}

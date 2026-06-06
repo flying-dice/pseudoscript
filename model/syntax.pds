@@ -312,7 +312,7 @@ public component Lexer for syntax::Syntax {
   /// line/col resolved via `LineIndex`, interior `\` and `"` escaped.
   public renderTokens(text: string): string {
     tokens = Token[] from self.tokenize(text)
-    Syntax::LineIndex.build(text)
+    syntax::LineIndex.build(text)
     return self.renderStream(tokens)
   }
 
@@ -340,7 +340,7 @@ public component LineIndex for syntax::Syntax {
 public component Parser for syntax::Syntax {
   /// Lex, then build the module; bundle the tree with collected diagnostics.
   public parse(text: string): syntax::Parsed {
-    tokens = Token[] from Syntax::Lexer.tokenize(text)
+    tokens = Token[] from syntax::Lexer.tokenize(text)
     ast = Module from self.parseModule(tokens)
     return Parsed from { ast, tokens }
   }

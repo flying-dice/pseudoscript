@@ -72,7 +72,7 @@ public component Dispatcher for webhooks::Webhooks {
 
   /// Retry deliveries whose backoff has elapsed (driven by the scheduled sweep).
   public redeliver(): void {
-    due = Delivery[] from Webhooks::DeliveryStore.due()
+    due = Delivery[] from webhooks::DeliveryStore.due()
     for (delivery in due) {
       self.attempt(delivery.event)
     }
@@ -81,9 +81,9 @@ public component Dispatcher for webhooks::Webhooks {
   /// Record an event for delivery (idempotent on the event id) and attempt it
   /// once. A re-raised event already recorded is ignored.
   dispatch(webhook: webhooks::WebhookEvent): void {
-    seen = Result<void, DeliveryError> from Webhooks::DeliveryStore.seen(webhook.id)
+    seen = Result<void, DeliveryError> from webhooks::DeliveryStore.seen(webhook.id)
     if (seen.isErr) {
-      Webhooks::DeliveryStore.record(webhook)
+      webhooks::DeliveryStore.record(webhook)
       self.attempt(webhook.id)
     }
   }
@@ -92,15 +92,15 @@ public component Dispatcher for webhooks::Webhooks {
   /// endpoint schedules a retry (or exhausts it after the cap); a success marks it
   /// delivered. A delivery already terminal is skipped.
   attempt(event: string): void {
-    deliverable = Option<Delivery> from Webhooks::DeliveryStore.deliverable(event)
+    deliverable = Option<Delivery> from webhooks::DeliveryStore.deliverable(event)
     if (deliverable.isSome) {
       endpoint = string from self.endpointFor(deliverable.value.merchant)
       signed = string from self.sign(deliverable.value)
       sent = Result<void, DeliveryError> from context::MerchantEndpoint.deliver(endpoint, deliverable.value.payload, signed)
       if (sent.isErr) {
-        Webhooks::DeliveryStore.save(self.onFailure(deliverable.value))
+        webhooks::DeliveryStore.save(self.onFailure(deliverable.value))
       } else {
-        Webhooks::DeliveryStore.save(self.markDelivered(deliverable.value))
+        webhooks::DeliveryStore.save(self.markDelivered(deliverable.value))
       }
     }
   }

@@ -40,14 +40,14 @@ public component Queue for waitingroom::WaitingRoom {
     if (open.isErr) {
       return Err(open.error)
     }
-    return Ok(WaitingRoom::QueueStore.enqueue(event, user))
+    return Ok(waitingroom::QueueStore.enqueue(event, user))
   }
 
   /// The caller's current position and estimated wait — computed from a published
   /// queue snapshot (drain cursor + rate), not live queue state, so millions of
   /// position polls during a hot on-sale never hit the enqueue path.
   public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
-    snap = Option<QueueSnapshot> from WaitingRoom::QueueStore.snapshot(ticket.event)
+    snap = Option<QueueSnapshot> from waitingroom::QueueStore.snapshot(ticket.event)
     return self.estimate(ticket, snap)
   }
 
@@ -63,7 +63,7 @@ public component Admission for waitingroom::WaitingRoom {
   /// Verify an admission token is valid and unexpired for its event. The gate
   /// reservation and checkout call before doing anything expensive.
   public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
-    found = Option<AdmissionToken> from WaitingRoom::AdmissionStore.lookup(token)
+    found = Option<AdmissionToken> from waitingroom::AdmissionStore.lookup(token)
     if (found.isNone) {
       return Err(waitingroom::WaitingError::AdmissionInvalid)
     }
@@ -84,10 +84,10 @@ public component Gatekeeper for waitingroom::WaitingRoom {
   /// what the inventory and payment paths can serve.
   public admitNext(event: shared::EventId): void {
     room = number from self.headroom(event)
-    due = QueueTicket[] from WaitingRoom::QueueStore.dequeue(event, room)
+    due = QueueTicket[] from waitingroom::QueueStore.dequeue(event, room)
     for (ticket in due) {
-      token = AdmissionToken from WaitingRoom::AdmissionStore.grant(ticket)
-      WaitingRoom::Signals.admitted(Admitted from { ticket.event, token })
+      token = AdmissionToken from waitingroom::AdmissionStore.grant(ticket)
+      waitingroom::Signals.admitted(Admitted from { ticket.event, token })
     }
   }
 
@@ -103,7 +103,7 @@ public component Gatekeeper for waitingroom::WaitingRoom {
     if (seats.isNone) {
       return self.budget(0, 0)
     }
-    inflight = number from WaitingRoom::AdmissionStore.outstandingAsOf(event, seats.value.version)
+    inflight = number from waitingroom::AdmissionStore.outstandingAsOf(event, seats.value.version)
     return self.budget(seats.value.available, inflight)
   }
 

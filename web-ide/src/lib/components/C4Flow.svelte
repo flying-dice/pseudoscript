@@ -81,6 +81,7 @@
     unlocked?: boolean;
     onpin?: ((fqn: string, row: number, col: number) => void) | null;
     onunlock?: ((next: boolean) => void) | null;
+    onuniverse?: ((fqn: string) => void) | null;
   };
 
   let {
@@ -96,6 +97,7 @@
     unlocked = false,
     onpin = null,
     onunlock = null,
+    onuniverse = null,
   }: Props = $props();
 
   // Drag-to-pin is offered only for a grid layout (the engine emits `grid` only
@@ -284,6 +286,9 @@
         { label: "Find usages", run: () => onusages?.(m.fqn, m.event) },
       ],
     });
+    if (onuniverse) {
+      sections.push({ items: [{ label: "Show in 3D graph", run: () => onuniverse?.(m.fqn), icon: "✦" }] });
+    }
     return sections;
   }
 </script>

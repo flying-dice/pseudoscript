@@ -44,7 +44,7 @@ public component Formatter for format::Format {
       err = FormatError from { errors }
       return Err(err)
     }
-    out = string from Format::Printer.print(parsed.ast)
+    out = string from format::Printer.print(parsed.ast)
     return Ok(out)
   }
 
@@ -52,7 +52,7 @@ public component Formatter for format::Format {
   /// string `format` surface is preferred; this serves the LSP, which already
   /// holds a parsed tree. The trailing newline matches `format`.
   public formatModule(ast: syntax::Module): string {
-    return Format::Printer.print(ast)
+    return format::Printer.print(ast)
   }
 
   /// True if `parsed` carries any error-severity diagnostic — the test that

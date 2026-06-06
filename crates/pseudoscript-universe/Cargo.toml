@@ -1,9 +1,6 @@
-# The 3D "software universe" layout engine — an isolated crate so its (future)
-# AGPL force-simulation dependency stays confined here and never propagates into
-# the web-IDE or Svelte crates (handover spec §12). Pure: no rendering, no
-# threading assumptions, no third-party layout types in the public API; compiles
-# to both native and wasm32. Named `pseudoscript-universe` (not `layout`) to avoid
-# clashing with the existing 2D `pseudoscript-layout` crate.
+# The software-graph model for the 3D relationship view — an isolated, pure crate:
+# no rendering, no layout (the renderer lays out with d3-force-3d client-side), no
+# third-party types in its public API; compiles to both native and wasm32.
 [package]
 name = "pseudoscript-universe"
 version.workspace = true
@@ -19,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 # The resolved C4 model — the same source of truth the 2D view consumes. WASM-safe.
 pseudoscript-model = { path = "../pseudoscript-model" }
-# The containment tree + relationship graph. MIT/Apache, WASM-safe; keeps an `fdg`
-# swap of the force engine trivial later (spec §2).
+# The containment tree + relationship graph. MIT/Apache, WASM-safe.
 petgraph = "0.6"
+# Serialises the graph snapshot the renderer consumes.
+serde = { version = "1", features = ["derive"] }

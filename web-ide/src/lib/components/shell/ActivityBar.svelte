@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Component as ComponentType } from "svelte";
 
-  import { Files, Network, TriangleAlert } from "@lucide/svelte";
+  import { Files, Network, Orbit, TriangleAlert } from "@lucide/svelte";
 
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 
-  // The two work modes the bar switches the centre between.
-  type Activity = "explorer" | "canvas";
+  // The work modes the bar switches the centre between.
+  type Activity = "explorer" | "canvas" | "space";
 
   type Props = {
     active?: Activity;
@@ -16,6 +16,7 @@
     errorCount?: number;
     onexplorer?: () => void;
     oncanvas?: () => void;
+    onspace?: () => void;
     ontoggleproblems?: () => void;
   };
 
@@ -27,6 +28,7 @@
     errorCount = 0,
     onexplorer,
     oncanvas,
+    onspace,
     ontoggleproblems,
   }: Props = $props();
 
@@ -39,6 +41,7 @@
     <div class="grp">
       {@render item(Files, active === "explorer" && explorerOpen ? "Hide explorer" : "Explorer", () => onexplorer?.(), active === "explorer" && explorerOpen)}
       {@render item(Network, "Canvas", () => oncanvas?.(), active === "canvas")}
+      {@render item(Orbit, "3D graph", () => onspace?.(), active === "space")}
     </div>
     <div class="grp bottom">
       <Tooltip.Root>

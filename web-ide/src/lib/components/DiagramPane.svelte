@@ -46,6 +46,7 @@
     unlocked?: boolean;
     onpin?: ((fqn: string, row: number, col: number) => void) | null;
     onunlock?: ((next: boolean) => void) | null;
+    onuniverse?: ((fqn: string) => void) | null;
   };
 
   let {
@@ -66,6 +67,7 @@
     unlocked = false,
     onpin = null,
     onunlock = null,
+    onuniverse = null,
   }: Props = $props();
 
   const isFlow = $derived(!!scene && Array.isArray(scene.participants));
@@ -105,7 +107,7 @@
     </div>
   {:else if ready}
     {#key sig}
-      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} {depth} {ondepth} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} {tweaks} {onlayoutchange} {unlocked} {onpin} {onunlock} />{/if}
+      {#if isFlow}<FlowTimeline scene={scene as ComponentProps<typeof FlowTimeline>["scene"]} layout={layout as ComponentProps<typeof FlowTimeline>["layout"]} {onusages} {onsource} {typeFqn} {depth} {ondepth} />{:else if isData}<DataModel scene={scene as ComponentProps<typeof DataModel>["scene"]} layout={layout as ComponentProps<typeof DataModel>["layout"]} {onpick} />{:else if isFeature}<FeatureFlow scene={scene as ComponentProps<typeof FeatureFlow>["scene"]} layout={layout as ComponentProps<typeof FeatureFlow>["layout"]} />{:else}<C4Flow scene={scene as ComponentProps<typeof C4Flow>["scene"]} layout={layout as ComponentProps<typeof C4Flow>["layout"]} {onpick} {onup} {flows} {onsource} {onusages} {tweaks} {onlayoutchange} {unlocked} {onpin} {onunlock} {onuniverse} />{/if}
     {/key}
   {:else}
     <div class="note">

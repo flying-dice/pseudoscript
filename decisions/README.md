@@ -211,3 +211,9 @@ Read in full for the field-resolution rule and the rejected reuse-the-C4-card an
 `from` carries a type onto a value and is the only way a binding states one. A target MAY be any non-node type (`data`, variant, `Result`, `Option`, primitive, array); `T from { … }` composes a `data` record/variant, `T from expr` carries `T` onto a single value and checks the source's type where determinable — including a resolvable call's declared return. The `x: Type = Expr` annotation is removed (`x = Type from Expr`). A bare `data`/node FQN in value position is not a value; a fieldless variant stays one. Supersedes ADR-020 and ADR-027; amends ADR-003, ADR-021, ADR-022, ADR-032.
 
 Read in full for the one-producer rationale, the determinable-source rule (call-return reads), and the rejected keep-annotations / permissive-`from` / structural-check alternatives.
+
+## [036 — A structural-qualifier path is not an FQN; only the flat FQN resolves](036-no-structural-qualifier.md)
+
+A node reference is its flat FQN `module::Name` (ADR-030), but a leaf-fallback let the C4-ancestry form (`Syntax::Parser`, `module::System::Container::Component`) resolve by its last segment — non-uniformly, so a cross-module drill passed the checker yet built an edge to a non-existent node and broke the C4 diagram while goto and the sequence view appeared to work. Now only the exact flat FQN resolves; the leaf-fallback is removed from the graph builder and the cursor resolver, and the checker reports the drill and suggests the flat FQN. Single-file/anonymous mode (ADR-029) stays lenient; the worked model and samples are migrated.
+
+Read in full for the non-uniform-fallback root cause and the rejected keep-the-convenience alternative.

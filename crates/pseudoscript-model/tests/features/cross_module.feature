@@ -79,6 +79,29 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
     When I check the workspace
     Then the workspace diagnostics include "call target `a::Box` is private to its module"
 
+  Scenario: A nested structural call target suggests its flat FQN (ADR-030)
+    Given the workspace modules:
+      | fqn   | source                                                                                                                              |
+      | a     | //! a\npublic system Sys;\npublic container Box for a::Sys;\npublic component Comp for a::Box {\n  run(): void;\n}                    |
+      | b     | //! b\npublic system Other;\npublic container Caller for b::Other {\n  go(): void {\n    a::Sys::Box::Comp.run()\n  }\n}              |
+    When I check the workspace
+    Then the workspace diagnostics include "call target `a::Sys::Box::Comp` is not a fully-qualified name; use `a::Comp`"
+
+  Scenario: A same-module structural drill suggests its flat FQN (ADR-036)
+    Given the workspace modules:
+      | fqn   | source                                                                                                                                                                  |
+      | shop  | //! shop\npublic system App;\npublic container Box for shop::App;\npublic component Repo for shop::Box {\n  run(): void;\n}\npublic container Caller for shop::App {\n  go(): void {\n    Box::Repo.run()\n  }\n} |
+    When I check the workspace
+    Then the workspace diagnostics include "call target `Box::Repo` is not a fully-qualified name; use `shop::Repo`"
+
+  Scenario: The flat FQN of the same component resolves
+    Given the workspace modules:
+      | fqn   | source                                                                                                                              |
+      | a     | //! a\npublic system Sys;\npublic container Box for a::Sys;\npublic component Comp for a::Box {\n  run(): void;\n}                    |
+      | b     | //! b\npublic system Other;\npublic container Caller for b::Other {\n  go(): void {\n    a::Comp.run()\n  }\n}                        |
+    When I check the workspace
+    Then the workspace has no errors
+
   Scenario: A public cross-module return type resolves
     Given the workspace modules:
       | fqn   | source                                                                                                     |

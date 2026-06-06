@@ -641,13 +641,13 @@ fn seq_label(
     let label = escape_xml(text);
     let chars = text.chars().count() + detail.chars().count();
     if pill && chars > 0 {
-        let w = i32::try_from(chars).unwrap_or(0) * 7 + 12;
+        let w = i32::try_from(chars).unwrap_or(0) * 7 + 8;
         let _ = write!(
             out,
-            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"17\" rx=\"4\" fill=\"{fill}\" \
+            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"14\" rx=\"4\" fill=\"{fill}\" \
              fill-opacity=\"0.92\"/>",
             rx = x - w / 2,
-            ry = y - 12,
+            ry = y - 11,
             fill = pal().pill,
         );
     }

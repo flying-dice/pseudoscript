@@ -164,6 +164,20 @@ export function ideEmitScene(view: string, target = ""): Scene {
   return callWasm("emitScene", () => JSON.parse(ide().emit_scene(view, target)) as Scene);
 }
 
+/** The workspace as a software graph for the 3D relationship view: nodes (systems,
+ *  containers, components, people) with containment, and directed relationships
+ *  weighted by traffic and coloured by the destination's macro-derived archetype.
+ *  The renderer (`ForceGraph`) lays it out with d3-force-3d client-side. */
+export type UniverseSnapshot = {
+  nodes: { id: string; level: string; parent: string | null }[];
+  edges: { from: string; to: string; traffic: number; kind: string }[];
+};
+
+/** Build the software graph for the held workspace. */
+export function ideUniverse(): UniverseSnapshot {
+  return callWasm("universe", () => JSON.parse(ide().universe()) as UniverseSnapshot);
+}
+
 /** Project the fitting diagram for the symbol `fqn` to its scene. A throw here
  *  is control flow (a non-projectable symbol → the canvas lifeline fallback), so
  *  it is left unwrapped — `callWasm` would double-log it at error severity. */

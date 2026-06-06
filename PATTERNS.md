@@ -23,7 +23,7 @@ A `data` field is a shape hint, not a faithful port of the host type: a count is
 
 ```pds
 view = Sequence from { entry }                       // compose a View variant
-scene = Scene from Emit::Projector.project(graph, view)   // carry the type onto a call result
+scene = Scene from emit::Projector.project(graph, view)   // carry the type onto a call result
 ```
 
 `Ok`/`Err`/`Some`/`None` construct the built-in generics (LANG.md §6): `Ok(v)`/`Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` is empty. A bare `data`-record or node reference is not a value — `from` produces it.
@@ -198,7 +198,7 @@ The headline subsystem (ADR-017, ADR-025). `try_render_site_with(graph, config, 
 
 `format(src) -> Result<String, FormatError>` (lib.rs). Maps to `Formatter`, `Printer`.
 
-- Parse with `Syntax::parse`; if any error-severity diagnostic, return `FormatError::Parse(messages)`; otherwise pretty-print.
+- Parse with `syntax::Parser.parse`; if any error-severity diagnostic, return `FormatError::Parse(messages)`; otherwise pretty-print.
 - **Trivia-preserving** (printer.rs): two-space indent, comments and blank-line runs kept, one declaration per stanza. Idempotent — formatting the output is a no-op.
 
 ---
@@ -251,7 +251,7 @@ Protocol, not language logic — reuses `Syntax` + `Model` + `Format`. Maps to `
 ## Alignment with LANG.md open questions
 
 - **Expression operators (§12 #3).** `==`/`&&` are not in the grammar yet; the recursive-descent expression parser is the place to add them via a precedence table when they land.
-- **`View` dispatch without `match` (§12 #4).** The language can't `match` on a `View` variant, but a caller **constructs** a `View` with `from` (LANG.md §7.2) and passes it to `Emit::Projector.project`, which dispatches internally. The dispatch is real; it just isn't surfaced in a disclosed body — the projection callable is a black box over the graph.
+- **`View` dispatch without `match` (§12 #4).** The language can't `match` on a `View` variant, but a caller **constructs** a `View` with `from` (LANG.md §7.2) and passes it to `emit::Projector.project`, which dispatches internally. The dispatch is real; it just isn't surfaced in a disclosed body — the projection callable is a black box over the graph.
 
 ---
 

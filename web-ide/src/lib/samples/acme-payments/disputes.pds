@@ -86,14 +86,14 @@ public component DisputeService for disputes::Disputes {
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen = Result<void, DisputeError> from Disputes::CallbackLog.seen(event.eventId)
+    seen = Result<void, DisputeError> from disputes::CallbackLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
     dispute = Dispute from { event, disputes::DisputeStatus::NeedsResponse }
-    Disputes::DisputeStore.save(dispute)
-    Disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
-    Disputes::CallbackLog.record(event.eventId)
+    disputes::DisputeStore.save(dispute)
+    disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
+    disputes::CallbackLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
   }
 
@@ -113,7 +113,7 @@ public component DisputeService for disputes::Disputes {
       return Err(disputes::DisputeError::NetworkUnreachable)
     }
     reviewing = Dispute from self.mark(loaded.value, disputes::DisputeStatus::UnderReview)
-    Disputes::DisputeStore.save(reviewing)
+    disputes::DisputeStore.save(reviewing)
     return Ok(reviewing)
   }
 
@@ -126,7 +126,7 @@ public component DisputeService for disputes::Disputes {
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen = Result<void, DisputeError> from Disputes::CallbackLog.seen(event.eventId)
+    seen = Result<void, DisputeError> from disputes::CallbackLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
@@ -134,14 +134,14 @@ public component DisputeService for disputes::Disputes {
     if (loaded.isOk) {
       self.applyRuling(loaded.value, event.ruling)
     }
-    Disputes::CallbackLog.record(event.eventId)
+    disputes::CallbackLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
   }
 
   /// Disputes past their response deadline still awaiting evidence (drives the
   /// deadline sweep).
   public unanswered(): disputes::Dispute[] {
-    return Disputes::DisputeStore.unanswered()
+    return disputes::DisputeStore.unanswered()
   }
 
   /// Forfeit a dispute the merchant never answered: mark it `Lost`. The funds
@@ -151,7 +151,7 @@ public component DisputeService for disputes::Disputes {
     if (loaded.isOk) {
       open = Result<void, DisputeError> from self.contestable(loaded.value)
       if (open.isOk) {
-        Disputes::DisputeStore.save(self.mark(loaded.value, disputes::DisputeStatus::Lost))
+        disputes::DisputeStore.save(self.mark(loaded.value, disputes::DisputeStatus::Lost))
       }
     }
   }
@@ -161,10 +161,10 @@ public component DisputeService for disputes::Disputes {
   applyRuling(dispute: disputes::Dispute, ruling: disputes::DisputeRuling): void {
     won = Result<void, DisputeError> from self.isWin(ruling)
     if (won.isOk) {
-      Disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Won))
-      Disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
+      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Won))
+      disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
     } else {
-      Disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Lost))
+      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Lost))
     }
   }
 
@@ -184,7 +184,7 @@ public component DisputeService for disputes::Disputes {
 
   /// Read a dispute, or `NotFound`.
   get(dispute: shared::DisputeId): Result<disputes::Dispute, disputes::DisputeError> {
-    found = Option<Dispute> from Disputes::DisputeStore.fetch(dispute)
+    found = Option<Dispute> from disputes::DisputeStore.fetch(dispute)
     if (found.isNone) {
       return Err(disputes::DisputeError::NotFound)
     }

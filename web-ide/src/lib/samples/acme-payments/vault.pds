@@ -33,9 +33,9 @@ public component Tokenizer for vault::Vault {
     if (instrument.isErr) {
       return Err(instrument.error)
     }
-    id = shared::PaymentMethodId from Vault::TokenStore.nextId()
+    id = shared::PaymentMethodId from vault::TokenStore.nextId()
     method = PaymentMethod from self.represent(id, card)
-    Vault::TokenStore.save(merchant, method, instrument.value)
+    vault::TokenStore.save(merchant, method, instrument.value)
     return Ok(method)
   }
 
@@ -54,7 +54,7 @@ public component Instruments for vault::Vault {
   /// The network instrument for a stored payment method, if it exists and
   /// belongs to the merchant.
   public instrumentFor(merchant: shared::MerchantId, method: shared::PaymentMethodId): Option<context::NetworkInstrument> {
-    return Vault::TokenStore.instrument(merchant, method)
+    return vault::TokenStore.instrument(merchant, method)
   }
 }
 
