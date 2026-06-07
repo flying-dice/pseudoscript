@@ -57,3 +57,9 @@ Language intelligence has a single source of truth: **`crates/pseudoscript-lsp-c
 - **`crates/pseudoscript-ide`** — the browser IDE's single wasm. It is the whole web-IDE application: a stateful `IdeSession` (`src/lib.rs`) that holds the workspace and exposes **one typed surface** covering every capability the IDE drives — language intelligence (routed through `lsp-core`), diagrams (`pseudoscript-emit`), the doc site (`pseudoscript-doc`), formatting, and dependency resolution. The toolchain crates are consumed as ordinary Rust rlibs, not a second wasm. The boundary is typed with **`tsify`**: the Rust DTOs are the source of truth, wasm-bindgen emits the real `.d.ts`, and values cross as objects — no hand-written TS, no `JSON.parse`. The one exception is the render IR `Scene`, an opaque JSON string the canvas reads structurally. The web IDE (`web-ide/src/lib/pds.ts`) is the only client and drives `IdeSession` directly, so the wasm toolchain is exercised as a real client and cannot drift.
 
 To change a language feature, edit it once in `lsp-core` (or its `model` primitive). After the wasm surface changes, rebuild: `npm run build:wasm` in `web-ide`, then commit the regenerated `pds-ide-wasm/` artifacts. Highlight **colours** and pure editor UX stay client-side.
+
+## Playwright
+
+Always write playwright tests for web-ide and web-landing projects.
+Playwright tests must use data-testid attributes for element selection. No brittle CSS selectors.
+Do not guess how to navigate using playwright explore the site and use the data to build the tests.

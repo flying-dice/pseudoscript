@@ -87,7 +87,7 @@ export type Loc = {
   col: number;
   label?: string;
   fqn?: string;
-  view?: "code" | "canvas";
+  view?: "code" | "canvas" | "space";
 };
 
 // The editor's imperative API, handed back via `onready`. Impure (DOM/CodeMirror) —

@@ -692,8 +692,8 @@
   });
 </script>
 
-<div class="graph">
-  <canvas bind:this={canvas}></canvas>
+<div class="graph" data-testid="universe">
+  <canvas bind:this={canvas} data-testid="universe-canvas"></canvas>
   <div class="bar">
     {#if hasSelection}<button onclick={() => { clearLocal?.(); ondeselect?.(); }}>⤺ Deselect</button>{/if}
     {#if onclose}<button onclick={() => onclose?.()}>✕ Close (Esc)</button>{/if}
@@ -718,10 +718,10 @@
     <span><i style="background:var(--k-person)"></i>person</span>
   </div>
   {#if flowSteps.length}
-    <div class="timeline">
+    <div class="timeline" data-testid="flow-timeline">
       {#if flowName}
         <div class="tl-flow">
-          {#if flowColor}<i style="background:{flowColor}"></i>{/if}<span>{flowName}</span>
+          {#if flowColor}<i style="background:{flowColor}"></i>{/if}<span data-testid="flow-name">{flowName}</span>
         </div>
       {/if}
       <div class="tl-head">

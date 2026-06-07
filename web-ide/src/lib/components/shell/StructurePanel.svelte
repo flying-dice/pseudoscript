@@ -9,10 +9,11 @@
     symbols?: SymbolNode[];
     selectedFqn?: string | null;
     onpicknode?: (fqn: string) => void;
+    ongotodef?: (fqn: string) => void;
     onreveal?: (fqn: string) => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, onreveal }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal }: Props = $props();
 
   let query = $state("");
 
@@ -50,7 +51,7 @@
     {#if filtered.length === 0 && query}
       <div class="empty">No symbol matches “{query}”.</div>
     {:else}
-      <SymbolTree symbols={filtered as never} {selectedFqn} {onpicknode} {onreveal} />
+      <SymbolTree symbols={filtered as never} {selectedFqn} {onpicknode} {ongotodef} {onreveal} />
     {/if}
   </div>
 </aside>

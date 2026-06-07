@@ -39,9 +39,9 @@
 <Tooltip.Provider delayDuration={250}>
   <nav class="activity" aria-label="Activity bar">
     <div class="grp">
-      {@render item(Files, active === "explorer" && explorerOpen ? "Hide explorer" : "Explorer", () => onexplorer?.(), active === "explorer" && explorerOpen)}
-      {@render item(Network, "Canvas", () => oncanvas?.(), active === "canvas")}
-      {@render item(Orbit, "3D graph", () => onspace?.(), active === "space")}
+      {@render item(Files, active === "explorer" && explorerOpen ? "Hide explorer" : "Explorer", () => onexplorer?.(), active === "explorer" && explorerOpen, "view-explorer")}
+      {@render item(Network, "Canvas", () => oncanvas?.(), active === "canvas", "view-canvas")}
+      {@render item(Orbit, "3D graph", () => onspace?.(), active === "space", "view-space")}
     </div>
     <div class="grp bottom">
       <Tooltip.Root>
@@ -62,9 +62,9 @@
   </nav>
 </Tooltip.Provider>
 
-{#snippet item(Icon: ComponentType, label: string, onclick: () => void, on: boolean)}
+{#snippet item(Icon: ComponentType, label: string, onclick: () => void, on: boolean, testid: string)}
   <Tooltip.Root>
-    <Tooltip.Trigger class="act-btn {on ? 'on' : ''}" {onclick} aria-label={label} aria-pressed={on}>
+    <Tooltip.Trigger class="act-btn {on ? 'on' : ''}" {onclick} aria-label={label} aria-pressed={on} data-testid={testid}>
       <Icon size={18} strokeWidth={1.75} aria-hidden="true" />
     </Tooltip.Trigger>
     <Tooltip.Content side="right" sideOffset={8}>{label}</Tooltip.Content>

@@ -82,6 +82,16 @@ describe("navigation history", () => {
     expect(s.index).toBe(1);
   });
 
+  it("treats a space (3D) entry as distinct from canvas/code, and steps to it", () => {
+    const canvas: Loc = { fileFqn: "m", line: 7, col: 3, view: "canvas", fqn: "m::Node" };
+    const space: Loc = { fileFqn: "m", line: 7, col: 3, view: "space", fqn: "m::Node" };
+    expect(samePosition(canvas, space)).toBe(false);
+    let s = recordLocation(empty, canvas);
+    s = recordLocation(s, space);
+    expect(s.history).toHaveLength(2);
+    expect(stepBack(s)?.loc.view).toBe("canvas");
+  });
+
   it("collapses a repeat of the same canvas scope", () => {
     const canvas: Loc = { fileFqn: "m", line: 7, col: 3, view: "canvas", fqn: "m::Node", label: "old" };
     let s = recordLocation(empty, canvas);

@@ -118,6 +118,15 @@
     navigation.recordIfMoved(nav.originLoc(openFile.fqn, loc.line, loc.col));
   }
 
+  // Record the *current view's* scope as a Back origin, so a reveal/goto returns to
+  // where it was launched from — the editor caret in code, the diagram scope in the
+  // canvas, or the focused flow/node in the universe (not always the editor).
+  function recordViewOrigin() {
+    if (view === "space") recordSpaceScope(spaceTargetFqn);
+    else if (view === "canvas") recordCanvasScope(selected?.fqn ?? null);
+    else recordOrigin();
+  }
+
   // Record a canvas scope (a drilled node, or `null` for the whole-model
   // overview) as a history entry, so Back returns to the previous diagram.
   function recordCanvasScope(fqn: string | null) {
@@ -132,12 +141,32 @@
     });
   }
 
+  // Record a universe scope (a focused node, or an opened flow keyed by its entry
+  // callable) as a history entry, so Back/Forward step through the 3D view alongside
+  // code and canvas. A flow's entry callable is not a placed node — label it by leaf.
+  function recordSpaceScope(fqn: string | null) {
+    const hit = fqn ? nodeIndex.get(fqn) : null;
+    recordLocation({
+      view: "space",
+      fqn: fqn ?? undefined,
+      fileFqn: hit?.fileFqn ?? "",
+      line: hit?.node.line ?? 0,
+      col: hit?.node.col ?? 0,
+      label: fqn ? (hit ? nodeTitle(fqn) : simpleName(fqn)) : "Universe",
+    });
+  }
+
   // Apply a location without recording it (back/forward, history-list click).
   // A canvas entry replays the diagram scope and stays on the canvas (no editor
   // jump); a code entry opens its file, re-scopes, and jumps the editor.
   // Sets state directly (never via selectNode/resetScope), so replay does not
   // re-enter the recording paths.
   function applyLocation(loc: Loc) {
+    if (loc.view === "space") {
+      applySpaceTarget(loc.fqn ?? null);
+      if (loc.fqn) selectNode(loc.fqn, { goto: false, origin: false, record: false });
+      return;
+    }
     if (loc.view === "canvas") {
       selection.selected = loc.fqn
         ? { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn }
@@ -417,6 +446,9 @@
   let spaceFlowColor = $state<string | null>(null);
   // The selected flow's name (its entry point's leaf), shown in the 3D timeline header.
   let spaceFlowName = $state<string | null>(null);
+  // The fqn the 3D view is currently targeting (a flow's entry callable or a node),
+  // so a reveal/goto launched from the universe can record it as the Back origin.
+  let spaceTargetFqn = $state<string | null>(null);
 
   $effect(() => {
     void allModules; // track edits + workspace switches
@@ -440,11 +472,19 @@
   // anything else flies to the node. Also records the shared selection so it persists
   // when you switch to the canvas or code views.
   function openUniverse(fqn: string | null): void {
+    applySpaceTarget(fqn);
+    if (fqn) selectNode(fqn, { goto: false, origin: false, record: false });
+    recordSpaceScope(fqn);
+  }
+  // Set the 3D view's target — light a flow's chain (an entry-point fqn) or fly to a
+  // node — and switch to the view. State only: no history, no shared selection (the
+  // callers own those, so back/forward replay can reuse this without re-recording).
+  function applySpaceTarget(fqn: string | null): void {
     const flow = fqn ? flowOf(fqn) : null;
     if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowColor(fqn!); spaceFlowName = simpleName(fqn!); spaceFocus = null; }
     else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; spaceFlowName = null; }
+    spaceTargetFqn = fqn;
     selection.view = "space";
-    if (fqn) selectNode(fqn, { goto: false, origin: false });
   }
   // Clear the 3D graph's selection (highlight + flow) back to the resting view, and
   // the global node selection with it — deselecting in the universe is a deselect
@@ -455,6 +495,7 @@
     spaceFlow = null;
     spaceFlowColor = null;
     spaceFlowName = null;
+    spaceTargetFqn = null;
     selection.selected = null;
   }
   // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
@@ -612,7 +653,7 @@
   // to the declaration; a canvas drill leaves the view alone. A member/field fqn
   // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
   // field opens its declaring type instead of no-opping (PDS-GOTO-002).
-  function selectNode(fqn: string, { goto = false, origin = true }: { goto?: boolean; origin?: boolean } = {}) {
+  function selectNode(fqn: string, { goto = false, origin = true, record = true }: { goto?: boolean; origin?: boolean; record?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
     // opens its declaring type instead of no-opping (PDS-GOTO-002).
@@ -636,10 +677,10 @@
       return;
     }
     const fileFqn = file.fqn;
-    // Record the pre-jump caret before the file/scope changes, so Back returns.
-    // `origin: false` suppresses it when the caller already recorded the origin
-    // (a canvas→code "go to definition" records the canvas scope as the origin).
-    if (goto && view !== "canvas" && origin) recordOrigin();
+    // Record the launching view's scope before the file/scope changes, so Back
+    // returns there (the editor caret in code, the universe's flow/node in space).
+    // `origin: false` suppresses it when the caller already recorded the origin.
+    if (goto && view !== "canvas" && origin) recordViewOrigin();
     if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
@@ -647,11 +688,12 @@
     if (goto && view !== "canvas") {
       selection.view = "code";
       selection.pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
-      recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
-    } else {
-      // A canvas drill (or a goto re-scope while the canvas shows): record the
-      // new scope so Back returns to the previous diagram.
-      recordCanvasScope(targetFqn);
+      if (record) recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
+    } else if (record) {
+      // A canvas drill or a universe selection: record the new scope in the active
+      // view so Back returns to the previous diagram / flow.
+      if (view === "space") recordSpaceScope(targetFqn);
+      else recordCanvasScope(targetFqn);
     }
   }
 
@@ -687,14 +729,15 @@
   // The structural ancestor chain (root system → … → the node) for the breadcrumb.
   const ancestry = (fqn: string) => model.ancestry(index, fqn);
 
-  // The editor's hover popover: reveal the symbol's diagram on the canvas.
-  // Record the code spot first so Back from the canvas returns to it; selectNode
-  // then records the revealed canvas scope.
+  // Reveal a symbol's diagram on the canvas (editor hover popover, or the structure
+  // panel's right-click). Record where you launched it from — code, canvas, or the
+  // universe — so Back returns there; then switch to the canvas so selectNode records
+  // the revealed scope as a canvas entry.
   function revealSymbol(fqn: string) {
     if (!nodeIndex.has(fqn)) return;
-    recordOrigin();
-    selectNode(fqn);
+    recordViewOrigin();
     selection.view = "canvas";
+    selectNode(fqn, { origin: false });
   }
 
   // Apply a queued editor jump once the code view is mounted on the right file.
@@ -2681,11 +2724,11 @@ show('index.html');
             {/if}
           </div>
           {#if view === "canvas"}
-            <div class="layer canvas-layer">
+            <div class="layer canvas-layer" data-testid="canvas-view">
               <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} onuniverse={openUniverse} />
             </div>
           {:else if view === "space"}
-            <div class="layer space-layer">
+            <div class="layer space-layer" data-testid="space-view">
               {#if spaceSnapshot}
                 {#key spaceKey}
                   <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} flowName={spaceFlowName} ondeselect={resetSpace} onpick={openUniverse} />
@@ -2712,6 +2755,7 @@ show('index.html');
           symbols={symbols as never}
           selectedFqn={selected?.fqn ?? null}
           onpicknode={(fqn) => (view === "space" ? openUniverse(fqn) : selectNode(fqn, { goto: true }))}
+          ongotodef={(fqn) => selectNode(fqn, { goto: true })}
           onreveal={revealSymbol}
         />
       {/if}
