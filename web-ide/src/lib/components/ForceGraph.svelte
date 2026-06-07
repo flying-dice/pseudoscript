@@ -235,35 +235,42 @@
     scene.add(new THREE.LineSegments(treeGeo, new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.14 })));
 
     // ---- filaments ---------------------------------------------------------
-    // Each relationship is its own smooth filament. Filaments are laterally offset by
-    // a per-strand amount (a packed disc cross-section) so that strands sharing a
-    // gateway run *parallel* and stacked, like the fibres in an optic cable — never
-    // overlapping. Built once from the (fixed) node positions.
-    const FIL_GAP = 0.85; // spacing between strands in the bundle cross-section
+    // A filament IS a relationship: it runs the *true* path — a direct arc from its
+    // source node to its destination node — not up the containment/parent line through
+    // the gateways (that hierarchy only drives the layout). Each filament is laterally
+    // offset by a packed-disc cross-section so strands between the same pair fan out in
+    // the middle and converge at the two spheres, stacked like fibres in an optic cable.
+    const FIL_GAP = 0.7; // spacing between strands in the bundle cross-section
+    const ARC_SAMPLES = 22;
     const filOffset = (i: number): [number, number] => {
       const a = i * 2.39996323, r = FIL_GAP * Math.sqrt(i + 0.5); // sunflower packing
       return [Math.cos(a) * r, Math.sin(a) * r];
     };
     const UP = new THREE.Vector3(0, 1, 0), ALT = new THREE.Vector3(1, 0, 0);
     const ftan = new THREE.Vector3(), frt = new THREE.Vector3(), fup = new THREE.Vector3();
-    const buildFilament = (ids: string[], idx: number): THREE.Vector3[] => {
-      const base = ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
-      if (base.length < 2) return [];
-      const [ox, oy] = filOffset(idx);
-      const off = base.map((p, j) => {
-        const prev = base[Math.max(0, j - 1)], next = base[Math.min(base.length - 1, j + 1)];
-        ftan.subVectors(next, prev); if (ftan.lengthSq() < 1e-9) ftan.set(0, 0, 1); ftan.normalize();
-        frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
-        fup.crossVectors(frt, ftan).normalize();
-        return p.clone().addScaledVector(frt, ox).addScaledVector(fup, oy);
-      });
-      // Smooth the offset polyline into a fibre — rounds the gateway corners.
-      return new THREE.CatmullRomCurve3(off).getPoints(Math.max(16, (off.length - 1) * 8));
+    // A direct, gently-bowed arc from `fromId` to `toId`, bowed by the strand's disc
+    // offset (zeroed at the ends so it meets both spheres). `idx < 0` → centreline.
+    const buildFilament = (fromId: string, toId: string, idx: number): THREE.Vector3[] => {
+      const a = pos.get(fromId), b = pos.get(toId);
+      if (!a || !b) return [];
+      ftan.subVectors(b, a); const len = ftan.length();
+      if (len < 1e-3) return [];
+      ftan.normalize();
+      frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
+      fup.crossVectors(frt, ftan).normalize();
+      const [ox, oy] = idx < 0 ? [0, 0] : filOffset(idx);
+      const bow = Math.min(1, len / 24); // short edges bow less, so they don't loop
+      const pts: THREE.Vector3[] = [];
+      for (let k = 0; k <= ARC_SAMPLES; k++) {
+        const t = k / ARC_SAMPLES, env = Math.sin(Math.PI * t) * bow;
+        pts.push(new THREE.Vector3().lerpVectors(a, b, t).addScaledVector(frt, ox * env).addScaledVector(fup, oy * env));
+      }
+      return pts;
     };
 
     // The filament line you hover to trace, and the beads-of-light flow that travels
     // it (caller → callee), coloured per destination, denser/faster with traffic.
-    type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; path: string[]; pathSet: Set<string>; from: string; to: string };
+    type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; from: string; to: string };
     const rels: Rel[] = [];
     const pickLines: THREE.Line[] = [];
     type FlowRoute = { from: string; to: string; pts: THREE.Vector3[]; cum: number[]; total: number; speed: number; color: THREE.Color };
@@ -271,7 +278,7 @@
     const particles: { route: number; off: number }[] = [];
     let fi = 0;
     for (const r of routes) {
-      const pts = buildFilament(r.path, fi);
+      const pts = buildFilament(r.from, r.to, fi);
       if (pts.length < 2) continue;
       fi++;
       const color = new THREE.Color(FLOW_PALETTE[flowHash(r.to) % FLOW_PALETTE.length]);
@@ -279,13 +286,16 @@
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
       (line as THREE.Object3D).userData = { rel: rels.length };
       scene.add(line); pickLines.push(line);
-      rels.push({ line, mat, base: color.clone(), path: r.path, pathSet: new Set(r.path), from: r.from, to: r.to });
+      rels.push({ line, mat, base: color.clone(), from: r.from, to: r.to });
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
       flowRoutes.push({ from: r.from, to: r.to, pts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
       for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
     }
+    // Does relationship `rl` belong to node `id` — is `id` an endpoint or an ancestor
+    // (container/system) of one? Lets hovering a hub light all relationships under it.
+    const relUnder = (rl: Rel, id: string) => ancestors(rl.from).includes(id) || ancestors(rl.to).includes(id);
     const flowArr = new Float32Array(particles.length * 3);
     const flowColArr = new Float32Array(particles.length * 3);
     for (let i = 0; i < particles.length; i++) {
@@ -353,14 +363,9 @@
         stepRoutes = []; current = null; streamGeo.setDrawRange(0, 0); flowSteps = []; flowStep = -1;
         return;
       }
-      // One routed polyline per call step (caller → … → callee through the gateways).
+      // One direct arc per call step (caller → callee) — the true relationship path.
       stepRoutes = hops.map((h) => {
-        const pts: THREE.Vector3[] = [];
-        for (const id of routeOf(h.from, h.to).path) {
-          const v = pos.get(id); if (!v) continue;
-          if (pts.length && pts[pts.length - 1].equals(v)) continue;
-          pts.push(v);
-        }
+        const pts = buildFilament(h.from, h.to, -1); // centreline arc
         const cum = [0];
         for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
         return { pts, cum, total: cum[cum.length - 1] || 1 };
@@ -449,7 +454,7 @@
       while (id && !pos.has(id)) { const i = id.lastIndexOf("::"); id = i < 0 ? "" : id.slice(0, i); }
       const p = id ? pos.get(id) : undefined; if (!p) return;
       camFocus = { target: p.clone(), dist: FOCUS_DIST[levelOf.get(id) ?? "component"] ?? 60 };
-      resting = (rl) => rl.pathSet.has(id);
+      resting = (rl) => relUnder(rl, id);
       setHighlight(resting);
       const nodeSet = new Set([id]);
       for (const a of ancestors(id)) if (pos.has(a)) nodeSet.add(a);
@@ -497,13 +502,13 @@
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       ray.setFromCamera(ndc, camera);
-      // A hub (node) first: light every chain passing through it.
+      // A hub (node) first: light every relationship it owns (itself or a descendant).
       const nodeHit = ray.intersectObjects(pickNodes, false)[0];
       if (nodeHit) {
         const n = (nodeHit.object as THREE.Object3D).userData as Node;
-        setHighlight((rl) => rl.pathSet.has(n.id));
-        const through = rels.filter((rl) => rl.pathSet.has(n.id)).length;
-        showTip(e.clientX, e.clientY, `<b>${shortName(n.id)}</b><em>${n.level}${through ? ` · gateway for ${through} relationship${through === 1 ? "" : "s"}` : ""}</em>`);
+        setHighlight((rl) => relUnder(rl, n.id));
+        const through = rels.filter((rl) => relUnder(rl, n.id)).length;
+        showTip(e.clientX, e.clientY, `<b>${shortName(n.id)}</b><em>${n.level}${through ? ` · ${through} relationship${through === 1 ? "" : "s"}` : ""}</em>`);
         cv.style.cursor = "pointer"; return;
       }
       const lineHit = ray.intersectObjects(pickLines, false)[0];
@@ -511,7 +516,7 @@
         const idx = ((lineHit.object as THREE.Object3D).userData as { rel: number }).rel;
         const rl = rels[idx];
         setHighlight((x) => x === rl);
-        showTip(e.clientX, e.clientY, `<b>${shortName(rl.from)} → ${shortName(rl.to)}</b><em>${rl.path.map(shortName).join(" › ")}</em>`);
+        showTip(e.clientX, e.clientY, `<b>${shortName(rl.from)} → ${shortName(rl.to)}</b>`);
         cv.style.cursor = "pointer"; return;
       }
       setHighlight(resting); tip.style.opacity = "0"; cv.style.cursor = "grab";
