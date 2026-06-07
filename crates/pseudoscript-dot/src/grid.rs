@@ -50,6 +50,9 @@ const MIN_EVALS: u64 = 4_000;
 const RESTARTS: usize = 48;
 /// Gap between grid cells beyond the largest node, in points.
 const GRID_GAP: f64 = 56.0;
+/// Empty-cell band kept around the pinned content on every side, so a box can be
+/// dragged a couple of cells beyond the current bounding box in any direction.
+const MARGIN: usize = 2;
 /// Cost weight: a non-member sitting inside a cluster's cell-box. Not a dial — set
 /// far above the others so the search treats a cluster frame as a constraint (it
 /// will only intrude one when no clean placement exists), yet it is still just a
@@ -153,6 +156,57 @@ struct Ctx {
     unpinned_nodes: Vec<usize>,
 }
 
+/// The grid extent plus the offset applied to every pinned cell, so the pinned
+/// content keeps a [`MARGIN`]-cell band on every side (see [`grid_window`]).
+struct GridWindow {
+    cols: usize,
+    rows: usize,
+    shift_r: usize,
+    shift_c: usize,
+}
+
+/// Size the grid and the pin shift for `n` nodes under reading direction `lr`.
+///
+/// A balanced base grid (longer axis along the reading direction, `long =
+/// ceil(sqrt(n))`) carries a one-cell band all round — search room the optimiser
+/// uses to seat a node on an edge cell or separate a cluster from externals. The
+/// pinned content is then shifted inward so a [`MARGIN`]-cell band sits above and to
+/// the left (cells are 0-indexed, so top/left room exists only as an offset), and
+/// the grid grows so the same band exists below and to the right. The shift is
+/// saturating: content already `MARGIN` cells in is left where the user put it. With
+/// no pins the shift is zero and the extent is the bare base, so the un-pinned
+/// layout is byte-identical to before.
+fn grid_window(n: usize, lr: bool, pins: &[Pin]) -> GridWindow {
+    let long = (1..=n).find(|c| c * c >= n).unwrap_or(1);
+    let short = n.div_ceil(long);
+    let (base_cols, base_rows) = if lr { (long, short) } else { (short, long) };
+
+    let valid_pins = || pins.iter().filter(|p| p.node < n);
+    let shift_r = valid_pins()
+        .map(|p| p.row)
+        .min()
+        .map_or(0, |r| MARGIN.saturating_sub(r));
+    let shift_c = valid_pins()
+        .map(|p| p.col)
+        .min()
+        .map_or(0, |c| MARGIN.saturating_sub(c));
+
+    let mut cols = base_cols + 2;
+    let mut rows = base_rows + 2;
+    if let Some(mc) = valid_pins().map(|p| p.col).max() {
+        cols = cols.max(mc + shift_c + 1 + MARGIN);
+    }
+    if let Some(mr) = valid_pins().map(|p| p.row).max() {
+        rows = rows.max(mr + shift_r + 1 + MARGIN);
+    }
+    GridWindow {
+        cols,
+        rows,
+        shift_r,
+        shift_c,
+    }
+}
+
 /// Place `graph` on a grid by minimising the weighted cost under `params` (the UI
 /// dials), with `pins` fixing chosen nodes to cells (the rest are searched around
 /// them). Deterministic; never panics. With `pins` empty this is byte-identical to
@@ -164,29 +218,13 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
         return Layout::default();
     }
 
-    // A balanced grid whose longer axis lies along the reading direction, so
-    // arrows have room to flow that way: wide for left-to-right, tall for top-down.
-    // `long = ceil(sqrt(n))` (integer search, no float cast); `short ≤ long`. The
-    // grid is the full `rows × cols` rectangle — the spare cells (`m - n`) give the
-    // search room to keep clusters compact and route edges around nodes.
     let lr = graph.rankdir == RankDir::LeftRight;
-    let long = (1..=n).find(|c| c * c >= n).unwrap_or(1);
-    let short = n.div_ceil(long);
-    let (mut cols, mut rows) = if lr { (long, short) } else { (short, long) };
-    // A one-cell margin on every side (N+1 all round), part of the search space: the
-    // optimiser may place a node on an edge cell when that reads better than the
-    // interior, clusters get room to separate from externals, and there is always a
-    // fresh cell to drag a box into in any direction.
-    cols += 2;
-    rows += 2;
-    // Grow the grid to include every pinned cell, so a node can be dragged to any
-    // coordinate — the extra empty cells are the placement room.
-    for p in pins {
-        if p.node < n {
-            cols = cols.max(p.col + 1);
-            rows = rows.max(p.row + 1);
-        }
-    }
+    let GridWindow {
+        cols,
+        rows,
+        shift_r,
+        shift_c,
+    } = grid_window(n, lr, pins);
     let m = rows * cols;
     // The gap between cells follows the spacing control (compact/comfortable/roomy).
     // The deviation from 1.0 is amplified so compact/roomy move the gap about twice
@@ -225,15 +263,20 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
         .collect();
     let clusters = effective_members(graph, n);
 
-    // Resolve pins to fixed cells, dropping any out of the current grid or colliding
-    // with an already-pinned cell (the dropped node then places freely).
+    // Resolve pins to fixed cells (shifted into the padded window), dropping any out
+    // of the current grid or colliding with an already-pinned cell (the dropped node
+    // then places freely).
     let mut fixed = vec![None; n];
     let mut taken = vec![false; m];
     for p in pins {
-        if p.node >= n || p.col >= cols || p.row >= rows {
+        if p.node >= n {
             continue;
         }
-        let cell = p.row * cols + p.col;
+        let (row, col) = (p.row + shift_r, p.col + shift_c);
+        if col >= cols || row >= rows {
+            continue;
+        }
+        let cell = row * cols + col;
         if taken[cell] {
             continue;
         }
@@ -1004,9 +1047,10 @@ mod tests {
         }
         g.edges.push(Edge::new("a", "b"));
         g.edges.push(Edge::new("a", "c"));
-        // Pin "a" to row 1, col 1 — a cell its edges would otherwise pull it off.
-        let l = grid_layout(&g, GridParams::default(), &[pin(0, 1, 1)]);
-        assert_eq!(cell_of(&l, "a"), (1, 1), "pinned node holds its cell");
+        // Pin "a" to (3, 3) — past the top-left margin, so no shift applies — a cell
+        // its edges would otherwise pull it off.
+        let l = grid_layout(&g, GridParams::default(), &[pin(0, 3, 3)]);
+        assert_eq!(cell_of(&l, "a"), (3, 3), "pinned node holds its cell");
         distinct_cells(&l);
     }
 
@@ -1017,8 +1061,9 @@ mod tests {
             g.nodes.push(node(id));
         }
         g.edges.push(Edge::new("a", "b"));
-        let l = grid_layout(&g, GridParams::default(), &[pin(2, 0, 0)]);
-        assert_eq!(cell_of(&l, "c"), (0, 0));
+        // Pin "c" past the margin so it holds its cell with no shift.
+        let l = grid_layout(&g, GridParams::default(), &[pin(2, 2, 2)]);
+        assert_eq!(cell_of(&l, "c"), (2, 2));
         distinct_cells(&l); // a, b, d placed around it, no overlap
     }
 
@@ -1041,12 +1086,12 @@ mod tests {
             g.nodes.push(node(id));
         }
         // Two pins on the same cell → one wins, the other places freely; no panic.
-        let l = grid_layout(&g, GridParams::default(), &[pin(0, 0, 0), pin(1, 0, 0)]);
+        let l = grid_layout(&g, GridParams::default(), &[pin(0, 2, 2), pin(1, 2, 2)]);
         assert_eq!(l.nodes.len(), 4);
         distinct_cells(&l);
         let occupants = ["a", "b"]
             .into_iter()
-            .filter(|id| cell_of(&l, id) == (0, 0));
+            .filter(|id| cell_of(&l, id) == (2, 2));
         assert_eq!(
             occupants.count(),
             1,
@@ -1060,13 +1105,39 @@ mod tests {
         for id in ["a", "b", "c", "d"] {
             g.nodes.push(node(id));
         }
-        // A 2×2 grid, every node pinned to a distinct cell.
-        let pins = [pin(0, 0, 0), pin(1, 0, 1), pin(2, 1, 0), pin(3, 1, 1)];
+        // Every node pinned to a distinct cell, past the top-left margin (no shift).
+        let pins = [pin(0, 2, 2), pin(1, 2, 3), pin(2, 3, 2), pin(3, 3, 3)];
         let l = grid_layout(&g, GridParams::default(), &pins);
-        assert_eq!(cell_of(&l, "a"), (0, 0));
-        assert_eq!(cell_of(&l, "b"), (0, 1));
-        assert_eq!(cell_of(&l, "c"), (1, 0));
-        assert_eq!(cell_of(&l, "d"), (1, 1));
+        assert_eq!(cell_of(&l, "a"), (2, 2));
+        assert_eq!(cell_of(&l, "b"), (2, 3));
+        assert_eq!(cell_of(&l, "c"), (3, 2));
+        assert_eq!(cell_of(&l, "d"), (3, 3));
+    }
+
+    #[test]
+    fn pins_keep_a_margin_on_every_side() {
+        let mut g = Graph::new();
+        for id in ["a", "b"] {
+            g.nodes.push(node(id));
+        }
+        g.edges.push(Edge::new("a", "b"));
+        // Pin both against the top-left origin. The engine shifts them inward so a
+        // MARGIN-cell band sits above and to the left, and sizes the grid so the
+        // same band exists below and to the right — drag room in every direction.
+        let l = grid_layout(&g, GridParams::default(), &[pin(0, 0, 0), pin(1, 0, 1)]);
+        let meta = l.grid.expect("grid layout emits grid metadata");
+        let (ra, ca) = cell_of(&l, "a");
+        let (rb, cb) = cell_of(&l, "b");
+        // Relative arrangement preserved: "a" left of "b" on the same row.
+        assert_eq!(ra, rb, "same row");
+        assert_eq!(cb, ca + 1, "a immediately left of b");
+        // At least MARGIN empty cells on every side of the bounding box.
+        let (min_r, max_r) = (ra.min(rb), ra.max(rb));
+        let (min_c, max_c) = (ca.min(cb), ca.max(cb));
+        assert!(min_r >= MARGIN, "top margin");
+        assert!(min_c >= MARGIN, "left margin");
+        assert!(meta.rows - 1 - max_r >= MARGIN, "bottom margin");
+        assert!(meta.cols - 1 - max_c >= MARGIN, "right margin");
     }
 
     #[test]

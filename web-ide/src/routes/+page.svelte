@@ -406,9 +406,13 @@
   // overview. Derived from `selected` (not the scene) to avoid a layout cycle —
   // each diagram has a unique target FQN, so this keys the `.layout` document.
   const currentViewKey = $derived(viewKey(selected ? "view" : "context", selected?.fqn ?? null));
-  // The global layout tweaks plus this view's pins (reactive on the pin store, so a
-  // drag re-derives the canvas → re-layout with the node fixed).
-  const canvasTweaks = $derived({ ...ui.layoutTweaks, gridPins: getPins(pinStore.doc, currentViewKey) });
+  // This view's manual placements — the single source every pin consumer reads
+  // (reactive on the pin store, so a drag re-derives the canvas → re-layout with the
+  // node fixed). The engine takes the list as `gridPins`; the canvas marks cards from
+  // {@link pinnedFqns}.
+  const currentPins = $derived(getPins(pinStore.doc, currentViewKey));
+  // The global layout tweaks plus this view's pins.
+  const canvasTweaks = $derived({ ...ui.layoutTweaks, gridPins: currentPins });
   const canvas = $derived(
     ready && workspace
       ? projectCanvas({
@@ -426,6 +430,21 @@
   // re-layout is automatic (canvasTweaks reads the pin store).
   function pinNode(fqn: string, row: number, col: number): void {
     pinStore.pin(currentViewKey, { fqn, row, col });
+    void persistPins();
+  }
+
+  // The FQNs pinned in the current view — marks their cards and gates the Reset.
+  const pinnedFqns = $derived(new Set(currentPins.map((p) => p.fqn)));
+
+  // Clear one node's placement (the inline ✕ on a pinned card), then persist.
+  function unpinNode(fqn: string): void {
+    pinStore.unpin(currentViewKey, fqn);
+    void persistPins();
+  }
+
+  // Reset this diagram's manual placements back to the auto-layout, then persist.
+  function resetCurrentView(): void {
+    pinStore.clear(currentViewKey);
     void persistPins();
   }
 
@@ -2725,7 +2744,7 @@ show('index.html');
           </div>
           {#if view === "canvas"}
             <div class="layer canvas-layer" data-testid="canvas-view">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} onuniverse={openUniverse} />
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} pinnedFqns={pinnedFqns} onunpin={unpinNode} onresetgrid={resetCurrentView} onuniverse={openUniverse} />
             </div>
           {:else if view === "space"}
             <div class="layer space-layer" data-testid="space-view">
