@@ -238,38 +238,20 @@
     treeGeo.setAttribute("position", new THREE.Float32BufferAttribute(treePos, 3));
     scene.add(new THREE.LineSegments(treeGeo, new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.14 })));
 
-    // ---- structure vs. flow ------------------------------------------------
-    // Two geometries per relationship:
-    //  • the PERMANENT line follows the *parent pathway* (routed up through the
-    //    containment gateways) — the static structure, matching the layout.
-    //  • the TRAFFIC (beads) and any selected route follow the *real* (direct) flow.
-    // Both are laterally offset by a packed-disc cross-section so strands sharing a
-    // segment stack like fibres in a cable rather than overlapping.
-    const FIL_GAP = 0.7;
+    // ---- layout relationships vs. data flows -------------------------------
+    // Two DIFFERENT things, drawn separately:
+    //  • LAYOUT relationships — the structural edges routed up through the containment
+    //    *parent pathway*. Pure layout: plain, faint, overlap is fine.
+    //  • DATA FLOWS — the actual flows running directly between two spheres (not routed
+    //    through the parent), each its own colour, with beads of light tracking along.
     const ARC_SAMPLES = 22;
-    const filOffset = (i: number): [number, number] => {
-      const a = i * 2.39996323, r = FIL_GAP * Math.sqrt(i + 0.5); // sunflower packing
-      return [Math.cos(a) * r, Math.sin(a) * r];
-    };
     const UP = new THREE.Vector3(0, 1, 0), ALT = new THREE.Vector3(1, 0, 0);
     const ftan = new THREE.Vector3(), frt = new THREE.Vector3(), fup = new THREE.Vector3();
-    // The parent-pathway line: offset the routed (gateway) polyline, then smooth it.
-    const parentLine = (ids: string[], idx: number): THREE.Vector3[] => {
-      const base = ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
-      if (base.length < 2) return [];
-      const [ox, oy] = filOffset(idx);
-      const off = base.map((p, j) => {
-        const prev = base[Math.max(0, j - 1)], next = base[Math.min(base.length - 1, j + 1)];
-        ftan.subVectors(next, prev); if (ftan.lengthSq() < 1e-9) ftan.set(0, 0, 1); ftan.normalize();
-        frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
-        fup.crossVectors(frt, ftan).normalize();
-        return p.clone().addScaledVector(frt, ox).addScaledVector(fup, oy);
-      });
-      return new THREE.CatmullRomCurve3(off).getPoints(Math.max(16, (off.length - 1) * 8));
-    };
-    // The real-flow arc: a direct, gently-bowed line from source to destination.
-    // `idx < 0` → centreline (no offset).
-    const directArc = (fromId: string, toId: string, idx: number): THREE.Vector3[] => {
+    // The parent-pathway polyline (gateway stops). Plain — no offset, overlap allowed.
+    const parentLine = (ids: string[]): THREE.Vector3[] =>
+      ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
+    // A data-flow filament: a direct, gently-bowed arc straight from source to dest.
+    const dataArc = (fromId: string, toId: string): THREE.Vector3[] => {
       const a = pos.get(fromId), b = pos.get(toId);
       if (!a || !b) return [];
       ftan.subVectors(b, a); const len = ftan.length();
@@ -277,41 +259,44 @@
       ftan.normalize();
       frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
       fup.crossVectors(frt, ftan).normalize();
-      const [ox, oy] = idx < 0 ? [0, 0] : filOffset(idx);
-      const bow = Math.min(1, len / 24);
+      const bow = Math.min(len * 0.12, 14); // gentle arc so flows between the same pair don't sit dead-straight
       const pts: THREE.Vector3[] = [];
       for (let k = 0; k <= ARC_SAMPLES; k++) {
-        const t = k / ARC_SAMPLES, env = Math.sin(Math.PI * t) * bow;
-        pts.push(new THREE.Vector3().lerpVectors(a, b, t).addScaledVector(frt, ox * env).addScaledVector(fup, oy * env));
+        const t = k / ARC_SAMPLES;
+        pts.push(new THREE.Vector3().lerpVectors(a, b, t).addScaledVector(fup, Math.sin(Math.PI * t) * bow));
       }
       return pts;
     };
     // Every flow (relationship) its own colour, keyed by the directed pair.
     const relColorOf = (from: string, to: string) => new THREE.Color(FLOW_PALETTE[flowHash(`${from}>${to}`) % FLOW_PALETTE.length]);
 
-    // The permanent line you hover/click to trace, and the beads-of-light traffic that
-    // travels its real (direct) flow — each relationship in its own colour.
+    // Layout relationships: faint structural lines along the parent pathway (overlap ok).
+    for (const r of routes) {
+      const pts = parentLine(r.path);
+      if (pts.length < 2) continue;
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.16 })));
+    }
+
+    // Data flows: the direct filament you hover/click to trace, with beads of light.
     type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; from: string; to: string };
     const rels: Rel[] = [];
     const pickLines: THREE.Line[] = [];
     type FlowRoute = { from: string; to: string; pts: THREE.Vector3[]; cum: number[]; total: number; speed: number; color: THREE.Color };
     const flowRoutes: FlowRoute[] = [];
     const particles: { route: number; off: number }[] = [];
-    let fi = 0;
     for (const r of routes) {
-      const linePts = parentLine(r.path, fi);   // permanent structure (parent pathway)
-      const beadPts = directArc(r.from, r.to, fi); // real-flow traffic
-      if (linePts.length < 2 || beadPts.length < 2) continue;
-      fi++;
+      const pts = dataArc(r.from, r.to);
+      if (pts.length < 2) continue;
       const color = relColorOf(r.from, r.to);
       const mat = new THREE.LineBasicMaterial({ color: color.clone(), transparent: true, opacity: REL_OPACITY });
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(linePts), mat);
-      (line as THREE.Object3D).userData = { rel: rels.length };
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+      (line as THREE.Object3D).userData = { rel: rels.length }; line.renderOrder = 1;
       scene.add(line); pickLines.push(line);
       rels.push({ line, mat, base: color.clone(), from: r.from, to: r.to });
       const cum = [0];
-      for (let i = 1; i < beadPts.length; i++) cum.push(cum[i - 1] + beadPts[i].distanceTo(beadPts[i - 1]));
-      flowRoutes.push({ from: r.from, to: r.to, pts: beadPts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+      flowRoutes.push({ from: r.from, to: r.to, pts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
       for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
     }
@@ -399,7 +384,7 @@
       streamMat.color.copy(flowColor);
       // One direct arc per call step (caller → callee) — the real flow path.
       stepRoutes = hops.map((h) => {
-        const pts = directArc(h.from, h.to, -1); // centreline arc
+        const pts = dataArc(h.from, h.to); // direct data-flow arc
         const cum = [0];
         for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
         return { pts, cum, total: cum[cum.length - 1] || 1 };
