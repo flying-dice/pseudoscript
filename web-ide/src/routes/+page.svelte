@@ -410,6 +410,24 @@
   // The flow's ordered call hops (caller→callee node ids + the call label), so the 3D
   // traffic follows the sequence and can name the current step; null = no flow.
   let spaceFlow = $state<{ from: string; to: string; label: string }[] | null>(null);
+  // The selected flow's colour (hash of its fqn → palette), shared with the picker.
+  let spaceFlowColor = $state<string | null>(null);
+  // The selected flow's entry fqn, for highlighting it in the picker.
+  let spaceFlowFqn = $state<string | null>(null);
+
+  // The flow picker: every triggered entry-point is a flow, each its own colour.
+  const FLOW_PALETTE = [
+    "#ff6b6b", "#ffa94d", "#ffd43b", "#a9e34b", "#69db7c", "#38d9a9", "#3bc9db",
+    "#4dabf7", "#748ffc", "#9775fa", "#da77f2", "#f783ac", "#ff8787", "#ffc078", "#94d82d", "#20c997",
+  ];
+  function flowHexOf(fqn: string): string {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < fqn.length; i++) { h ^= fqn.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return FLOW_PALETTE[(h >>> 0) % FLOW_PALETTE.length];
+  }
+  const spaceFlows = $derived(
+    nodes.filter((n) => n.triggered).map((n) => ({ fqn: n.fqn, name: n.name, color: flowHexOf(n.fqn) })),
+  );
   $effect(() => {
     void allModules; // track edits + workspace switches
     if (view !== "space" || !ready || !workspace) return;
@@ -433,8 +451,8 @@
   // when you switch to the canvas or code views.
   function openUniverse(fqn: string | null): void {
     const flow = fqn ? flowOf(fqn) : null;
-    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFocus = null; }
-    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; }
+    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowHexOf(fqn!); spaceFlowFqn = fqn; spaceFocus = null; }
+    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; spaceFlowFqn = null; }
     selection.view = "space";
     if (fqn) selectNode(fqn, { goto: false, origin: false });
   }
@@ -443,6 +461,8 @@
     spaceFocus = null;
     spacePath = null;
     spaceFlow = null;
+    spaceFlowColor = null;
+    spaceFlowFqn = null;
   }
   // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
   // to 3D-graph node ids, or null if it isn't a flow. The sequence and the universe use
@@ -2658,8 +2678,22 @@ show('index.html');
             <div class="layer space-layer">
               {#if spaceSnapshot}
                 {#key spaceKey}
-                  <ForceGraph snapshot={spaceSnapshot} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} ondeselect={resetSpace} />
+                  <ForceGraph snapshot={spaceSnapshot} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} ondeselect={resetSpace} />
                 {/key}
+                {#if spaceFlows.length}
+                  <div class="flow-picker">
+                    <div class="fp-head">Flows</div>
+                    <ol>
+                      {#each spaceFlows as f (f.fqn)}
+                        <li>
+                          <button class:active={spaceFlowFqn === f.fqn} onclick={() => openUniverse(f.fqn)}>
+                            <i style="background:{f.color}"></i>{f.name}
+                          </button>
+                        </li>
+                      {/each}
+                    </ol>
+                  </div>
+                {/if}
               {:else}
                 <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>
               {/if}
@@ -2920,6 +2954,23 @@ show('index.html');
     margin-bottom: 0.6rem;
   }
   .space-layer .note p { margin: 0; font-family: var(--font-mono); font-size: 0.82rem; }
+  /* The flow picker: a list of every flow with its colour; click to trace it. */
+  .flow-picker {
+    position: absolute; left: 16px; top: 92px; width: 210px; max-height: 56%;
+    overflow-y: auto; padding: 8px 6px; border-radius: 10px;
+    background: color-mix(in srgb, var(--surface) 90%, transparent);
+    border: 1px solid var(--line); box-shadow: 0 6px 24px #0006;
+  }
+  .flow-picker .fp-head { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); padding: 2px 6px 6px; }
+  .flow-picker ol { list-style: none; margin: 0; padding: 0; }
+  .flow-picker button {
+    display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+    padding: 4px 6px; border: 0; border-radius: 5px; background: none; cursor: pointer;
+    font: 12px/1.4 var(--font-sans); color: var(--ink-soft);
+  }
+  .flow-picker button:hover { background: var(--surface-3); color: var(--ink); }
+  .flow-picker button.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--ink); }
+  .flow-picker i { width: 9px; height: 9px; flex: none; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
 
   /* CODE | CANVAS | Problems toggle */
   .bar-actions {

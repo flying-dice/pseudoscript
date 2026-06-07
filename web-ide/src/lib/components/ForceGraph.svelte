@@ -44,9 +44,10 @@
     focusFqn?: string | null;
     highlightPath?: string[] | null;
     flowSequence?: FlowHop[] | null;
+    flowColor?: string | null;
     ondeselect?: (() => void) | null;
   };
-  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, ondeselect = null }: Props = $props();
+  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null }: Props = $props();
 
   // An in-canvas relationship selection (clicking traffic), separate from the prop-
   // driven flow selection. Set by onMount's handlers.
@@ -64,18 +65,18 @@
   // Set by onMount once the scene exists; the effect drives focus/highlight on change.
   let applyFocus: ((fqn: string) => void) | null = null;
   let applyPath: ((path: string[] | null) => void) | null = null;
-  let applyFlowSeq: ((hops: FlowHop[] | null) => void) | null = null;
+  let applyFlowSeq: ((hops: FlowHop[] | null, color?: string | null) => void) | null = null;
   let popToStep: ((i: number) => void) | null = null;
   $effect(() => {
     // Read every prop up front so all are tracked — a `&&` on the non-reactive
     // `apply*` handles would short-circuit before the prop is read, and the effect
     // would never re-run when the selection changes.
-    const path = highlightPath, fqn = focusFqn, seq = flowSequence;
+    const path = highlightPath, fqn = focusFqn, seq = flowSequence, col = flowColor;
     if (!applyPath) return; // not mounted yet
     if (path) applyPath(path);
     else if (fqn) applyFocus?.(fqn);
     else applyPath(null); // nothing selected → reset highlight / dim / filter
-    applyFlowSeq?.(seq ?? null); // after focus/path so it can override the flow particles
+    applyFlowSeq?.(seq ?? null, col); // after focus/path so it can override the flow particles
   });
   // Manual stepping: pop the request across the selected step.
   $effect(() => { const s = flowStep; if (popToStep && s >= 0) popToStep(s); });
@@ -303,11 +304,17 @@
     // Does relationship `rl` belong to node `id` — is `id` an endpoint or an ancestor
     // (container/system) of one? Lets hovering a hub light all relationships under it.
     const relUnder = (rl: Rel, id: string) => ancestors(rl.from).includes(id) || ancestors(rl.to).includes(id);
-    const flowArr = new Float32Array(particles.length * 3);
-    const flowColArr = new Float32Array(particles.length * 3);
+    // Each bead is a comet: a bright lead point + a few fading tail points behind it.
+    const TRAIL = 6, TRAIL_GAP = 0.012; // tail length (points) and phase spacing
+    const fade = (k: number) => (1 - k / TRAIL) ** 1.5;
+    const flowArr = new Float32Array(particles.length * TRAIL * 3);
+    const flowColArr = new Float32Array(particles.length * TRAIL * 3);
     for (let i = 0; i < particles.length; i++) {
       const c = flowRoutes[particles[i].route].color;
-      flowColArr[i * 3] = c.r; flowColArr[i * 3 + 1] = c.g; flowColArr[i * 3 + 2] = c.b;
+      for (let k = 0; k < TRAIL; k++) {
+        const o = (i * TRAIL + k) * 3, f = fade(k);
+        flowColArr[o] = c.r * f; flowColArr[o + 1] = c.g * f; flowColArr[o + 2] = c.b * f;
+      }
     }
     const flowGeo = new THREE.BufferGeometry();
     flowGeo.setAttribute("position", new THREE.BufferAttribute(flowArr, 3));
@@ -336,8 +343,11 @@
     const filterFlow = (keep: ((fr: FlowRoute) => boolean) | null) => {
       for (let i = 0; i < particles.length; i++) {
         const fr = flowRoutes[particles[i].route];
-        const c = !keep || keep(fr) ? fr.color : null;
-        flowColArr[i * 3] = c ? c.r : 0; flowColArr[i * 3 + 1] = c ? c.g : 0; flowColArr[i * 3 + 2] = c ? c.b : 0;
+        const on = !keep || keep(fr);
+        for (let k = 0; k < TRAIL; k++) {
+          const o = (i * TRAIL + k) * 3, f = on ? fade(k) : 0;
+          flowColArr[o] = fr.color.r * f; flowColArr[o + 1] = fr.color.g * f; flowColArr[o + 2] = fr.color.b * f;
+        }
       }
       flowGeo.attributes.color.needsUpdate = true;
     };
@@ -373,14 +383,14 @@
       for (const b of busSegs) { scene.remove(b.line); b.line.geometry.dispose(); b.mat.dispose(); }
       busSegs = [];
     };
-    const setFlowStream = (hops: FlowHop[] | null, color?: THREE.Color) => {
+    const setFlowStream = (hops: FlowHop[] | null, color?: string | THREE.Color | null) => {
       clearBus();
       if (!hops || hops.length === 0) {
         // Clear the stream only; the per-edge filter is owned by focus/path selection.
         stepRoutes = []; current = null; streamGeo.setDrawRange(0, 0); flowSteps = []; flowStep = -1;
         return;
       }
-      flowColor = color ?? relColorOf(hops[0].from, hops[hops.length - 1].to); // every flow its own colour
+      flowColor = color ? (typeof color === "string" ? new THREE.Color(color) : color) : relColorOf(hops[0].from, hops[hops.length - 1].to); // every flow its own colour
       streamMat.color.copy(flowColor);
       // One direct arc per call step (caller → callee) — the real flow path.
       stepRoutes = hops.map((h) => {
@@ -612,13 +622,18 @@
         camera.position.copy(controls.target).add(offset.setLength(camFocus.dist));
         if (controls.target.distanceTo(camFocus.target) < 0.4) camFocus = null;
       }
-      // Stream the traffic particles along their routes (caller → callee).
+      // Stream the traffic comets along their routes (caller → callee): each is a lead
+      // dot plus a short fading tail trailing behind it.
       flowT += dt;
       for (let i = 0; i < particles.length; i++) {
         const p = particles[i], fr = flowRoutes[p.route];
-        const t = (flowT * fr.speed + p.off) % 1;
-        along(fr, t < 0 ? t + 1 : t, flowTmp);
-        flowArr[i * 3] = flowTmp.x; flowArr[i * 3 + 1] = flowTmp.y; flowArr[i * 3 + 2] = flowTmp.z;
+        const lead = flowT * fr.speed + p.off;
+        for (let k = 0; k < TRAIL; k++) {
+          let t = (lead - k * TRAIL_GAP) % 1; if (t < 0) t += 1;
+          along(fr, t, flowTmp);
+          const o = (i * TRAIL + k) * 3;
+          flowArr[o] = flowTmp.x; flowArr[o + 1] = flowTmp.y; flowArr[o + 2] = flowTmp.z;
+        }
       }
       flowGeo.attributes.position.needsUpdate = true;
       flowMat.opacity = 0.7 + 0.25 * Math.sin(flowT * 2.2); // gentle volume-agnostic pulse
