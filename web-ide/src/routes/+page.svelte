@@ -20,6 +20,7 @@
   import type { MountableWorkspace } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
   import { flowColor } from "$lib/flow-color.js";
+  import { simpleName } from "$lib/graph-route.js";
   import * as nav from "$lib/core/navigation.js";
   import * as ops from "$lib/core/workspace-ops.js";
   import { keyOf, computeDirty, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
@@ -414,6 +415,8 @@
   let spaceFlow = $state<{ from: string; to: string; label: string }[] | null>(null);
   // The selected flow's colour (hash of its fqn → palette), so each flow reads distinct.
   let spaceFlowColor = $state<string | null>(null);
+  // The selected flow's name (its entry point's leaf), shown in the 3D timeline header.
+  let spaceFlowName = $state<string | null>(null);
 
   $effect(() => {
     void allModules; // track edits + workspace switches
@@ -438,8 +441,8 @@
   // when you switch to the canvas or code views.
   function openUniverse(fqn: string | null): void {
     const flow = fqn ? flowOf(fqn) : null;
-    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowColor(fqn!); spaceFocus = null; }
-    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; }
+    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowColor(fqn!); spaceFlowName = simpleName(fqn!); spaceFocus = null; }
+    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; spaceFlowName = null; }
     selection.view = "space";
     if (fqn) selectNode(fqn, { goto: false, origin: false });
   }
@@ -451,6 +454,7 @@
     spacePath = null;
     spaceFlow = null;
     spaceFlowColor = null;
+    spaceFlowName = null;
     selection.selected = null;
   }
   // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
@@ -470,14 +474,13 @@
       return null; // not a projectable flow
     }
     if (!Array.isArray(scene.participants) || scene.participants.length <= 1) return null;
-    const simple = (id: string) => id.split("::").at(-1) ?? id;
     const byName = new Map<string, string[]>();
     for (const n of snap.nodes) {
-      const s = simple(n.id);
+      const s = simpleName(n.id);
       (byName.get(s) ?? byName.set(s, []).get(s)!).push(n.id);
     }
     const mapId = (f: string) => {
-      const m = byName.get(simple(f));
+      const m = byName.get(simpleName(f));
       return m && m.length === 1 ? m[0] : null; // unambiguous only
     };
     const participants = [...new Set(scene.participants.map((p) => mapId(p.fqn)).filter((x): x is string => !!x))];
@@ -2685,7 +2688,7 @@ show('index.html');
             <div class="layer space-layer">
               {#if spaceSnapshot}
                 {#key spaceKey}
-                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} ondeselect={resetSpace} onpick={openUniverse} />
+                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} flowName={spaceFlowName} ondeselect={resetSpace} onpick={openUniverse} />
                 {/key}
               {:else}
                 <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>

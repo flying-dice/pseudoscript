@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { ancestors, routeOf, type ParentOf } from "./graph-route";
+import { ancestors, routeOf, simpleName, type ParentOf } from "./graph-route";
+
+describe("simpleName", () => {
+  it("returns the last `::` segment", () => {
+    expect(simpleName("banking::core::Mainframe")).toBe("Mainframe");
+  });
+  it("returns the whole string when there is no `::`", () => {
+    expect(simpleName("Mainframe")).toBe("Mainframe");
+  });
+});
 
 // A two-system tree:
 //   SysA → ContA → CompA1, CompA2

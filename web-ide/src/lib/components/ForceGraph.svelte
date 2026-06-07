@@ -22,11 +22,13 @@
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY, forceZ } from "d3-force-3d";
   import { flowColor as flowHexOf } from "$lib/flow-color";
-  import { ancestors, routeOf } from "$lib/graph-route";
+  import { ancestors, routeOf, simpleName } from "$lib/graph-route";
+  import type { UniverseSnapshot } from "$lib/pds";
 
-  type Node = { id: string; level: string; parent: string | null };
-  type Edge = { from: string; to: string; traffic: number };
-  type Snapshot = { nodes: Node[]; edges: Edge[] };
+  // The graph shape is the Rust-derived DTO (single source of truth across the wasm
+  // boundary); the node/edge element types are read off it.
+  type Snapshot = UniverseSnapshot;
+  type Node = Snapshot["nodes"][number];
 
   // `onclose` present → rendered as a full-screen overlay (show a close button);
   // absent → embedded as a panel view (the activity bar switches away from it).
@@ -45,13 +47,15 @@
     highlightPath?: string[] | null;
     flowSequence?: FlowHop[] | null;
     flowColor?: string | null;
+    // The selected flow's name, shown in the timeline header.
+    flowName?: string | null;
     ondeselect?: (() => void) | null;
     // Every flow in the model, drawn as resting filaments (one per leg, flow-coloured).
     flows?: FlowDef[] | null;
     // Clicking a node or a flow filament → pick it (same effect as the structure panel).
     onpick?: ((fqn: string) => void) | null;
   };
-  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null, flows = null, onpick = null }: Props = $props();
+  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, flowName = null, ondeselect = null, flows = null, onpick = null }: Props = $props();
 
   // Reset handle into onMount's scene (clears the in-canvas highlight on Deselect/Esc).
   let clearLocal: (() => void) | null = null;
@@ -88,7 +92,6 @@
 
   const SIZE: Record<string, number> = { system: 6, container: 3.4, component: 1.9, person: 3 };
   const REL_OPACITY = 0.3;
-  const shortName = (id: string) => id.split("::").pop() ?? id;
 
   onMount(() => {
     const cv = canvas!, tip = tipEl!;
@@ -113,7 +116,7 @@
     // `ancestors`/`routeOf` are the pure gateway-routing logic (tested in graph-route.ts).
     const ids = new Set(snapshot.nodes.map((n) => n.id));
     const levelOf = new Map(snapshot.nodes.map((n) => [n.id, n.level]));
-    const parentOf = new Map(snapshot.nodes.map((n) => [n.id, n.parent]));
+    const parentOf = new Map(snapshot.nodes.map((n) => [n.id, n.parent ?? null]));
     const anc = (id: string) => ancestors(id, parentOf);
 
     const routes = snapshot.edges
@@ -230,7 +233,7 @@
       const p = pos.get(n.id); if (!p) continue;
       const size = SIZE[n.level] ?? 2.2;
       const h = Math.max(1.8, size * 0.85); // label height tracks node size
-      const spr = makeLabel(shortName(n.id), h);
+      const spr = makeLabel(simpleName(n.id), h);
       spr.position.copy(p).add(new THREE.Vector3(0, size + h * 0.7, 0));
       scene.add(spr);
     }
@@ -294,7 +297,7 @@
     // 1. One straight filament per directed leg; record which flows run over it.
     for (const fl of flowDefs) {
       const color = new THREE.Color(fl.color);
-      const name = shortName(fl.fqn);
+      const name = simpleName(fl.fqn);
       for (const h of fl.hops) {
         if (h.from === h.to || !pos.has(h.from) || !pos.has(h.to)) continue;
         const key = h.from + ">" + h.to;
@@ -410,7 +413,7 @@
         line.renderOrder = 1; scene.add(line); busSegs.push({ line, mat });
       }
       filterFlow(() => false); // the stepping stream replaces the per-edge particles
-      flowSteps = hops.map((h) => ({ from: shortName(h.from), to: shortName(h.to), label: h.label }));
+      flowSteps = hops.map((h) => ({ from: simpleName(h.from), to: simpleName(h.to), label: h.label }));
       flowStep = 0; // the $effect on flowStep streams the dots across step 0
     };
     // Stream traffic continuously along step `i` (driven by the manual `flowStep`):
@@ -559,7 +562,7 @@
         const n = placed[nodeHit.instanceId];
         setHighlight((f) => filUnder(f, n.id));
         const through = new Set(filaments.filter((f) => filUnder(f, n.id)).flatMap((f) => f.legFlows.map((x) => x.fqn))).size;
-        showTip(e.clientX, e.clientY, `<b>${shortName(n.id)}</b><em>${n.level}${through ? ` · ${through} flow${through === 1 ? "" : "s"}` : ""}</em>`);
+        showTip(e.clientX, e.clientY, `<b>${simpleName(n.id)}</b><em>${n.level}${through ? ` · ${through} flow${through === 1 ? "" : "s"}` : ""}</em>`);
         cv.style.cursor = "pointer"; return;
       }
       // A leg: light it and say how many flows it carries (click to choose / open).
@@ -568,7 +571,7 @@
         const fil = filaments[((lineHit.object as THREE.Object3D).userData as { fil: number }).fil];
         setHighlight((f) => f === fil);
         const n = fil.legFlows.length;
-        showTip(e.clientX, e.clientY, `<b>${shortName(fil.from)} → ${shortName(fil.to)}</b><em>${n} flow${n === 1 ? "" : "s"} · click to ${n === 1 ? "open" : "choose"}</em>`);
+        showTip(e.clientX, e.clientY, `<b>${simpleName(fil.from)} → ${simpleName(fil.to)}</b><em>${n} flow${n === 1 ? "" : "s"} · click to ${n === 1 ? "open" : "choose"}</em>`);
         cv.style.cursor = "pointer"; return;
       }
       setHighlight(resting); tip.style.opacity = "0"; cv.style.cursor = "grab";
@@ -716,8 +719,13 @@
   </div>
   {#if flowSteps.length}
     <div class="timeline">
+      {#if flowName}
+        <div class="tl-flow">
+          {#if flowColor}<i style="background:{flowColor}"></i>{/if}<span>{flowName}</span>
+        </div>
+      {/if}
       <div class="tl-head">
-        <span>Flow · step {Math.max(0, flowStep) + 1}/{flowSteps.length}</span>
+        <span>step {Math.max(0, flowStep) + 1}/{flowSteps.length}</span>
         <span class="tl-ctrls">
           <button onclick={() => (flowStep = Math.max(0, flowStep - 1))} disabled={flowStep <= 0} aria-label="Previous step">‹</button>
           <button onclick={() => (flowStep = Math.min(flowSteps.length - 1, flowStep + 1))} disabled={flowStep >= flowSteps.length - 1} aria-label="Next step">›</button>
@@ -771,6 +779,9 @@
     border: 1px solid var(--line); box-shadow: 0 6px 24px #0006;
     font: 12px/1.5 var(--font-sans); color: var(--ink-soft);
   }
+  .timeline .tl-flow { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+  .timeline .tl-flow i { width: 9px; height: 9px; flex: none; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
+  .timeline .tl-flow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .timeline .tl-head { display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
   .timeline .tl-ctrls { display: inline-flex; gap: 4px; }
   .timeline .tl-ctrls button { width: 20px; height: 20px; line-height: 1; cursor: pointer; color: var(--ink-soft); background: var(--surface-2, transparent); border: 1px solid var(--line); border-radius: 5px; }

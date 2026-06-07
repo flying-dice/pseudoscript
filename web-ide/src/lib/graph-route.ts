@@ -6,6 +6,12 @@
 
 export type ParentOf = ReadonlyMap<string, string | null>;
 
+/** An FQN's leaf — its last `::` segment (`banking::core::Mainframe` → `Mainframe`).
+ *  Used for display labels and for bridging a sequence FQN to a graph node by name. */
+export function simpleName(fqn: string): string {
+  return fqn.split("::").at(-1) ?? fqn;
+}
+
 /** The gateway route between two nodes: the polyline of nodes it passes through, and
  *  the single segment that straddles the meeting point. */
 export type Route = { path: string[]; bridge: [string, string] | null };

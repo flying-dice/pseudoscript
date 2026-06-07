@@ -109,6 +109,57 @@ pub struct MarkupContent {
     pub value: String,
 }
 
+/// One node in the 3D relationship graph: its FQN, C4 level, and containment parent.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct UniverseNode {
+    pub id: String,
+    pub level: String,
+    pub parent: Option<String>,
+}
+
+/// One directed relationship in the 3D graph, weighted by traffic (call count).
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct UniverseEdge {
+    pub from: String,
+    pub to: String,
+    pub traffic: u32,
+}
+
+/// The whole workspace as a software graph for the 3D relationship view.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct UniverseSnapshot {
+    pub nodes: Vec<UniverseNode>,
+    pub edges: Vec<UniverseEdge>,
+}
+
+impl From<pseudoscript_universe::Snapshot> for UniverseSnapshot {
+    fn from(s: pseudoscript_universe::Snapshot) -> Self {
+        Self {
+            nodes: s
+                .nodes
+                .into_iter()
+                .map(|n| UniverseNode {
+                    id: n.id,
+                    level: n.level.to_string(),
+                    parent: n.parent,
+                })
+                .collect(),
+            edges: s
+                .edges
+                .into_iter()
+                .map(|e| UniverseEdge {
+                    from: e.from,
+                    to: e.to,
+                    traffic: e.traffic,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The result of find-usages: the resolved symbol plus every occurrence.
 #[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
@@ -685,11 +736,10 @@ impl IdeSession {
     /// (systems, containers, components, people) with containment, and directed
     /// relationships weighted by traffic. The renderer lays it out (d3-force-3d)
     /// client-side.
-    #[allow(clippy::missing_errors_doc)]
-    pub fn universe(&mut self) -> Result<String, JsError> {
+    pub fn universe(&mut self) -> UniverseSnapshot {
         self.ensure_built();
         let u = pseudoscript_universe::from_model(self.graph());
-        Ok(to_json(&pseudoscript_universe::snapshot(&u)))
+        pseudoscript_universe::snapshot(&u).into()
     }
 
     /// Positions a [`Scene`] (as JSON) into absolute coordinates, returning the

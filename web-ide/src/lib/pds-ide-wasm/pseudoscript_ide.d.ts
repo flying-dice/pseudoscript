@@ -103,6 +103,15 @@ export interface Diagnostic {
 }
 
 /**
+ * One directed relationship in the 3D graph, weighted by traffic (call count).
+ */
+export interface UniverseEdge {
+    from: string;
+    to: string;
+    traffic: number;
+}
+
+/**
  * One doc group in [`DocConfigInput`]: a heading and its pages (with content).
  */
 export interface DocGroupInput {
@@ -151,6 +160,15 @@ export interface ModuleResult {
 export interface RenamedSource {
     fqn: string;
     source: string;
+}
+
+/**
+ * One node in the 3D relationship graph: its FQN, C4 level, and containment parent.
+ */
+export interface UniverseNode {
+    id: string;
+    level: string;
+    parent: string | undefined;
 }
 
 /**
@@ -279,6 +297,14 @@ export interface References {
     fqn: string;
     title: string;
     occurrences: Occurrence[];
+}
+
+/**
+ * The whole workspace as a software graph for the 3D relationship view.
+ */
+export interface UniverseSnapshot {
+    nodes: UniverseNode[];
+    edges: UniverseEdge[];
 }
 
 
@@ -437,7 +463,7 @@ export class IdeSession {
      * relationships weighted by traffic. The renderer lays it out (d3-force-3d)
      * client-side.
      */
-    universe(): string;
+    universe(): UniverseSnapshot;
 }
 
 /**
@@ -471,7 +497,7 @@ export interface InitOutput {
     readonly idesession_semantic_tokens: (a: number, b: number, c: number) => any;
     readonly idesession_set_source: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly idesession_symbol_scene: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly idesession_universe: (a: number) => [number, number, number, number];
+    readonly idesession_universe: (a: number) => any;
     readonly version: () => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
