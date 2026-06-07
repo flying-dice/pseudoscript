@@ -12,25 +12,13 @@
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY, forceZ } from "d3-force-3d";
+  import { flowColor as flowHexOf } from "$lib/flow-color";
+  import { ancestors, routeOf } from "$lib/graph-route";
 
   type Node = { id: string; level: string; parent: string | null };
-  type Edge = { from: string; to: string; traffic: number; kind: string };
+  type Edge = { from: string; to: string; traffic: number };
   type Snapshot = { nodes: Node[]; edges: Edge[] };
 
-  // Traffic flows take a colour keyed by their *destination node*, from a varied
-  // categorical palette — so flows converging on a node share a hue while the graph
-  // as a whole reads in many colours (archetype alone clusters to one "service" green).
-  const FLOW_PALETTE = [
-    "#ff6b6b", "#ffa94d", "#ffd43b", "#a9e34b", "#69db7c", "#38d9a9", "#3bc9db",
-    "#4dabf7", "#748ffc", "#9775fa", "#da77f2", "#f783ac", "#ff8787", "#ffc078",
-    "#94d82d", "#20c997",
-  ];
-  // FNV-1a (32-bit) over a node id → a stable palette index.
-  const flowHash = (s: string) => {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-    return h >>> 0;
-  };
   // `onclose` present → rendered as a full-screen overlay (show a close button);
   // absent → embedded as a panel view (the activity bar switches away from it).
   // `focusFqn` → fly the camera to that node and light its relationships.
@@ -46,8 +34,10 @@
     flowSequence?: FlowHop[] | null;
     flowColor?: string | null;
     ondeselect?: (() => void) | null;
+    // Clicking a node → pick it (same effect as picking it in the structure panel).
+    onpick?: ((fqn: string) => void) | null;
   };
-  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null }: Props = $props();
+  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null, onpick = null }: Props = $props();
 
   // An in-canvas relationship selection (clicking traffic), separate from the prop-
   // driven flow selection. Set by onMount's handlers.
@@ -81,7 +71,7 @@
   // Manual stepping: pop the request across the selected step.
   $effect(() => { const s = flowStep; if (popToStep && s >= 0) popToStep(s); });
 
-  const SIZE: Record<string, number> = { system: 6, container: 3.4, component: 1.9, person: 3, data: 2.2 };
+  const SIZE: Record<string, number> = { system: 6, container: 3.4, component: 1.9, person: 3 };
   const REL_OPACITY = 0.3;
   const shortName = (id: string) => id.split("::").pop() ?? id;
 
@@ -105,35 +95,15 @@
     const hotColor = cssColor("--accent", "#ff5a36");
 
     // ---- containment + routing ----------------------------------------------
+    // `ancestors`/`routeOf` are the pure gateway-routing logic (tested in graph-route.ts).
     const ids = new Set(snapshot.nodes.map((n) => n.id));
     const levelOf = new Map(snapshot.nodes.map((n) => [n.id, n.level]));
     const parentOf = new Map(snapshot.nodes.map((n) => [n.id, n.parent]));
-    const ancestors = (id: string) => {
-      const chain = [id];
-      let p = parentOf.get(id) ?? null;
-      while (p && ids.has(p)) { chain.push(p); p = parentOf.get(p) ?? null; }
-      return chain; // [self, …, root]
-    };
-    // The gateway route from `a` to `b`: up each side to the lowest common ancestor
-    // (or, across systems, joining the two roots). `bridge` is the single segment that
-    // straddles the meeting point — the pair the relationship force should pull together.
-    const routeOf = (a: string, b: string): { path: string[]; bridge: [string, string] | null } => {
-      const A = ancestors(a), B = ancestors(b);
-      const bIdx = new Map(B.map((id, i) => [id, i] as const));
-      const i = A.findIndex((id) => bIdx.has(id));
-      if (i >= 0) {
-        const j = bIdx.get(A[i])!;
-        const path = [...A.slice(0, i + 1), ...B.slice(0, j).reverse()];
-        const bridge: [string, string] | null = i - 1 >= 0 && i + 1 < path.length ? [path[i - 1], path[i + 1]] : null;
-        return { path, bridge };
-      }
-      // disjoint roots (different systems): join the two roots directly.
-      return { path: [...A, ...B.slice().reverse()], bridge: [A[A.length - 1], B[B.length - 1]] };
-    };
+    const anc = (id: string) => ancestors(id, parentOf);
 
     const routes = snapshot.edges
       .filter((e) => e.from !== e.to && ids.has(e.from) && ids.has(e.to))
-      .map((e) => ({ from: e.from, to: e.to, traffic: e.traffic, kind: e.kind, ...routeOf(e.from, e.to) }));
+      .map((e) => ({ from: e.from, to: e.to, traffic: e.traffic, ...routeOf(e.from, e.to, parentOf) }));
 
     // ---- d3-force-3d layout --------------------------------------------------
     const nodes = snapshot.nodes.map((n) => ({ id: n.id, level: n.level }));
@@ -269,7 +239,17 @@
       return pts;
     };
     // Every flow (relationship) its own colour, keyed by the directed pair.
-    const relColorOf = (from: string, to: string) => new THREE.Color(FLOW_PALETTE[flowHash(`${from}>${to}`) % FLOW_PALETTE.length]);
+    const relColorOf = (from: string, to: string) => new THREE.Color(flowHexOf(`${from}>${to}`));
+
+    // A polyline with cumulative segment lengths, so a fraction `t` can be resolved to a
+    // point along it in constant time (see `along`). `total` is floored at 1 to keep
+    // degenerate (zero-length) lines safe to divide by.
+    type Poly = { pts: THREE.Vector3[]; cum: number[]; total: number };
+    const polyline = (pts: THREE.Vector3[]): Poly => {
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+      return { pts, cum, total: cum[cum.length - 1] || 1 };
+    };
 
     // Layout relationships: faint structural lines along the parent pathway (overlap ok).
     for (const r of routes) {
@@ -283,7 +263,7 @@
     type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; from: string; to: string };
     const rels: Rel[] = [];
     const pickLines: THREE.Line[] = [];
-    type FlowRoute = { from: string; to: string; pts: THREE.Vector3[]; cum: number[]; total: number; speed: number; color: THREE.Color };
+    type FlowRoute = Poly & { from: string; to: string; speed: number; color: THREE.Color };
     const flowRoutes: FlowRoute[] = [];
     const particles: { route: number; off: number }[] = [];
     for (const r of routes) {
@@ -295,15 +275,13 @@
       (line as THREE.Object3D).userData = { rel: rels.length }; line.renderOrder = 1;
       scene.add(line); pickLines.push(line);
       rels.push({ line, mat, base: color.clone(), from: r.from, to: r.to });
-      const cum = [0];
-      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-      flowRoutes.push({ from: r.from, to: r.to, pts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
+      flowRoutes.push({ from: r.from, to: r.to, ...polyline(pts), speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
       for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
     }
     // Does relationship `rl` belong to node `id` — is `id` an endpoint or an ancestor
     // (container/system) of one? Lets hovering a hub light all relationships under it.
-    const relUnder = (rl: Rel, id: string) => ancestors(rl.from).includes(id) || ancestors(rl.to).includes(id);
+    const relUnder = (rl: Rel, id: string) => anc(rl.from).includes(id) || anc(rl.to).includes(id);
     // Each bead is a comet: a bright lead point + a few fading tail points behind it.
     const TRAIL = 6, TRAIL_GAP = 0.012; // tail length (points) and phase spacing
     const fade = (k: number) => (1 - k / TRAIL) ** 1.5;
@@ -331,12 +309,12 @@
     const dotTex = new THREE.CanvasTexture(dotCanvas);
     const flowMat = new THREE.PointsMaterial({ vertexColors: true, map: dotTex, size: 2.2, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     scene.add(new THREE.Points(flowGeo, flowMat));
-    // Position a particle at fraction `t` along its route's polyline.
-    const along = (fr: FlowRoute, t: number, out: THREE.Vector3) => {
-      const d = t * fr.total;
-      let k = 0; while (k < fr.cum.length - 2 && fr.cum[k + 1] <= d) k++;
-      const seg = fr.cum[k + 1] - fr.cum[k] || 1;
-      out.copy(fr.pts[k]).lerp(fr.pts[k + 1], (d - fr.cum[k]) / seg);
+    // Position `out` at fraction `t` along a polyline (its points + cumulative lengths).
+    const along = ({ pts, cum, total }: Poly, t: number, out: THREE.Vector3) => {
+      const d = t * total;
+      let k = 0; while (k < cum.length - 2 && cum[k + 1] <= d) k++;
+      const seg = cum[k + 1] - cum[k] || 1;
+      out.copy(pts[k]).lerp(pts[k + 1], (d - cum[k]) / seg);
     };
     // Show only the traffic on routes matching `keep` (a selection); `null` shows all.
     // Hidden particles get colour (0,0,0) — invisible under additive blending.
@@ -352,14 +330,6 @@
       flowGeo.attributes.color.needsUpdate = true;
     };
 
-    // A position at fraction `t` along a polyline (pts + cumulative lengths).
-    const alongPoly = (pts: THREE.Vector3[], cum: number[], total: number, t: number, out: THREE.Vector3) => {
-      const d = t * total;
-      let k = 0; while (k < cum.length - 2 && cum[k + 1] <= d) k++;
-      const seg = cum[k + 1] - cum[k] || 1;
-      out.copy(pts[k]).lerp(pts[k + 1], (d - cum[k]) / seg);
-    };
-
     // The flow request: you pick the step manually (the whole flow stays highlighted),
     // and traffic flows *continuously* along that one step's routed segment (caller →
     // … → callee through the gateways) until you advance.
@@ -371,9 +341,8 @@
     const streamMat = new THREE.PointsMaterial({ color: hotColor, map: dotTex, size: 3.6, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     scene.add(new THREE.Points(streamGeo, streamMat));
     const FLOW_SPEED = 55; // world units / second — one constant crossing speed
-    type StepRoute = { pts: THREE.Vector3[]; cum: number[]; total: number };
-    let stepRoutes: StepRoute[] = [];
-    let current: { sr: StepRoute; count: number; travel: number } | null = null;
+    let stepRoutes: Poly[] = [];
+    let current: { sr: Poly; count: number; travel: number } | null = null;
     // The "bus route": each leg of the selected flow drawn as its own bright line, so
     // the whole route is visible at once. The current leg is lit; the rest are a faint
     // route colour. Replaces the resting filaments while a flow is selected.
@@ -393,12 +362,7 @@
       flowColor = color ? (typeof color === "string" ? new THREE.Color(color) : color) : relColorOf(hops[0].from, hops[hops.length - 1].to); // every flow its own colour
       streamMat.color.copy(flowColor);
       // One direct arc per call step (caller → callee) — the real flow path.
-      stepRoutes = hops.map((h) => {
-        const pts = dataArc(h.from, h.to); // direct data-flow arc
-        const cum = [0];
-        for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-        return { pts, cum, total: cum[cum.length - 1] || 1 };
-      });
+      stepRoutes = hops.map((h) => polyline(dataArc(h.from, h.to))); // direct data-flow arc per leg
       // Draw every leg of the route (the bus line).
       for (const sr of stepRoutes) {
         if (sr.pts.length < 2) { busSegs.push({ line: new THREE.Line(), mat: new THREE.LineBasicMaterial() }); continue; }
@@ -487,7 +451,7 @@
 
     // Focus: fly to a node (keeping the current view direction) and light its chains.
     // Driven by the `focusFqn` prop via `applyFocus` — used by "Show in 3D graph".
-    const FOCUS_DIST: Record<string, number> = { system: 120, person: 70, container: 60, component: 38, data: 44 };
+    const FOCUS_DIST: Record<string, number> = { system: 120, person: 70, container: 60, component: 38 };
     let camFocus: { target: THREE.Vector3; dist: number } | null = null;
     const focusNode = (fqn: string) => {
       // The structure tree can select a flow (callable) that isn't a placed node — walk
@@ -499,7 +463,7 @@
       resting = (rl) => relUnder(rl, id);
       setHighlight(resting);
       const nodeSet = new Set([id]);
-      for (const a of ancestors(id)) if (pos.has(a)) nodeSet.add(a);
+      for (const a of anc(id)) if (pos.has(a)) nodeSet.add(a);
       paintNodes(nodeSet);
       filterFlow((fr) => fr.from === id || fr.to === id);
     };
@@ -514,7 +478,7 @@
       // system) — light those parent nodes too, while edges/flow still match the
       // participants themselves.
       const nodeSet = new Set(set);
-      for (const id of set) for (const a of ancestors(id)) if (pos.has(a)) nodeSet.add(a);
+      for (const id of set) for (const a of anc(id)) if (pos.has(a)) nodeSet.add(a);
       resting = () => false; // dim the chart; the bus route carries the highlight
       setHighlight(resting);
       paintNodes(nodeSet);
@@ -584,8 +548,8 @@
     };
     cv.addEventListener("pointermove", onMove);
 
-    // A click (not a drag): on a relationship → reveal its real-flow route; on empty
-    // space → clear back to the resting chart.
+    // A click (not a drag): on a node → pick it (same as the structure panel); on a
+    // relationship → reveal its real-flow route; on empty space → clear the chart.
     let down = { x: 0, y: 0 };
     const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
     const onUp = (e: PointerEvent) => {
@@ -594,12 +558,16 @@
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       ray.setFromCamera(ndc, camera);
+      const nodeHit = ray.intersectObjects(pickNodes, false)[0];
+      if (nodeHit) {
+        onpick?.(((nodeHit.object as THREE.Object3D).userData as Node).id);
+        return;
+      }
       const lineHit = ray.intersectObjects(pickLines, false)[0];
       if (lineHit) {
         selectRelationship(rels[((lineHit.object as THREE.Object3D).userData as { rel: number }).rel]);
         return;
       }
-      if (ray.intersectObjects(pickNodes, false)[0]) return; // a node — leave to hover/structure
       clearSelection(); ondeselect?.();
     };
     cv.addEventListener("pointerdown", onDown);
@@ -643,7 +611,7 @@
         const { sr, count, travel } = current;
         for (let i = 0; i < count; i++) {
           const t = (flowT / travel + i / count) % 1; // constant speed; evenly spaced
-          alongPoly(sr.pts, sr.cum, sr.total, t, flowTmp);
+          along(sr, t, flowTmp);
           streamArr[i * 3] = flowTmp.x; streamArr[i * 3 + 1] = flowTmp.y; streamArr[i * 3 + 2] = flowTmp.z;
         }
         streamGeo.attributes.position.needsUpdate = true;

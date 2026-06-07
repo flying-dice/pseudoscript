@@ -683,8 +683,8 @@ impl IdeSession {
 
     /// The whole workspace as a software graph for the 3D relationship view: nodes
     /// (systems, containers, components, people) with containment, and directed
-    /// relationships weighted by traffic and coloured by the destination's
-    /// macro-derived archetype. The renderer lays it out (d3-force-3d) client-side.
+    /// relationships weighted by traffic. The renderer lays it out (d3-force-3d)
+    /// client-side.
     #[allow(clippy::missing_errors_doc)]
     pub fn universe(&mut self) -> Result<String, JsError> {
         self.ensure_built();

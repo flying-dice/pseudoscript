@@ -166,11 +166,11 @@ export function ideEmitScene(view: string, target = ""): Scene {
 
 /** The workspace as a software graph for the 3D relationship view: nodes (systems,
  *  containers, components, people) with containment, and directed relationships
- *  weighted by traffic and coloured by the destination's macro-derived archetype.
- *  The renderer (`ForceGraph`) lays it out with d3-force-3d client-side. */
+ *  weighted by traffic. The renderer (`ForceGraph`) lays it out with d3-force-3d
+ *  client-side. */
 export type UniverseSnapshot = {
   nodes: { id: string; level: string; parent: string | null }[];
-  edges: { from: string; to: string; traffic: number; kind: string }[];
+  edges: { from: string; to: string; traffic: number }[];
 };
 
 /** Build the software graph for the held workspace. */
