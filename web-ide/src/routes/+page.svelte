@@ -442,12 +442,15 @@
     selection.view = "space";
     if (fqn) selectNode(fqn, { goto: false, origin: false });
   }
-  // Clear the 3D graph's selection (highlight + flow), back to the resting view.
+  // Clear the 3D graph's selection (highlight + flow) back to the resting view, and
+  // the global node selection with it — deselecting in the universe is a deselect
+  // everywhere (the structure panel, breadcrumb, canvas scope), not just here.
   function resetSpace(): void {
     spaceFocus = null;
     spacePath = null;
     spaceFlow = null;
     spaceFlowColor = null;
+    selection.selected = null;
   }
   // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
   // to 3D-graph node ids, or null if it isn't a flow. The sequence and the universe use
