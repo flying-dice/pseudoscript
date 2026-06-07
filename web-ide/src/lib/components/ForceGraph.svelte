@@ -48,8 +48,12 @@
   };
   let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, ondeselect = null }: Props = $props();
 
+  // An in-canvas relationship selection (clicking traffic), separate from the prop-
+  // driven flow selection. Set by onMount's handlers.
+  let localSelected = $state(false);
+  let clearLocal: (() => void) | null = null;
   // Whether a selection is active (drives the Deselect button + background-click reset).
-  const hasSelection = $derived(!!focusFqn || !!(highlightPath?.length) || !!(flowSequence?.length));
+  const hasSelection = $derived(!!focusFqn || !!(highlightPath?.length) || !!(flowSequence?.length) || localSelected);
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let tipEl = $state<HTMLDivElement | null>(null);
@@ -234,13 +238,14 @@
     treeGeo.setAttribute("position", new THREE.Float32BufferAttribute(treePos, 3));
     scene.add(new THREE.LineSegments(treeGeo, new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.14 })));
 
-    // ---- filaments ---------------------------------------------------------
-    // A filament IS a relationship: it runs the *true* path — a direct arc from its
-    // source node to its destination node — not up the containment/parent line through
-    // the gateways (that hierarchy only drives the layout). Each filament is laterally
-    // offset by a packed-disc cross-section so strands between the same pair fan out in
-    // the middle and converge at the two spheres, stacked like fibres in an optic cable.
-    const FIL_GAP = 0.7; // spacing between strands in the bundle cross-section
+    // ---- structure vs. flow ------------------------------------------------
+    // Two geometries per relationship:
+    //  • the PERMANENT line follows the *parent pathway* (routed up through the
+    //    containment gateways) — the static structure, matching the layout.
+    //  • the TRAFFIC (beads) and any selected route follow the *real* (direct) flow.
+    // Both are laterally offset by a packed-disc cross-section so strands sharing a
+    // segment stack like fibres in a cable rather than overlapping.
+    const FIL_GAP = 0.7;
     const ARC_SAMPLES = 22;
     const filOffset = (i: number): [number, number] => {
       const a = i * 2.39996323, r = FIL_GAP * Math.sqrt(i + 0.5); // sunflower packing
@@ -248,9 +253,23 @@
     };
     const UP = new THREE.Vector3(0, 1, 0), ALT = new THREE.Vector3(1, 0, 0);
     const ftan = new THREE.Vector3(), frt = new THREE.Vector3(), fup = new THREE.Vector3();
-    // A direct, gently-bowed arc from `fromId` to `toId`, bowed by the strand's disc
-    // offset (zeroed at the ends so it meets both spheres). `idx < 0` → centreline.
-    const buildFilament = (fromId: string, toId: string, idx: number): THREE.Vector3[] => {
+    // The parent-pathway line: offset the routed (gateway) polyline, then smooth it.
+    const parentLine = (ids: string[], idx: number): THREE.Vector3[] => {
+      const base = ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
+      if (base.length < 2) return [];
+      const [ox, oy] = filOffset(idx);
+      const off = base.map((p, j) => {
+        const prev = base[Math.max(0, j - 1)], next = base[Math.min(base.length - 1, j + 1)];
+        ftan.subVectors(next, prev); if (ftan.lengthSq() < 1e-9) ftan.set(0, 0, 1); ftan.normalize();
+        frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
+        fup.crossVectors(frt, ftan).normalize();
+        return p.clone().addScaledVector(frt, ox).addScaledVector(fup, oy);
+      });
+      return new THREE.CatmullRomCurve3(off).getPoints(Math.max(16, (off.length - 1) * 8));
+    };
+    // The real-flow arc: a direct, gently-bowed line from source to destination.
+    // `idx < 0` → centreline (no offset).
+    const directArc = (fromId: string, toId: string, idx: number): THREE.Vector3[] => {
       const a = pos.get(fromId), b = pos.get(toId);
       if (!a || !b) return [];
       ftan.subVectors(b, a); const len = ftan.length();
@@ -259,7 +278,7 @@
       frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
       fup.crossVectors(frt, ftan).normalize();
       const [ox, oy] = idx < 0 ? [0, 0] : filOffset(idx);
-      const bow = Math.min(1, len / 24); // short edges bow less, so they don't loop
+      const bow = Math.min(1, len / 24);
       const pts: THREE.Vector3[] = [];
       for (let k = 0; k <= ARC_SAMPLES; k++) {
         const t = k / ARC_SAMPLES, env = Math.sin(Math.PI * t) * bow;
@@ -267,9 +286,11 @@
       }
       return pts;
     };
+    // Every flow (relationship) its own colour, keyed by the directed pair.
+    const relColorOf = (from: string, to: string) => new THREE.Color(FLOW_PALETTE[flowHash(`${from}>${to}`) % FLOW_PALETTE.length]);
 
-    // The filament line you hover to trace, and the beads-of-light flow that travels
-    // it (caller → callee), coloured per destination, denser/faster with traffic.
+    // The permanent line you hover/click to trace, and the beads-of-light traffic that
+    // travels its real (direct) flow — each relationship in its own colour.
     type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; from: string; to: string };
     const rels: Rel[] = [];
     const pickLines: THREE.Line[] = [];
@@ -278,18 +299,19 @@
     const particles: { route: number; off: number }[] = [];
     let fi = 0;
     for (const r of routes) {
-      const pts = buildFilament(r.from, r.to, fi);
-      if (pts.length < 2) continue;
+      const linePts = parentLine(r.path, fi);   // permanent structure (parent pathway)
+      const beadPts = directArc(r.from, r.to, fi); // real-flow traffic
+      if (linePts.length < 2 || beadPts.length < 2) continue;
       fi++;
-      const color = new THREE.Color(FLOW_PALETTE[flowHash(r.to) % FLOW_PALETTE.length]);
+      const color = relColorOf(r.from, r.to);
       const mat = new THREE.LineBasicMaterial({ color: color.clone(), transparent: true, opacity: REL_OPACITY });
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(linePts), mat);
       (line as THREE.Object3D).userData = { rel: rels.length };
       scene.add(line); pickLines.push(line);
       rels.push({ line, mat, base: color.clone(), from: r.from, to: r.to });
       const cum = [0];
-      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-      flowRoutes.push({ from: r.from, to: r.to, pts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
+      for (let i = 1; i < beadPts.length; i++) cum.push(cum[i - 1] + beadPts[i].distanceTo(beadPts[i - 1]));
+      flowRoutes.push({ from: r.from, to: r.to, pts: beadPts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
       for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
     }
@@ -357,26 +379,51 @@
     type StepRoute = { pts: THREE.Vector3[]; cum: number[]; total: number };
     let stepRoutes: StepRoute[] = [];
     let current: { sr: StepRoute; count: number; travel: number } | null = null;
-    const setFlowStream = (hops: FlowHop[] | null) => {
+    // The "bus route": each leg of the selected flow drawn as its own bright line, so
+    // the whole route is visible at once. The current leg is lit; the rest are a faint
+    // route colour. Replaces the resting filaments while a flow is selected.
+    let busSegs: { line: THREE.Line; mat: THREE.LineBasicMaterial }[] = [];
+    let flowColor = hotColor.clone(); // the selected flow's own colour
+    const clearBus = () => {
+      for (const b of busSegs) { scene.remove(b.line); b.line.geometry.dispose(); b.mat.dispose(); }
+      busSegs = [];
+    };
+    const setFlowStream = (hops: FlowHop[] | null, color?: THREE.Color) => {
+      clearBus();
       if (!hops || hops.length === 0) {
         // Clear the stream only; the per-edge filter is owned by focus/path selection.
         stepRoutes = []; current = null; streamGeo.setDrawRange(0, 0); flowSteps = []; flowStep = -1;
         return;
       }
-      // One direct arc per call step (caller → callee) — the true relationship path.
+      flowColor = color ?? relColorOf(hops[0].from, hops[hops.length - 1].to); // every flow its own colour
+      streamMat.color.copy(flowColor);
+      // One direct arc per call step (caller → callee) — the real flow path.
       stepRoutes = hops.map((h) => {
-        const pts = buildFilament(h.from, h.to, -1); // centreline arc
+        const pts = directArc(h.from, h.to, -1); // centreline arc
         const cum = [0];
         for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
         return { pts, cum, total: cum[cum.length - 1] || 1 };
       });
+      // Draw every leg of the route (the bus line).
+      for (const sr of stepRoutes) {
+        if (sr.pts.length < 2) { busSegs.push({ line: new THREE.Line(), mat: new THREE.LineBasicMaterial() }); continue; }
+        const mat = new THREE.LineBasicMaterial({ color: relColor, transparent: true, opacity: 0.45 });
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(sr.pts), mat);
+        line.renderOrder = 1; scene.add(line); busSegs.push({ line, mat });
+      }
       filterFlow(() => false); // the stepping stream replaces the per-edge particles
       flowSteps = hops.map((h) => ({ from: shortName(h.from), to: shortName(h.to), label: h.label }));
       flowStep = 0; // the $effect on flowStep streams the dots across step 0
     };
     // Stream traffic continuously along step `i` (driven by the manual `flowStep`):
-    // dots cross at a constant speed, one emitted from the origin ~per second.
+    // dots cross at a constant speed, one emitted from the origin ~per second. Also
+    // re-colours the bus route so the current leg is lit and the rest are faint.
     const doStep = (i: number) => {
+      for (let j = 0; j < busSegs.length; j++) {
+        const b = busSegs[j];
+        if (j === i) { b.mat.color.copy(flowColor); b.mat.opacity = 0.95; b.line.renderOrder = 2; }
+        else { b.mat.color.copy(flowColor); b.mat.opacity = 0.28; b.line.renderOrder = 1; }
+      }
       const sr = stepRoutes[i];
       if (!sr || sr.pts.length < 2) { current = null; streamGeo.setDrawRange(0, 0); return; }
       const travel = Math.max(0.6, sr.total / FLOW_SPEED); // seconds to cross the segment
@@ -473,7 +520,7 @@
       // participants themselves.
       const nodeSet = new Set(set);
       for (const id of set) for (const a of ancestors(id)) if (pos.has(a)) nodeSet.add(a);
-      resting = (rl) => set.has(rl.from) && set.has(rl.to);
+      resting = () => false; // dim the chart; the bus route carries the highlight
       setHighlight(resting);
       paintNodes(nodeSet);
       filterFlow((fr) => set.has(fr.from) && set.has(fr.to));
@@ -484,6 +531,25 @@
     };
     applyPath = focusPath;
     applyFlowSeq = setFlowStream;
+
+    // Click a relationship (its traffic) → reveal its routed path as a bus route: the
+    // full journey through the gateways, each segment a leg, the current leg lit, with
+    // the request bead and the step timeline. Dims the rest of the chart.
+    const selectRelationship = (rl: Rel) => {
+      if (!pos.has(rl.from) || !pos.has(rl.to)) return;
+      resting = () => false; setHighlight(resting);    // dim the chart
+      paintNodes(new Set([rl.from, rl.to]));           // light the two ends
+      const fbox = new THREE.Box3().expandByPoint(pos.get(rl.from)!).expandByPoint(pos.get(rl.to)!);
+      const c = fbox.getCenter(new THREE.Vector3()), s = fbox.getSize(new THREE.Vector3());
+      camFocus = { target: c, dist: Math.max(70, Math.max(s.x, s.y, s.z) * 1.4 + 50) };
+      // The real flow of this relationship: a single direct leg, in its own colour.
+      setFlowStream([{ from: rl.from, to: rl.to, label: shortName(rl.to) }], rl.base);
+      localSelected = true;
+    };
+    // Clear any selection back to the resting chart.
+    const clearSelection = () => { focusPath(null); setFlowStream(null); localSelected = false; };
+    clearLocal = clearSelection;
+
     if (highlightPath) focusPath(highlightPath);
     else if (focusFqn) focusNode(focusFqn);
     if (flowSequence) setFlowStream(flowSequence);
@@ -523,7 +589,8 @@
     };
     cv.addEventListener("pointermove", onMove);
 
-    // Click on empty space (not a drag, no node/line under the pointer) → deselect.
+    // A click (not a drag): on a relationship → reveal its real-flow route; on empty
+    // space → clear back to the resting chart.
     let down = { x: 0, y: 0 };
     const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
     const onUp = (e: PointerEvent) => {
@@ -532,15 +599,20 @@
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       ray.setFromCamera(ndc, camera);
-      if (ray.intersectObjects(pickNodes, false)[0] || ray.intersectObjects(pickLines, false)[0]) return;
-      ondeselect?.();
+      const lineHit = ray.intersectObjects(pickLines, false)[0];
+      if (lineHit) {
+        selectRelationship(rels[((lineHit.object as THREE.Object3D).userData as { rel: number }).rel]);
+        return;
+      }
+      if (ray.intersectObjects(pickNodes, false)[0]) return; // a node — leave to hover/structure
+      clearSelection(); ondeselect?.();
     };
     cv.addEventListener("pointerdown", onDown);
     cv.addEventListener("pointerup", onUp);
 
     const resize = () => { camera.aspect = W() / H(); camera.updateProjectionMatrix(); renderer.setSize(W(), H()); };
     addEventListener("resize", resize);
-    const onKey = (e: KeyboardEvent) => { if (e.key !== "Escape") return; if (onclose) onclose(); else ondeselect?.(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key !== "Escape") return; clearSelection(); if (onclose) onclose(); else ondeselect?.(); };
     addEventListener("keydown", onKey);
 
     let raf = 0, alive = true, last = performance.now(), flowT = 0;
@@ -608,7 +680,7 @@
 <div class="graph">
   <canvas bind:this={canvas}></canvas>
   <div class="bar">
-    {#if hasSelection && ondeselect}<button onclick={() => ondeselect?.()}>⤺ Deselect</button>{/if}
+    {#if hasSelection}<button onclick={() => { clearLocal?.(); ondeselect?.(); }}>⤺ Deselect</button>{/if}
     {#if onclose}<button onclick={() => onclose?.()}>✕ Close (Esc)</button>{/if}
   </div>
   <div class="hint">
