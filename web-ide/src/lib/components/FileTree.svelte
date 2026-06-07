@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ChevronRight, File, FileCode, FileImage, FileText, Settings2 } from "@lucide/svelte";
+  import { untrack } from "svelte";
+  import { ChevronRight, File, FileCode, FileImage, FileText, LocateFixed, RefreshCw, Settings2 } from "@lucide/svelte";
 
   import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
 
@@ -25,6 +26,8 @@
     onrenamefile?: (fqn: string) => void;
     ondeletefile?: (fqn: string) => void;
     onmovefile?: (payload: { fqn: string; destDir: string }) => void;
+    // Re-read the workspace from disk (manual refresh of the external watcher).
+    onrefresh?: () => void;
   };
 
   let {
@@ -42,7 +45,11 @@
     onrenamefile,
     onmovefile,
     ondeletefile,
+    onrefresh,
   }: Props = $props();
+
+  // The scrollable tree body, so "reveal active file" can scroll it into view.
+  let bodyEl = $state<HTMLElement>();
 
   type TreeNode = { name: string; path: string; entry?: FileEntry; children: TreeNode[] };
 
@@ -76,12 +83,49 @@
     return root.children;
   });
 
-  // Collapsed folders, by path. Default expanded.
-  let collapsed = $state(new Set<string>());
+  // Expanded folders, by path. Default collapsed; the folders on the path to the
+  // active file are auto-expanded so it stays visible.
+  let expanded = $state(new Set<string>());
   function toggle(path: string): void {
-    const next = new Set(collapsed);
+    const next = new Set(expanded);
     next.has(path) ? next.delete(path) : next.add(path);
-    collapsed = next;
+    expanded = next;
+  }
+
+  // Expand the folders on the path to `relPath` so the entry is visible.
+  function expandAncestors(relPath: string): void {
+    const segs = relPath.split("/");
+    segs.pop(); // drop the file name, leaving its ancestor directories
+    if (segs.length === 0) return;
+    const next = new Set(expanded);
+    let acc = "";
+    let changed = false;
+    for (const seg of segs) {
+      acc = acc ? `${acc}/${seg}` : seg;
+      if (!next.has(acc)) {
+        next.add(acc);
+        changed = true;
+      }
+    }
+    if (changed) expanded = next;
+  }
+
+  // Reveal the active file by expanding its ancestor folders when it changes.
+  // Untracked so a folder the user collapses isn't immediately re-expanded.
+  $effect(() => {
+    const active = entries.find((e) => e.key === openKey);
+    if (active) untrack(() => expandAncestors(active.relPath));
+  });
+
+  // The "reveal" toolbar action: expand to the active file and scroll to it,
+  // even if the user has since collapsed its folders or scrolled away.
+  function revealActive(): void {
+    const active = entries.find((e) => e.key === openKey);
+    if (!active) return;
+    expandAncestors(active.relPath);
+    requestAnimationFrame(() => {
+      bodyEl?.querySelector<HTMLElement>(".file.active")?.scrollIntoView({ block: "nearest" });
+    });
   }
 
   function iconFor(e: FileEntry) {
@@ -102,9 +146,19 @@
 </script>
 
 <nav class="tree" aria-label="Workspace">
+  <div class="tree-head">
+    <button class="head-btn" title="Reveal active file" aria-label="Reveal active file in the tree" onclick={revealActive} disabled={!openKey}>
+      <LocateFixed size={14} strokeWidth={1.9} aria-hidden="true" />
+    </button>
+    {#if onrefresh}
+      <button class="head-btn" title="Refresh from disk" aria-label="Refresh the workspace from disk" onclick={() => onrefresh?.()}>
+        <RefreshCw size={14} strokeWidth={1.9} aria-hidden="true" />
+      </button>
+    {/if}
+  </div>
   <ContextMenu.Root>
     <ContextMenu.Trigger class="tree-trigger">
-      <div class="body">
+      <div class="body" bind:this={bodyEl}>
         {#if tree.length === 0}
           <div class="empty">No files yet — right-click to create one.</div>
         {:else}
@@ -166,7 +220,7 @@
       </ContextMenu.Root>
     </li>
   {:else}
-    {@const open = !collapsed.has(node.path)}
+    {@const open = expanded.has(node.path)}
     <li>
       <ContextMenu.Root>
         <ContextMenu.Trigger class="row-trigger">
@@ -214,10 +268,38 @@
   .tree {
     height: 100%;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .tree-head {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.1rem;
+    padding: 0.2rem 0.3rem;
+  }
+  .head-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.2rem;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-faint);
+    cursor: pointer;
+  }
+  .head-btn:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  .head-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   :global(.tree-trigger) {
     display: block;
-    height: 100%;
+    flex: 1;
     min-height: 0;
   }
   .body {

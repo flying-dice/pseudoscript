@@ -19,7 +19,7 @@ public data Dispute {
   intent: shared::PaymentIntentId,
   amount: shared::Money,
   ref: context::DisputeRef,
-  status: DisputeStatus
+  status: disputes::DisputeStatus
 }
 
 /// A dispute-opened callback from the network's webhook.
@@ -42,7 +42,7 @@ public data DisputeRuling =
 public data ResolutionEvent {
   eventId: string,
   dispute: shared::DisputeId,
-  ruling: DisputeRuling,
+  ruling: disputes::DisputeRuling,
   signature: string
 }
 
@@ -76,44 +76,44 @@ public container Disputes for context::AcmePay;
 
 /// Owns the dispute lifecycle: open (from the network), contest (from the
 /// merchant), and resolve (from the network).
-public component DisputeService for Disputes {
+public component DisputeService for disputes::Disputes {
   /// The network opens a dispute. Signature-verified and de-duplicated before the
   /// dispute is recorded and `DisputeOpened` raised, so a replayed callback is
   /// acknowledged but holds funds only once.
   #[http("POST /v1/network/disputes")]
-  public open(event: DisputeEvent): Result<Acknowledged, DisputeError> {
-    verified: Result<void, DisputeError> = self.verify(event)
+  public open(event: disputes::DisputeEvent): Result<disputes::Acknowledged, disputes::DisputeError> {
+    verified = Result<void, DisputeError> from self.verify(event)
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen: Result<void, DisputeError> = Disputes::CallbackLog.seen(event.eventId)
+    seen = Result<void, DisputeError> from disputes::CallbackLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
-    dispute: Dispute = Dispute from { event, NeedsResponse }
-    Disputes::DisputeStore.save(dispute)
-    Disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
-    Disputes::CallbackLog.record(event.eventId)
+    dispute = Dispute from { event, disputes::DisputeStatus::NeedsResponse }
+    disputes::DisputeStore.save(dispute)
+    disputes::Events.opened(DisputeOpened from { event.dispute, event.merchant, event.amount })
+    disputes::CallbackLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
   }
 
   /// The merchant contests a dispute with evidence: forward it to the network and
   /// move the dispute to `UnderReview`.
-  public submitEvidence(merchant: shared::MerchantId, req: EvidenceSubmission): Result<Dispute, DisputeError> {
-    loaded: Result<Dispute, DisputeError> = self.getFor(merchant, req.dispute)
+  public submitEvidence(merchant: shared::MerchantId, req: disputes::EvidenceSubmission): Result<disputes::Dispute, disputes::DisputeError> {
+    loaded = Result<Dispute, DisputeError> from self.getFor(merchant, req.dispute)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    open: Result<void, DisputeError> = self.contestable(loaded.value)
+    open = Result<void, DisputeError> from self.contestable(loaded.value)
     if (open.isErr) {
       return Err(open.error)
     }
-    sent: Result<void, NetworkError> = context::CardNetwork.submitEvidence(loaded.value.ref, req.evidence)
+    sent = Result<void, NetworkError> from context::CardNetwork.submitEvidence(loaded.value.ref, req.evidence)
     if (sent.isErr) {
-      return Err(NetworkUnreachable)
+      return Err(disputes::DisputeError::NetworkUnreachable)
     }
-    reviewing: Dispute = self.mark(loaded.value, UnderReview)
-    Disputes::DisputeStore.save(reviewing)
+    reviewing = Dispute from self.mark(loaded.value, disputes::DisputeStatus::UnderReview)
+    disputes::DisputeStore.save(reviewing)
     return Ok(reviewing)
   }
 
@@ -121,61 +121,61 @@ public component DisputeService for Disputes {
   /// ledger returns the held funds; a loss leaves them debited. De-duplicated so
   /// a replayed ruling settles once.
   #[http("POST /v1/network/dispute-outcomes")]
-  public resolve(event: ResolutionEvent): Result<Acknowledged, DisputeError> {
-    verified: Result<void, DisputeError> = self.verifyResolution(event)
+  public resolve(event: disputes::ResolutionEvent): Result<disputes::Acknowledged, disputes::DisputeError> {
+    verified = Result<void, DisputeError> from self.verifyResolution(event)
     if (verified.isErr) {
       return Err(verified.error)
     }
-    seen: Result<void, DisputeError> = Disputes::CallbackLog.seen(event.eventId)
+    seen = Result<void, DisputeError> from disputes::CallbackLog.seen(event.eventId)
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
-    loaded: Result<Dispute, DisputeError> = self.get(event.dispute)
+    loaded = Result<Dispute, DisputeError> from self.get(event.dispute)
     if (loaded.isOk) {
       self.applyRuling(loaded.value, event.ruling)
     }
-    Disputes::CallbackLog.record(event.eventId)
+    disputes::CallbackLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
   }
 
   /// Disputes past their response deadline still awaiting evidence (drives the
   /// deadline sweep).
-  public unanswered(): Dispute[] {
-    return Disputes::DisputeStore.unanswered()
+  public unanswered(): disputes::Dispute[] {
+    return disputes::DisputeStore.unanswered()
   }
 
   /// Forfeit a dispute the merchant never answered: mark it `Lost`. The funds
   /// were already held at open, so no further debit is needed.
   public forfeit(dispute: shared::DisputeId): void {
-    loaded: Result<Dispute, DisputeError> = self.get(dispute)
+    loaded = Result<Dispute, DisputeError> from self.get(dispute)
     if (loaded.isOk) {
-      open: Result<void, DisputeError> = self.contestable(loaded.value)
+      open = Result<void, DisputeError> from self.contestable(loaded.value)
       if (open.isOk) {
-        Disputes::DisputeStore.save(self.mark(loaded.value, Lost))
+        disputes::DisputeStore.save(self.mark(loaded.value, disputes::DisputeStatus::Lost))
       }
     }
   }
 
   /// Apply a ruling: a win records `Won` and raises `DisputeWon`; a loss records
   /// `Lost`.
-  applyRuling(dispute: Dispute, ruling: DisputeRuling): void {
-    won: Result<void, DisputeError> = self.isWin(ruling)
+  applyRuling(dispute: disputes::Dispute, ruling: disputes::DisputeRuling): void {
+    won = Result<void, DisputeError> from self.isWin(ruling)
     if (won.isOk) {
-      Disputes::DisputeStore.save(self.mark(dispute, Won))
-      Disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
+      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Won))
+      disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
     } else {
-      Disputes::DisputeStore.save(self.mark(dispute, Lost))
+      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Lost))
     }
   }
 
   /// Read a dispute on behalf of `merchant`, refusing one that belongs to
   /// another merchant.
-  public getFor(merchant: shared::MerchantId, dispute: shared::DisputeId): Result<Dispute, DisputeError> {
-    loaded: Result<Dispute, DisputeError> = self.get(dispute)
+  public getFor(merchant: shared::MerchantId, dispute: shared::DisputeId): Result<disputes::Dispute, disputes::DisputeError> {
+    loaded = Result<Dispute, DisputeError> from self.get(dispute)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    owns: Result<void, DisputeError> = self.ownedBy(loaded.value, merchant)
+    owns = Result<void, DisputeError> from self.ownedBy(loaded.value, merchant)
     if (owns.isErr) {
       return Err(owns.error)
     }
@@ -183,52 +183,52 @@ public component DisputeService for Disputes {
   }
 
   /// Read a dispute, or `NotFound`.
-  get(dispute: shared::DisputeId): Result<Dispute, DisputeError> {
-    found: Option<Dispute> = Disputes::DisputeStore.fetch(dispute)
+  get(dispute: shared::DisputeId): Result<disputes::Dispute, disputes::DisputeError> {
+    found = Option<Dispute> from disputes::DisputeStore.fetch(dispute)
     if (found.isNone) {
-      return Err(NotFound)
+      return Err(disputes::DisputeError::NotFound)
     }
     return Ok(found.value)
   }
 
   /// A copy of `dispute` in a new state.
-  mark(dispute: Dispute, status: DisputeStatus): Dispute;
+  mark(dispute: disputes::Dispute, status: disputes::DisputeStatus): disputes::Dispute;
   /// `Err(BadSignature)` if the open callback's signature does not verify.
-  verify(event: DisputeEvent): Result<void, DisputeError>;
+  verify(event: disputes::DisputeEvent): Result<void, disputes::DisputeError>;
   /// `Err(BadSignature)` if the resolution callback's signature does not verify.
-  verifyResolution(event: ResolutionEvent): Result<void, DisputeError>;
+  verifyResolution(event: disputes::ResolutionEvent): Result<void, disputes::DisputeError>;
   /// `Err(NotContestable)` unless the dispute still needs a response.
-  contestable(dispute: Dispute): Result<void, DisputeError>;
+  contestable(dispute: disputes::Dispute): Result<void, disputes::DisputeError>;
   /// `Err(WrongMerchant)` if the dispute is not owned by `merchant`.
-  ownedBy(dispute: Dispute, merchant: shared::MerchantId): Result<void, DisputeError>;
+  ownedBy(dispute: disputes::Dispute, merchant: shared::MerchantId): Result<void, disputes::DisputeError>;
   /// `Ok` only if the ruling is a win.
-  isWin(ruling: DisputeRuling): Result<void, DisputeError>;
+  isWin(ruling: disputes::DisputeRuling): Result<void, disputes::DisputeError>;
 }
 
 /// Durable dispute records.
-component DisputeStore for Disputes {
-  save(dispute: Dispute): void;
-  fetch(dispute: shared::DisputeId): Option<Dispute>;
-  unanswered(): Dispute[];
+component DisputeStore for disputes::Disputes {
+  save(dispute: disputes::Dispute): void;
+  fetch(dispute: shared::DisputeId): Option<disputes::Dispute>;
+  unanswered(): disputes::Dispute[];
 }
 
 /// De-duplicates inbound network callbacks by event id.
-component CallbackLog for Disputes {
+component CallbackLog for disputes::Disputes {
   /// `Ok` if this event id was already processed (a replay).
-  seen(eventId: string): Result<void, DisputeError>;
+  seen(eventId: string): Result<void, disputes::DisputeError>;
   /// Mark an event id processed.
   record(eventId: string): void;
 }
 
 /// Raises `DisputeOpened` and `DisputeWon`. At-least-once through a transactional
 /// outbox; the ledger consumer de-duplicates on the dispute id.
-component Events for Disputes {
-  opened(event: DisputeOpened): void;
-  won(event: DisputeWon): void;
+component Events for disputes::Disputes {
+  opened(event: disputes::DisputeOpened): void;
+  won(event: disputes::DisputeWon): void;
 }
 
 /// An opened dispute holds the funds before the merchant can spend them.
-feature DisputeHoldsFundsImmediately for DisputeService {
+feature DisputeHoldsFundsImmediately for disputes::DisputeService {
   given "a captured payment whose balance is available"
   when  "the network opens a dispute for it"
   then  "the disputed amount and the dispute fee are debited from available"
@@ -236,7 +236,7 @@ feature DisputeHoldsFundsImmediately for DisputeService {
 }
 
 /// A won dispute returns the held funds.
-feature WonDisputeReturnsFunds for DisputeService {
+feature WonDisputeReturnsFunds for disputes::DisputeService {
   given "a dispute whose funds were held at open"
   when  "the network rules in the merchant's favour"
   then  "the disputed amount is returned to available"

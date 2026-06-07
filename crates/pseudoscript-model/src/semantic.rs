@@ -1,5 +1,5 @@
 //! AST-aware semantic tokens — the shared engine behind the LSP
-//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-wasm`).
+//! (`pseudoscript-lsp`) and the web IDE (`pseudoscript-ide`).
 //!
 //! Two passes feed one sorted, non-overlapping token list in absolute byte
 //! offsets:
@@ -118,7 +118,6 @@ fn is_keyword(kind: TokenKind) -> bool {
             | TokenKind::KwPerson
             | TokenKind::KwData
             | TokenKind::KwFor
-            | TokenKind::KwAlias
             | TokenKind::KwFrom
             | TokenKind::KwPublic
             | TokenKind::KwSelf
@@ -146,10 +145,6 @@ fn is_keyword(kind: TokenKind) -> bool {
 fn ast_pass(module: &ast::Module, out: &mut Vec<SemToken>) {
     for item in &module.items {
         match item {
-            ast::Item::Alias(alias) => {
-                push(out, alias.name.span, SemKind::Namespace, true);
-                namespace_path(&alias.target, out);
-            }
             ast::Item::Decl(decl) => decl_tokens(decl, out),
             ast::Item::Feature(feature) => {
                 push(out, feature.name.span, SemKind::Namespace, true);
@@ -243,13 +238,10 @@ fn block_tokens(block: &ast::Block, out: &mut Vec<SemToken>) {
 /// Colours one statement and its sub-expressions.
 fn stmt_tokens(stmt: &ast::Stmt, out: &mut Vec<SemToken>) {
     match &stmt.kind {
-        ast::StmtKind::Assign { name, ty, value } => {
+        ast::StmtKind::Assign { name, value } => {
             push(out, name.span, SemKind::Variable, true);
-            // A placeholder type (untyped-assignment error recovery) is an
-            // empty-named path at the binding span — don't re-colour it.
-            if !ty.name.segments.iter().all(|s| s.name.is_empty()) {
-                type_tokens(ty, out);
-            }
+            // A binding states its type through `from` (ADR-035); the type is
+            // coloured inside the `from` value.
             expr_tokens(value, out);
         }
         ast::StmtKind::Return(value) => {
@@ -293,10 +285,10 @@ fn expr_tokens(expr: &ast::Expr, out: &mut Vec<SemToken>) {
                 expr_tokens(payload, out);
             }
         }
-        ast::ExprKind::From { ty, sources, .. } => {
-            type_path(ty, out);
-            for source in sources {
-                expr_tokens(source, out);
+        ast::ExprKind::From { ty, source } => {
+            type_tokens(ty, out);
+            for src in source.sources() {
+                expr_tokens(src, out);
             }
         }
         ast::ExprKind::Postfix { base, segments } => {

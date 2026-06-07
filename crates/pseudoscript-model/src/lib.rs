@@ -31,6 +31,7 @@
 
 mod check;
 pub mod complete;
+pub mod deps;
 pub mod fold;
 mod graph;
 pub mod infer;
@@ -39,13 +40,13 @@ pub mod resolve;
 pub mod semantic;
 
 pub use complete::{CompletionItem, CompletionKind, completion};
-pub use fold::{FoldRange, folding_ranges};
+pub use fold::{FoldKind, FoldRange, folding_ranges};
 pub use graph::{
-    Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind, SigParam, Signature, Step, Trigger,
-    Visibility,
+    DataField, DataShape, DataVariant, Edge, EdgeKind, Graph, GraphNode, NodeDoc, NodeKind,
+    Scenario, ScenarioStep, SigParam, Signature, Step, Trigger, Visibility,
 };
 pub use model::{
-    Alias, Member, MemberKind, Model, ModuleEntry, Resolution, Symbol, SymbolKind, Workspace,
+    Member, MemberKind, Model, ModuleEntry, Resolution, Symbol, SymbolKind, Workspace,
 };
 pub use pseudoscript_syntax::ast;
 pub use pseudoscript_syntax::{Diagnostic, Severity};
@@ -92,7 +93,7 @@ pub fn check_workspace(modules: &[WorkspaceModule]) -> Vec<Diagnostic> {
     check_workspace_with_externals(modules, &[])
 }
 
-/// Parses and analyzes a workspace that has git dependencies (`LANG.md` §8.4):
+/// Parses and analyzes a workspace that has git dependencies (`LANG.md` §8.3):
 /// `local` modules are checked as in [`check_workspace`], while `external`
 /// modules — the loader supplies them dependency-name-prefixed — contribute only
 /// their `public` symbols so cross-workspace references resolve. External
@@ -139,23 +140,41 @@ pub struct ModuleDiagnostics {
 /// the module that *makes* the offending reference, where its span points.
 #[must_use]
 pub fn check_workspace_modules(modules: &[WorkspaceModule]) -> Vec<ModuleDiagnostics> {
-    let mut parsed = Vec::with_capacity(modules.len());
-    let mut parse_diagnostics = Vec::with_capacity(modules.len());
-    for module in modules {
+    check_workspace_modules_with_externals(modules, &[])
+}
+
+/// The per-module counterpart of [`check_workspace_with_externals`]: checks
+/// `local` modules against `external` dependency modules (`LANG.md` §8.3), so a
+/// reference into a dependency resolves (a public target) or diagnoses (a
+/// private one, §8.2). Only `local` modules are attributed diagnostics —
+/// a dependency's internal errors are not the consumer's.
+#[must_use]
+#[tracing::instrument(level = "debug", skip_all, fields(modules = local.len(), externals = external.len()))]
+pub fn check_workspace_modules_with_externals(
+    local: &[WorkspaceModule],
+    external: &[WorkspaceModule],
+) -> Vec<ModuleDiagnostics> {
+    let mut parse_diagnostics = Vec::with_capacity(local.len());
+    let mut local_parsed = Vec::with_capacity(local.len());
+    for module in local {
         let result = pseudoscript_syntax::parse(&module.source);
         parse_diagnostics.push(result.diagnostics);
-        parsed.push((module.fqn.clone(), result.ast));
+        local_parsed.push((module.fqn.clone(), result.ast));
     }
-    let workspace = Workspace::build(parsed);
-    workspace
-        .modules()
+    let external_parsed = external
+        .iter()
+        .map(|m| (m.fqn.clone(), pseudoscript_syntax::parse(&m.source).ast));
+    let workspace = Workspace::build_with_externals(local_parsed, external_parsed);
+    local
         .iter()
         .zip(parse_diagnostics)
-        .map(|(entry, parse)| {
+        .map(|(module, parse)| {
             let mut diagnostics = parse;
-            diagnostics.extend(check::run_module(&workspace, entry));
+            if let Some(entry) = workspace.module(&module.fqn) {
+                diagnostics.extend(check::run_module(&workspace, entry));
+            }
             ModuleDiagnostics {
-                fqn: entry.fqn.clone(),
+                fqn: module.fqn.clone(),
                 diagnostics,
             }
         })
@@ -241,7 +260,7 @@ mod tests {
 
     /// A consumer references a dependency's `public` node by its
     /// dependency-rooted FQN; the reference resolves and the dependency's own
-    /// modules are not checked (§8.4).
+    /// modules are not checked (§8.3).
     #[test]
     fn cross_workspace_reference_to_public_dep_node_resolves() {
         let local = [WorkspaceModule::new(
@@ -256,7 +275,7 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
-    /// Referencing a dependency's *private* node is rejected (§8.4 extends §8.2).
+    /// Referencing a dependency's *private* node is rejected (§8.3 extends §8.2).
     #[test]
     fn cross_workspace_reference_to_private_dep_node_is_rejected() {
         let local = [WorkspaceModule::new(
@@ -274,7 +293,7 @@ mod tests {
         );
     }
 
-    /// A dangling reference into a known dependency module is rejected (§8.5).
+    /// A dangling reference into a known dependency module is rejected (§8.4).
     #[test]
     fn dangling_cross_workspace_reference_is_rejected() {
         let local = [WorkspaceModule::new(

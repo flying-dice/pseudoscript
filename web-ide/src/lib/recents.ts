@@ -23,6 +23,10 @@ export interface Recent {
   key: string;
   kind: "sample" | "folder";
   name: string;
+  // The picked folder's leaf name (e.g. "model"). Shown beneath the display name,
+  // which for a folder with a `pds.toml` is its `[doc].name` rather than the folder.
+  // Absent on sample recents and on folder recents saved before this field existed.
+  dir?: string;
   sampleId?: string;
   at: number;
 }
@@ -75,9 +79,17 @@ export function recordSample(sample: RecentSample): void {
   upsert({ key: `sample:${sample.id}`, kind: "sample", name: sample.name, sampleId: sample.id, at: Date.now() });
 }
 
-/** Record a folder as recently opened, persisting its handle for a later re-open. */
-export async function recordFolder(name: string, rootHandle: FileSystemDirectoryHandle | null): Promise<void> {
-  const key = `folder:${name}`;
+/**
+ * Record a folder as recently opened, persisting its handle for a later re-open.
+ * `name` is the display label (the `pds.toml` `[doc].name` when present, else the
+ * folder name); `dir` is the folder's leaf name, keyed on and shown as the subtitle.
+ */
+export async function recordFolder(
+  name: string,
+  dir: string,
+  rootHandle: FileSystemDirectoryHandle | null,
+): Promise<void> {
+  const key = `folder:${dir}`;
   if (rootHandle) {
     try {
       await putHandle(key, rootHandle);
@@ -85,7 +97,7 @@ export async function recordFolder(name: string, rootHandle: FileSystemDirectory
       /* handle persistence unavailable — the entry still shows, re-open re-picks */
     }
   }
-  upsert({ key, kind: "folder", name, at: Date.now() });
+  upsert({ key, kind: "folder", name, dir, at: Date.now() });
 }
 
 /**

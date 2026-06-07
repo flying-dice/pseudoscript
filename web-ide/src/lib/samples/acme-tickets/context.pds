@@ -89,13 +89,13 @@ public system AcmeTickets;
 /// references. Every call is idempotent on a supplied key.
 public system PaymentProvider {
   /// Authorise (hold) an amount against a tokenised card.
-  public authorize(amount: shared::Money, method: payments::PaymentMethod, key: payments::IdempotencyKey): Result<ProviderAuth, ProviderError>;
+  public authorize(amount: shared::Money, method: payments::PaymentMethod, key: payments::IdempotencyKey): Result<context::ProviderAuth, context::ProviderError>;
   /// Capture (settle) a previously authorised hold.
-  public capture(auth: ProviderAuthRef, amount: shared::Money, key: payments::IdempotencyKey): Result<ProviderCapture, ProviderError>;
+  public capture(auth: context::ProviderAuthRef, amount: shared::Money, key: payments::IdempotencyKey): Result<context::ProviderCapture, context::ProviderError>;
   /// Refund a captured payment, in full or part.
-  public refund(capture: ProviderCaptureRef, amount: shared::Money, key: payments::IdempotencyKey): Result<ProviderRefund, ProviderError>;
+  public refund(capture: context::ProviderCaptureRef, amount: shared::Money, key: payments::IdempotencyKey): Result<context::ProviderRefund, context::ProviderError>;
   /// Void an authorised hold that will not be captured, releasing the funds.
-  public cancel(auth: ProviderAuthRef, key: payments::IdempotencyKey): void;
+  public cancel(auth: context::ProviderAuthRef, key: payments::IdempotencyKey): void;
 }
 
 /// The provider's handle for an authorised hold.
@@ -105,10 +105,10 @@ public data ProviderAuthRef { value: string }
 public data ProviderCaptureRef { value: string }
 
 /// A successful authorisation.
-public data ProviderAuth { ref: ProviderAuthRef }
+public data ProviderAuth { ref: context::ProviderAuthRef }
 
 /// A successful capture.
-public data ProviderCapture { ref: ProviderCaptureRef }
+public data ProviderCapture { ref: context::ProviderCaptureRef }
 
 /// A successful refund.
 public data ProviderRefund { ref: string }

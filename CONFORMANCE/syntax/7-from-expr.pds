@@ -1,0 +1,19 @@
+// LANG.md §7.2 / §10 (ADR-035): `Type from Expr` carries a type onto a single
+// value — a call or a chained access — alongside the brace form. `Type[] from`
+// carries it onto an array source.
+
+//! example
+
+public data Cat { name: string }
+
+public system Zoo;
+
+public container Pen for Zoo {
+  Make(): Cat {
+    c = Cat from self.fetch()
+    cats = Cat[] from self.fetchMany()
+    return c
+  }
+  fetch(): Cat;
+  fetchMany(): Cat[];
+}

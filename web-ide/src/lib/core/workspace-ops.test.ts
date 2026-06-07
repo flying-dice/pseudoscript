@@ -112,7 +112,7 @@ describe("validation", () => {
 
   it("danglingImporters finds modules still referencing the old fqn", () => {
     const files2: OpenFile[] = [{ fqn: "a" }, { fqn: "b" }];
-    const src = { a: "alias X = old::Thing", b: "public system S;" };
+    const src = { a: "public container X for old::Thing;", b: "public system S;" };
     expect(danglingImporters(files2, src, "new", "old::Thing")).toEqual(["a"]);
   });
 });

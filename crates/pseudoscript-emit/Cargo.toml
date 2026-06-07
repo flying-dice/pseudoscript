@@ -11,11 +11,13 @@ name = "pseudoscript_emit"
 path = "src/lib.rs"
 
 [dependencies]
+# Logging facade (target-agnostic); the subscriber is chosen at the wasm/stdio edge.
+tracing = "0.1"
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-model = { path = "../pseudoscript-model" }
 pseudoscript-layout = { path = "../pseudoscript-layout" }
+pseudoscript-dot = { path = "../pseudoscript-dot" }
 serde = { version = "1", features = ["derive"] }
-layout-rs = "0.1.3"
 
 [dev-dependencies]
 cucumber = "0.21"

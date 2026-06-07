@@ -12,7 +12,7 @@ The checker validated structure and control flow but did almost nothing inside c
 
 A conservative type inference underpins four body checks. Inference yields a concrete type only for statically-determinable forms — literals, `Ok`/`Err`/`Some`/`None` markers, `from` (incl. `Type[] from`), and bare parameter/binding references; calls, field accesses, `self`, and `::` paths yield `Unknown`. A check never fires on an `Unknown`.
 
-- **Reference resolution (§7/§8).** A bare single-segment name must resolve to a parameter, a binding, a `for` binding, a node, an alias, or a union variant (a fieldless variant is referenced by name). An unresolved reference MUST be rejected.
+- **Reference resolution (§7/§8).** A bare single-segment name must resolve to a parameter, a binding, a `for` binding, a node, an alias, or a union variant (a fieldless variant is referenced by name). An unresolved reference MUST be rejected. *(Superseded: `alias` removed (ADR-028); a node/type/variant reference now requires its FQN (ADR-030), so a bare name resolves only to a parameter, binding, or `for` binding.)*
 - **Return-type inference (§5.1, extends ADR-020).** A `return` whose operand infers to a concrete type — now including a parameter or binding — MUST match the declared return type.
 - **Member access (§2.2/§3.4).** A `.field` read whose receiver infers to a same-module `data` record (with disclosed fields) MUST name one of its fields.
 - **Call arity (§5.1).** A call whose receiver resolves to a same-module node (`self` or a node name) MUST pass exactly as many arguments as the callable declares.

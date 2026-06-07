@@ -78,8 +78,17 @@ export type WorkspaceModel = {
 export type LiveDocItem = { title: string; path: string; handle?: FileSystemFileHandle | null };
 export type LiveDocGroup = { title: string; items: LiveDocItem[] };
 
-// A code location recorded in / replayed from navigation history.
-export type Loc = { fileFqn: string; line: number; col: number; label?: string; fqn?: string };
+// A location recorded in / replayed from navigation history. `view` is which
+// pane it was visited in — `"canvas"` entries replay the diagram scope (`fqn`,
+// or the whole-model overview when absent); absent ⇒ `"code"`.
+export type Loc = {
+  fileFqn: string;
+  line: number;
+  col: number;
+  label?: string;
+  fqn?: string;
+  view?: "code" | "canvas";
+};
 
 // The editor's imperative API, handed back via `onready`. Impure (DOM/CodeMirror) —
 // held by the view/stores, injected into core only as plain values it returns.
@@ -91,6 +100,38 @@ export type EditorApi = {
 
 // A laid-out diagram scene + its positioned layout, or an error to show instead.
 export type Canvas = { scene: Scene | null; layout?: Scene | null; error: string };
+
+// Per-diagram C4 layout tweaks (the canvas "Layout" control). Applies to C4
+// views only; the layout engine ignores it for other scene kinds.
+export type LayoutTweaks = {
+  minimizeLongEdges: boolean;
+  orientation: "tb" | "lr";
+  spacing: "compact" | "comfortable" | "roomy";
+  /** Brute-force grid placement instead of dot. */
+  experimentalGrid: boolean;
+  /** Grid cost dials (apply when {@link experimentalGrid}): the weight of a
+   *  crossing, a cell of edge length, and a cell of against-the-flow travel. */
+  gridCrossingCost: number;
+  gridDistanceCost: number;
+  gridFlowCost: number;
+  /** Grid search: `"auto"`, `"heuristic"`, or `"exhaustive"` (brute force where
+   *  feasible) — the toggle for checking the heuristic against exact. */
+  gridSearch: "auto" | "heuristic" | "exhaustive";
+  /** Grid pins for the current view (drag-to-pin). Not persisted in the global
+   *  tweaks blob — supplied per-view from the pin store at layout time. */
+  gridPins?: import("$lib/core/pins.js").Pin[];
+};
+
+export const DEFAULT_LAYOUT_TWEAKS: LayoutTweaks = {
+  minimizeLongEdges: false,
+  orientation: "tb",
+  spacing: "comfortable",
+  experimentalGrid: false,
+  gridCrossingCost: 10,
+  gridDistanceCost: 1,
+  gridFlowCost: 5,
+  gridSearch: "auto",
+};
 
 // The canvas find-usages popover: a reference list anchored at the pointer.
 export type CanvasUsages = { name: string; items: Occurrence[]; x: number; y: number };

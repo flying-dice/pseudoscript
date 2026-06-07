@@ -1,0 +1,6 @@
+view feature
+entry shop::Place
+target shop::Shop
+step given "an empty cart"
+step when "an item is added"
+step then "the cart holds one item"

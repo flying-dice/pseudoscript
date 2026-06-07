@@ -28,51 +28,51 @@ public data RiskError =
 public container Risk for context::AcmePay;
 
 /// Scores a confirmation and turns the score into an allow/review/block outcome.
-public component Engine for Risk {
+public component Engine for risk::Risk {
   /// Screen a confirmation. The score-to-outcome thresholds are the disclosed
   /// rule; the weighting of signals into a score is the black box behind it.
-  public screen(input: RiskInput): RiskOutcome {
-    return Risk::Scorer.classify(input)
+  public screen(input: risk::RiskInput): risk::RiskOutcome {
+    return risk::Scorer.classify(input)
   }
 
   /// `Ok` only if the outcome blocks the payment outright.
-  public isBlocked(outcome: RiskOutcome): Result<void, RiskError>;
+  public isBlocked(outcome: risk::RiskOutcome): Result<void, risk::RiskError>;
   /// `Ok` only if the outcome holds the payment for manual review.
-  public isReview(outcome: RiskOutcome): Result<void, RiskError>;
+  public isReview(outcome: risk::RiskOutcome): Result<void, risk::RiskError>;
 }
 
 /// Holds captured payments that screening flagged, until an analyst rules on them.
-public component ReviewQueue for Risk {
+public component ReviewQueue for risk::Risk {
   /// Flag a (proceeding) payment for human review.
   public flag(intent: shared::PaymentIntentId, reason: string): void {
-    Risk::ReviewStore.add(intent, reason)
+    risk::ReviewStore.add(intent, reason)
   }
 
   /// Remove a payment from the queue once it has been ruled on.
   public clear(intent: shared::PaymentIntentId): void {
-    Risk::ReviewStore.remove(intent)
+    risk::ReviewStore.remove(intent)
   }
 
   /// Payments awaiting an analyst's decision.
   public pending(): shared::PaymentIntentId[] {
-    return Risk::ReviewStore.pending()
+    return risk::ReviewStore.pending()
   }
 }
 
 /// Weights signals into a score and classifies it (the proprietary model).
-component Scorer for Risk {
-  classify(input: RiskInput): RiskOutcome;
+component Scorer for risk::Risk {
+  classify(input: risk::RiskInput): risk::RiskOutcome;
 }
 
 /// Durable review-queue records.
-component ReviewStore for Risk {
+component ReviewStore for risk::Risk {
   add(intent: shared::PaymentIntentId, reason: string): void;
   remove(intent: shared::PaymentIntentId): void;
   pending(): shared::PaymentIntentId[];
 }
 
 /// A payment the engine blocks never reaches the network.
-feature BlockStopsBeforeMoneyMoves for Engine {
+feature BlockStopsBeforeMoneyMoves for risk::Engine {
   given "a confirmation the fraud engine scores as block"
   when  "the payment is confirmed"
   then  "it is rejected on risk grounds"

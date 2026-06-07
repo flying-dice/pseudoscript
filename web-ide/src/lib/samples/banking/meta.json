@@ -1,0 +1,7 @@
+{
+  "name": "Internet Banking System",
+  "category": "Tutorial",
+  "order": 0,
+  "landing": "docs/overview.md",
+  "description": "Simon Brown's canonical Internet Banking System (c4model.com, CC BY 4.0), modelled in C4 down to the component level: the customer, the single-page app / static content / backend / database / statement-store containers, and the seven Spring components the Backend decomposes into."
+}

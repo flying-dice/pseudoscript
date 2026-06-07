@@ -1,0 +1,14 @@
+// LANG.md §5.1 / §7.2 (ADR-035): a bare reference to a `data` record is not a
+// value; a `data` value is produced with `from`. Returning the bare type is a
+// model error.
+
+//! example
+
+public data Cat;
+public data Dog;
+
+public system Shelter;
+
+public container Pen for Shelter {
+  AdoptCat(): Cat { return Dog }
+}

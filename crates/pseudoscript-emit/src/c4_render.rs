@@ -1,40 +1,25 @@
-//! Layout-rs-driven rendering of C4 views.
+//! C4 view rendering, driven by the [`pseudoscript_dot`] layout engine.
 //!
-//! [`render_c4`] builds a `layout::topo::layout::VisualGraph` from a [`C4Scene`]
-//! — one box per node, one routed edge per [`RoutedEdge`] — runs the Sugiyama
-//! layered placer, and captures the laid-out geometry through a custom
-//! [`RenderBackend`] ([`Capture`]). The captured rects, polylines, and labels are
-//! then re-emitted as a self-contained SVG of modern C4 *cards*: a white rounded
-//! card with a coloured left rule (the kind colour), an UPPERCASE kind eyebrow, a
-//! bold title, and a dimmed `///` description wrapped to at most two lines.
+//! [`render_c4`] and [`layout_c4_scene`] turn a [`C4Scene`] into, respectively, a
+//! self-contained SVG and a positioned [`C4Layout`] the web IDE's canvas renders
+//! directly. Both share one layout pass: the scene becomes a `pseudoscript_dot`
+//! [`dot::Graph`] (one box per node sized from its card content, one cluster for
+//! a boundary view), `dot::layout` runs the Graphviz `dot` pipeline (rank →
+//! order → position → splines, with the boundary as a cluster so external actors
+//! land outside its frame), and the result maps back to the [`C4Layout`] DTO.
 //!
-//! Each node box is created with an empty engine label and its FQN as the box's
-//! `properties`, so the engine draws no centred text — the card chrome is drawn
-//! here. Only captured rects whose `properties` match a scene node's FQN are
-//! cards; the engine's layout connectors (no/non-matching properties) are skipped.
+//! The SVG style is a modern C4 *card*: a white rounded card with a coloured left
+//! rule (the kind colour), an UPPERCASE kind eyebrow, a bold title, and a dimmed
+//! `///` description wrapped to at most two lines. Edges are the engine's routed
+//! Bézier polylines with an arrowhead at the target.
 //!
-//! A container/component view frames its children: the boundary (`of`) node is
-//! excluded from the layout graph; the children and their inter-child edges are
-//! laid out, then an enclosing rounded rectangle is drawn around their bounding
-//! box with the boundary's label as a title (the C4 "system boundary" look).
-//!
-//! The placement is left-to-right (`Orientation::LeftToRight`), which reads well
-//! for C4 container/component graphs. layout-rs is deterministic and the capture
-//! preserves draw order, so the emitted SVG is byte-stable across runs.
+//! A container/component view draws the boundary (`of`) node as an enclosing
+//! dashed frame — the cluster box the engine returns — with its label as a title.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use layout::core::base::Orientation;
-use layout::core::color::Color;
-use layout::core::format::{ClipHandle, RenderBackend};
-use layout::core::geometry::Point;
-use layout::core::style::{LineStyleKind, StyleAttr};
-use layout::std_shapes::shapes::{Arrow, Element, LineEndKind, ShapeKind};
-use layout::topo::layout::VisualGraph;
-
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
+use pseudoscript_dot as dot;
 use pseudoscript_model::NodeKind;
 use serde::{Deserialize, Serialize};
 
@@ -43,16 +28,19 @@ use crate::scene::{C4EdgeKind, C4Scene, PlacedNode, Rect, RoutedEdge};
 
 // All SVG colours come from the active theme palette (crate::render::pal); the
 // hand-written emitters bind their roles as locals at the top of each function.
-// The engine-side box/edge styles below feed the layout engine only — the
-// `Capture` backend ignores their colours — so they keep harmless literals.
-/// Margin added around the laid-out extent and inside the document.
-const MARGIN: f64 = 24.0;
-/// Font size handed to the layout engine for edge-label sizing.
-const FONT_SIZE: usize = 13;
+/// Padding added around the laid-out extent, inside the document.
+const CANVAS_PAD: i32 = 24;
+/// Minimum gap between sibling nodes in a rank, handed to the layout engine.
+const NODESEP: f64 = 40.0;
+/// Minimum gap between ranks, handed to the layout engine (room for edge labels).
+const RANKSEP: f64 = 72.0;
+/// Padding between a boundary cluster's contents and its frame.
+const CLUSTER_MARGIN: f64 = 16.0;
+/// Extra top padding inside a boundary frame, reserving a header band so the
+/// frame's title (and the canvas close button) clear the member nodes.
+const CLUSTER_HEADER: f64 = 28.0;
 /// Card corner radius.
 const CARD_RADIUS: i32 = 8;
-/// Card corner radius as the engine's `usize` rounding.
-const CARD_RADIUS_PX: usize = 8;
 /// Width of the coloured left rule.
 const BAR_WIDTH: i32 = 5;
 /// Left text padding past the left rule.
@@ -70,6 +58,10 @@ const DESC_CHAR_W_I32: i32 = 6;
 /// Card width is clamped to this range.
 const CARD_MIN_W: f64 = 180.0;
 const CARD_MAX_W: f64 = 300.0;
+/// Fixed card size for grid placement: every box is the same so the grid reads as
+/// a clean lattice (content-derived sizing is kept for the layered/SVG views).
+const GRID_CARD_W: f64 = 260.0;
+const GRID_CARD_H: f64 = 120.0;
 /// Vertical band holding the eyebrow and title.
 const HEAD_BAND: i32 = 52;
 /// Vertical advance per description line.
@@ -81,22 +73,20 @@ const NO_DESC_H: i32 = 64;
 
 /// Renders a laid-out C4 view to a self-contained SVG document.
 ///
-/// The layout engine requires a DAG and panics on a cycle, so only an acyclic
-/// subset of edges is laid out ([`acyclic_edges`]); the call is additionally
-/// wrapped so no input can panic the renderer — on failure (or an empty view) it
-/// falls back to the scene's own simple coordinates ([`fallback_svg`]).
+/// An empty view (only the framed boundary, or no nodes) falls back to the
+/// scene's own simple coordinates ([`fallback_svg`]); otherwise the view is laid
+/// out by [`layout_c4_scene`] and drawn from that [`C4Layout`].
 pub(crate) fn render_c4(scene: &C4Scene) -> String {
-    let boundary = scene.of.as_deref();
-    let laid_out = scene.nodes.iter().any(|n| Some(n.fqn.as_str()) != boundary);
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
+    let laid_out = scene
+        .nodes
+        .iter()
+        .any(|n| !is_frame(&frames, n.fqn.as_str()));
     if !laid_out {
-        return fallback_svg(scene, boundary);
+        return fallback_svg(scene);
     }
-
-    let captured = catch_unwind(AssertUnwindSafe(|| layout_capture(scene, boundary)));
-    match captured {
-        Ok(capture) => emit_svg(&capture, scene, boundary),
-        Err(_) => fallback_svg(scene, boundary),
-    }
+    emit_svg(&layout_c4_scene(scene))
 }
 
 // --- C4 layout export -------------------------------------------------------
@@ -116,8 +106,26 @@ pub struct C4Layout {
     pub nodes: Vec<LaidOutNode>,
     /// Routed edges between cards.
     pub edges: Vec<LaidOutEdge>,
-    /// The enclosing frame of a container/component view; `None` for context.
-    pub boundary: Option<BoundaryFrame>,
+    /// The enclosing frames of a boundary view, outermost first: one for a
+    /// container view (the system), two nested for a component view (the system
+    /// then the container). Empty for a context view. Draw in order so an inner
+    /// frame sits atop its outer one.
+    pub boundaries: Vec<BoundaryFrame>,
+    /// The grid geometry, present only for an experimental-grid layout — it lets
+    /// the canvas map a dragged node's pixel position back to a cell (drag-to-pin).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridInfo>,
+}
+
+/// The grid the experimental placement used, in absolute canvas coordinates. Cell
+/// `(r, c)` is centred at `origin + (c·cell_w, r·cell_h)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridInfo {
+    pub cols: i32,
+    pub rows: i32,
+    pub cell_w: i32,
+    pub cell_h: i32,
+    pub origin: PointI,
 }
 
 /// A node card placed by the layout engine: its content (for the card chrome)
@@ -137,10 +145,9 @@ pub struct LaidOutNode {
     pub rect: Rect,
 }
 
-/// A routed edge: the engine's polyline through `points` (a straight
-/// card-centre-to-centre line when the routed path could not be matched), plus
-/// the relationship it expresses. `points` always has at least two entries.
-/// `dashed` marks a `from`-provenance edge, matching the SVG.
+/// A routed edge: the engine's Bézier polyline through `points`, plus the
+/// relationship it expresses. `points` always has at least two entries. `dashed`
+/// marks a `from`-provenance edge, matching the SVG.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaidOutEdge {
     /// Source endpoint FQN.
@@ -149,11 +156,13 @@ pub struct LaidOutEdge {
     pub to: String,
     /// The relationship kind.
     pub kind: C4EdgeKind,
-    /// Edge label (the method name for a call, else empty).
-    pub label: String,
+    /// The merged edge labels (call method names), sorted and de-duplicated;
+    /// empty for a trigger or provenance edge. The canvas stacks them one per
+    /// line, matching the SVG.
+    pub labels: Vec<String>,
     /// The routed polyline (at least two points).
     pub points: Vec<PointI>,
-    /// The engine's label position, when a matching label was found.
+    /// The label position (polyline midpoint) when the edge carries labels.
     #[serde(default)]
     pub label_pos: Option<PointI>,
     /// Dashed (a `from`-provenance edge), matching the SVG.
@@ -164,12 +173,15 @@ pub struct LaidOutEdge {
 /// boundary node's title and kind (for the frame's accent).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundaryFrame {
+    /// The boundary node's fully-qualified name (so the canvas can act on the
+    /// frame — drill into it, or pop up from the view's own anchor).
+    pub fqn: String,
     /// The boundary node's display label.
     pub title: String,
     /// The boundary node's C4 kind (system for a container view, container for a
     /// component view), for the frame's accent colour.
     pub kind: NodeKind,
-    /// The frame rectangle (padded child bounding box).
+    /// The frame rectangle (the cluster box the engine returned).
     pub rect: Rect,
 }
 
@@ -182,185 +194,391 @@ pub struct PointI {
     pub y: i32,
 }
 
-/// Positions a [`C4Scene`] into a [`C4Layout`] — the same layout-rs Sugiyama
-/// pass [`render_c4`] runs, returned as structured geometry instead of SVG.
-/// Wrapped exactly like [`render_c4`]: an empty view or a layout-engine panic
-/// falls back to the scene's own simple coordinates ([`fallback_layout`]), so
-/// no input can panic the caller.
-#[must_use]
-pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
-    let boundary = scene.of.as_deref();
-    let laid_out = scene.nodes.iter().any(|n| Some(n.fqn.as_str()) != boundary);
-    if !laid_out {
-        return fallback_layout(scene, boundary);
-    }
+/// Which grid search to run — the UI's heuristic-vs-brute-force toggle. Mirrors
+/// [`dot::SearchMode`] so the IDE layer need not depend on `dot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GridSearch {
+    /// Exact for a tiny placement space, the bounded heuristic otherwise.
+    #[default]
+    Auto,
+    /// Always the bounded heuristic.
+    Heuristic,
+    /// Brute force where feasible (small graphs), else the heuristic.
+    Exhaustive,
+}
 
-    match catch_unwind(AssertUnwindSafe(|| layout_capture(scene, boundary))) {
-        Ok(capture) => capture_to_layout(&capture, scene, boundary),
-        Err(_) => fallback_layout(scene, boundary),
+/// Per-diagram layout tweaks (the UI's "Layout" toggles): whether to run the
+/// long-edge optimiser, the reading direction, and a spacing multiplier.
+#[derive(Debug, Clone, Copy)]
+pub struct C4Tweaks {
+    /// Run the [`dot::optimize::minimize_long_edges`] search.
+    pub minimize_long_edges: bool,
+    /// Lay out left-to-right instead of top-to-bottom.
+    pub left_to_right: bool,
+    /// Multiplier on the base node/rank spacing (1.0 = default).
+    pub spacing: f64,
+    /// **Experimental**: place nodes by brute-force grid search
+    /// ([`dot::grid_layout`]) instead of the layered engine.
+    pub experimental_grid: bool,
+    /// Grid-placement cost dials (used only when `experimental_grid`): the weight
+    /// of a crossing, a cell of edge length, and a cell of against-the-flow travel.
+    pub grid_crossing_cost: usize,
+    pub grid_distance_cost: usize,
+    pub grid_flow_cost: usize,
+    /// Which grid search to run.
+    pub grid_search: GridSearch,
+}
+
+impl Default for C4Tweaks {
+    fn default() -> Self {
+        // The grid dials default to the engine's own defaults — one source of truth.
+        let grid = dot::GridParams::default();
+        Self {
+            minimize_long_edges: false,
+            left_to_right: false,
+            spacing: 1.0,
+            experimental_grid: false,
+            grid_crossing_cost: grid.crossing_cost,
+            grid_distance_cost: grid.distance_cost,
+            grid_flow_cost: grid.flow_cost,
+            grid_search: GridSearch::Auto,
+        }
     }
 }
 
-/// Reads the captured geometry into a [`C4Layout`]: cards from the rects whose
-/// `properties` name a scene node (the SVG card filter), edges from each
-/// laid-out scene edge matched to its routed arrow by endpoint proximity
-/// (robust to the engine's draw order and to connector arrows), and the
-/// boundary frame and extent from the shared [`frame_and_extent`].
-fn capture_to_layout(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
-    let by_fqn: HashMap<&str, &PlacedNode> =
-        scene.nodes.iter().map(|n| (n.fqn.as_str(), n)).collect();
-    let (frame, width, height) = frame_and_extent(capture, scene, boundary);
+/// A node the user has pinned to a grid cell (drag-to-pin). Identified by FQN; the
+/// emit layer resolves it to a `dot` node index for the current view.
+#[derive(Debug, Clone)]
+pub struct GridPin {
+    pub fqn: String,
+    pub row: usize,
+    pub col: usize,
+}
 
-    let mut centre: HashMap<&str, Point> = HashMap::new();
-    let mut nodes = Vec::new();
-    for rect in &capture.rects {
-        let Some((fqn, node)) = rect
-            .properties
-            .as_deref()
-            .and_then(|fqn| Some((fqn, *by_fqn.get(fqn)?)))
-        else {
-            continue;
-        };
-        centre.insert(
-            fqn,
-            Point::new(rect.xy.x + rect.size.x / 2.0, rect.xy.y + rect.size.y / 2.0),
-        );
-        nodes.push(laid_out_node(node, rect_of(rect.xy, rect.size)));
+/// Positions a [`C4Scene`] into a [`C4Layout`] via the [`pseudoscript_dot`]
+/// engine, with default tweaks and no pins. See [`layout_c4_scene_with`].
+#[must_use]
+pub fn layout_c4_scene(scene: &C4Scene) -> C4Layout {
+    layout_c4_scene_with(scene, &C4Tweaks::default(), &[])
+}
+
+/// Positions a [`C4Scene`] into a [`C4Layout`] under `tweaks`. `pins` fix nodes to
+/// grid cells (grid placement only; ignored otherwise). An empty view (only the
+/// framed boundary) falls back to the scene's own simple coordinates
+/// ([`fallback_layout`]); the engine itself never panics.
+#[must_use]
+pub fn layout_c4_scene_with(scene: &C4Scene, tweaks: &C4Tweaks, pins: &[GridPin]) -> C4Layout {
+    tracing::debug!(
+        of = ?scene.of,
+        nodes = scene.nodes.len(),
+        edges = scene.edges.len(),
+        minimize_long_edges = tweaks.minimize_long_edges,
+        left_to_right = tweaks.left_to_right,
+        "c4 layout_c4_scene"
+    );
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
+    let laid_out = scene
+        .nodes
+        .iter()
+        .any(|n| !is_frame(&frames, n.fqn.as_str()));
+    if !laid_out {
+        return fallback_layout(scene, &frames, &frame_list);
     }
 
-    let mut used_arrow = vec![false; capture.arrows.len()];
-    let mut used_text = vec![false; capture.texts.len()];
-    let mut edges = Vec::new();
-    for edge in acyclic_edges(scene, boundary) {
-        let (Some(&from_c), Some(&to_c)) =
-            (centre.get(edge.from.as_str()), centre.get(edge.to.as_str()))
-        else {
+    let drawable = drawable_edges(scene, &frames);
+    let graph = to_dot_graph(scene, &frames, &drawable, tweaks);
+    let positioned = if tweaks.experimental_grid {
+        // Experimental: brute-force grid placement instead of the layered engine.
+        // Resolve pins to node indices for this view; a pin whose node is not in the
+        // view (the `.pds` changed, or it's another view's pin) is silently dropped.
+        let dot_pins: Vec<dot::Pin> = pins
+            .iter()
+            .filter_map(|p| {
+                graph.node_index(&p.fqn).map(|node| dot::Pin {
+                    node,
+                    row: p.row,
+                    col: p.col,
+                })
+            })
+            .collect();
+        dot::grid_layout(
+            &graph,
+            dot::GridParams {
+                crossing_cost: tweaks.grid_crossing_cost,
+                distance_cost: tweaks.grid_distance_cost,
+                flow_cost: tweaks.grid_flow_cost,
+                spacing: tweaks.spacing,
+                search: match tweaks.grid_search {
+                    GridSearch::Auto => dot::SearchMode::Auto,
+                    GridSearch::Heuristic => dot::SearchMode::Heuristic,
+                    GridSearch::Exhaustive => dot::SearchMode::Exhaustive,
+                },
+            },
+            &dot_pins,
+        )
+    } else {
+        // Base `dot` layout, then the post-processing passes the tweaks select.
+        dot::run_pipeline(&graph, &layout_passes(tweaks))
+    };
+    from_dot_layout(&positioned, scene, &frame_list, &drawable)
+}
+
+/// The post-layout passes a set of tweaks enables, in pipeline order. Add a tweak
+/// and its pass here; the engine stays a plain `dot::layout` otherwise.
+fn layout_passes(tweaks: &C4Tweaks) -> Vec<&'static dyn dot::Pass> {
+    let mut passes: Vec<&'static dyn dot::Pass> = Vec::new();
+    if tweaks.minimize_long_edges {
+        passes.push(&dot::ShortenLongEdges);
+    }
+    passes
+}
+
+/// Builds the engine input from a scene: one box per card (non-frame) node (sized
+/// from its card content), one cluster per frame node — nested via the frame's
+/// own `boundary`, so a component view yields a container cluster inside a system
+/// cluster — and one edge per drawable relationship. A frame anchor is not a box.
+fn to_dot_graph(
+    scene: &C4Scene,
+    frames: &HashSet<&str>,
+    drawable: &[&RoutedEdge],
+    tweaks: &C4Tweaks,
+) -> dot::Graph {
+    let mut graph = dot::Graph::new();
+    graph.rankdir = if tweaks.left_to_right {
+        dot::RankDir::LeftRight
+    } else {
+        dot::RankDir::TopBottom
+    };
+    // Spacing scales the node and rank gaps. The rank gap is the axis the diagram
+    // flows along — vertical in TB, horizontal in LR — and in LR it competes with
+    // the wide C4 cards, so the same multiplier reads as a smaller change. Amplify
+    // the rank-gap response in LR so roomy/compact visibly move the X spacing.
+    let scale = tweaks.spacing.max(0.1);
+    graph.nodesep = NODESEP * scale;
+    let rank_scale = if tweaks.left_to_right {
+        1.0 + (scale - 1.0) * 3.0
+    } else {
+        scale
+    };
+    graph.ranksep = (RANKSEP * rank_scale).max(24.0);
+
+    // Feed cards in scene-declaration order — no node kind is privileged. (We used
+    // to float persons to the front so the cycle-breaker pinned actors at the top;
+    // that anchor is removed, so the engine ranks people like anything else.)
+    for node in scene
+        .nodes
+        .iter()
+        .filter(|n| !is_frame(frames, n.fqn.as_str()))
+    {
+        // Grid placement uses uniform boxes (a clean lattice); the layered engine
+        // keeps content-derived sizing so cards fit their text.
+        let (w, h) = if tweaks.experimental_grid {
+            (GRID_CARD_W, GRID_CARD_H)
+        } else {
+            card_size(node)
+        };
+        graph.nodes.push(dot::Node::new(node.fqn.clone(), w, h));
+    }
+
+    // One cluster per frame node. Its direct members are the cards it encloses;
+    // its `parent` is its own enclosing frame (a container frame nests in its
+    // system frame). A frame with only a nested child and no direct cards still
+    // gets a cluster, so the engine frames the child.
+    for fnode in scene.nodes.iter().filter(|n| is_frame(frames, &n.fqn)) {
+        let members: Vec<String> = scene
+            .nodes
+            .iter()
+            .filter(|n| {
+                !is_frame(frames, &n.fqn) && n.boundary.as_deref() == Some(fnode.fqn.as_str())
+            })
+            .map(|n| n.fqn.clone())
+            .collect();
+        let parent = fnode
+            .boundary
+            .as_deref()
+            .filter(|b| is_frame(frames, b))
+            .map(str::to_owned);
+        graph.clusters.push(dot::Cluster {
+            id: fnode.fqn.clone(),
+            parent,
+            members,
+            margin: CLUSTER_MARGIN,
+            header: CLUSTER_HEADER,
+        });
+    }
+
+    for edge in drawable {
+        let mut e = dot::Edge::new(edge.from.clone(), edge.to.clone());
+        // Reserve space for the edge label so the engine makes the edge long
+        // enough to hold it (no cramping against the cards).
+        e.label = label_size(&edge.labels);
+        graph.edges.push(e);
+    }
+
+    graph
+}
+
+/// Maps the engine's [`dot::Layout`] back to a [`C4Layout`]: cards from placed
+/// nodes, edges matched to their routed splines by endpoint FQN, and the
+/// boundary frame from the cluster box. All coordinates are shifted by
+/// [`CANVAS_PAD`] for breathing room inside the document.
+fn from_dot_layout(
+    positioned: &dot::Layout,
+    scene: &C4Scene,
+    frame_list: &[String],
+    drawable: &[&RoutedEdge],
+) -> C4Layout {
+    let by_fqn: HashMap<&str, &PlacedNode> =
+        scene.nodes.iter().map(|n| (n.fqn.as_str(), n)).collect();
+    let pad = CANVAS_PAD;
+    let off = |p: dot::Pt| PointI {
+        x: round(p.x) + pad,
+        y: round(p.y) + pad,
+    };
+
+    let mut nodes = Vec::new();
+    for np in &positioned.nodes {
+        let Some(node) = by_fqn.get(np.id.as_str()) else {
             continue;
         };
-        let (points, dashed, label_pos) =
-            match nearest_arrow(&capture.arrows, &used_arrow, from_c, to_c) {
-                Some(i) => {
-                    used_arrow[i] = true;
-                    let arrow = &capture.arrows[i];
-                    let label_pos =
-                        nearest_label(&capture.texts, &mut used_text, &edge.label, arrow);
-                    (
-                        arrow.points.iter().map(point_i).collect(),
-                        arrow.dashed,
-                        label_pos,
-                    )
-                }
-                None => (
-                    // No routed arrow matched: a straight line between card centres,
-                    // so every edge always carries a drawable polyline.
-                    vec![point_i(&from_c), point_i(&to_c)],
-                    matches!(edge.kind, C4EdgeKind::Provenance),
-                    None,
-                ),
-            };
+        let rect = Rect {
+            x: round(np.center.x - np.width / 2.0) + pad,
+            y: round(np.center.y - np.height / 2.0) + pad,
+            w: round(np.width),
+            h: round(np.height),
+        };
+        nodes.push(laid_out_node(node, rect));
+    }
+
+    // Route geometry keyed by endpoint pair (parallel edges of differing kinds
+    // share a path; that is acceptable — the geometry is the same).
+    let mut routes: HashMap<(&str, &str), &dot::EdgeRoute> = HashMap::new();
+    for er in &positioned.edges {
+        routes
+            .entry((er.tail.as_str(), er.head.as_str()))
+            .or_insert(er);
+    }
+
+    let mut edges = Vec::new();
+    for edge in drawable {
+        let Some(route) = routes.get(&(edge.from.as_str(), edge.to.as_str())) else {
+            continue;
+        };
+        let points: Vec<PointI> = route.polyline.iter().map(|p| off(*p)).collect();
+        if points.len() < 2 {
+            continue;
+        }
+        let label_pos = if edge.labels.is_empty() {
+            None
+        } else {
+            Some(route.label_pos.map_or(points[points.len() / 2], &off))
+        };
         edges.push(LaidOutEdge {
             from: edge.from.clone(),
             to: edge.to.clone(),
             kind: edge.kind,
-            label: edge.label.clone(),
+            labels: edge.labels.clone(),
             points,
             label_pos,
-            dashed,
+            dashed: matches!(edge.kind, C4EdgeKind::Provenance),
         });
     }
 
+    // One frame per cluster box, outermost first (the order in `frame_list`).
+    let boundaries: Vec<BoundaryFrame> = frame_list
+        .iter()
+        .filter_map(|of| {
+            let cluster = positioned.clusters.iter().find(|c| &c.id == of)?;
+            let rect = Rect {
+                x: round(cluster.bbox.x) + pad,
+                y: round(cluster.bbox.y) + pad,
+                w: round(cluster.bbox.w),
+                h: round(cluster.bbox.h),
+            };
+            boundary_frame(scene, of, rect)
+        })
+        .collect();
+
+    let grid = positioned.grid.map(|g| GridInfo {
+        cols: i32::try_from(g.cols).unwrap_or(0),
+        rows: i32::try_from(g.rows).unwrap_or(0),
+        cell_w: round(g.cell_w),
+        cell_h: round(g.cell_h),
+        origin: off(g.origin),
+    });
+
     C4Layout {
-        width,
-        height,
+        width: round(positioned.bbox.w) + 2 * pad,
+        height: round(positioned.bbox.h) + 2 * pad,
         nodes,
         edges,
-        boundary: frame.and_then(|(min, max, _title)| {
-            boundary_frame(scene, boundary?, rect_corners(min, max))
-        }),
+        boundaries,
+        grid,
     }
 }
 
-/// The unused arrow whose ends sit closest to `from`/`to` (the source and target
-/// card centres), or `None` when none is left. Endpoint proximity, not draw
-/// order, so connector arrows and reordering never mismatch an edge.
-fn nearest_arrow(arrows: &[CapturedArrow], used: &[bool], from: Point, to: Point) -> Option<usize> {
-    arrows
+/// The frame anchors of a scene, outermost first: every node named as some
+/// node's `boundary` (so it is drawn as an enclosing frame, not a card). A
+/// container view yields one (the system); a component view two (system, then
+/// container); a context view none. Ordered by nesting depth so a consumer draws
+/// outer frames before the inner ones they contain.
+fn frame_fqns(scene: &C4Scene) -> Vec<String> {
+    let is_node: HashSet<&str> = scene.nodes.iter().map(|n| n.fqn.as_str()).collect();
+    let mut frames: Vec<String> = scene
+        .nodes
         .iter()
-        .enumerate()
-        .filter(|(i, a)| !used[*i] && a.points.len() >= 2)
-        .map(|(i, a)| {
-            let first = a.points[0];
-            let last = a.points[a.points.len() - 1];
-            (i, dist2(first, from) + dist2(last, to))
-        })
-        .min_by(|(_, x), (_, y)| x.total_cmp(y))
-        .map(|(i, _)| i)
+        .filter_map(|n| n.boundary.clone())
+        .filter(|b| is_node.contains(b.as_str()))
+        .collect();
+    // The view anchor is always a frame, even when it has no children to enclose
+    // (an empty container view still draws its system frame).
+    if let Some(of) = scene.of.as_deref().filter(|of| is_node.contains(of)) {
+        frames.push(of.to_owned());
+    }
+    frames.sort();
+    frames.dedup();
+    frames.sort_by_key(|f| frame_depth(scene, f));
+    frames
 }
 
-/// The unused captured edge label matching `label` nearest the arrow's midpoint,
-/// marking it consumed so parallel same-label edges take distinct labels. `None`
-/// for an empty label or when none matches.
-fn nearest_label(
-    texts: &[CapturedText],
-    used: &mut [bool],
-    label: &str,
-    arrow: &CapturedArrow,
-) -> Option<PointI> {
-    if label.is_empty() {
-        return None;
+/// How deeply a frame nests: the number of `boundary` links from it up to an
+/// outermost frame (0 for the outer frame). Bounded by the node count.
+fn frame_depth(scene: &C4Scene, fqn: &str) -> usize {
+    let boundary_of = |f: &str| {
+        scene
+            .nodes
+            .iter()
+            .find(|n| n.fqn == f)
+            .and_then(|n| n.boundary.clone())
+    };
+    let mut depth = 0;
+    let mut cur = boundary_of(fqn);
+    while let Some(b) = cur {
+        depth += 1;
+        if depth > scene.nodes.len() {
+            break;
+        }
+        cur = boundary_of(&b);
     }
-    let mid = arrow_midpoint(arrow);
-    let (j, text) = texts
+    depth
+}
+
+/// Whether `fqn` is a frame anchor (drawn as a frame, not a card).
+fn is_frame(frames: &HashSet<&str>, fqn: &str) -> bool {
+    frames.contains(fqn)
+}
+
+/// Every edge to draw: both endpoints are card (non-frame) nodes present in the
+/// scene, and not a self-loop. (Cycle breaking is the engine's job; it draws
+/// every relationship, so a cyclic C4 graph keeps all its arrows.)
+fn drawable_edges<'a>(scene: &'a C4Scene, frames: &HashSet<&str>) -> Vec<&'a RoutedEdge> {
+    let in_view = |fqn: &str| !is_frame(frames, fqn) && scene.nodes.iter().any(|n| n.fqn == fqn);
+    scene
+        .edges
         .iter()
-        .enumerate()
-        .filter(|(j, t)| !used[*j] && t.text == label)
-        .min_by(|(_, a), (_, b)| dist2(a.xy, mid).total_cmp(&dist2(b.xy, mid)))?;
-    used[j] = true;
-    Some(point_i(&text.xy))
-}
-
-/// The arithmetic mean of an arrow's polyline points (its rough centre).
-fn arrow_midpoint(arrow: &CapturedArrow) -> Point {
-    let n = f64::from(u32::try_from(arrow.points.len().max(1)).unwrap_or(u32::MAX));
-    let sum = arrow
-        .points
-        .iter()
-        .fold(Point::zero(), |acc, p| Point::new(acc.x + p.x, acc.y + p.y));
-    Point::new(sum.x / n, sum.y / n)
-}
-
-/// Squared Euclidean distance (avoids a `sqrt` — only the ordering matters).
-fn dist2(a: Point, b: Point) -> f64 {
-    let (dx, dy) = (a.x - b.x, a.y - b.y);
-    dx * dx + dy * dy
-}
-
-/// A captured top-left + size as an integer [`Rect`].
-fn rect_of(xy: Point, size: Point) -> Rect {
-    Rect {
-        x: round(xy.x),
-        y: round(xy.y),
-        w: round(size.x),
-        h: round(size.y),
-    }
-}
-
-/// A min/max corner pair as an integer [`Rect`] (the boundary frame box).
-fn rect_corners(min: Point, max: Point) -> Rect {
-    Rect {
-        x: round(min.x),
-        y: round(min.y),
-        w: round(max.x - min.x),
-        h: round(max.y - min.y),
-    }
-}
-
-/// A rounded [`PointI`] from a layout [`Point`].
-fn point_i(p: &Point) -> PointI {
-    PointI {
-        x: round(p.x),
-        y: round(p.y),
-    }
+        .filter(|e| e.from != e.to && in_view(&e.from) && in_view(&e.to))
+        .collect()
 }
 
 /// The centre of an integer [`Rect`].
@@ -388,21 +606,22 @@ fn laid_out_node(node: &PlacedNode, rect: Rect) -> LaidOutNode {
 fn boundary_frame(scene: &C4Scene, of: &str, rect: Rect) -> Option<BoundaryFrame> {
     let node = scene.nodes.iter().find(|n| n.fqn == of)?;
     Some(BoundaryFrame {
+        fqn: of.to_owned(),
         title: node.label.clone(),
         kind: node.kind,
         rect,
     })
 }
 
-/// The two endpoint nodes of an in-view edge, or `None` when the edge touches
-/// the framed boundary or an endpoint is absent. Shared by the SVG fallback and
-/// the layout fallback so the two agree on which edges a fallback draws.
+/// The two endpoint nodes of an in-view edge, or `None` when the edge touches a
+/// frame anchor or an endpoint is absent. Shared by the SVG fallback and the
+/// layout fallback so the two agree on which edges a fallback draws.
 fn view_edge_endpoints<'a>(
     scene: &'a C4Scene,
     edge: &RoutedEdge,
-    boundary: Option<&str>,
+    frames: &HashSet<&str>,
 ) -> Option<(&'a PlacedNode, &'a PlacedNode)> {
-    if Some(edge.from.as_str()) == boundary || Some(edge.to.as_str()) == boundary {
+    if is_frame(frames, &edge.from) || is_frame(frames, &edge.to) {
         return None;
     }
     let from = scene.nodes.iter().find(|n| n.fqn == edge.from)?;
@@ -410,10 +629,10 @@ fn view_edge_endpoints<'a>(
     Some((from, to))
 }
 
-/// A panic-proof fallback mirroring [`fallback_svg`]: each node at its own
-/// scene-assigned rect, straight centre-to-centre edges, and the boundary frame
-/// from the boundary node's rect. Used for an empty view or a layout panic.
-fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
+/// A fallback mirroring [`fallback_svg`]: each card at its own scene-assigned
+/// rect, straight centre-to-centre edges, and the frames from the frame nodes'
+/// rects. Used for an empty view (no children to lay out).
+fn fallback_layout(scene: &C4Scene, frames: &HashSet<&str>, frame_list: &[String]) -> C4Layout {
     let pad = 20;
     let extent =
         |f: fn(&Rect) -> i32| scene.nodes.iter().map(|n| f(&n.rect)).max().unwrap_or(0) + pad;
@@ -423,7 +642,7 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
     let nodes = scene
         .nodes
         .iter()
-        .filter(|n| Some(n.fqn.as_str()) != boundary)
+        .filter(|n| !is_frame(frames, n.fqn.as_str()))
         .map(|n| laid_out_node(n, n.rect))
         .collect();
 
@@ -431,12 +650,12 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
         .edges
         .iter()
         .filter_map(|e| {
-            let (from, to) = view_edge_endpoints(scene, e, boundary)?;
+            let (from, to) = view_edge_endpoints(scene, e, frames)?;
             Some(LaidOutEdge {
                 from: e.from.clone(),
                 to: e.to.clone(),
                 kind: e.kind,
-                label: e.label.clone(),
+                labels: e.labels.clone(),
                 points: vec![rect_centre(&from.rect), rect_centre(&to.rect)],
                 label_pos: None,
                 dashed: matches!(e.kind, C4EdgeKind::Provenance),
@@ -444,114 +663,27 @@ fn fallback_layout(scene: &C4Scene, boundary: Option<&str>) -> C4Layout {
         })
         .collect();
 
-    let boundary = boundary
-        .and_then(|of| boundary_frame(scene, of, scene.nodes.iter().find(|n| n.fqn == of)?.rect));
+    let boundaries = frame_list
+        .iter()
+        .filter_map(|of| boundary_frame(scene, of, scene.nodes.iter().find(|n| &n.fqn == of)?.rect))
+        .collect();
 
     C4Layout {
         width,
         height,
         nodes,
         edges,
-        boundary,
+        boundaries,
+        grid: None,
     }
 }
 
-/// Builds the layout graph (boundary framed out, cycles broken) and captures the
-/// engine's placement + edge routing. Each node box carries an empty engine
-/// label (so the engine draws no centred text) and its FQN as `properties` (so
-/// the card chrome can be matched back to the scene node at draw time).
-fn layout_capture(scene: &C4Scene, boundary: Option<&str>) -> Capture {
-    let mut graph = VisualGraph::new(Orientation::LeftToRight);
-    let mut handles = HashMap::new();
-    for node in &scene.nodes {
-        if Some(node.fqn.as_str()) == boundary {
-            continue; // The boundary frames its children; it is not a peer box.
-        }
-        let look = node_style();
-        let size = card_size(node);
-        let element = Element::create_with_properties(
-            ShapeKind::Box(String::new()),
-            look,
-            Orientation::LeftToRight,
-            size,
-            node.fqn.clone(),
-        );
-        handles.insert(node.fqn.clone(), graph.add_node(element));
-    }
-
-    for edge in acyclic_edges(scene, boundary) {
-        let (Some(&from), Some(&to)) = (handles.get(&edge.from), handles.get(&edge.to)) else {
-            continue;
-        };
-        graph.add_edge(edge_arrow(edge), from, to);
-    }
-
-    let mut capture = Capture::default();
-    graph.do_it(false, false, false, &mut capture);
-    capture
-}
-
-/// A DFS color used to break cycles: absence is white (unvisited).
-#[derive(Clone, Copy, PartialEq)]
-enum Mark {
-    /// On the current DFS stack — an edge into a `Gray` node closes a cycle.
-    Gray,
-    /// Fully explored.
-    Black,
-}
-
-/// The edges fed to the layout engine: a back-edge-free (acyclic) subset of the
-/// in-view edges, since the engine panics on a cycle. Self-loops and edges
-/// touching the framed boundary are dropped. Deterministic — nodes and their
-/// out-edges are visited in scene order.
-fn acyclic_edges<'a>(scene: &'a C4Scene, boundary: Option<&str>) -> Vec<&'a RoutedEdge> {
-    let in_view = |fqn: &str| Some(fqn) != boundary && scene.nodes.iter().any(|n| n.fqn == fqn);
-    let mut adjacency: HashMap<&str, Vec<&RoutedEdge>> = HashMap::new();
-    for edge in &scene.edges {
-        if edge.from != edge.to && in_view(&edge.from) && in_view(&edge.to) {
-            adjacency.entry(edge.from.as_str()).or_default().push(edge);
-        }
-    }
-
-    let mut color: HashMap<&str, Mark> = HashMap::new();
-    let mut kept = Vec::new();
-    for node in &scene.nodes {
-        if Some(node.fqn.as_str()) != boundary && !color.contains_key(node.fqn.as_str()) {
-            dfs_keep(node.fqn.as_str(), &adjacency, &mut color, &mut kept);
-        }
-    }
-    kept
-}
-
-/// Visits `node`, keeping every out-edge except a back-edge (to a `Gray` node),
-/// whose removal is what makes the kept set acyclic.
-fn dfs_keep<'a>(
-    node: &'a str,
-    adjacency: &HashMap<&'a str, Vec<&'a RoutedEdge>>,
-    color: &mut HashMap<&'a str, Mark>,
-    kept: &mut Vec<&'a RoutedEdge>,
-) {
-    color.insert(node, Mark::Gray);
-    if let Some(edges) = adjacency.get(node) {
-        for &edge in edges {
-            let to = edge.to.as_str();
-            match color.get(to) {
-                Some(Mark::Gray) => {} // back-edge: drop to keep the set acyclic
-                Some(Mark::Black) => kept.push(edge), // forward/cross edge: safe
-                None => {
-                    kept.push(edge);
-                    dfs_keep(to, adjacency, color, kept);
-                }
-            }
-        }
-    }
-    color.insert(node, Mark::Black);
-}
-
-/// A panic-proof fallback: draws each node card at its scene-assigned rect with a
-/// straight edge between centres. Used for an empty view or if the layout engine
-/// fails, so `pds doc` never crashes on a model.
-fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
+/// A panic-proof SVG fallback: draws each node card at its scene-assigned rect
+/// with a straight edge between centres. Used for an empty view, so `pds doc`
+/// never crashes on a model.
+fn fallback_svg(scene: &C4Scene) -> String {
+    let frame_list = frame_fqns(scene);
+    let frames: HashSet<&str> = frame_list.iter().map(String::as_str).collect();
     let pad = 20;
     let w = scene
         .nodes
@@ -574,10 +706,10 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
     #[allow(non_snake_case)]
     let (CARD_BORDER, TITLE_FILL, STROKE) = (pal().hairline, pal().ink, pal().ink);
 
-    for node in &scene.nodes {
-        if Some(node.fqn.as_str()) != boundary {
+    for of in &frame_list {
+        let Some(node) = scene.nodes.iter().find(|n| &n.fqn == of) else {
             continue;
-        }
+        };
         let _ = write!(
             out,
             "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" fill=\"{boundary_fill}\" \
@@ -595,7 +727,7 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         );
     }
     for node in &scene.nodes {
-        if Some(node.fqn.as_str()) == boundary {
+        if is_frame(&frames, &node.fqn) {
             continue;
         }
         draw_card(
@@ -610,7 +742,7 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
         );
     }
     for edge in &scene.edges {
-        let Some((from, to)) = view_edge_endpoints(scene, edge, boundary) else {
+        let Some((from, to)) = view_edge_endpoints(scene, edge, &frames) else {
             continue;
         };
         let _ = write!(
@@ -628,51 +760,14 @@ fn fallback_svg(scene: &C4Scene, boundary: Option<&str>) -> String {
     out
 }
 
-/// The engine-side box style. The card itself is drawn here, so the engine only
-/// needs to size and place a plain rectangle; its fill never reaches the SVG.
-fn node_style() -> StyleAttr {
-    StyleAttr {
-        line_color: web_color("#c3c8d2"),
-        line_width: 1,
-        fill_color: Some(web_color("#ffffff")),
-        rounded: CARD_RADIUS_PX,
-        font_size: FONT_SIZE,
-    }
-}
-
-/// The arrow style for a C4 edge: a thin line with an arrowhead at the target,
-/// dashed for provenance, carrying the edge label for the engine to route.
-fn edge_arrow(edge: &RoutedEdge) -> Arrow {
-    let line_style = if matches!(edge.kind, C4EdgeKind::Provenance) {
-        LineStyleKind::Dashed
-    } else {
-        LineStyleKind::Normal
-    };
-    let look = StyleAttr {
-        line_color: web_color("#2a2f3a"),
-        line_width: 1,
-        fill_color: None,
-        rounded: 0,
-        font_size: FONT_SIZE,
-    };
-    Arrow::new(
-        LineEndKind::None,
-        LineEndKind::Arrow,
-        line_style,
-        &edge.label,
-        &look,
-        &None,
-        &None,
-    )
-}
-
 // --- card content sizing/wrapping -------------------------------------------
 
-/// The card box size for a node, derived from its content *before* layout so the
-/// engine reserves the right footprint. Width is the clamped widest of the title,
-/// eyebrow, and wrapped description; height grows with the description's line
-/// count. A node with no description gets the short [`NO_DESC_H`] card.
-fn card_size(node: &PlacedNode) -> Point {
+/// The card box `(width, height)` for a node, derived from its content *before*
+/// layout so the engine reserves the right footprint. Width is the clamped
+/// widest of the title, eyebrow, and wrapped description; height grows with the
+/// description's line count. A node with no description gets the short
+/// [`NO_DESC_H`] card.
+fn card_size(node: &PlacedNode) -> (f64, f64) {
     let inner_w = card_inner_width(node);
     let w =
         (f64::from(inner_w) + f64::from(BAR_WIDTH + TEXT_PAD * 2)).clamp(CARD_MIN_W, CARD_MAX_W);
@@ -684,7 +779,7 @@ fn card_size(node: &PlacedNode) -> Point {
             f64::from(HEAD_BAND + i32::try_from(lines).unwrap_or(0) * DESC_LINE_H + BOTTOM_PAD)
         }
     };
-    Point::new(w, h)
+    (w, h)
 }
 
 /// The widest content row (title / eyebrow / unwrapped description), in px,
@@ -771,204 +866,52 @@ fn kind_color(kind: NodeKind) -> &'static str {
     }
 }
 
-fn web_color(hex: &str) -> Color {
-    Color::from_name(hex).unwrap_or_else(|| Color::fast("black"))
-}
-
-// --- captured geometry ------------------------------------------------------
-
-/// A box captured from the layout engine: top-left, size, and the `properties`
-/// string it was created with (a node FQN for a card; absent for a connector).
-struct CapturedRect {
-    xy: Point,
-    size: Point,
-    properties: Option<String>,
-}
-
-/// A routed edge captured from the layout engine: a polyline through the
-/// path points and whether it is dashed.
-struct CapturedArrow {
-    points: Vec<Point>,
-    dashed: bool,
-}
-
-/// A label captured from the layout engine, centred at the engine's chosen
-/// point. Node boxes carry empty labels, so these are edge labels.
-struct CapturedText {
-    xy: Point,
-    text: String,
-}
-
-/// A [`RenderBackend`] that records draw calls instead of writing pixels, so the
-/// crate can re-emit them in its own SVG style.
-#[derive(Default)]
-struct Capture {
-    rects: Vec<CapturedRect>,
-    arrows: Vec<CapturedArrow>,
-    texts: Vec<CapturedText>,
-}
-
-impl RenderBackend for Capture {
-    fn draw_rect(
-        &mut self,
-        xy: Point,
-        size: Point,
-        _look: &StyleAttr,
-        properties: Option<String>,
-        _clip: Option<ClipHandle>,
-    ) {
-        self.rects.push(CapturedRect {
-            xy,
-            size,
-            properties,
-        });
-    }
-
-    fn draw_text(&mut self, xy: Point, text: &str, _look: &StyleAttr) {
-        self.texts.push(CapturedText {
-            xy,
-            text: text.to_owned(),
-        });
-    }
-
-    fn draw_arrow(
-        &mut self,
-        path: &[(Point, Point)],
-        dashed: bool,
-        _head: (bool, bool),
-        _look: &StyleAttr,
-        _properties: Option<String>,
-        _text: &str,
-    ) {
-        // The path is [(exit, _), (entry, _), ...]; the first point of each pair
-        // traces the polyline.
-        let points = path.iter().map(|(p, _)| *p).collect();
-        self.arrows.push(CapturedArrow { points, dashed });
-    }
-
-    fn draw_line(
-        &mut self,
-        start: Point,
-        stop: Point,
-        _look: &StyleAttr,
-        _properties: Option<String>,
-    ) {
-        self.arrows.push(CapturedArrow {
-            points: vec![start, stop],
-            dashed: false,
-        });
-    }
-
-    fn draw_circle(
-        &mut self,
-        xy: Point,
-        size: Point,
-        _look: &StyleAttr,
-        _properties: Option<String>,
-    ) {
-        // Connectors may render as small circles; record them (no properties) so
-        // the extent still accounts for them. They are not drawn as cards.
-        self.rects.push(CapturedRect {
-            xy,
-            size,
-            properties: None,
-        });
-    }
-
-    fn create_clip(&mut self, _xy: Point, _size: Point, _rounded_px: usize) -> ClipHandle {
-        0
-    }
-}
-
 // --- SVG emission -----------------------------------------------------------
 
-/// The boundary frame (padded child bbox + title) and the document extent
-/// (`w`, `h`) for a captured layout — the geometry both the SVG emitter and the
-/// [`C4Layout`] export derive identically, so the two never drift. The extent
-/// covers the captured content plus any boundary frame.
-fn frame_and_extent<'a>(
-    capture: &Capture,
-    scene: &'a C4Scene,
-    boundary: Option<&str>,
-) -> (Option<(Point, Point, &'a str)>, i32, i32) {
-    let boundary_frame = boundary.and_then(|of| {
-        let title = boundary_title(scene, of)?;
-        // Frame only the boundary's own children, never the external actors the
-        // view draws alongside them (`boundary: None`).
-        let (min, max) = children_bbox(capture, scene, of)?;
-        let pad = MARGIN;
-        Some((
-            Point::new(min.x - pad, min.y - pad),
-            Point::new(max.x + pad, max.y + pad),
-            title,
-        ))
-    });
-
-    let (_, mut max) = content_bbox(capture);
-    if let Some((_, frame_max, _)) = &boundary_frame {
-        max.x = max.x.max(frame_max.x);
-        max.y = max.y.max(frame_max.y);
-    }
-    (boundary_frame, round(max.x + MARGIN), round(max.y + MARGIN))
-}
-
-/// Re-emits captured geometry as a self-contained SVG, framing the boundary
-/// children when the view has an `of`.
-fn emit_svg(capture: &Capture, scene: &C4Scene, boundary: Option<&str>) -> String {
-    let by_fqn: HashMap<&str, &PlacedNode> =
-        scene.nodes.iter().map(|n| (n.fqn.as_str(), n)).collect();
-
-    let (boundary_frame, w, h) = frame_and_extent(capture, scene, boundary);
-
+/// Renders a positioned [`C4Layout`] to a self-contained SVG document: the
+/// boundary frame (if any), the node cards, then the routed edges with labels.
+fn emit_svg(layout: &C4Layout) -> String {
     let mut out = String::new();
-    svg_open(&mut out, w, h);
+    svg_open(&mut out, layout.width, layout.height);
 
-    if let Some((frame_min, frame_max, title)) = &boundary_frame {
+    // Frames outermost first, so an inner frame's border draws over its outer one.
+    for frame in &layout.boundaries {
         #[allow(non_snake_case)]
         let (CARD_BORDER, TITLE_FILL) = (pal().hairline, pal().ink);
-        let x = round(frame_min.x);
-        let y = round(frame_min.y);
-        let fw = round(frame_max.x - frame_min.x);
-        let fh = round(frame_max.y - frame_min.y);
         let _ = write!(
             &mut out,
-            "<rect x=\"{x}\" y=\"{y}\" width=\"{fw}\" height=\"{fh}\" rx=\"12\" \
+            "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"12\" \
              fill=\"{boundary_fill}\" stroke=\"{CARD_BORDER}\" stroke-dasharray=\"6 5\"/>\
              <text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" font-weight=\"700\" \
              fill=\"{TITLE_FILL}\">{label}</text>",
+            x = frame.rect.x,
+            y = frame.rect.y,
+            w = frame.rect.w,
+            h = frame.rect.h,
             boundary_fill = pal().boundary_fill,
-            tx = x + 12,
-            ty = y + 19,
-            label = escape_xml(title),
+            tx = frame.rect.x + 12,
+            ty = frame.rect.y + 19,
+            label = escape_xml(&frame.title),
         );
     }
 
-    // Only rects whose properties name a scene node are cards; connectors and any
-    // other layout rects are skipped (they only contribute to the extent).
-    for rect in &capture.rects {
-        let Some(node) = rect
-            .properties
-            .as_deref()
-            .and_then(|fqn| by_fqn.get(fqn).copied())
-        else {
-            continue;
-        };
+    for node in &layout.nodes {
         draw_card(
             &mut out,
-            round(rect.xy.x),
-            round(rect.xy.y),
-            round(rect.size.x),
-            round(rect.size.y),
+            node.rect.x,
+            node.rect.y,
+            node.rect.w,
+            node.rect.h,
             node.kind,
             &node.label,
             node.summary.as_deref(),
         );
     }
-    for arrow in &capture.arrows {
-        draw_arrow(&mut out, arrow);
-    }
-    for label in &capture.texts {
-        draw_edge_label(&mut out, label);
+    for edge in &layout.edges {
+        draw_arrow(&mut out, &edge.points, edge.dashed);
+        if let Some(lp) = edge.label_pos {
+            draw_edge_label(&mut out, lp, &edge_display(&edge.labels));
+        }
     }
 
     crate::render::svg_close(&mut out);
@@ -1058,67 +1001,6 @@ pub(crate) fn draw_card(
     }
 }
 
-/// The boundary node's label, if the `of` node is present in the scene.
-fn boundary_title<'a>(scene: &'a C4Scene, of: &str) -> Option<&'a str> {
-    scene
-        .nodes
-        .iter()
-        .find(|n| n.fqn == of)
-        .map(|n| n.label.as_str())
-}
-
-/// The bounding box of the rects belonging to `of`'s children (the nodes whose
-/// `boundary` is `of`). `None` when no child rect was captured.
-fn children_bbox(capture: &Capture, scene: &C4Scene, of: &str) -> Option<(Point, Point)> {
-    let children: std::collections::HashSet<&str> = scene
-        .nodes
-        .iter()
-        .filter(|n| n.boundary.as_deref() == Some(of))
-        .map(|n| n.fqn.as_str())
-        .collect();
-    let mut min = Point::new(f64::MAX, f64::MAX);
-    let mut max = Point::new(f64::MIN, f64::MIN);
-    for rect in &capture.rects {
-        if !rect
-            .properties
-            .as_deref()
-            .is_some_and(|p| children.contains(p))
-        {
-            continue;
-        }
-        min.x = min.x.min(rect.xy.x);
-        min.y = min.y.min(rect.xy.y);
-        max.x = max.x.max(rect.xy.x + rect.size.x);
-        max.y = max.y.max(rect.xy.y + rect.size.y);
-    }
-    (min.x <= max.x).then_some((min, max))
-}
-
-/// The bounding box of all captured content (rects and arrow points).
-fn content_bbox(capture: &Capture) -> (Point, Point) {
-    let mut min = Point::new(f64::MAX, f64::MAX);
-    let mut max = Point::new(f64::MIN, f64::MIN);
-    let mut grow = |p: Point| {
-        min.x = min.x.min(p.x);
-        min.y = min.y.min(p.y);
-        max.x = max.x.max(p.x);
-        max.y = max.y.max(p.y);
-    };
-    for rect in &capture.rects {
-        grow(rect.xy);
-        grow(Point::new(rect.xy.x + rect.size.x, rect.xy.y + rect.size.y));
-    }
-    for arrow in &capture.arrows {
-        for &p in &arrow.points {
-            grow(p);
-        }
-    }
-    if min.x > max.x {
-        return (Point::zero(), Point::zero());
-    }
-    (min, max)
-}
-
 /// SVG document header with a viewBox and an arrowhead marker (matches the
 /// sequence renderer's chrome).
 fn svg_open(out: &mut String, w: i32, h: i32) {
@@ -1148,17 +1030,17 @@ fn svg_open(out: &mut String, w: i32, h: i32) {
     out.push_str(crate::render::SVG_FONT_GROUP);
 }
 
-/// Draws a captured routed edge as a polyline with an arrowhead at the target.
-fn draw_arrow(out: &mut String, arrow: &CapturedArrow) {
-    if arrow.points.len() < 2 {
+/// Draws a routed edge as a polyline with an arrowhead at the target.
+fn draw_arrow(out: &mut String, points: &[PointI], dashed: bool) {
+    if points.len() < 2 {
         return;
     }
     let mut path = String::new();
-    for (i, p) in arrow.points.iter().enumerate() {
+    for (i, p) in points.iter().enumerate() {
         let cmd = if i == 0 { 'M' } else { 'L' };
-        let _ = write!(&mut path, "{cmd}{},{} ", round(p.x), round(p.y));
+        let _ = write!(&mut path, "{cmd}{},{} ", p.x, p.y);
     }
-    let dash = if arrow.dashed {
+    let dash = if dashed {
         " stroke-dasharray=\"4 3\""
     } else {
         ""
@@ -1172,31 +1054,86 @@ fn draw_arrow(out: &mut String, arrow: &CapturedArrow) {
     );
 }
 
-/// Draws a captured edge label on a small light plate so it never reads against a
-/// routed line. Node boxes carry empty labels, so every captured text is an edge
-/// label.
-fn draw_edge_label(out: &mut String, label: &CapturedText) {
-    if label.text.is_empty() {
+/// The separator between an edge's merged labels in its display string. Joined by
+/// [`edge_display`], split back by [`draw_edge_label`]; the web canvas mirrors it
+/// (`C4Flow.svelte`). One newline per stacked label.
+const LABEL_SEP: &str = "\n";
+
+/// An edge's display label: its merged labels stacked one per line.
+fn edge_display(labels: &[String]) -> String {
+    labels.join(LABEL_SEP)
+}
+
+/// The `(width, height)` of an edge's label plate, matching [`draw_edge_label`]'s
+/// geometry, so the layout engine can reserve room for it. `None` for an
+/// unlabelled (trigger/provenance) edge.
+fn label_size(labels: &[String]) -> Option<(f64, f64)> {
+    if labels.is_empty() {
+        return None;
+    }
+    let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let w = f64::from(u32::try_from(widest).unwrap_or(0)) * f64::from(EDGE_CHAR_W)
+        + f64::from(EDGE_PLATE_PAD_X);
+    let h = f64::from(u32::try_from(labels.len()).unwrap_or(1)) * f64::from(EDGE_LINE_H)
+        + f64::from(EDGE_PLATE_PAD);
+    Some((w, h))
+}
+
+/// The line height (px) of a stacked edge label, sized for the 11.5px label font.
+const EDGE_LINE_H: i32 = 14;
+/// The vertical padding (px) added to an edge-label plate's text block.
+const EDGE_PLATE_PAD: i32 = 2;
+/// Approximate width (px) per character of an edge label.
+const EDGE_CHAR_W: i32 = 7;
+/// Horizontal padding (px) of an edge-label plate. Shared by the label drawing
+/// ([`draw_edge_label`]) and the layout reservation ([`label_size`]) so the space
+/// reserved matches the plate drawn.
+const EDGE_PLATE_PAD_X: i32 = 8;
+
+/// Draws an edge label on a small light plate so it never reads against a routed
+/// line. A merged edge carries its labels `\n`-joined; each becomes a stacked
+/// `<tspan>` and the plate grows to fit.
+fn draw_edge_label(out: &mut String, pos: PointI, text: &str) {
+    if text.is_empty() {
         return;
     }
-    let lx = round(label.xy.x);
-    let ly = round(label.xy.y);
-    let chars = i32::try_from(label.text.chars().count()).unwrap_or(0);
-    let plate_w = chars * 7 + 8;
+    let lines: Vec<&str> = text.split(LABEL_SEP).collect();
+    let widest = lines
+        .iter()
+        .map(|line| i32::try_from(line.chars().count()).unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    let n = i32::try_from(lines.len()).unwrap_or(1);
+
+    let lx = pos.x;
+    let ly = pos.y;
+    let plate_w = widest * EDGE_CHAR_W + EDGE_PLATE_PAD_X;
+    let plate_h = n * EDGE_LINE_H + EDGE_PLATE_PAD;
+    let top = ly - plate_h / 2;
+    // First baseline sits 12px below the plate top — the single-line plate's
+    // baseline offset, so a one-line label renders exactly as before.
+    let first_baseline = top + 12;
+
     #[allow(non_snake_case)]
     let DESC_FILL = pal().muted;
     let _ = write!(
         out,
-        "<rect x=\"{rx}\" y=\"{ry}\" width=\"{plate_w}\" height=\"16\" rx=\"4\" \
+        "<rect x=\"{rx}\" y=\"{top}\" width=\"{plate_w}\" height=\"{plate_h}\" rx=\"4\" \
          fill=\"{plate}\"/>\
-         <text x=\"{lx}\" y=\"{ty}\" text-anchor=\"middle\" font-size=\"11.5\" \
-         fill=\"{DESC_FILL}\">{text}</text>",
+         <text x=\"{lx}\" y=\"{first_baseline}\" text-anchor=\"middle\" font-size=\"11.5\" \
+         fill=\"{DESC_FILL}\">",
         plate = pal().edge_plate,
         rx = lx - plate_w / 2,
-        ry = ly - 8,
-        ty = ly + 4,
-        text = escape_xml(&label.text),
     );
+    for (i, line) in lines.iter().enumerate() {
+        let dy = if i == 0 { 0 } else { EDGE_LINE_H };
+        let _ = write!(
+            out,
+            "<tspan x=\"{lx}\" dy=\"{dy}\">{text}</tspan>",
+            text = escape_xml(line),
+        );
+    }
+    out.push_str("</text>");
 }
 
 /// Rounds a layout coordinate to the nearest integer SVG unit.
@@ -1248,7 +1185,7 @@ mod tests {
                 from: "m::A".to_owned(),
                 to: "m::B".to_owned(),
                 kind: C4EdgeKind::Call,
-                label: "uses".to_owned(),
+                labels: vec!["uses".to_owned()],
             }],
         }
     }
@@ -1300,9 +1237,8 @@ mod tests {
         assert!(svg.contains("&amp;"), "summary escaped: {svg}");
     }
 
-    /// Regression: the layout engine requires a DAG and panics on a cycle. A
-    /// mutual call (A→B, B→A) must lay out without panicking and stay
-    /// deterministic — back-edges are dropped from the layout (`acyclic_edges`).
+    /// A mutual call (A→B, B→A) must lay out without panicking and stay
+    /// deterministic — the engine breaks the cycle internally.
     #[test]
     fn cyclic_graph_does_not_panic() {
         let mut scene = context_scene();
@@ -1310,7 +1246,7 @@ mod tests {
             from: "m::B".to_owned(),
             to: "m::A".to_owned(),
             kind: C4EdgeKind::Call,
-            label: "calls back".to_owned(),
+            labels: vec!["calls back".to_owned()],
         });
         let svg = render_c4(&scene);
         assert!(svg.starts_with("<svg"));
@@ -1319,16 +1255,19 @@ mod tests {
     }
 
     #[test]
-    fn acyclic_edges_drops_one_back_edge() {
-        let mut scene = context_scene(); // A→B
-        scene.edges.push(RoutedEdge {
-            from: "m::B".to_owned(),
-            to: "m::A".to_owned(),
-            kind: C4EdgeKind::Call,
-            label: "back".to_owned(),
-        });
-        // one of the two mutual edges is dropped, leaving an acyclic set
-        assert_eq!(acyclic_edges(&scene, None).len(), 1);
+    fn draw_edge_label_stacks_merged_labels_as_tspans() {
+        let mut single = String::new();
+        draw_edge_label(&mut single, PointI { x: 40, y: 20 }, "getB");
+        assert_eq!(single.matches("<tspan").count(), 1, "one label: one tspan");
+
+        let mut merged = String::new();
+        draw_edge_label(&mut merged, PointI { x: 40, y: 20 }, "getB\ngetBb");
+        assert_eq!(
+            merged.matches("<tspan").count(),
+            2,
+            "two merged labels: two stacked tspans"
+        );
+        assert!(merged.contains(">getB</tspan>") && merged.contains(">getBb</tspan>"));
     }
 
     #[test]
@@ -1369,7 +1308,7 @@ mod tests {
                 from: "m::Sys::Web".to_owned(),
                 to: "m::Sys::Api".to_owned(),
                 kind: C4EdgeKind::Call,
-                label: "calls".to_owned(),
+                labels: vec!["calls".to_owned()],
             }],
         }
     }
@@ -1385,6 +1324,33 @@ mod tests {
     }
 
     #[test]
+    fn lr_spacing_has_strong_x_impact() {
+        // In left-to-right, spacing must visibly move the X (rank) axis: roomy
+        // should be markedly wider than compact.
+        let scene = context_scene(); // m::A -> m::B (two ranks)
+        let lr = |spacing: f64| {
+            layout_c4_scene_with(
+                &scene,
+                &C4Tweaks {
+                    minimize_long_edges: false,
+                    left_to_right: true,
+                    spacing,
+                    experimental_grid: false,
+                    ..C4Tweaks::default()
+                },
+                &[],
+            )
+            .width
+        };
+        let compact = lr(0.7);
+        let roomy = lr(1.4);
+        assert!(
+            roomy > compact + 80,
+            "roomy LR widens X over compact: {compact} -> {roomy}"
+        );
+    }
+
+    #[test]
     fn layout_c4_scene_is_deterministic() {
         let scene = context_scene();
         assert_eq!(layout_c4_scene(&scene), layout_c4_scene(&scene));
@@ -1396,16 +1362,15 @@ mod tests {
         let edge = layout.edges.first().expect("the A->B edge is laid out");
         assert_eq!((edge.from.as_str(), edge.to.as_str()), ("m::A", "m::B"));
         assert_eq!(edge.kind, C4EdgeKind::Call);
-        assert_eq!(edge.label, "uses");
+        assert_eq!(edge.labels, ["uses"]);
         assert!(edge.points.len() >= 2, "routed polyline: {edge:?}");
     }
 
     #[test]
     fn layout_c4_scene_frames_a_container_view() {
         let layout = layout_c4_scene(&container_scene());
-        let frame = layout
-            .boundary
-            .expect("container view has a boundary frame");
+        assert_eq!(layout.boundaries.len(), 1, "a container view has one frame");
+        let frame = &layout.boundaries[0];
         assert_eq!(frame.title, "Sys");
         // The frame encloses the two children, which are the only laid-out cards.
         assert_eq!(layout.nodes.len(), 2, "boundary itself is not a card");
@@ -1428,11 +1393,61 @@ mod tests {
             from: "m::B".to_owned(),
             to: "m::A".to_owned(),
             kind: C4EdgeKind::Call,
-            label: "back".to_owned(),
+            labels: vec!["back".to_owned()],
         });
         let layout = layout_c4_scene(&scene);
         assert_eq!(layout.nodes.len(), 2);
         assert_eq!(layout_c4_scene(&scene), layout);
+    }
+
+    #[test]
+    fn layout_c4_scene_draws_every_edge_in_a_cycle() {
+        // Cycle-breaking is for *layering* only. Both directions of a mutual
+        // relationship must still be drawn, or a cyclic C4 graph silently loses
+        // arrows (e.g. a `person -> container` edge that closes a loop).
+        let mut scene = context_scene(); // A -> B
+        scene.edges.push(RoutedEdge {
+            from: "m::B".to_owned(),
+            to: "m::A".to_owned(),
+            kind: C4EdgeKind::Call,
+            labels: vec!["back".to_owned()],
+        });
+        let layout = layout_c4_scene(&scene);
+        assert!(
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::A" && e.to == "m::B"),
+            "forward edge drawn: {:?}",
+            layout.edges
+        );
+        assert!(
+            layout
+                .edges
+                .iter()
+                .any(|e| e.from == "m::B" && e.to == "m::A"),
+            "back edge drawn: {:?}",
+            layout.edges
+        );
+    }
+
+    #[test]
+    fn render_c4_draws_a_back_edge() {
+        // The SVG path (`pds doc` / `pds svg`) must also draw a cycle-closing
+        // back-edge, not just the routed acyclic subset.
+        let mut scene = context_scene(); // A -> B "uses"
+        scene.edges.push(RoutedEdge {
+            from: "m::B".to_owned(),
+            to: "m::A".to_owned(),
+            kind: C4EdgeKind::Call,
+            labels: vec!["back".to_owned()],
+        });
+        let svg = render_c4(&scene);
+        assert!(svg.contains(">uses</tspan>"), "forward edge label drawn");
+        assert!(
+            svg.contains(">back</tspan>"),
+            "back-edge label drawn (a cyclic graph keeps every arrow)"
+        );
     }
 
     /// An empty view (only the framed boundary, no children) falls back without
@@ -1448,8 +1463,12 @@ mod tests {
         let layout = layout_c4_scene(&scene);
         assert!(layout.nodes.is_empty(), "no children to draw");
         assert_eq!(
-            layout.boundary.map(|b| b.title),
-            Some("Sys".to_owned()),
+            layout
+                .boundaries
+                .iter()
+                .map(|b| b.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Sys"],
             "fallback still frames the boundary"
         );
     }

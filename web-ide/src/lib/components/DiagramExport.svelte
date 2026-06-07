@@ -19,9 +19,13 @@
     nodes: Node[];
     // Download name without extension (e.g. the diagram's subject).
     filename: string;
+    // C4 views only: a callback returning the Graphviz `dot` source equivalent
+    // to the engine's layout input. When given, a ".dot" download is offered so
+    // the graph can be checked against real `dot`.
+    dotSource?: (() => string) | null;
   };
 
-  let { container, nodes, filename }: Props = $props();
+  let { container, nodes, filename, dotSource = null }: Props = $props();
 
   // The concrete canvas background, read off the rendered pane so the export
   // follows the active theme (light / dark) without re-deriving it here.
@@ -40,6 +44,23 @@
       notifications.notify("error", "Export failed", String((e as Error)?.message ?? e));
     }
   }
+
+  // Download the Graphviz `dot` source for the current C4 view as a text file.
+  function runDot(): void {
+    if (!dotSource) return;
+    try {
+      const blob = new Blob([dotSource()], { type: "text/vnd.graphviz" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${filename}.dot`;
+      a.click();
+      URL.revokeObjectURL(url);
+      notifications.notify("success", "Exported DOT", `${filename}.dot`);
+    } catch (e) {
+      notifications.notify("error", "Export failed", String((e as Error)?.message ?? e));
+    }
+  }
 </script>
 
 <DropdownMenu.Root>
@@ -50,6 +71,9 @@
   <DropdownMenu.Content align="end" sideOffset={4}>
     <DropdownMenu.Item onSelect={() => run("png")}>PNG image</DropdownMenu.Item>
     <DropdownMenu.Item onSelect={() => run("svg")}>SVG image</DropdownMenu.Item>
+    {#if dotSource}
+      <DropdownMenu.Item onSelect={() => runDot()}>Graphviz .dot</DropdownMenu.Item>
+    {/if}
   </DropdownMenu.Content>
 </DropdownMenu.Root>
 

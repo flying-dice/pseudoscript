@@ -6,8 +6,8 @@
 //! reproduced at the current indent.
 
 use pseudoscript_syntax::ast::{
-    Alias, Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind,
-    Feature, Field, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs, Module, Node,
+    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind, Feature,
+    Field, FromSource, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs, Module, Node,
     NodeKind, Param, Path, PostfixSeg, Ref, Stmt, StmtKind, Type, Variant,
 };
 use pseudoscript_syntax::{SpannedTrivia, Trivia};
@@ -145,25 +145,14 @@ impl Printer {
 
     fn write_item(&mut self, item: &Item, first: bool) {
         let trivia = match item {
-            Item::Alias(a) => &a.leading_trivia,
             Item::Decl(d) => &d.leading_trivia,
             Item::Feature(f) => &f.leading_trivia,
         };
         self.write_member_separator(trivia, first);
         match item {
-            Item::Alias(a) => self.write_alias(a),
             Item::Decl(d) => self.write_decl(d),
             Item::Feature(f) => self.write_feature(f),
         }
-    }
-
-    fn write_alias(&mut self, alias: &Alias) {
-        self.push("alias ");
-        self.push(&alias.name.name);
-        self.push(" = ");
-        self.write_path(&alias.target);
-        self.push(";");
-        self.newline();
     }
 
     // --- features (§5.2) ----------------------------------------------------
@@ -386,10 +375,8 @@ impl Printer {
 
     fn write_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Assign { name, ty, value } => {
+            StmtKind::Assign { name, value } => {
                 self.push(&name.name);
-                self.push(": ");
-                self.write_type(ty);
                 self.push(" = ");
                 self.write_expr(value);
                 self.newline();
@@ -456,23 +443,25 @@ impl Printer {
                     self.push(")");
                 }
             }
-            ExprKind::From {
-                ty,
-                is_array,
-                sources,
-            } => {
-                self.write_path(ty);
-                if *is_array {
-                    self.push("[]");
-                }
-                self.push(" from { ");
-                for (i, src) in sources.iter().enumerate() {
-                    if i > 0 {
-                        self.push(", ");
+            ExprKind::From { ty, source } => {
+                self.write_type(ty);
+                match source {
+                    FromSource::Compose(sources) if sources.is_empty() => self.push(" from {}"),
+                    FromSource::Compose(sources) => {
+                        self.push(" from { ");
+                        for (i, src) in sources.iter().enumerate() {
+                            if i > 0 {
+                                self.push(", ");
+                            }
+                            self.write_expr(src);
+                        }
+                        self.push(" }");
                     }
-                    self.write_expr(src);
+                    FromSource::Convert(expr) => {
+                        self.push(" from ");
+                        self.write_expr(expr);
+                    }
                 }
-                self.push(" }");
             }
             ExprKind::Postfix { base, segments } => {
                 self.write_expr(base);

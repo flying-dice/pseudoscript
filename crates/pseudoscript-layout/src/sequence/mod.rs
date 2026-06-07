@@ -5,9 +5,10 @@
 //!
 //! 1. **Measure** — participant card widths from their titles, and per-message
 //!    label widths from the rendered text.
-//! 2. **Space columns** — pick a uniform inter-lifeline gap wide enough that
-//!    every message label fits the lane it spans and no card overlaps its
-//!    neighbour, then place lifelines.
+//! 2. **Space columns** — size each inter-lifeline gap independently: a gap is
+//!    widened only by the labels that actually span it (a single wide label
+//!    widens its own lane, not every lane), floored at card + gutter so no card
+//!    overlaps its neighbour, then place lifelines.
 //! 3. **Walk vertically** — advance a `y` cursor down the items, emitting
 //!    messages, growing fragment boxes around their sections (with a divider
 //!    between sections), and recording each participant's activation span.
@@ -74,13 +75,13 @@ impl Default for Metrics {
             pad: 20,
             node_w_min: 168,
             lifeline_top: 64,
-            msg_gap: 54,
-            self_extra: 26,
-            frame_head: 46,
+            msg_gap: 44,
+            self_extra: 20,
+            frame_head: 38,
             frame_foot: 14,
-            frame_gap: 20,
+            frame_gap: 16,
             else_pad: 12,
-            else_head: 30,
+            else_head: 26,
             act_w: 10,
             ret_stub: 46,
             frame_pad: 18,
@@ -248,16 +249,20 @@ pub fn layout(diagram: &Diagram, metrics: &Metrics) -> Layout {
     // uniform card height that fits the tallest.
     let (content, node_h) = head_content(&diagram.participants, &m.text, node_w);
 
-    // Pass 2 — column gap: fit the widest label per lane it spans, plus
-    // self-message room, never tighter than card + gutter.
-    let mut need_gap = 0;
-    let mut self_room = 0;
-    measure(&diagram.items, m, &col, &mut need_gap, &mut self_room);
-    let gap = (node_w + m.col_gutter).max(need_gap).max(self_room);
+    // Pass 2 — column gaps: each gap fits only the labels that span it (a wide
+    // message widens its own lane, not every lane), plus self-message room,
+    // never tighter than card + gutter.
+    let base = node_w + m.col_gutter;
+    let mut gaps = vec![base; diagram.participants.len().saturating_sub(1)];
+    measure(&diagram.items, m, &col, &mut gaps);
 
-    let xs: Vec<i32> = (0..diagram.participants.len())
-        .map(|i| m.pad + node_w / 2 + i32::try_from(i).unwrap_or(0) * gap)
-        .collect();
+    let mut xs = Vec::with_capacity(diagram.participants.len());
+    let mut x = m.pad + node_w / 2;
+    xs.push(x);
+    for &g in &gaps {
+        x += g;
+        xs.push(x);
+    }
     let min_x = xs.iter().copied().min().unwrap_or(m.pad) - m.frame_pad;
     let max_x = xs.iter().copied().max().unwrap_or(m.pad) + m.frame_pad + m.ret_stub;
 
@@ -335,35 +340,42 @@ pub fn layout(diagram: &Diagram, metrics: &Metrics) -> Layout {
     }
 }
 
-/// Accumulate the column gap a diagram needs: per inter-lifeline message, the
-/// label must fit the columns it spans; self-messages reserve room to the right.
-fn measure(
-    items: &[Item],
-    m: &Metrics,
-    col: &HashMap<&str, usize>,
-    need_gap: &mut i32,
-    self_room: &mut i32,
-) {
+/// Widen the inter-lifeline gaps a diagram needs: each call/return label must
+/// fit the gaps it spans (its width shared evenly across them), and a
+/// self-message reserves room in the gap to its right. A gap no wide label
+/// spans keeps its card + gutter floor — one long label no longer spreads every
+/// column. `gaps[k]` is the gap between columns `k` and `k + 1`.
+fn measure(items: &[Item], m: &Metrics, col: &HashMap<&str, usize>, gaps: &mut [i32]) {
     for item in items {
         match item {
             Item::Message(msg) => match msg.kind {
                 MsgKind::SelfMsg => {
-                    *self_room =
-                        (*self_room).max(m.self_offset + m.text.label_width(&msg.label) + 24);
+                    // The loop extends right of its lifeline; reserve that room
+                    // in the gap to the next column. On the last column it runs
+                    // into the canvas margin, sized by the right-extent pass.
+                    let c = col.get(msg.from.as_str()).copied().unwrap_or(0);
+                    if let Some(g) = gaps.get_mut(c) {
+                        *g = (*g).max(m.self_offset + m.text.label_width(&msg.label) + 24);
+                    }
                 }
                 MsgKind::Call | MsgKind::Return => {
-                    let a = i32::try_from(col.get(msg.from.as_str()).copied().unwrap_or(0))
-                        .unwrap_or(0);
-                    let b =
-                        i32::try_from(col.get(msg.to.as_str()).copied().unwrap_or(0)).unwrap_or(0);
-                    let span = (a - b).abs().max(1);
-                    let w = m.message_pill_width(msg);
-                    *need_gap = (*need_gap).max((w + span - 1) / span); // ceil(w / span)
+                    let a = col.get(msg.from.as_str()).copied().unwrap_or(0);
+                    let b = col.get(msg.to.as_str()).copied().unwrap_or(0);
+                    let (lo, hi) = (a.min(b), a.max(b));
+                    let span = i32::try_from(hi - lo).unwrap_or(1).max(1);
+                    // Clear the activation bars at both endpoints (each `act_w / 2`
+                    // off its lifeline) plus breathing room, so a centred label's
+                    // backing pill never butts against a lifeline's activation.
+                    let need = m.message_pill_width(msg) + m.act_w + 16;
+                    let per = (need + span - 1) / span; // ceil(need / span)
+                    for g in &mut gaps[lo..hi] {
+                        *g = (*g).max(per);
+                    }
                 }
             },
             Item::Fragment(frag) => {
                 for section in &frag.sections {
-                    measure(&section.body, m, col, need_gap, self_room);
+                    measure(&section.body, m, col, gaps);
                 }
             }
         }
@@ -668,5 +680,34 @@ mod tests {
         let err_y = out.messages.iter().find(|m| m.label == "Err").unwrap().y;
         assert!(ok_y < f.dividers[0].y && f.dividers[0].y < err_y);
         assert!(f.rect.y <= ok_y && err_y <= f.rect.bottom());
+    }
+
+    #[test]
+    fn a_wide_label_widens_only_its_own_lane() {
+        let m = Metrics::default();
+        let node_w = m.node_w_min; // single-char titles stay at the floor
+        let base = node_w + m.col_gutter;
+        let wide = "a_very_long_descriptive_method_name_that_needs_room";
+        let d = Diagram {
+            participants: vec![p("A"), p("B"), p("C"), p("D")],
+            items: vec![
+                call("A", "B", "Do"),
+                call("B", "C", wide),
+                call("C", "D", "Do"),
+            ],
+        };
+        let xs: Vec<i32> = layout(&d, &m)
+            .participants
+            .iter()
+            .map(|q| q.lifeline_x)
+            .collect();
+        // Lanes the wide label does not span keep the card+gutter floor; only the
+        // B–C lane widens, and by enough to fit the label.
+        assert_eq!(xs[1] - xs[0], base, "A–B lane should stay at the floor");
+        assert_eq!(xs[3] - xs[2], base, "C–D lane should stay at the floor");
+        assert!(
+            xs[2] - xs[1] >= m.text.label_width(wide),
+            "B–C lane must fit the wide label"
+        );
     }
 }

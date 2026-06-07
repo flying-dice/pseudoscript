@@ -12,10 +12,12 @@ path = "src/lib.rs"
 
 # The transport-neutral LSP API: `text + position -> lsp_types value`. Depends on
 # the standalone `lsp-types` (pure serde, WASM-safe) — NOT tower-lsp — so both
-# the stdio server (pseudoscript-lsp) and the WASM bridge (pseudoscript-wasm)
+# the stdio server (pseudoscript-lsp) and the WASM bridge (pseudoscript-ide)
 # share one implementation. lsp-types is pinned to the version tower-lsp 0.20
 # re-exports, so the server passes these types through without conversion.
 [dependencies]
+# Logging facade (target-agnostic); the subscriber is chosen at the wasm/stdio edge.
+tracing = "0.1"
 pseudoscript-syntax = { path = "../pseudoscript-syntax" }
 pseudoscript-model = { path = "../pseudoscript-model" }
 pseudoscript-format = { path = "../pseudoscript-format" }

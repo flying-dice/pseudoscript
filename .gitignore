@@ -4,3 +4,5 @@ target/
 .idea/
 .playwright-mcp/
 node_modules/
+# Graphviz source clone — algorithm/oracle reference for pseudoscript-dot, not vendored.
+reference/

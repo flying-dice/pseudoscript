@@ -1,4 +1,0 @@
-// LANG.md §8.3: an alias target is a node path (`::` only). A callable is
-// reached via `.`, which cannot appear in an alias target.
-
-alias G = banking::core::Mainframe.GetInfo;

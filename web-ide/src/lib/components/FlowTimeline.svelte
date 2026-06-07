@@ -13,6 +13,8 @@
   import CanvasMenu from "./CanvasMenu.svelte";
   import DiagramExport from "./DiagramExport.svelte";
   import { theme } from "$lib/theme.svelte.js";
+  import { DEPTHS } from "$lib/sequence.js";
+  import type { Depth } from "$lib/sequence.js";
   import type { MenuRequest, MenuSection } from "$lib/core/types.js";
 
   // The triggered scene this flow projects; only `entry` is read here for the
@@ -48,9 +50,19 @@
     onusages?: SymbolHandler | null;
     onsource?: ((fqn: string) => void) | null;
     typeFqn?: string | null;
+    depth?: Depth;
+    ondepth?: ((id: Depth) => void) | null;
   };
 
-  let { scene, layout, onusages = null, onsource = null, typeFqn = null }: Props = $props();
+  let {
+    scene,
+    layout,
+    onusages = null,
+    onsource = null,
+    typeFqn = null,
+    depth = "component",
+    ondepth = null,
+  }: Props = $props();
 
   // The symbol a right-click opened the menu on, anchored at the pointer; `event`
   // is kept so "Find usages" can position its popover where the click was. A
@@ -160,7 +172,13 @@
       <span class="kicker">flow</span>
       <span class="name">{leaf(scene?.entry)}</span>
     </div>
-    <span class="hint">sequence diagram — scroll to zoom · drag to pan</span>
+    {#if ondepth}
+      <div class="depth" role="group" aria-label="Sequence depth">
+        {#each DEPTHS as d (d.id)}
+          <button class:active={depth === d.id} onclick={() => ondepth(d.id)}>{d.label}</button>
+        {/each}
+      </div>
+    {/if}
     <DiagramExport container={flowEl} {nodes} filename={exportName} />
   </header>
 
@@ -219,8 +237,33 @@
     font-size: 1rem;
     color: var(--ink);
   }
-  .hint {
+  /* depth selector: a segmented control in the header, leading the right cluster */
+  .depth {
     margin-left: auto;
+    display: flex;
+    gap: 1px;
+    padding: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+  }
+  .depth button {
+    padding: 0.28rem 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+    background: transparent;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 2px);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .depth button:hover { color: var(--ink); }
+  .depth button.active { background: var(--accent); color: var(--accent-ink); }
+  .hint {
     font-family: var(--font-mono);
     font-size: 0.62rem;
     letter-spacing: 0.04em;

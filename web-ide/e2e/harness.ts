@@ -32,7 +32,17 @@ export async function stubPicker(page: Page): Promise<void> {
 // Boots the IDE and creates a project from `templateId` (the launcher's New-project
 // flow), optionally opening a module by fqn. Resolves once a module is visible and
 // highlighted — i.e. wasm is ready and the disk-backed workspace is mounted.
-export async function createProject(page: Page, templateId: string, openFqn?: string): Promise<void> {
+//
+// `highlight` (default true) waits for a semantic-token highlight as the wasm-ready
+// signal. A template whose landing file is a Markdown doc (e.g. acme-tickets'
+// `docs/overview.md`) has no `.pds` highlight, so such callers pass `false` and
+// gate readiness on their own post-condition (e.g. a projected canvas node).
+export async function createProject(
+  page: Page,
+  templateId: string,
+  openFqn?: string,
+  { highlight = true }: { highlight?: boolean } = {},
+): Promise<void> {
   await page.goto("/");
   // The launcher only offers Open/Recent/New; templates live in the New-project
   // dialog and stay disabled until a name and a target folder are both set. The
@@ -46,5 +56,7 @@ export async function createProject(page: Page, templateId: string, openFqn?: st
   // highlights can take a while on a loaded CI machine — wait generously.
   const content = page.getByTestId("editor").locator(".cm-content");
   await expect(content).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('[data-sem="keyword"]').first()).toBeVisible({ timeout: 20_000 });
+  if (highlight) {
+    await expect(page.locator('[data-sem="keyword"]').first()).toBeVisible({ timeout: 20_000 });
+  }
 }

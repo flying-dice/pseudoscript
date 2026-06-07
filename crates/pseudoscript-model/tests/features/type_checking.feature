@@ -114,7 +114,7 @@ Feature: Return-type and `from` type checking (LANG.md §5.1, §6, §7.2)
         build(x: number): string { return string from { x } }
       }
       """
-    Then the diagnostics include "`from` target `string` is not a `data` record or variant"
+    Then the diagnostics include "`from { … }` composes a `data` record or variant, not `string`"
     And there is exactly 1 diagnostic
 
   Scenario: An array `from` composition matches an array return (ADR-021)
@@ -136,7 +136,7 @@ Feature: Return-type and `from` type checking (LANG.md §5.1, §6, §7.2)
       public system S;
       public container C for S {
         one(): number {
-          x: string = ""
+          x = string from ""
           return x
         }
       }

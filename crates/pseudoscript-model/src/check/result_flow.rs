@@ -197,8 +197,8 @@ fn check_expr(expr: &Expr, env: &Bindings, out: &mut Vec<Diagnostic>) {
                 check_expr(payload, env, out);
             }
         }
-        ExprKind::From { sources, .. } => {
-            for src in sources {
+        ExprKind::From { source, .. } => {
+            for src in source.sources() {
                 check_expr(src, env, out);
             }
         }

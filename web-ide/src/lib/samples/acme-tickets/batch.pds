@@ -16,11 +16,11 @@ public container Batch for context::AcmeTickets;
 
 /// Drains the waiting room: admits the next attendees for every on-sale event at
 /// the controlled rate. This is the engine of surge-volume control.
-public component Drainer for Batch {
+public component Drainer for batch::Batch {
   /// Every minute, admit the next attendees for each on-sale event.
   #[schedule = "* * * * *"]
   public drain(): void {
-    onsale: Event[] = catalog::Events.onSale()
+    onsale = Event[] from catalog::Events.onSale()
     for (event in onsale) {
       waitingroom::Gatekeeper.admitNext(event.id)
     }
@@ -30,11 +30,11 @@ public component Drainer for Batch {
 /// Advances event lifecycle: marks events `SoldOut` when inventory is exhausted
 /// and `Closed` once they have passed, so sales stop and the drain/reap loops
 /// drop them.
-public component Curator for Batch {
+public component Curator for batch::Batch {
   /// Every five minutes, settle each on-sale event's lifecycle.
   #[schedule = "*/5 * * * *"]
   public tidy(): void {
-    onsale: Event[] = catalog::Events.onSale()
+    onsale = Event[] from catalog::Events.onSale()
     for (event in onsale) {
       catalog::Events.settle(event.id)
     }
@@ -43,14 +43,14 @@ public component Curator for Batch {
 
 /// Returns abandoned holds to sale so seats are not stuck behind buyers who
 /// never paid.
-public component HoldReaper for Batch {
+public component HoldReaper for batch::Batch {
   /// Every minute, expire elapsed holds — one event at a time, so a single
   /// event's backlog cannot starve another's reaping.
   #[schedule = "* * * * *"]
   public reap(): void {
-    onsale: Event[] = catalog::Events.onSale()
+    onsale = Event[] from catalog::Events.onSale()
     for (event in onsale) {
-      stale: Hold[] = inventory::Holds.staleFor(event)
+      stale = Hold[] from inventory::Holds.staleFor(event)
       for (hold in stale) {
         inventory::Holds.expire(hold.id)
       }
@@ -61,11 +61,11 @@ public component HoldReaper for Batch {
 /// Forward-recovers orders that crashed mid-saga, driving each to a terminal
 /// state idempotently so no buyer is left charged-without-tickets or
 /// held-without-progress.
-public component SagaSweeper for Batch {
+public component SagaSweeper for batch::Batch {
   /// Every two minutes, resume orders stuck mid-saga past their threshold.
   #[schedule = "*/2 * * * *"]
   public sweep(): void {
-    stuck: Order[] = orders::OrderService.stuck()
+    stuck = Order[] from orders::OrderService.stuck()
     for (order in stuck) {
       orders::OrderService.resume(order.id)
     }
@@ -74,13 +74,13 @@ public component SagaSweeper for Batch {
 
 /// Pulls provider truth for orders the settlement webhook has not yet confirmed,
 /// so a lost webhook still converges the ledger.
-public component Reconciler for Batch {
+public component Reconciler for batch::Batch {
   /// Every five minutes, reconcile unsettled orders against the provider. The
   /// payment service pulls provider truth itself, so a lost settlement webhook
   /// still converges the ledger.
   #[schedule = "*/5 * * * *"]
   public reconcile(): void {
-    pending: Order[] = orders::OrderService.unsettled()
+    pending = Order[] from orders::OrderService.unsettled()
     for (order in pending) {
       payments::PaymentService.reconcile(order.id)
     }

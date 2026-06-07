@@ -8,13 +8,13 @@ data BankingInfo { id: number }
 
 public container Mainframe for Banking {
   Run(): void {
-    a: Result<BankingInfo, void> = Foo.getThing()
-    b: BankingInfo = Bar.getOther()
-    c: BankingInfo = BankingInfo from { a, b }
+    a = Result<BankingInfo, void> from Foo.getThing()
+    b = BankingInfo from Bar.getOther()
+    c = BankingInfo from { a, b }
     if (a.isErr) {
       return
     } else {
-      x: BankingInfo = a.value
+      x = BankingInfo from a.value
     }
     while (cond) {
       self.step()

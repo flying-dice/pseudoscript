@@ -7,10 +7,15 @@
 //! does not resolve to the required node kind returns an [`EmitError`] rather
 //! than panicking.
 
-use pseudoscript_model::{EdgeKind, Graph, GraphNode, NodeKind, Signature, Step, Trigger};
+use std::collections::{BTreeMap, BTreeSet};
+
+use pseudoscript_model::{
+    DataShape, EdgeKind, Graph, GraphNode, NodeKind, Signature, Step, Trigger,
+};
 
 use crate::scene::{
-    C4EdgeKind, C4Scene, C4View, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
+    C4EdgeKind, C4Scene, C4View, DataEntity, DataLink, DataScene, EntityForm, EntityRow,
+    FeatureScene, FeatureStepNode, Frame, FrameKind, Lifeline, Message, MessageKind, PlacedNode,
     Rect, Scene, SeqItem, SequenceScene,
 };
 
@@ -33,6 +38,16 @@ pub enum View {
     Sequence {
         /// The entry callable FQN.
         entry: String,
+    },
+    /// A `data` type's entity (ER) view (`LANG.md` §9.4).
+    Data {
+        /// The focal data type FQN.
+        of: String,
+    },
+    /// A `feature` scenario's flow view (`LANG.md` §9.5).
+    Feature {
+        /// The feature FQN (`module::name`).
+        of: String,
     },
 }
 
@@ -78,7 +93,9 @@ impl std::error::Error for EmitError {}
 ///
 /// Returns [`EmitError`] when the view's target FQN does not resolve to the
 /// required node kind.
+#[tracing::instrument(level = "debug", skip(graph))]
 pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
+    tracing::debug!(?view, edges = graph.edges().len(), "emit: project view");
     project_view(graph, view)
 }
 
@@ -96,9 +113,12 @@ pub fn project(graph: &Graph, view: View) -> Result<Scene, EmitError> {
 ///
 /// Returns [`EmitError::UnknownNode`] when `fqn` names no graph node.
 pub fn project_symbol(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
-    let node = graph
-        .node(fqn)
-        .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
+    let Some(node) = graph.node(fqn) else {
+        // A `feature` is not a graph node (`LANG.md` §5.2); a non-node `fqn`
+        // projects its flow view, which itself reports `UnknownNode` (the same
+        // error) when `fqn` names no scenario either.
+        return project_view(graph, View::Feature { of: fqn.to_owned() });
+    };
     if node.kind == NodeKind::Callable {
         return project_view(
             graph,
@@ -113,17 +133,36 @@ pub fn project_symbol(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
 /// The structural boundary view for a node: a system's containers, a
 /// container's components, a component's sibling components (its parent
 /// container's view). Persons and `data` fall back to the context overview.
+///
+/// A boundary with no children of its drill-down kind has no diagram of its
+/// own — drilling into it would draw an empty frame ringed by externals. Such a
+/// node falls back to the view that frames it as a peer: a childless container
+/// shows its parent system's container view; a childless system shows the
+/// context overview.
 fn structural_view(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
     let node = graph
         .node(fqn)
         .ok_or_else(|| EmitError::UnknownNode(fqn.to_owned()))?;
+    let has_child = |kind: NodeKind| graph.children_of(fqn).any(|n| n.kind == kind);
     let view = match node.kind {
-        NodeKind::System => View::Container { of: fqn.to_owned() },
-        NodeKind::Container => View::Component { of: fqn.to_owned() },
+        NodeKind::System if has_child(NodeKind::Container) => {
+            View::Container { of: fqn.to_owned() }
+        }
+        NodeKind::Container if has_child(NodeKind::Component) => {
+            View::Component { of: fqn.to_owned() }
+        }
+        NodeKind::Container => node
+            .parent
+            .clone()
+            .map_or(View::Context, |of| View::Container { of }),
         NodeKind::Component => View::Component {
             of: node.parent.clone().unwrap_or_else(|| fqn.to_owned()),
         },
-        NodeKind::Person | NodeKind::Data | NodeKind::Callable => View::Context,
+        // A `data` symbol shows its entity (ER) view (`LANG.md` §9.4); a person
+        // has no boundary, and a childless system has no containers to frame, so
+        // the context overview stands in.
+        NodeKind::Data => View::Data { of: fqn.to_owned() },
+        NodeKind::System | NodeKind::Person | NodeKind::Callable => View::Context,
     };
     project_view(graph, view)
 }
@@ -146,7 +185,165 @@ fn project_view(graph: &Graph, view: View) -> Result<Scene, EmitError> {
             C4View::Component,
         )?)),
         View::Sequence { entry } => Ok(Scene::Sequence(project_sequence(graph, &entry)?)),
+        View::Data { of } => Ok(Scene::Data(project_data(graph, &of)?)),
+        View::Feature { of } => Ok(Scene::Feature(project_feature(graph, &of)?)),
     }
+}
+
+// --- data (ER) projection ---------------------------------------------------
+
+/// The entity (ER) view of a data type (`LANG.md` §9.4): the focal type's card,
+/// the data types its fields reference (one hop), and the reference links
+/// between them. The returned scene is unpositioned — [`crate::layout_data_scene`]
+/// assigns coordinates at render time.
+///
+/// # Errors
+///
+/// Returns [`EmitError`] when `of` is not a data node.
+fn project_data(graph: &Graph, of: &str) -> Result<DataScene, EmitError> {
+    let node = require_kind(graph, of, NodeKind::Data)?;
+    let focal = data_entity(graph, node, true);
+
+    let mut entities = Vec::new();
+    let mut links = Vec::new();
+    let mut added: BTreeSet<String> = BTreeSet::new();
+    added.insert(of.to_owned());
+    for row in &focal.rows {
+        // A row whose type resolves to another data type (not itself) becomes a
+        // reference link, and pulls that type in as a referenced card (one hop).
+        let Some(target) = row.target.as_ref().filter(|t| t.as_str() != of) else {
+            continue;
+        };
+        links.push(DataLink {
+            from: of.to_owned(),
+            to: target.clone(),
+            field: row.name.clone(),
+        });
+        if added.insert(target.clone())
+            && let Some(referenced) = graph.node(target)
+        {
+            entities.push(data_entity(graph, referenced, false));
+        }
+    }
+    entities.insert(0, focal);
+
+    Ok(DataScene {
+        of: of.to_owned(),
+        entities,
+        links,
+        width: 0,
+        height: 0,
+    })
+}
+
+/// Builds the [`DataEntity`] card for a data node from its disclosed
+/// [`DataShape`]: record fields become `name: ty` rows, union variants become
+/// name rows, each resolving its referenced data type where one exists.
+fn data_entity(graph: &Graph, node: &GraphNode, focal: bool) -> DataEntity {
+    let (form, rows) = match &node.shape {
+        Some(DataShape::Record { fields }) => (
+            EntityForm::Record,
+            fields
+                .iter()
+                .map(|f| EntityRow {
+                    name: f.name.clone(),
+                    ty: f.ty.clone(),
+                    target: resolve_data_type(graph, &node.module, &f.ty),
+                })
+                .collect(),
+        ),
+        Some(DataShape::Union { variants }) => (
+            EntityForm::Union,
+            variants
+                .iter()
+                .map(|v| EntityRow {
+                    name: v.name.clone(),
+                    ty: String::new(),
+                    target: resolve_data_type(graph, &node.module, &v.name),
+                })
+                .collect(),
+        ),
+        Some(DataShape::BlackBox) | None => (EntityForm::BlackBox, Vec::new()),
+    };
+    DataEntity {
+        fqn: node.fqn.clone(),
+        label: node.name.clone(),
+        form,
+        rows,
+        focal,
+        rect: Rect::default(),
+    }
+}
+
+/// Resolves a rendered field type to the FQN of the data type it names, when one
+/// exists in the workspace. Strips a trailing `[]` and any generic arguments,
+/// then tries an exact FQN, a name qualified by the declaring `module`, and
+/// finally any data node with that simple name. Built-in types (`string`,
+/// `number`, …) and generic wrappers resolve to `None`.
+fn resolve_data_type(graph: &Graph, module: &str, ty: &str) -> Option<String> {
+    let base = ty.trim_end_matches("[]");
+    let base = base.split('<').next().unwrap_or(base).trim();
+    if base.is_empty() {
+        return None;
+    }
+    let is_data = |fqn: &str| graph.node(fqn).is_some_and(|n| n.kind == NodeKind::Data);
+    if is_data(base) {
+        return Some(base.to_owned());
+    }
+    let qualified = format!("{module}::{base}");
+    if is_data(&qualified) {
+        return Some(qualified);
+    }
+    graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind == NodeKind::Data && n.name == base)
+        .map(|n| n.fqn.clone())
+}
+
+// --- feature (flow) projection ----------------------------------------------
+
+/// The flow view of a `feature` scenario (`LANG.md` §9.5): its ordered
+/// given/when/then steps. A feature is not a graph node (`LANG.md` §5.2), so it
+/// is looked up among the graph's scenarios by its `module::name` FQN. The
+/// returned scene is unpositioned — [`crate::layout_feature_scene`] assigns
+/// coordinates.
+///
+/// # Errors
+///
+/// Returns [`EmitError::UnknownNode`] when `of` names no scenario.
+fn project_feature(graph: &Graph, of: &str) -> Result<FeatureScene, EmitError> {
+    let scenario = graph
+        .scenarios()
+        .iter()
+        .find(|s| format!("{}::{}", s.module, s.name) == of)
+        .ok_or_else(|| EmitError::UnknownNode(of.to_owned()))?;
+    let target_label = graph
+        .node(&scenario.target_fqn)
+        .map_or_else(|| simple_fqn(&scenario.target_fqn), |n| n.name.clone());
+    let steps = scenario
+        .steps
+        .iter()
+        .map(|s| FeatureStepNode {
+            keyword: s.keyword.clone(),
+            text: s.text.clone(),
+            rect: Rect::default(),
+        })
+        .collect();
+    Ok(FeatureScene {
+        entry: of.to_owned(),
+        target_fqn: scenario.target_fqn.clone(),
+        target_label,
+        name: scenario.name.clone(),
+        steps,
+        width: 0,
+        height: 0,
+    })
+}
+
+/// The simple (final-segment) name of an FQN.
+fn simple_fqn(fqn: &str) -> String {
+    fqn.rsplit("::").next().unwrap_or(fqn).to_owned()
 }
 
 // --- C4 projections ---------------------------------------------------------
@@ -180,7 +377,18 @@ fn project_boundary(
 ) -> Result<C4Scene, EmitError> {
     let anchor = require_kind(graph, of, boundary)?;
 
-    let mut nodes = vec![placed(anchor, None)];
+    // The anchor's own parent node, if any, becomes an enclosing **outer** frame:
+    // a component view (anchor = container) nests inside its system, so the system
+    // frame holds the container frame and the container's sibling containers. A
+    // container view (anchor = system, no parent node) keeps a single frame.
+    let outer = anchor
+        .parent
+        .as_deref()
+        .filter(|p| graph.node(p).is_some())
+        .map(str::to_owned);
+
+    // In-frame nodes: the anchor (inside the outer frame, if any) and its children.
+    let mut nodes = vec![placed(anchor, outer.clone())];
     nodes.extend(
         graph
             .children_of(of)
@@ -189,17 +397,41 @@ fn project_boundary(
     );
 
     // External actors that interact with the boundary's nodes — the persons and
-    // other systems (and, for a component view, other containers) that call in
-    // or are called out to. Drawn outside the frame (`boundary: None`), as a C4
-    // boundary diagram does (`LANG.md` §9.1).
+    // other systems (and, for a component view, other containers) that call in or
+    // are called out to (`LANG.md` §9.1). A sibling container of the anchor (same
+    // parent system) sits **inside** the outer frame; everything else is drawn
+    // outside every frame (`boundary: None`).
     let inside: Vec<String> = nodes.iter().map(|n| n.fqn.clone()).collect();
     let inside_refs: Vec<&str> = inside.iter().map(String::as_str).collect();
-    nodes.extend(external_actors(graph, of, child, &inside_refs));
+    if let Some(o) = &outer
+        && let Some(onode) = graph.node(o)
+    {
+        nodes.push(placed(onode, None));
+    }
+    for mut ext in external_actors(graph, of, child, &inside_refs) {
+        let in_outer = outer
+            .as_deref()
+            .is_some_and(|o| graph.node(&ext.fqn).and_then(|n| n.parent.as_deref()) == Some(o));
+        if in_outer {
+            ext.boundary.clone_from(&outer);
+        }
+        nodes.push(ext);
+    }
 
     // Edges among nodes in view, lifting each endpoint to the contained child it
     // belongs to (a call from a component bubbles to its owning container, etc.).
     let in_view: Vec<&str> = nodes.iter().map(|n| n.fqn.as_str()).collect();
     let edges = collect_edges(graph, &in_view, |fqn| lift_to_view(graph, fqn, &in_view));
+
+    tracing::debug!(
+        of,
+        nodes = nodes.len(),
+        edges = edges.len(),
+        "c4 boundary view"
+    );
+    for e in &edges {
+        tracing::trace!(from = %e.from, to = %e.to, kind = ?e.kind, "c4 boundary edge");
+    }
 
     Ok(laid_out_c4(view, Some(of.to_owned()), nodes, edges))
 }
@@ -259,7 +491,14 @@ fn collect_edges(
     in_view: &[&str],
     lift: impl Fn(&str) -> Option<String>,
 ) -> Vec<RoutedEdges> {
-    let mut edges: Vec<RoutedEdges> = Vec::new();
+    // Group by (from, to, kind) so parallel same-direction relationships of one
+    // kind collapse into a single edge whose labels are merged. The key's third
+    // component is the kind keyword, so the map's canonical order is
+    // `(from, to, kind)` — the golden order. The `BTreeSet` value sorts and
+    // de-duplicates the merged labels. Empty labels (trigger/provenance) never
+    // enter the set, leaving those edges label-less.
+    let mut grouped: BTreeMap<(String, String, &'static str), (C4EdgeKind, BTreeSet<String>)> =
+        BTreeMap::new();
     for edge in graph.edges() {
         let Some(kind) = c4_edge_kind(edge.kind) else {
             continue;
@@ -272,23 +511,22 @@ fn collect_edges(
         if from == to {
             continue;
         }
-        edges.push(RoutedEdges {
+        let (_, labels) = grouped
+            .entry((from, to, kind.keyword()))
+            .or_insert_with(|| (kind, BTreeSet::new()));
+        if !edge.label.is_empty() {
+            labels.insert(edge.label.clone());
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((from, to, _), (kind, labels))| RoutedEdges {
             from,
             to,
             kind,
-            label: edge.label.clone(),
-        });
-    }
-    edges.sort_by(|a, b| {
-        (&a.from, &a.to, a.kind.keyword(), &a.label).cmp(&(
-            &b.from,
-            &b.to,
-            b.kind.keyword(),
-            &b.label,
-        ))
-    });
-    edges.dedup();
-    edges
+            labels: labels.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// Working edge form before placement into the scene (same shape as
@@ -740,8 +978,9 @@ fn ancestry_path(graph: &Graph, node: &GraphNode) -> Option<String> {
     Some(names.join("::"))
 }
 
-/// A call's type detail: `(name: ty, …): Ret`, the return type omitted when
-/// `void`. Shown dimmed after the method name on a call message (`LANG.md` §9.2).
+/// A call's parameter detail: `(name: ty, …)`. Shown dimmed after the method
+/// name on a call message (`LANG.md` §9.2). The return type is carried by the
+/// return message (`return_detail`), not the call.
 fn call_detail(sig: &Signature) -> String {
     let params = sig
         .params
@@ -749,11 +988,7 @@ fn call_detail(sig: &Signature) -> String {
         .map(|p| format!("{}: {}", p.name, p.ty))
         .collect::<Vec<_>>()
         .join(", ");
-    if sig.ret == "void" {
-        format!("({params})")
-    } else {
-        format!("({params}): {}", sig.ret)
-    }
+    format!("({params})")
 }
 
 /// The concrete type a `return` carries, given the executing callable's return
@@ -829,7 +1064,7 @@ mod tests {
     fn c4(scene: Scene) -> C4Scene {
         match scene {
             Scene::C4(s) => s,
-            Scene::Sequence(_) => panic!("expected a C4 scene"),
+            _ => panic!("expected a C4 scene"),
         }
     }
 
@@ -878,6 +1113,21 @@ mod tests {
     }
 
     #[test]
+    fn project_symbol_falls_back_when_a_container_has_no_components() {
+        // `shop::Web` is a container with a body but no `component` children.
+        // Drilling into it would draw an empty frame, so it falls back to its
+        // parent system's container view, framing Web among its sibling
+        // containers rather than showing a broken empty diagram.
+        let scene = c4(project_symbol(&workspace(), "shop::Web").expect("projects"));
+        assert_eq!(scene.of.as_deref(), Some("shop::Shop"));
+        assert!(
+            scene.nodes.iter().any(|n| n.fqn == "shop::Web"),
+            "Web is framed as a container of its system: {:?}",
+            scene.nodes.iter().map(|n| &n.fqn).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn project_symbol_projects_a_black_box_callable_as_a_minimal_sequence() {
         // `warehouse::Stock::Read` is a black-box callable (signature, no body).
         // It still projects a sequence — a single inbound call and its return —
@@ -914,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn component_view_includes_external_container_and_system() {
+    fn component_view_nests_container_in_its_system() {
         let scene = c4(project(
             &workspace(),
             View::Component {
@@ -922,19 +1172,111 @@ mod tests {
             },
         )
         .expect("projects"));
-        let fqns: Vec<&str> = scene.nodes.iter().map(|n| n.fqn.as_str()).collect();
-        // The calling container is shown as a peer, lifted no further than itself.
-        assert!(fqns.contains(&"shop::Web"), "caller container: {fqns:?}");
-        // The downstream system is shown directly.
+        let boundary = |fqn: &str| {
+            scene
+                .nodes
+                .iter()
+                .find(|n| n.fqn == fqn)
+                .unwrap_or_else(|| panic!("{fqn} present"))
+                .boundary
+                .clone()
+        };
+        // The anchor container nests inside its system frame, which is itself an
+        // outermost frame.
+        assert_eq!(boundary("shop::Api").as_deref(), Some("shop::Shop"));
+        assert_eq!(boundary("shop::Shop"), None, "system is the outer frame");
+        // Its component sits inside the container frame.
         assert!(
-            fqns.contains(&"warehouse::Stock"),
-            "callee system: {fqns:?}"
+            scene
+                .nodes
+                .iter()
+                .any(|n| n.boundary.as_deref() == Some("shop::Api")),
+            "a component sits inside the container frame"
         );
-        // Neither is enclosed by the frame.
-        for ext in ["shop::Web", "warehouse::Stock"] {
-            let node = scene.nodes.iter().find(|n| n.fqn == ext).unwrap();
-            assert_eq!(node.boundary, None);
-        }
+        // A sibling container sits inside the system frame; a downstream system
+        // stays outside every frame.
+        assert_eq!(boundary("shop::Web").as_deref(), Some("shop::Shop"));
+        assert_eq!(boundary("warehouse::Stock"), None);
+    }
+
+    #[test]
+    fn container_view_draws_a_person_caller_edge() {
+        // A person whose disclosed body calls into a container is an external
+        // actor of that system; the call MUST draw a person -> container edge in
+        // the container view (§9.1). Persons own behaviour (ADR-011).
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic person User {\n  Use(): void { m::Api.Run() }\n}\n\
+             public system Sys;\npublic container Api for m::Sys {\n  Run(): void;\n}"
+                .to_owned(),
+        );
+        let scene = c4(project(
+            &graph(&[m]),
+            View::Container {
+                of: "m::Sys".to_owned(),
+            },
+        )
+        .expect("projects"));
+        assert!(
+            scene.nodes.iter().any(|n| n.fqn == "m::User"),
+            "person is an external actor: {:?}",
+            scene.nodes.iter().map(|n| &n.fqn).collect::<Vec<_>>()
+        );
+        assert!(
+            scene
+                .edges
+                .iter()
+                .any(|e| e.from == "m::User" && e.to == "m::Api"),
+            "person -> container edge: {:?}",
+            scene
+                .edges
+                .iter()
+                .map(|e| (e.from.as_str(), e.to.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parallel_same_direction_calls_merge_into_one_edge() {
+        // AWeb makes two distinct calls to BApi (both bubble A->B in the context
+        // view); BApi calls back AWeb (B->A). The two A->B calls collapse to one
+        // edge with sorted, de-duplicated labels; the opposite-direction callback
+        // stays a separate edge.
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system A;\npublic container AWeb for A {\n  \
+             public Go(): void { m::BApi.Read(); m::BApi.Ping() }\n}\n\
+             public system B;\npublic container BApi for B {\n  \
+             public Read(): void;\n  public Ping(): void;\n  \
+             public Cb(): void { m::AWeb.Go() }\n}"
+                .to_owned(),
+        );
+        let scene = c4(project(&graph(&[m]), View::Context).expect("projects"));
+        let ab = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::A" && e.to == "m::B")
+            .expect("a single merged A->B edge");
+        assert_eq!(
+            ab.labels,
+            ["Ping", "Read"],
+            "labels sorted and de-duplicated"
+        );
+        let ba = scene
+            .edges
+            .iter()
+            .find(|e| e.from == "m::B" && e.to == "m::A")
+            .expect("the opposite-direction callback stays separate");
+        assert_eq!(ba.labels, ["Go"]);
+        assert_eq!(
+            scene
+                .edges
+                .iter()
+                .filter(|e| e.kind == C4EdgeKind::Call)
+                .count(),
+            2,
+            "exactly two call edges: one merged A->B, one B->A"
+        );
     }
 
     #[test]
@@ -964,5 +1306,91 @@ mod tests {
         // module-flat FQN.
         assert_eq!(v.parent_path.as_deref(), Some("Shop::Api"));
         assert_eq!(v.summary.as_deref(), Some("Validates orders."));
+    }
+
+    /// A record `data` symbol projects an entity (ER) view: the focal card, the
+    /// data types its fields reference pulled in as cards, and a link per
+    /// referencing field. Built-in field types (here `number`) add no card.
+    #[test]
+    fn project_symbol_projects_a_data_entity_view() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic data Money { minor: number }\n\
+             public data Order { id: string, total: Money }"
+                .to_owned(),
+        );
+        let Scene::Data(scene) = project_symbol(&graph(&[m]), "m::Order").expect("projects") else {
+            panic!("expected a data scene");
+        };
+        assert_eq!(scene.of, "m::Order");
+        // The focal Order card plus the referenced Money card (string/number are
+        // built-ins, so they pull in no card).
+        assert_eq!(scene.entities.len(), 2, "focal + referenced: {scene:?}");
+        assert!(scene.entities[0].focal, "focal entity first");
+        assert_eq!(scene.entities[0].rows.len(), 2);
+        // Exactly the `total: Money` field links to the Money entity.
+        assert_eq!(scene.links.len(), 1);
+        assert_eq!(
+            (
+                scene.links[0].from.as_str(),
+                scene.links[0].to.as_str(),
+                scene.links[0].field.as_str()
+            ),
+            ("m::Order", "m::Money", "total"),
+        );
+        assert!(
+            scene
+                .entities
+                .iter()
+                .any(|e| e.fqn == "m::Money" && !e.focal)
+        );
+    }
+
+    /// A union `data` symbol projects its variants as rows, each linking to the
+    /// variant's hoisted record type.
+    #[test]
+    fn project_data_renders_union_variants() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic data Event = | Created { id: string } | Closed { id: string }"
+                .to_owned(),
+        );
+        let Scene::Data(scene) = project_symbol(&graph(&[m]), "m::Event").expect("projects") else {
+            panic!("expected a data scene");
+        };
+        assert_eq!(scene.entities[0].form, EntityForm::Union);
+        let variants: Vec<&str> = scene.entities[0]
+            .rows
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(variants, ["Created", "Closed"]);
+        assert_eq!(scene.links.len(), 2, "each variant links to its record");
+    }
+
+    /// A `feature` is not a graph node, so it projects via its `module::name`
+    /// FQN into a flow view of its ordered steps.
+    #[test]
+    fn project_feature_view_lists_the_scenario_steps() {
+        let m = WorkspaceModule::new(
+            "m".to_owned(),
+            "//! m\npublic system S;\nfeature Charged for S {\n  \
+             given \"a charge\"\n  when \"charged twice\"\n  then \"one debit\"\n}"
+                .to_owned(),
+        );
+        let Scene::Feature(scene) = project(
+            &graph(&[m]),
+            View::Feature {
+                of: "m::Charged".to_owned(),
+            },
+        )
+        .expect("projects") else {
+            panic!("expected a feature scene");
+        };
+        assert_eq!(scene.entry, "m::Charged");
+        assert_eq!(scene.target_fqn, "m::S");
+        assert_eq!(scene.target_label, "S");
+        let kinds: Vec<&str> = scene.steps.iter().map(|s| s.keyword.as_str()).collect();
+        assert_eq!(kinds, ["given", "when", "then"]);
     }
 }

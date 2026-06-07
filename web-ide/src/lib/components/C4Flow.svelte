@@ -8,15 +8,18 @@
   // polylines. A boundary view (container / component) draws its `of` node as an
   // enclosing frame. Right-clicking a node opens its context menu (drill / flows
   // / go-to-definition / find-usages).
-  import { Background, Controls, MarkerType, MiniMap, SvelteFlow } from "@xyflow/svelte";
+  import { Background, Controls, MarkerType, MiniMap, SvelteFlow, ViewportPortal } from "@xyflow/svelte";
   import type { Edge, Node } from "@xyflow/svelte";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
   import CanvasMenu from "./CanvasMenu.svelte";
   import DiagramExport from "./DiagramExport.svelte";
+  import LayoutControl from "./LayoutControl.svelte";
   import PolylineEdge from "./PolylineEdge.svelte";
   import { theme } from "$lib/theme.svelte.js";
-  import type { MenuItem, MenuSection } from "$lib/core/types.js";
+  import { buildC4Dot } from "$lib/dot-source.js";
+  import { cellAt } from "$lib/core/pins.js";
+  import type { LayoutTweaks, MenuItem, MenuSection } from "$lib/core/types.js";
 
   // A scene only contributes its boundary subject here (the export name); all
   // geometry comes from the layout.
@@ -29,17 +32,27 @@
     from: string;
     to: string;
     kind: string;
-    label: string;
+    // Merged labels of parallel same-direction relationships, sorted and
+    // de-duplicated; empty for a trigger/provenance edge. Stacked one per line.
+    labels: string[];
     points: Pt[];
     label_pos?: Pt | null;
     dashed: boolean;
   };
+  type BoundaryFrame = { fqn: string; title: string; kind: string; rect: Rect };
+  // The grid geometry, present only for an experimental-grid layout; lets a drop
+  // pixel map back to a cell (drag-to-pin). Cell (r,c) centres at
+  // `origin + (c·cell_w, r·cell_h)`.
+  type GridInfo = { cols: number; rows: number; cell_w: number; cell_h: number; origin: Pt };
   type Layout = {
     width: number;
     height: number;
     nodes: LaidOutNode[];
     edges: LaidOutEdge[];
-    boundary?: { title: string; kind: string; rect: Rect } | null;
+    // Enclosing frames, outermost first: one for a container view, two nested
+    // (system then container) for a component view.
+    boundaries?: BoundaryFrame[];
+    grid?: GridInfo | null;
   };
   // The `data` payload carried by every Svelte Flow node (card or boundary).
   type NodeData = {
@@ -61,9 +74,51 @@
     flows?: Map<string, Flow[]> | null;
     onsource?: ((fqn: string) => void) | null;
     onusages?: ((fqn: string, event: MouseEvent) => void) | null;
+    tweaks?: LayoutTweaks | null;
+    onlayoutchange?: ((tweaks: LayoutTweaks) => void) | null;
+    // Drag-to-pin: when `unlocked`, cards are draggable and a drop snaps to a grid
+    // cell, reported via `onpin`. `onunlock` toggles the mode.
+    unlocked?: boolean;
+    onpin?: ((fqn: string, row: number, col: number) => void) | null;
+    onunlock?: ((next: boolean) => void) | null;
+    onuniverse?: ((fqn: string) => void) | null;
   };
 
-  let { scene, layout, onpick, onup, flows = null, onsource = null, onusages = null }: Props = $props();
+  let {
+    scene,
+    layout,
+    onpick,
+    onup,
+    flows = null,
+    onsource = null,
+    onusages = null,
+    tweaks = null,
+    onlayoutchange = null,
+    unlocked = false,
+    onpin = null,
+    onunlock = null,
+    onuniverse = null,
+  }: Props = $props();
+
+  // Drag-to-pin is offered only for a grid layout (the engine emits `grid` only
+  // then); leaving grid mode or switching to a non-grid view hides it.
+  const gridEditable = $derived(!!layout?.grid && !!onpin && !!onunlock);
+  const dragging = $derived(gridEditable && unlocked);
+
+  // The grid lines to draw while editing, in flow coordinates. Cell (r,c) centres
+  // at `origin + (c·cell_w, r·cell_h)`, so boundaries sit half a cell out.
+  const gridOverlay = $derived.by(() => {
+    const g = layout?.grid;
+    if (!dragging || !g) return null;
+    return {
+      left: g.origin.x - g.cell_w / 2,
+      top: g.origin.y - g.cell_h / 2,
+      w: g.cols * g.cell_w,
+      h: g.rows * g.cell_h,
+      vx: Array.from({ length: g.cols + 1 }, (_, c) => c * g.cell_w),
+      hy: Array.from({ length: g.rows + 1 }, (_, r) => r * g.cell_h),
+    };
+  });
 
   // Drive Svelte Flow's colour mode from the app theme so the canvas (pane,
   // grid, minimap, controls) follows light/dark instead of being pinned dark.
@@ -77,6 +132,39 @@
   const nodeTypes = { boundary: BoundaryNode, card: C4Node };
   const edgeTypes = { polyline: PolylineEdge };
 
+  // The Graphviz `dot` source for the current view (the engine's layout input),
+  // offered as a download so the graph can be checked against real `dot`.
+  const dotSource = $derived(
+    layout ? () => buildC4Dot(layout, tweaks?.orientation === "lr") : null,
+  );
+
+  // Debug-only affordance, gated on `__debug=true` in the URL: render the current
+  // view's DOT through real Graphviz (compiled to wasm) and open it in a new tab,
+  // so our layout can be eyeballed against the reference engine.
+  const showGraphvizDebug =
+    typeof window !== "undefined" && window.location.href.includes("__debug=true");
+
+  async function openGraphviz(): Promise<void> {
+    if (!dotSource) return;
+    // Open the tab inside the click gesture so the pop-up isn't blocked, then
+    // fill it once the (lazy-loaded) engine has rendered.
+    const win = window.open("", "_blank");
+    try {
+      const { Graphviz } = await import("@hpcc-js/wasm-graphviz");
+      const graphviz = await Graphviz.load();
+      const svg = graphviz.dot(dotSource());
+      if (win) {
+        win.document.write(
+          `<!doctype html><html><head><meta charset="utf-8"><title>Graphviz — ${exportName}</title></head><body style="margin:0;background:#fff">${svg}</body></html>`,
+        );
+        win.document.close();
+      }
+    } catch (e) {
+      win?.close();
+      console.error("[graphviz-debug] render failed", e);
+    }
+  }
+
   // Which deeper view a node drills into, by kind. Persons / components have no
   // structural view below them, so they get no drill button (info only).
   const DRILL: Record<string, string> = { system: "Open container diagram", container: "Open component diagram" };
@@ -87,23 +175,29 @@
   function build(l: Layout | null): { nodes: Node[]; edges: Edge[] } {
     if (!l || !Array.isArray(l.nodes)) return { nodes: [], edges: [] };
 
-    const frame: Node[] = l.boundary
-      ? [
-          {
-            id: "__boundary",
-            type: "boundary",
-            position: { x: l.boundary.rect.x, y: l.boundary.rect.y },
-            width: l.boundary.rect.w,
-            height: l.boundary.rect.h,
-            data: { label: l.boundary.title, kind: l.boundary.kind, summary: "", fqn: scene.of ?? "", boundary: true, onclose: onup ?? undefined } as NodeData,
-            class: `c4-boundary ${l.boundary.kind}`,
-            draggable: false,
-            connectable: false,
-            selectable: true,
-            zIndex: 0,
-          },
-        ]
-      : [];
+    // Frames sit behind the cards (zIndex 0), outermost first so a nested inner
+    // frame draws over its outer one. Only the view's own anchor frame
+    // (`fqn === scene.of`) carries the close button that pops up one level.
+    const frame: Node[] = (l.boundaries ?? []).map((b, i) => ({
+      id: `__boundary_${i}`,
+      type: "boundary",
+      position: { x: b.rect.x, y: b.rect.y },
+      width: b.rect.w,
+      height: b.rect.h,
+      data: {
+        label: b.title,
+        kind: b.kind,
+        summary: "",
+        fqn: b.fqn,
+        boundary: true,
+        onclose: b.fqn === scene.of ? (onup ?? undefined) : undefined,
+      } as NodeData,
+      class: `c4-boundary ${b.kind}`,
+      draggable: false,
+      connectable: false,
+      selectable: true,
+      zIndex: 0,
+    }));
 
     const cards: Node[] = l.nodes.map((n) => ({
       id: n.fqn,
@@ -113,7 +207,7 @@
       height: n.rect.h,
       data: { label: n.label, kind: n.kind, summary: n.summary ?? "", fqn: n.fqn } as NodeData,
       class: `c4-node ${n.kind}`,
-      draggable: false,
+      draggable: dragging,
       connectable: false,
       zIndex: 1,
     }));
@@ -122,7 +216,7 @@
       id: `e${i}`,
       source: e.from,
       target: e.to,
-      label: e.label || undefined,
+      label: e.labels.join("\n") || undefined,
       type: "polyline",
       data: { points: e.points, labelPos: e.label_pos ?? null, dashed: e.dashed },
       class: `c4-edge ${e.kind}`,
@@ -153,6 +247,17 @@
   }
   const closeMenu = () => (menu = null);
 
+  // Drag-to-pin: snap a dropped card to the nearest grid cell and report it. The
+  // re-layout (driven by the new pin) repositions the card exactly on that cell.
+  function onnodedragstop({ targetNode }: { targetNode: Node | null }): void {
+    const g = layout?.grid;
+    if (!targetNode || targetNode.type === "boundary" || !g || !onpin) return;
+    const w = targetNode.width ?? targetNode.measured?.width ?? 0;
+    const h = targetNode.height ?? targetNode.measured?.height ?? 0;
+    const { row, col } = cellAt(g, targetNode.position.x + w / 2, targetNode.position.y + h / 2);
+    onpin(targetNode.id, row, col);
+  }
+
   // CanvasMenu renders these rule-separated. A row's `run` closes over the opened
   // node — drill / go up the structure, jump to a flow, reveal the definition, or
   // list usages at the click point.
@@ -181,6 +286,9 @@
         { label: "Find usages", run: () => onusages?.(m.fqn, m.event) },
       ],
     });
+    if (onuniverse) {
+      sections.push({ items: [{ label: "Show in 3D graph", run: () => onuniverse?.(m.fqn), icon: "✦" }] });
+    }
     return sections;
   }
 </script>
@@ -195,20 +303,55 @@
     {colorMode}
     minZoom={0.2}
     maxZoom={2.5}
-    nodesDraggable={false}
+    nodesDraggable={dragging}
     nodesConnectable={false}
-    elementsSelectable={false}
+    elementsSelectable={dragging}
     proOptions={{ hideAttribution: true }}
     {onnodecontextmenu}
+    {onnodedragstop}
   >
     <Background gap={24} />
+    {#if gridOverlay}
+      {@const o = gridOverlay}
+      <ViewportPortal target="back">
+        <svg
+          class="grid-overlay"
+          style="position:absolute; left:{o.left}px; top:{o.top}px;"
+          width={o.w}
+          height={o.h}
+        >
+          {#each o.vx as x (x)}<line x1={x} y1={0} x2={x} y2={o.h} />{/each}
+          {#each o.hy as y (y)}<line x1={0} y1={y} x2={o.w} y2={y} />{/each}
+        </svg>
+      </ViewportPortal>
+    {/if}
     <MiniMap pannable zoomable />
     <Controls showLock={false} />
   </SvelteFlow>
 
-  <!-- Top-right toolbar: export the diagram. -->
+  <!-- Top-right toolbar: layout tweaks + export the diagram. -->
   <div class="customise">
-    <DiagramExport container={flowEl} {nodes} filename={exportName} />
+    {#if gridEditable}
+      <button
+        class="export-trigger"
+        class:active={unlocked}
+        onclick={() => onunlock?.(!unlocked)}
+        title={unlocked ? "Lock the grid (stop dragging)" : "Unlock the grid to drag nodes between cells"}
+      >
+        {unlocked ? "🔓 Unlocked" : "🔒 Locked"}
+      </button>
+    {/if}
+    {#if tweaks && onlayoutchange}
+      <LayoutControl {tweaks} onchange={onlayoutchange} />
+    {/if}
+    {#if showGraphvizDebug && dotSource}
+      <button
+        class="export-trigger"
+        onclick={openGraphviz}
+        title="Render this view through real Graphviz (debug)"
+      >Graphviz</button>
+    {/if}
+    <DiagramExport container={flowEl} {nodes} filename={exportName} dotSource={dotSource} />
   </div>
 
   {#if menu}
@@ -228,5 +371,22 @@
     z-index: 5;
     display: flex;
     gap: 0.4rem;
+  }
+
+  /* The unlock toggle reads as "armed" while dragging is enabled. */
+  .customise :global(.export-trigger.active) {
+    border-color: var(--k-callable, #2563eb);
+    color: var(--k-callable, #2563eb);
+  }
+
+  /* The snap grid shown while editing — drawn in flow space behind the cards. */
+  .grid-overlay {
+    overflow: visible;
+    pointer-events: none;
+  }
+  .grid-overlay line {
+    stroke: var(--k-callable, #2563eb);
+    stroke-width: 1;
+    opacity: 0.28;
   }
 </style>

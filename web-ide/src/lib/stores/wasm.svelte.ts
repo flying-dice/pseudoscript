@@ -21,6 +21,8 @@ class WasmStore {
   async init(): Promise<boolean> {
     this.error = null;
     try {
+      // The one wasm + its IDE session, ready before the editor's sync language
+      // sources fire.
       await initWasm();
     } catch (e) {
       this.error = String((e as Error)?.message ?? e);

@@ -1,0 +1,11 @@
+view data
+of shop::Event
+entity shop::Event union "Event"
+  row Created "" -> shop::Created
+  row Closed "" -> shop::Closed
+entity shop::Created record "Created"
+  row id "string"
+entity shop::Closed record "Closed"
+  row id "string"
+link shop::Event -> shop::Created "Created"
+link shop::Event -> shop::Closed "Closed"

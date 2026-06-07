@@ -5,7 +5,8 @@
 // that open these (showCanvasUsages, the dialog `run` callbacks, refreshRecents)
 // stay in the view; this store just owns the state.
 
-import type { CanvasUsages, ConfirmDialog, Dialog } from "$lib/core/types.js";
+import { DEFAULT_LAYOUT_TWEAKS } from "$lib/core/types.js";
+import type { CanvasUsages, ConfirmDialog, Dialog, LayoutTweaks } from "$lib/core/types.js";
 import type { Recent } from "$lib/recents.js";
 
 function readDocWidth(): string {
@@ -13,6 +14,18 @@ function readDocWidth(): string {
     return localStorage.getItem("pds-doc-width") || "narrow";
   } catch {
     return "narrow";
+  }
+}
+
+function readLayoutTweaks(): LayoutTweaks {
+  try {
+    const raw = localStorage.getItem("pds-layout");
+    // Always a fresh object (never the shared default by reference) and defaults
+    // fill any absent field (forward-compatible with older entries).
+    const stored = raw ? (JSON.parse(raw) as Partial<LayoutTweaks>) : {};
+    return { ...DEFAULT_LAYOUT_TWEAKS, ...stored };
+  } catch {
+    return { ...DEFAULT_LAYOUT_TWEAKS };
   }
 }
 
@@ -32,6 +45,9 @@ class UiStore {
   commandOpen = $state(false);
   // The Markdown reading width (narrow | wide | full), persisted across sessions.
   docWidth = $state(readDocWidth());
+  // The C4 layout tweaks (the canvas "Layout" control), one config applied to
+  // every diagram and persisted across sessions.
+  layoutTweaks = $state<LayoutTweaks>(readLayoutTweaks());
   // Doc-build progress + the example-vs-folder modal.
   building = $state(false);
   buildNotice = $state(false);
@@ -48,6 +64,16 @@ class UiStore {
     this.docWidth = w;
     try {
       localStorage.setItem("pds-doc-width", w);
+    } catch {
+      /* storage unavailable — session-only */
+    }
+  }
+
+  /** Set and persist the layout tweaks (applied to every diagram). */
+  setLayoutTweaks(tweaks: LayoutTweaks): void {
+    this.layoutTweaks = tweaks;
+    try {
+      localStorage.setItem("pds-layout", JSON.stringify(tweaks));
     } catch {
       /* storage unavailable — session-only */
     }

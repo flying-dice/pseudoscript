@@ -1,0 +1,15 @@
+// LANG.md §7.2 (ADR-035): `Type from Expr` checks the source where determinable.
+// A call to a resolvable callable contributes its declared return type, so
+// composing a `Cat` from a `Dog`-returning call is a model error.
+
+//! example
+
+public data Cat;
+public data Dog;
+
+public system Zoo;
+
+public container Pen for Zoo {
+  AdoptCat(): Cat { return Cat from self.MakeDog() }
+  MakeDog(): Dog;
+}

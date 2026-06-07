@@ -10,7 +10,7 @@
   type Props = {
     workspaceName?: string | null;
     building?: boolean;
-    view?: "code" | "canvas";
+    view?: "code" | "canvas" | "space";
     structureOpen?: boolean;
     canBack?: boolean;
     canForward?: boolean;
@@ -28,7 +28,7 @@
     onshortcuts?: () => void;
     onback?: () => void;
     onforward?: () => void;
-    onview?: (view: "code" | "canvas") => void;
+    onview?: (view: "code" | "canvas" | "space") => void;
     ontogglestructure?: () => void;
   };
 
@@ -122,9 +122,10 @@
       <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content class="menu-content" align="start" sideOffset={4}>
-      <DropdownMenu.RadioGroup value={view} onValueChange={(v) => onview?.(v as "code" | "canvas")}>
+      <DropdownMenu.RadioGroup value={view} onValueChange={(v) => onview?.(v as "code" | "canvas" | "space")}>
         <DropdownMenu.RadioItem value="code" disabled={!hasWorkspace}>Editor</DropdownMenu.RadioItem>
         <DropdownMenu.RadioItem value="canvas" disabled={!hasWorkspace}>Diagram canvas</DropdownMenu.RadioItem>
+        <DropdownMenu.RadioItem value="space" disabled={!hasWorkspace}>3D graph</DropdownMenu.RadioItem>
       </DropdownMenu.RadioGroup>
       <DropdownMenu.Separator />
       <DropdownMenu.CheckboxItem

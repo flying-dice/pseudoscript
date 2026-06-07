@@ -11,7 +11,7 @@ public system Banking;
 
 public container Mainframe for Banking {
   public GetBankingInfo(id: number): Result<BankingInfo, NotFound> {
-    r: Result<BankingInfo, NotFound> = AccountStore::Repository.fetch(id)
+    r = Result<BankingInfo, NotFound> from AccountStore::Repository.fetch(id)
     if (r.isErr) {
       return Err(r.value)
     }

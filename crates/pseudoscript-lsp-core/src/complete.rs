@@ -11,6 +11,7 @@ use crate::convert::position_to_offset;
 
 /// Computes completion items for `position` in module `from_fqn`'s `src`.
 #[must_use]
+#[tracing::instrument(level = "debug", skip(ws, src))]
 pub fn completion(
     ws: &Workspace,
     from_fqn: &str,
@@ -39,7 +40,6 @@ fn item_kind(kind: CompletionKind) -> CompletionItemKind {
         CompletionKind::Type => CompletionItemKind::STRUCT,
         CompletionKind::Class => CompletionItemKind::CLASS,
         CompletionKind::Module => CompletionItemKind::MODULE,
-        CompletionKind::Reference => CompletionItemKind::REFERENCE,
     }
 }
 

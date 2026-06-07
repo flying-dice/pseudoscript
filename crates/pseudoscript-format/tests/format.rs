@@ -33,8 +33,6 @@ data OrderEvent =
   | OrderPlaced
   | OrderCancelled { id: string, reason: string }
 
-alias Store = shop::Warehouse;
-
 public system Shop;
 
 public container Web for Shop {
@@ -42,12 +40,12 @@ public container Web for Shop {
   #[http("POST /checkout")]
   public checkout(cart: Sku[]): Result<Receipt, OrderError> {
     for (item in cart) {
-      line: Result<Receipt, OrderError> = Warehouse::Pricing.price(item)
+      line = Result<Receipt, OrderError> from Warehouse::Pricing.price(item)
       if (line.isErr) {
         return Err(line.error)
       }
     }
-    r: Result<Receipt, OrderError> = self.finalize(cart)
+    r = Result<Receipt, OrderError> from self.finalize(cart)
     return Ok(r.value)
   }
 
@@ -58,8 +56,8 @@ public container Warehouse for Shop;
 
 component Pricing for Warehouse {
   price(item: Sku): Result<Receipt, OrderError> {
-    base: Receipt = Catalog.lookup(item).value
-    receipt: Receipt = Receipt from { base }
+    base = Receipt from Catalog.lookup(item).value
+    receipt = Receipt from { base }
     return Ok(receipt)
   }
 }

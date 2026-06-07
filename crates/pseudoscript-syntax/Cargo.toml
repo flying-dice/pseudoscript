@@ -11,6 +11,8 @@ name = "pseudoscript_syntax"
 path = "src/lib.rs"
 
 [dependencies]
+# Logging facade (target-agnostic); the subscriber is chosen at the wasm/stdio edge.
+tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

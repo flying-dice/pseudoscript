@@ -5,7 +5,8 @@
 // errorCount / errorPaths for the problems pane and the file-tree markers.
 
 import { computeDiagnostics, type DiagnosticsResult } from "$lib/core/diagnostics.js";
-import { checkModules } from "$lib/pds.js";
+import { ideDiagnostics, type ModuleDiagnostics } from "$lib/pds.js";
+import { sessionMount } from "./session.svelte.js";
 import { wasm } from "./wasm.svelte.js";
 import { wsStore } from "./workspace.svelte.js";
 
@@ -15,7 +16,14 @@ class DiagnosticsStore {
   readonly result = $derived.by<DiagnosticsResult>(() => {
     const ws = wsStore.workspace;
     if (!wasm.ready || !ws) return EMPTY;
-    return computeDiagnostics(wsStore.allModules, ws.files, checkModules);
+    // Bind dependency modules as externals so a cross-workspace reference (§8.3)
+    // resolves instead of diagnosing as unknown.
+    // `allModules` keeps this reactive on every edit (the session is current via
+    // `setIdeSource`); `sessionMount.seq` re-runs it once a structural mount has
+    // loaded the new modules (the mount runs in an effect, after this derived's
+    // first read). The query itself takes no modules — the session holds them.
+    void sessionMount.seq;
+    return computeDiagnostics(wsStore.allModules, ws.files, () => ideDiagnostics());
   });
 
   get problems() {
@@ -26,6 +34,13 @@ class DiagnosticsStore {
   }
   get errorPaths() {
     return this.result.errorPaths;
+  }
+
+  /** Per-module results with full diagnostic spans (the `ideDiagnostics` shape),
+   *  for inline editor highlighting. `computeDiagnostics` types them minimally,
+   *  but the source is `ideDiagnostics()`, so the cast is sound. */
+  get results(): readonly ModuleDiagnostics[] | null {
+    return this.result.results as readonly ModuleDiagnostics[] | null;
   }
 }
 

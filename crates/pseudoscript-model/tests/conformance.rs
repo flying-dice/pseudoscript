@@ -48,16 +48,16 @@ public container Emit for Pseudoscript;
 component Generate for Cli {
   #[manual]
   public run(req: Request): Result<Diagram, Failure> {
-    ast: Result<Ast, Failure> = Syntax::Parser.parse(req)
+    ast = Result<Ast, Failure> from pseudoscript::Parser.parse(req)
     if (ast.isErr) {
       return Err(ast.error)
     }
-    graph: Result<Graph, Failure> = Model::Builder.build(ast.value)
+    graph = Result<Graph, Failure> from pseudoscript::Builder.build(ast.value)
     if (graph.isErr) {
       return Err(graph.error)
     }
-    sub: Graph = Model::Views.extract(graph.value)
-    out: Result<Diagram, Failure> = Emit::Transpiler.emit(sub)
+    sub = Graph from pseudoscript::Views.extract(graph.value)
+    out = Result<Diagram, Failure> from pseudoscript::Transpiler.emit(sub)
     if (out.isErr) {
       return Err(out.error)
     }

@@ -13,7 +13,10 @@ use pseudoscript_layout::sequence::{self, Activation, FragKind, PlacedFragment, 
 use pseudoscript_model::NodeKind;
 
 use crate::c4_render::render_c4;
-use crate::scene::{C4Scene, FrameKind, Message, MessageKind, Rect, Scene, SeqItem, SequenceScene};
+use crate::scene::{
+    C4Scene, DataScene, FeatureScene, FrameKind, Message, MessageKind, Rect, Scene, SeqItem,
+    SequenceScene,
+};
 
 // C4 layout constants (renderer coordinates). Sequence geometry now lives in the
 // `pseudoscript-layout` crate; only the activation-bar width is shared here, to
@@ -311,6 +314,8 @@ pub fn render_svg_themed(scene: &Scene, theme: Theme) -> String {
     let svg = match scene {
         Scene::C4(c4) => render_c4(c4),
         Scene::Sequence(seq) => render_sequence(seq),
+        Scene::Data(data) => render_data(data),
+        Scene::Feature(feature) => render_feature(feature),
     };
     PALETTE.with(|p| p.set(&LIGHT));
     svg
@@ -636,13 +641,13 @@ fn seq_label(
     let label = escape_xml(text);
     let chars = text.chars().count() + detail.chars().count();
     if pill && chars > 0 {
-        let w = i32::try_from(chars).unwrap_or(0) * 7 + 12;
+        let w = i32::try_from(chars).unwrap_or(0) * 7 + 8;
         let _ = write!(
             out,
-            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"17\" rx=\"4\" fill=\"{fill}\" \
+            "<rect x=\"{rx}\" y=\"{ry}\" width=\"{w}\" height=\"14\" rx=\"4\" fill=\"{fill}\" \
              fill-opacity=\"0.92\"/>",
             rx = x - w / 2,
-            ry = y - 12,
+            ry = y - 11,
             fill = pal().pill,
         );
     }
@@ -666,6 +671,366 @@ fn return_style(marker: &str) -> (&'static str, String) {
         "" => (pal().muted, "\u{21a9} return".to_owned()),
         other => (pal().muted, format!("\u{21a9} {other}")),
     }
+}
+
+// --- data (ER) layout + rendering -------------------------------------------
+
+const ENTITY_HDR: i32 = 40; // header band: eyebrow + name
+const ENTITY_ROW_H: i32 = 22; // per-field row height
+const ENTITY_PAD_B: i32 = 12; // card bottom padding
+const ENTITY_MIN_W: i32 = 150;
+const ENTITY_MAX_W: i32 = 440;
+const ENTITY_CHAR_W: i32 = 8; // approx px per row character (12.5px mono advance)
+const ENTITY_NAME_CHAR_W: i32 = 10; // approx px per header-name char (15px bold display)
+const ENTITY_COL_GAP: i32 = 96; // gap between the focal card and the referenced column
+const ENTITY_VGAP: i32 = 24; // vertical gap between referenced cards
+/// The data-entity accent (matches the C4 `data` card colour).
+const DATA_ACCENT: &str = "#9333ea";
+
+/// The card width for an entity: wide enough for the widest row (mono) and the
+/// header name (the bold display font, wider per character), clamped.
+fn entity_width(entity: &crate::scene::DataEntity) -> i32 {
+    let row_chars = |r: &crate::scene::EntityRow| {
+        if r.ty.is_empty() {
+            r.name.chars().count()
+        } else {
+            // The row renders `name : ty` — the ` : ` separator is three chars.
+            r.name.chars().count() + 3 + r.ty.chars().count()
+        }
+    };
+    let chars = |n: usize| i32::try_from(n).unwrap_or(0);
+    let rows_w = entity.rows.iter().map(row_chars).max().unwrap_or(0);
+    // The name is drawn in the 15px bold display font; size it at its own advance
+    // so a long type name is not clipped by the card edge.
+    let name_w = chars(entity.label.chars().count()) * ENTITY_NAME_CHAR_W;
+    (chars(rows_w) * ENTITY_CHAR_W)
+        .max(name_w)
+        .saturating_add(40)
+        .clamp(ENTITY_MIN_W, ENTITY_MAX_W)
+}
+
+/// The card height for an entity: the header band plus a row per field.
+fn entity_height(entity: &crate::scene::DataEntity) -> i32 {
+    if entity.rows.is_empty() {
+        ENTITY_HDR + ENTITY_PAD_B
+    } else {
+        ENTITY_HDR + i32::try_from(entity.rows.len()).unwrap_or(0) * ENTITY_ROW_H + ENTITY_PAD_B
+    }
+}
+
+/// Positions a [`DataScene`]: the focal entity top-left, its referenced types in
+/// a column to the right. Deterministic; the same geometry [`render_data`] draws.
+#[must_use]
+pub fn layout_data_scene(scene: &DataScene) -> DataScene {
+    let mut scene = scene.clone();
+    if let Some(focal) = scene.entities.first_mut() {
+        focal.rect = Rect {
+            x: PAD,
+            y: PAD,
+            w: entity_width(focal),
+            h: entity_height(focal),
+        };
+    }
+    let (fx, fw) = scene
+        .entities
+        .first()
+        .map_or((PAD, ENTITY_MIN_W), |e| (e.rect.x, e.rect.w));
+    let col_x = fx + fw + ENTITY_COL_GAP;
+    let mut y = PAD;
+    for entity in scene.entities.iter_mut().skip(1) {
+        let h = entity_height(entity);
+        entity.rect = Rect {
+            x: col_x,
+            y,
+            w: entity_width(entity),
+            h,
+        };
+        y += h + ENTITY_VGAP;
+    }
+    let extent = |f: fn(&Rect) -> i32| {
+        scene
+            .entities
+            .iter()
+            .map(|e| f(&e.rect))
+            .max()
+            .unwrap_or(PAD)
+    };
+    scene.width = extent(|r| r.x + r.w) + PAD;
+    scene.height = extent(|r| r.y + r.h) + PAD;
+    scene
+}
+
+fn render_data(scene: &DataScene) -> String {
+    let scene = layout_data_scene(scene);
+    let mut out = String::new();
+    svg_open(&mut out, scene.width.max(PAD), scene.height.max(PAD));
+    // Reference links first, behind the cards they connect.
+    for link in &scene.links {
+        draw_data_link(&mut out, &scene, link);
+    }
+    for entity in &scene.entities {
+        draw_entity(&mut out, entity);
+    }
+    svg_close(&mut out);
+    out
+}
+
+/// Draws an entity card: a coloured left rule, an UPPERCASE form eyebrow, the
+/// bold type name, and one row per field (`name : ty`), a dot marking a row that
+/// references another type.
+fn draw_entity(out: &mut String, entity: &crate::scene::DataEntity) {
+    #[allow(non_snake_case)]
+    let (CARD_FILL, BORDER, INK, MUTED) = (pal().card_fill, pal().hairline, pal().ink, pal().muted);
+    let r = entity.rect;
+    // The accent shows as a clean left rule, the same way a C4 card draws it: a
+    // base accent rounded rect, then a card-fill interior with the left edge
+    // square and right corners rounded, so only a BAR_WIDTH strip of the base
+    // shows. A neutral border (accent when focal) sits over the whole card.
+    let rad = 8;
+    let (ix, right, bottom) = (r.x + 5, r.x + r.w, r.y + r.h);
+    let border = if entity.focal { DATA_ACCENT } else { BORDER };
+    let _ = write!(
+        out,
+        "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{rad}\" fill=\"{DATA_ACCENT}\"/>\
+         <path d=\"M{ix},{y} H{rl} A{rad},{rad} 0 0 1 {right},{ry} V{by} A{rad},{rad} 0 0 1 {rl},{bottom} H{ix} Z\" fill=\"{CARD_FILL}\"/>\
+         <rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{rad}\" fill=\"none\" stroke=\"{border}\"/>",
+        x = r.x,
+        y = r.y,
+        w = r.w,
+        h = r.h,
+        rl = right - rad,
+        ry = r.y + rad,
+        by = bottom - rad,
+    );
+    let tx = r.x + 16;
+    let _ = write!(
+        out,
+        "<text x=\"{tx}\" y=\"{ey}\" font-size=\"10\" letter-spacing=\"1.5\" font-weight=\"600\" \
+         fill=\"{DATA_ACCENT}\">{eyebrow}</text>\
+         <text x=\"{tx}\" y=\"{ny}\" font-size=\"15\" font-weight=\"700\" fill=\"{INK}\">{name}</text>",
+        ey = r.y + 18,
+        ny = r.y + 33,
+        eyebrow = escape_xml(&entity.form.keyword().to_uppercase()),
+        name = escape_xml(&entity.label),
+    );
+    for (i, row) in entity.rows.iter().enumerate() {
+        let ry = r.y + ENTITY_HDR + i32::try_from(i).unwrap_or(0) * ENTITY_ROW_H + 15;
+        // Highlight the row: field name in ink, the `:` dimmed, the type in the
+        // data accent (matching the editor's type colour and the reference arrow).
+        // A union variant row (no type) is itself a type token.
+        if row.ty.is_empty() {
+            let _ = write!(
+                out,
+                "<text x=\"{tx}\" y=\"{ry}\" font-size=\"12.5\" fill=\"{DATA_ACCENT}\">{name}</text>",
+                name = escape_xml(&row.name),
+            );
+        } else {
+            let _ = write!(
+                out,
+                // Non-breaking space after the colon so SVG whitespace collapsing
+                // keeps the `name: type` gap at the tspan boundary.
+                "<text x=\"{tx}\" y=\"{ry}\" font-size=\"12.5\">\
+                 <tspan fill=\"{INK}\">{name}</tspan>\
+                 <tspan fill=\"{MUTED}\">:\u{00a0}</tspan>\
+                 <tspan fill=\"{DATA_ACCENT}\">{ty}</tspan></text>",
+                name = escape_xml(&row.name),
+                ty = escape_xml(&row.ty),
+            );
+        }
+        if row.target.is_some() {
+            let _ = write!(
+                out,
+                "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"3.5\" fill=\"{DATA_ACCENT}\"/>",
+                cx = r.x + r.w - 9,
+                cy = ry - 4,
+            );
+        }
+    }
+}
+
+/// Draws a reference link: an elbow from the referencing field's row to the
+/// left edge of the referenced card, arrowhead at the target.
+fn draw_data_link(out: &mut String, scene: &DataScene, link: &crate::scene::DataLink) {
+    let Some(from) = scene.entities.iter().find(|e| e.fqn == link.from) else {
+        return;
+    };
+    let Some(to) = scene.entities.iter().find(|e| e.fqn == link.to) else {
+        return;
+    };
+    let row_idx = from
+        .rows
+        .iter()
+        .position(|r| r.name == link.field)
+        .unwrap_or(0);
+    let y1 = from.rect.y + ENTITY_HDR + i32::try_from(row_idx).unwrap_or(0) * ENTITY_ROW_H + 11;
+    let x1 = from.rect.x + from.rect.w;
+    let x2 = to.rect.x;
+    let y2 = to.rect.y + to.rect.h / 2;
+    let midx = i32::midpoint(x1, x2);
+    #[allow(non_snake_case)]
+    let STROKE = pal().arrow_seq;
+    let _ = write!(
+        out,
+        "<path d=\"M{x1},{y1} H{midx} V{y2} H{x2}\" fill=\"none\" stroke=\"{STROKE}\" \
+         marker-end=\"url(#arrow)\"/>",
+    );
+}
+
+// --- feature (flow) layout + rendering --------------------------------------
+
+const STEP_W: i32 = 340; // fixed step-box width; text wraps within it
+const STEP_PAD_X: i32 = 16; // text inset from each side
+const STEP_TEXT_TOP: i32 = 36; // first prose-line baseline within the box
+const STEP_LINE_H: i32 = 17; // wrapped-line advance
+const STEP_PAD_B: i32 = 12; // padding below the last line
+const STEP_CHAR_W: i32 = 8; // approx px per prose char (13px mono advance ≈ 7.8)
+const STEP_GAP: i32 = 28;
+const FEATURE_HDR: i32 = 66; // header band: eyebrow + name + target
+
+/// The per-line character budget a step box wraps its prose to.
+fn step_max_chars() -> usize {
+    usize::try_from((STEP_W - 2 * STEP_PAD_X) / STEP_CHAR_W)
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// The box height for a step with `lines` wrapped prose lines.
+fn step_height(lines: i32) -> i32 {
+    STEP_TEXT_TOP + (lines - 1).max(0) * STEP_LINE_H + STEP_PAD_B
+}
+
+/// Greedy word-wrap of `text` to at most `max_chars` per line. An over-long word
+/// keeps its own line rather than being split.
+fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    let max = max_chars.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.chars().count() + 1 + word.chars().count() <= max {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Positions a [`FeatureScene`]: the steps stacked top-to-bottom under a header,
+/// each box's height grown to fit its wrapped prose.
+#[must_use]
+pub fn layout_feature_scene(scene: &FeatureScene) -> FeatureScene {
+    let mut scene = scene.clone();
+    let max_chars = step_max_chars();
+    let mut y = FEATURE_HDR;
+    for step in &mut scene.steps {
+        let lines = i32::try_from(wrap_text(&step.text, max_chars).len()).unwrap_or(1);
+        let h = step_height(lines);
+        step.rect = Rect {
+            x: PAD,
+            y,
+            w: STEP_W,
+            h,
+        };
+        y += h + STEP_GAP;
+    }
+    // Fit the header name (17px bold display) too, so a long feature name is not
+    // clipped at the canvas edge.
+    let name_w = i32::try_from(scene.name.chars().count()).unwrap_or(0) * 11 + 2 * PAD;
+    scene.width = (STEP_W + 2 * PAD).max(name_w);
+    scene.height = (y - STEP_GAP + PAD).max(FEATURE_HDR + PAD);
+    scene
+}
+
+/// The accent colour for a step keyword.
+fn step_color(keyword: &str) -> &'static str {
+    match keyword {
+        "given" => "#4f72f0",
+        "when" => "#c77f10",
+        "then" => "#0f9d8a",
+        _ => pal().muted,
+    }
+}
+
+fn render_feature(scene: &FeatureScene) -> String {
+    let scene = layout_feature_scene(scene);
+    #[allow(non_snake_case)]
+    let (INK, MUTED) = (pal().ink, pal().muted);
+    let mut out = String::new();
+    svg_open(&mut out, scene.width.max(PAD), scene.height.max(PAD));
+    let _ = write!(
+        &mut out,
+        "<text x=\"{PAD}\" y=\"22\" font-size=\"10\" letter-spacing=\"2\" fill=\"{MUTED}\">FEATURE</text>\
+         <text x=\"{PAD}\" y=\"44\" font-size=\"17\" font-weight=\"700\" fill=\"{INK}\">{name}</text>\
+         <text x=\"{PAD}\" y=\"60\" font-size=\"11.5\" fill=\"{MUTED}\">for {target}</text>",
+        name = escape_xml(&scene.name),
+        target = escape_xml(&scene.target_label),
+    );
+    for pair in scene.steps.windows(2) {
+        let (a, b) = (pair[0].rect, pair[1].rect);
+        let _ = write!(
+            &mut out,
+            "<line x1=\"{x}\" y1=\"{y1}\" x2=\"{x}\" y2=\"{y2}\" stroke=\"{MUTED}\" \
+             marker-end=\"url(#arrow)\"/>",
+            x = a.x + a.w / 2,
+            y1 = a.y + a.h,
+            y2 = b.y,
+        );
+    }
+    for step in &scene.steps {
+        draw_step(&mut out, step);
+    }
+    svg_close(&mut out);
+    out
+}
+
+/// Draws a step box: a coloured left rule, an UPPERCASE keyword eyebrow, and the
+/// step prose.
+fn draw_step(out: &mut String, step: &crate::scene::FeatureStepNode) {
+    #[allow(non_snake_case)]
+    let (CARD_FILL, INK) = (pal().card_fill, pal().ink);
+    let accent = step_color(&step.keyword);
+    let r = step.rect;
+    let tx = r.x + STEP_PAD_X;
+    let _ = write!(
+        out,
+        "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"8\" fill=\"{CARD_FILL}\" \
+         stroke=\"{hair}\"/>\
+         <rect x=\"{x}\" y=\"{y}\" width=\"5\" height=\"{h}\" rx=\"2\" fill=\"{accent}\"/>\
+         <text x=\"{tx}\" y=\"{ky}\" font-size=\"10\" letter-spacing=\"1.5\" font-weight=\"600\" \
+         fill=\"{accent}\">{kw}</text>",
+        x = r.x,
+        y = r.y,
+        w = r.w,
+        h = r.h,
+        hair = pal().hairline,
+        ky = r.y + 18,
+        kw = escape_xml(&step.keyword.to_uppercase()),
+    );
+    // The prose, wrapped to the box width, one `<tspan>` per line.
+    let _ = write!(
+        out,
+        "<text x=\"{tx}\" y=\"{ty}\" font-size=\"13\" fill=\"{INK}\">",
+        ty = r.y + STEP_TEXT_TOP,
+    );
+    for (i, line) in wrap_text(&step.text, step_max_chars()).iter().enumerate() {
+        let dy = if i == 0 { 0 } else { STEP_LINE_H };
+        let _ = write!(
+            out,
+            "<tspan x=\"{tx}\" dy=\"{dy}\">{}</tspan>",
+            escape_xml(line)
+        );
+    }
+    out.push_str("</text>");
 }
 
 // --- helpers ----------------------------------------------------------------

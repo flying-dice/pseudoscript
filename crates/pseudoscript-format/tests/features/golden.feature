@@ -25,9 +25,9 @@ Feature: Golden canonical outputs
     Then the result equals "public component Repo for S {\n  fetch(id: number): Result<Info, E>;\n}\n"
 
   Scenario: nested body, control flow, from-composition, and postfix chain
-    Given the source "public container M for B {\nrun(s:Source):Result<Ast,E>{\ntree:Ast=Ast from {s.text,s.path}\nx:string=Repo.fetch(id).value.owner\nfor(item in xs){self.handle(item)}\nreturn Ok(tree)\n}\n}"
+    Given the source "public container M for B {\nrun(s:Source):Result<Ast,E>{\ntree=Ast from {s.text,s.path}\nx=string from Repo.fetch(id).value.owner\nfor(item in xs){self.handle(item)}\nreturn Ok(tree)\n}\n}"
     When I format it
-    Then the result equals "public container M for B {\n  run(s: Source): Result<Ast, E> {\n    tree: Ast = Ast from { s.text, s.path }\n    x: string = Repo.fetch(id).value.owner\n    for (item in xs) {\n      self.handle(item)\n    }\n    return Ok(tree)\n  }\n}\n"
+    Then the result equals "public container M for B {\n  run(s: Source): Result<Ast, E> {\n    tree = Ast from { s.text, s.path }\n    x = string from Repo.fetch(id).value.owner\n    for (item in xs) {\n      self.handle(item)\n    }\n    return Ok(tree)\n  }\n}\n"
 
   Scenario: a feature reformats to one step per line
     Given the source "feature  Open   for  Bank{given \"a\"\nwhen \"b\"\nthen \"c\"}"

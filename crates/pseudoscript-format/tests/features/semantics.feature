@@ -11,19 +11,19 @@ Feature: Formatting preserves semantics
     And the result preserves the meaningful tokens
 
   Scenario: callable with control flow
-    Given the source "public container M for B {\npublic Get(id:number):Result<Info,NotFound>{\nr:Result<Info,NotFound>=Repo.fetch(id)\nif(r.isErr){return Err(r.error)}\nreturn Ok(r.value)\n}\n}"
+    Given the source "public container M for B {\npublic Get(id:number):Result<Info,NotFound>{\nr=Result<Info,NotFound> from Repo.fetch(id)\nif(r.isErr){return Err(r.error)}\nreturn Ok(r.value)\n}\n}"
     When I format it
     Then the result re-parses without errors
     And the result preserves the meaningful tokens
 
   Scenario: from-composition and postfix chain
-    Given the source "public container M for B {\nrun(s:Source):Result<Ast,E>{\ntree:Ast=Ast from {s.text,s.path}\nx:string=Repo.fetch(id).value.owner\nreturn Ok(tree)\n}\n}"
+    Given the source "public container M for B {\nrun(s:Source):Result<Ast,E>{\ntree=Ast from {s.text,s.path}\nx=string from Repo.fetch(id).value.owner\nreturn Ok(tree)\n}\n}"
     When I format it
     Then the result re-parses without errors
     And the result preserves the meaningful tokens
 
-  Scenario: array types and aliases
-    Given the source "alias R = a::b::Repo;\npublic container M for B {\nparse(argv:string[]):Result<Request,E>;\n}"
+  Scenario: array types in a node body
+    Given the source "public container M for B {\nparse(argv:string[]):Result<Request,E>;\n}"
     When I format it
     Then the result re-parses without errors
     And the result preserves the meaningful tokens

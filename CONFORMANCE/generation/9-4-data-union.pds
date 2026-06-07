@@ -1,0 +1,7 @@
+// LANG.md §9.4: a union `data` symbol projects one row per variant; an inline
+// record variant is hoisted to its own data type, so the variant row links to it
+// and that type renders as a peer card.
+
+//! shop
+
+public data Event = | Created { id: string } | Closed { id: string }

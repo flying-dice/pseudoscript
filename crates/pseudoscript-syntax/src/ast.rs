@@ -8,13 +8,13 @@
 use crate::lexer::SpannedTrivia;
 use crate::span::Span;
 
-/// A whole parsed file: module-level inner docs followed by aliases and
-/// declarations, in source order.
+/// A whole parsed file: module-level inner docs followed by declarations, in
+/// source order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// `//!` inner-doc lines documenting this module (§2.1).
     pub inner_docs: Vec<InnerDoc>,
-    /// Top-level items: `alias`es and declarations, interleaved in source order.
+    /// Top-level items: declarations and features, in source order.
     pub items: Vec<Item>,
     /// Source span of the whole module.
     pub span: Span,
@@ -32,8 +32,6 @@ pub struct InnerDoc {
 /// A top-level item.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    /// An `alias` binding (§8.3).
-    Alias(Alias),
     /// A documented, annotated structural declaration (§4, §3.4).
     Decl(Decl),
     /// A `feature` BDD scenario (§5.2).
@@ -45,7 +43,6 @@ impl Item {
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
-            Item::Alias(a) => a.span,
             Item::Decl(d) => d.span,
             Item::Feature(f) => f.span,
         }
@@ -127,19 +124,6 @@ impl StepKind {
             _ => None,
         }
     }
-}
-
-/// `alias Name = Path ;` — a file-local shorthand for a node FQN (§8.3).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Alias {
-    /// The local name introduced.
-    pub name: Ident,
-    /// The target node path (must be `::`-only; no `.`).
-    pub target: Path,
-    /// Comments / blank lines preceding this alias.
-    pub leading_trivia: Vec<SpannedTrivia>,
-    /// Source span of the whole `alias` statement.
-    pub span: Span,
 }
 
 /// The doc block, macros, and modifiers shared by every declaration, plus the
@@ -329,8 +313,9 @@ pub struct Stmt {
 /// The statement forms (§7).
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    /// `x: T = Expr` single-assignment (§7.1): a binding states its type.
-    Assign { name: Ident, ty: Type, value: Expr },
+    /// `x = Expr` single-assignment (§7.1): a binding states its type through a
+    /// `from` right-hand side (ADR-035).
+    Assign { name: Ident, value: Expr },
     /// `return [Expr]` (§7).
     Return(Option<Expr>),
     /// `if (C) { } [else { }]` (§7).
@@ -398,19 +383,17 @@ pub enum ExprKind {
         /// Optional `( Expr )` payload; `None` carries none.
         payload: Option<Box<Expr>>,
     },
-    /// `Type from { a, b }` composition, or `Type[] from { a, b }` composing an
-    /// array (§7.2). `is_array` is set by the `[]` suffix on the target.
-    From {
-        ty: Path,
-        is_array: bool,
-        sources: Vec<Expr>,
-    },
+    /// `Type from …` — carries a type onto a value (§7.2, ADR-035). The target
+    /// `ty` may be any non-node type, including `Result<…>` generics and a `[]`
+    /// array. The source is a brace set (composition) or a single value
+    /// (conversion).
+    From { ty: Type, source: FromSource },
     /// A postfix chain over a primary: `a.b.c`, `Repo.f(x).g()` (ADR-007).
     Postfix {
         base: Box<Expr>,
         segments: Vec<PostfixSeg>,
     },
-    /// `self`, an alias name, or an FQN (§10 `Ref`).
+    /// `self` or an FQN (§10 `Ref`).
     Ref(Ref),
     /// A string / number / bool literal (ADR-013).
     Literal(Literal),
@@ -418,6 +401,27 @@ pub enum ExprKind {
     Unary { op_span: Span, expr: Box<Expr> },
     /// A `( Expr )` group.
     Paren(Box<Expr>),
+}
+
+/// The source of a `from` expression (§7.2, ADR-035).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FromSource {
+    /// `from { a, b }` — composes a `data` record/variant from a source set.
+    Compose(Vec<Expr>),
+    /// `from expr` — carries the target type onto a single value.
+    Convert(Box<Expr>),
+}
+
+impl FromSource {
+    /// The source expressions, whichever form — for walkers that treat both
+    /// uniformly.
+    #[must_use]
+    pub fn sources(&self) -> &[Expr] {
+        match self {
+            FromSource::Compose(sources) => sources,
+            FromSource::Convert(expr) => std::slice::from_ref(expr),
+        }
+    }
 }
 
 /// One `.name` or `.name(args)` step in a postfix chain (ADR-007).
@@ -436,7 +440,7 @@ pub struct PostfixSeg {
 pub enum Ref {
     /// `self` — the enclosing node (ADR-004).
     SelfNode(Span),
-    /// An identifier or `::`-separated path (alias name or FQN).
+    /// An identifier or `::`-separated path (a node FQN).
     Path(Path),
 }
 
@@ -475,28 +479,6 @@ pub struct Type {
     pub is_array: bool,
     /// Source span of the whole type.
     pub span: Span,
-}
-
-impl Type {
-    /// A placeholder type at `span` — an empty-named path, mirroring the
-    /// error-recovery [`Ident`] convention. The parser inserts one for an
-    /// untyped assignment so the statement still carries a `ty` while the
-    /// missing-annotation diagnostic stands on its own.
-    #[must_use]
-    pub fn placeholder(span: Span) -> Self {
-        Type {
-            name: Path {
-                segments: vec![Ident {
-                    name: String::new(),
-                    span,
-                }],
-                span,
-            },
-            generics: Vec::new(),
-            is_array: false,
-            span,
-        }
-    }
 }
 
 /// A `::`-separated path of identifiers (§2.2, §10 `Path`).

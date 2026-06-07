@@ -13,9 +13,21 @@ export type NavState = { history: Loc[]; index: number };
 // The maximum trail length kept; older entries fall off the front.
 export const HISTORY_CAP = 50;
 
-/** Whether two locations point at the same file and caret position (label aside). */
+/**
+ * Whether two locations are the same history entry (label aside): same pane
+ * (`view`, absent ⇒ `"code"`), same code position, and same node scope (`fqn`).
+ * Including `view`/`fqn` keeps a code entry and a canvas entry at the same
+ * declaration position distinct, while a repeat of one scope still collapses.
+ */
 export function samePosition(a: Loc | undefined, b: Loc): boolean {
-  return !!a && a.fileFqn === b.fileFqn && a.line === b.line && a.col === b.col;
+  return (
+    !!a &&
+    a.fileFqn === b.fileFqn &&
+    a.line === b.line &&
+    a.col === b.col &&
+    (a.view ?? "code") === (b.view ?? "code") &&
+    (a.fqn ?? "") === (b.fqn ?? "")
+  );
 }
 
 /**

@@ -18,14 +18,14 @@ import type { DecorationSet, ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 
-import { check, semanticTokens } from "./pds.js";
+import { semanticTokens } from "./pds.js";
 import type { CompletionItem } from "./pds.js";
 import { byteToChar } from "./offsets.js";
 
-// The compiler diagnostic fields this linter reads. `check`'s wasm payload
-// carries raw UTF-8 byte offsets (`start`/`end`) alongside the line/column form;
-// the linter maps those byte offsets to CodeMirror's code-unit positions.
-interface CompilerDiagnostic {
+// The compiler diagnostic fields this linter reads. A wasm diagnostic carries
+// raw UTF-8 byte offsets (`start`/`end`) alongside the line/column form; the
+// linter maps those byte offsets to CodeMirror's code-unit positions.
+export interface CompilerDiagnostic {
   severity: string;
   message: string;
   start: number;
@@ -184,7 +184,6 @@ const KIND_TYPE: Record<number, string> = {
   7: "class", // Class (data)
   9: "namespace", // Module (node)
   14: "keyword", // Keyword
-  18: "variable", // Reference (alias)
   22: "type", // Struct (primitive / type)
 };
 
@@ -205,12 +204,14 @@ export function pseudoscriptCompletion(
     icons: true,
     override: [
       (context: CompletionContext): CompletionResult | null => {
-        // Auto-open only once a prefix is typed; an explicit invoke (Ctrl-Space)
-        // still completes at the bare caret. Only the trailing identifier
-        // segment is replaced — the `.`/`::` before it is context the engine
-        // already accounted for.
+        // Auto-open once a prefix is typed, or right after a `.`/`::` trigger
+        // (the engine offers the member / submodule set at that boundary, with no
+        // prefix yet). An explicit invoke (Ctrl-Space) still completes anywhere.
+        // Only the trailing identifier segment is replaced — the `.`/`::` before
+        // it is context the engine already accounted for.
         const word = context.matchBefore(/[A-Za-z_]\w*/);
-        if (!word && !context.explicit) return null;
+        const atTrigger = context.matchBefore(/\.|::/);
+        if (!word && !atTrigger && !context.explicit) return null;
         const from = word ? word.from : context.pos;
         const seen = new Set<string>();
         const options: Completion[] = [];
@@ -226,19 +227,19 @@ export function pseudoscriptCompletion(
   });
 }
 
-/** A linter that surfaces the wasm compiler's diagnostics inline. */
-export function pseudoscriptLinter(): Extension {
+/**
+ * A linter that surfaces the open module's diagnostics inline. `diagnosticsFor`
+ * returns the *workspace* diagnostics for the open file — not a standalone
+ * single-file check, which runs the buffer as an anonymous module and so misses
+ * workspace-only diagnostics (FQN qualification, cross-module visibility, §8).
+ * The host re-lints (`forceLinting`) when those diagnostics change.
+ */
+export function pseudoscriptLinter(diagnosticsFor: () => readonly CompilerDiagnostic[]): Extension {
   return linter((view: EditorView): LintDiagnostic[] => {
     const source = view.state.doc.toString();
-    let diagnostics: CompilerDiagnostic[];
-    try {
-      diagnostics = check(source) as unknown as CompilerDiagnostic[];
-    } catch {
-      return [];
-    }
     const length = view.state.doc.length;
-    return diagnostics.map((d): LintDiagnostic => {
-      // Compiler spans are UTF-8 byte offsets; map to code-unit offsets.
+    return diagnosticsFor().map((d): LintDiagnostic => {
+      // Diagnostic spans are UTF-8 byte offsets; map to code-unit offsets.
       const from = Math.min(byteToChar(source, d.start), length);
       const to = Math.min(Math.max(byteToChar(source, d.end), from), length);
       const severity: LintDiagnostic["severity"] =

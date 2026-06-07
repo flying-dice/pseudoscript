@@ -65,7 +65,7 @@ from a model. (Constructs and call syntax are defined in the language reference 
 | HTTP route / controller / RPC handler | callable with `#[http("VERB /path")]` | body disclosed only for the orchestration that carries meaning; routing/serialization is the macro, not the body |
 | Use case / application service / interactor | disclosed callable | **disclose** |
 | Domain rule, validation, **authorization** decision | `if (r.isErr) { return Err(...) }` branches | **disclose** |
-| Calculation / assembling a result from parts | `x: T = T from { a, b }` + the calls feeding it | **disclose** (provenance) |
+| Calculation / assembling a result from parts | `x = T from { a, b }` + the calls feeding it | **disclose** (provenance) |
 | Repository / DAO / ORM mapper | black-box `component` (or `container`) with `fetch`/`save`/… signatures | black box |
 | Database / cache / queue infrastructure | black-box `container`, often tagged `#critical` | black box |
 | DTO / entity / domain event / message | `data` record; events as a discriminated union | fields disclosed when they matter; `data X;` otherwise |
@@ -91,7 +91,7 @@ from a model. (Constructs and call syntax are defined in the language reference 
 5. **Disclose the use cases.** Translate each service/interactor method into a disclosed callable,
    tracing the **business logic line for line**: every guard becomes an `if (…isErr) { return Err }`,
    every assembled value becomes `from { … }`, every dependency call becomes a `Target.method(args)`.
-   Every binding states its type (`x: T = …`). Keep bodies at flow-and-provenance level — never
+   Every binding states its type through `from` (`x = T from …`). Keep bodies at flow-and-provenance level — never
    field-level arithmetic.
 6. **Mark the entry points.** Attach the trigger macro that matches how each callable is actually
    initiated: `#[http]`, `#[onevent]`, `#[schedule]`, `#[manual]`. These become inbound edges and
@@ -190,18 +190,18 @@ public container Checkout for Shop {
   /// Reserve stock, price it, charge, persist, announce.
   #[http("POST /orders")]
   public PlaceOrder(cmd: PlaceOrder): Result<Order, OrderError> {
-    reserved: Result<void, OutOfStock> = Inventory::Reservations.reserve(cmd.sku, cmd.qty)
+    reserved = Result<void, OutOfStock> from Inventory::Reservations.reserve(cmd.sku, cmd.qty)
     if (reserved.isErr) {
       return Err(reserved.error)
     }
-    quote: number = self.Quote(cmd.sku, cmd.qty)
-    order: Order = Order from { cmd, quote }
-    paid: Result<void, Declined> = Payments.charge(order)
+    quote = number from self.Quote(cmd.sku, cmd.qty)
+    order = Order from { cmd, quote }
+    paid = Result<void, Declined> from Payments.charge(order)
     if (paid.isErr) {
       return Err(paid.error)
     }
     OrderStore::Orders.save(order)
-    evt: OrderPlaced = OrderPlaced from { order }
+    evt = OrderPlaced from { order }
     Bus.publish(evt)
     return Ok(order)
   }

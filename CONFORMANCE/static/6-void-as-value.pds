@@ -1,6 +1,6 @@
 // LANG.md §6.1: `void` is a type, not a value. A void-returning callable returns
 // with a bare `Ok`; `Ok(void)` reads `void` as a value, which resolves to no
-// parameter, binding, node, alias, or variant.
+// parameter, binding, node, or variant.
 
 //! example
 

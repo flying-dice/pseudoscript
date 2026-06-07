@@ -1,0 +1,9 @@
+// LANG.md §9.4: a `data` symbol projects an entity view — a record's fields, and
+// the data types they reference pulled in as peer cards with a link. Built-in
+// field types (string/number) resolve to nothing, so they draw no card or link.
+
+//! shop
+
+public data Money { minor: number }
+
+public data Order { id: string, total: Money }

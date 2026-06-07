@@ -89,18 +89,18 @@ public system AcmePay;
 public system CardNetwork {
   /// Authorise (hold) an amount. The outcome is either an authorised hold or a
   /// 3-D Secure challenge the cardholder must complete first.
-  public authorize(amount: shared::Money, instrument: NetworkInstrument, key: charges::IdempotencyKey): Result<AuthOutcome, NetworkError>;
+  public authorize(amount: shared::Money, instrument: context::NetworkInstrument, key: charges::IdempotencyKey): Result<context::AuthOutcome, context::NetworkError>;
   /// Complete a 3-D Secure challenge, promoting a pending authorisation to a
   /// usable hold.
-  public completeAction(auth: NetworkAuthRef, outcome: NetworkChallengeResult, key: charges::IdempotencyKey): Result<NetworkAuth, NetworkError>;
+  public completeAction(auth: context::NetworkAuthRef, outcome: context::NetworkChallengeResult, key: charges::IdempotencyKey): Result<context::NetworkAuth, context::NetworkError>;
   /// Capture (settle) a previously authorised hold.
-  public capture(auth: NetworkAuthRef, amount: shared::Money, key: charges::IdempotencyKey): Result<NetworkCapture, NetworkError>;
+  public capture(auth: context::NetworkAuthRef, amount: shared::Money, key: charges::IdempotencyKey): Result<context::NetworkCapture, context::NetworkError>;
   /// Refund a captured payment, in full or part.
-  public refund(capture: NetworkCaptureRef, amount: shared::Money, key: charges::IdempotencyKey): Result<NetworkRefund, NetworkError>;
+  public refund(capture: context::NetworkCaptureRef, amount: shared::Money, key: charges::IdempotencyKey): Result<context::NetworkRefund, context::NetworkError>;
   /// Void an authorised hold that will not be captured, releasing the funds.
-  public cancel(auth: NetworkAuthRef, key: charges::IdempotencyKey): void;
+  public cancel(auth: context::NetworkAuthRef, key: charges::IdempotencyKey): void;
   /// Submit evidence contesting a chargeback to the issuer via the acquirer.
-  public submitEvidence(dispute: DisputeRef, evidence: string): Result<void, NetworkError>;
+  public submitEvidence(dispute: context::DisputeRef, evidence: string): Result<void, context::NetworkError>;
 }
 
 /// The network's handle for an open dispute (chargeback).
@@ -123,14 +123,14 @@ public data NetworkChallengeResult { value: string }
 
 /// The result of an authorise attempt.
 public data AuthOutcome =
-  | Authorized { ref: NetworkAuthRef }
-  | ActionRequired { ref: NetworkAuthRef, challenge: NetworkChallenge }
+  | Authorized { ref: context::NetworkAuthRef }
+  | ActionRequired { ref: context::NetworkAuthRef, challenge: context::NetworkChallenge }
 
 /// A successful (challenge-cleared) authorisation.
-public data NetworkAuth { ref: NetworkAuthRef }
+public data NetworkAuth { ref: context::NetworkAuthRef }
 
 /// A successful capture.
-public data NetworkCapture { ref: NetworkCaptureRef }
+public data NetworkCapture { ref: context::NetworkCaptureRef }
 
 /// A successful refund.
 public data NetworkRefund { ref: string }
@@ -146,9 +146,9 @@ public data NetworkError =
 /// #critical
 public system BankingPartner {
   /// Initiate a payout to a merchant's bank account.
-  public initiate(amount: shared::Money, destination: BankAccountRef, key: payouts::PayoutKey): Result<BankTransfer, BankError>;
+  public initiate(amount: shared::Money, destination: context::BankAccountRef, key: payouts::PayoutKey): Result<context::BankTransfer, context::BankError>;
   /// Ask the partner whether a payout has settled.
-  public status(transfer: BankTransferRef): Option<BankTransferState>;
+  public status(transfer: context::BankTransferRef): Option<context::BankTransferState>;
 }
 
 /// A merchant's bank account handle (never raw account numbers).
@@ -158,7 +158,7 @@ public data BankAccountRef { value: string }
 public data BankTransferRef { value: string }
 
 /// An accepted transfer.
-public data BankTransfer { ref: BankTransferRef }
+public data BankTransfer { ref: context::BankTransferRef }
 
 /// Where a transfer is in the partner's pipeline.
 public data BankTransferState =
@@ -175,7 +175,7 @@ public data BankError =
 /// payloads to it and treats any non-2xx as a delivery failure to retry.
 public system MerchantEndpoint {
   /// Deliver a signed event payload; a non-2xx response is a delivery failure.
-  public deliver(url: string, payload: string, signature: string): Result<void, DeliveryError>;
+  public deliver(url: string, payload: string, signature: string): Result<void, context::DeliveryError>;
 }
 
 /// Why a webhook delivery did not succeed.

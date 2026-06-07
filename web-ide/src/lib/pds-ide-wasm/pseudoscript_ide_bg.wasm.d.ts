@@ -1,0 +1,36 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_idesession_free: (a: number, b: number) => void;
+export const idesession_check: (a: number, b: number, c: number) => [number, number];
+export const idesession_completion: (a: number, b: number, c: number, d: number) => [number, number];
+export const idesession_definition: (a: number, b: number, c: number, d: number) => [number, number];
+export const idesession_dependency_modules: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const idesession_diagnostics: (a: number) => [number, number];
+export const idesession_doc_manifest: (a: number, b: number, c: number) => [number, number, number];
+export const idesession_doc_ssr_bundle: (a: number) => [number, number];
+export const idesession_emit_scene: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const idesession_folding_ranges: (a: number, b: number, c: number) => [number, number];
+export const idesession_format: (a: number, b: number, c: number) => [number, number, number, number];
+export const idesession_hover: (a: number, b: number, c: number, d: number) => any;
+export const idesession_layout_scene: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const idesession_mount: (a: number, b: number, c: number, d: number, e: number) => void;
+export const idesession_new: () => number;
+export const idesession_outline: (a: number) => [number, number];
+export const idesession_references: (a: number, b: number, c: number, d: number) => any;
+export const idesession_rename_apply: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+export const idesession_render_doc_site: (a: number, b: any, c: any) => [number, number, number, number];
+export const idesession_semantic_tokens: (a: number, b: number, c: number) => any;
+export const idesession_set_source: (a: number, b: number, c: number, d: number, e: number) => void;
+export const idesession_symbol_scene: (a: number, b: number, c: number) => [number, number, number, number];
+export const idesession_universe: (a: number) => [number, number, number, number];
+export const version: () => [number, number];
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_drop_slice: (a: number, b: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;

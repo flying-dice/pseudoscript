@@ -103,7 +103,7 @@
                 <span class="avatar" style="--h: {hue(r.name)}" aria-hidden="true">{initials(r.name)}</span>
                 <span class="meta">
                   <span class="name">{r.name}</span>
-                  <span class="sub">folder · {ago(r.at)}</span>
+                  <span class="sub">{r.dir ?? r.name} · {ago(r.at)}</span>
                 </span>
               </button>
               <button class="forget" title="Remove from recent" aria-label="Remove {r.name} from recent" onclick={() => onforget?.(r)}>✕</button>

@@ -4,11 +4,11 @@
   import { copyLineDown, defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from "@codemirror/commands";
   import { Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
   import type { Extension, StateEffectType, Text, TransactionSpec } from "@codemirror/state";
-  import { codeFolding, foldedRanges, foldEffect, foldGutter, foldKeymap, foldService, HighlightStyle, LanguageDescription, StreamLanguage, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
+  import { codeFolding, foldedRanges, foldEffect, foldGutter, foldKeymap, foldService, HighlightStyle, LanguageDescription, StreamLanguage, syntaxHighlighting, unfoldAll, unfoldEffect } from "@codemirror/language";
   import { languages } from "@codemirror/language-data";
   import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
   import { tags as t } from "@lezer/highlight";
-  import { lintGutter } from "@codemirror/lint";
+  import { lintGutter, forceLinting } from "@codemirror/lint";
   import { search, searchKeymap, openSearchPanel } from "@codemirror/search";
   import {
     Decoration,
@@ -22,13 +22,13 @@
   } from "@codemirror/view";
   import type { Command, DecorationSet, Tooltip } from "@codemirror/view";
   import { pseudoscript, pseudoscriptCompletion, pseudoscriptLinter } from "$lib/pseudoscript-language.js";
-  import type { CompletionFetcher } from "$lib/pseudoscript-language.js";
+  import type { CompletionFetcher, CompilerDiagnostic } from "$lib/pseudoscript-language.js";
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
-  import { completion as symbolCompletion, definition as symbolDefinition, foldRanges, hover as symbolHover, references as symbolReferences } from "$lib/pds.js";
+  import { ideDefinition, foldRanges, type FoldingRange, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
-  import type { Module, Occurrence, References } from "$lib/pds.js";
+  import type { Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
 
   /** A workspace symbol entry the host hands in; carried unmodified on `ctx`. */
@@ -48,7 +48,6 @@
     value?: string;
     onchange?: (value: string) => void;
     onready?: (api: EditorApi) => void;
-    modules?: Module[];
     moduleFqn?: string;
     /**
      * Stable per-file identity (fqn for modules, path for docs/manifest). Drives
@@ -88,13 +87,18 @@
      * resolveLink(rel) }` for relative images / sibling-doc links (folder docs).
      */
     previewOpts?: MarkdownLivePreviewOptions;
+    /**
+     * The open module's *workspace* diagnostics (byte spans), shown inline. Sourced
+     * from the workspace check, not a single-file one, so workspace-only diagnostics
+     * (FQN qualification, cross-module visibility, §8) highlight at their position.
+     */
+    diagnostics?: readonly CompilerDiagnostic[];
   };
 
   let {
     value = "",
     onchange,
     onready,
-    modules = [],
     moduleFqn = "",
     fileKey = "",
     symbols = [],
@@ -110,6 +114,7 @@
     toml = false,
     filename = "",
     previewOpts = {},
+    diagnostics = [],
   }: Props = $props();
 
   // Highlight tags → the editor's --hl-* token colours, for the TOML manifest.
@@ -164,7 +169,6 @@
 
   /** The live state mirror read by the once-built hover/click extensions. */
   type EditorCtx = {
-    modules: Module[];
     moduleFqn: string;
     symbols: SymbolEntry[];
     onopensymbol?: (fqn: string) => void;
@@ -177,15 +181,20 @@
 
   // The hover extension is built once but must read live state; this object is
   // kept current by the effect below and closed over by the tooltip source.
-  const ctx: EditorCtx = { modules, moduleFqn, symbols, onopensymbol, ongotodefinition, onnavigate };
+  const ctx: EditorCtx = { moduleFqn, symbols, onopensymbol, ongotodefinition, onnavigate };
   $effect(() => {
-    ctx.modules = modules;
     ctx.moduleFqn = moduleFqn;
     ctx.symbols = symbols;
     ctx.onopensymbol = onopensymbol;
     ctx.ongotodefinition = ongotodefinition;
     ctx.onnavigate = onnavigate;
   });
+
+  // Push the live buffer into the stateful session before any cursor query, so
+  // the held state is current regardless of when the edit's `set_source` fired.
+  // Every query helper below syncs through this — the one place that owns the
+  // "current module + its text" contract.
+  const syncBuffer = (src: string): void => setIdeSource(ctx.moduleFqn, src);
 
   // Go to the definition of the symbol at byte position `pos`: resolve it via
   // the compiler, then hand the FQN to the host (which opens the declaring file
@@ -195,7 +204,8 @@
     const src = view.state.doc.toString();
     let fqn: string | null;
     try {
-      fqn = symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(src, pos));
+      syncBuffer(src);
+      fqn = ideDefinition(ctx.moduleFqn, charToByte(src, pos));
     } catch {
       return false;
     }
@@ -219,7 +229,8 @@
     if (pos == null) return null;
     const src = view.state.doc.toString();
     try {
-      return symbolReferences(ctx.modules, ctx.moduleFqn, charToByte(src, pos));
+      syncBuffer(src);
+      return ideReferences(ctx.moduleFqn, charToByte(src, pos));
     } catch {
       return null;
     }
@@ -305,7 +316,9 @@
   // Whether the symbol starting at `from` resolves to a definition.
   function resolvesToDefinition(state: EditorState, from: number): boolean {
     try {
-      return !!symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(state.doc.toString(), from));
+      const src = state.doc.toString();
+      syncBuffer(src);
+      return !!ideDefinition(ctx.moduleFqn, charToByte(src, from));
     } catch {
       return false;
     }
@@ -501,8 +514,8 @@
   // document. Each maps to `{ open, close }` editor offsets: `open` on the header
   // line, `close` at the closing brace itself — past the closing line's
   // indentation, so a nested `}` folds flush against the `…` (no trailing space).
-  /** A foldable block, as `{ open, close }` editor offsets. */
-  type FoldBlock = { open: number; close: number };
+  /** A foldable block, as `{ open, close }` editor offsets, tagged with its kind. */
+  type FoldBlock = { open: number; close: number; kind: FoldingRange["kind"] };
   const rangeCache = new WeakMap<Text, FoldBlock[]>();
   function rangesOf(doc: Text): FoldBlock[] {
     let r = rangeCache.get(doc);
@@ -515,6 +528,7 @@
           return {
             open: doc.line(range.startLine + 1).from,
             close: closeLine.from + indent,
+            kind: range.kind,
           };
         });
       rangeCache.set(doc, r);
@@ -527,18 +541,46 @@
     const from = doc.lineAt(range.open).to;
     return from < range.close ? { from, to: range.close } : null;
   }
-  // Fold every block except those whose header line through `}` contains `pos`
-  // (the target and its ancestors). `pos` null collapses everything.
+  // The default fold state: collapse every member impl block, except the one
+  // whose header line through `}` contains `pos` (the navigation target's
+  // member). Structural `node`/`data` bodies and nested `block` scopes are left
+  // expanded — you see the full structure, members collapsed, and expanding a
+  // member reveals its child scopes already open. `pos` null collapses every
+  // member (a freshly opened file with nothing navigated to yet).
   function applyFold(view: EditorView, pos: number | null): void {
     const doc = view.state.doc;
     const effects: StateEffect<{ from: number; to: number }>[] = [];
     for (const r of rangesOf(doc)) {
+      if (r.kind !== "member") continue;
       const span = foldSpan(doc, r);
       if (!span) continue;
       const open = pos != null && pos >= doc.lineAt(r.open).from && pos <= r.close;
       effects.push((open ? unfoldEffect : foldEffect).of(span));
     }
     if (effects.length) view.dispatch({ effects });
+  }
+
+  // The innermost foldable block whose header line through `}` contains `pos` —
+  // the block a right-click at `pos` acts on (any kind, not just members).
+  function blockAt(doc: Text, pos: number): FoldBlock | null {
+    let best: FoldBlock | null = null;
+    for (const r of rangesOf(doc)) {
+      if (pos >= doc.lineAt(r.open).from && pos <= r.close && (!best || r.open > best.open)) best = r;
+    }
+    return best;
+  }
+  // Right-click "Fold"/"Unfold": collapse or expand the block at the click.
+  function foldBlockAt(pos: number): void {
+    if (!editor) return;
+    const block = blockAt(editor.state.doc, pos);
+    const span = block && foldSpan(editor.state.doc, block);
+    if (span) editor.dispatch({ effects: foldEffect.of(span) });
+  }
+  function unfoldBlockAt(pos: number): void {
+    if (!editor) return;
+    const block = blockAt(editor.state.doc, pos);
+    const span = block && foldSpan(editor.state.doc, block);
+    if (span) editor.dispatch({ effects: unfoldEffect.of(span) });
   }
   // The CodeMirror fold service: a block opening on a line is foldable there.
   const pdsFoldService = foldService.of((state: EditorState, lineStart: number, lineEnd: number) => {
@@ -623,9 +665,10 @@
   function symbolTooltip(view: EditorView, pos: number): Tooltip | null {
     const src = view.state.doc.toString();
     const offset = charToByte(src, pos);
-    let result: ReturnType<typeof symbolHover>;
+    let result: ReturnType<typeof ideHover>;
     try {
-      result = symbolHover(ctx.modules, ctx.moduleFqn, offset);
+      syncBuffer(src);
+      result = ideHover(ctx.moduleFqn, offset);
     } catch {
       return null;
     }
@@ -687,18 +730,16 @@
   const historyCompartment = new Compartment();
 
   // Completion candidates from the shared LSP engine (via wasm), scoped to the
-  // trigger before the caret. The active module uses the live document text so a
-  // just-typed `.`/`::` is reflected; other modules come from `ctx.modules`.
-  // Returns `[{ label, kind, detail }]`; an empty list on any wasm error so a
-  // transient parse failure never breaks typing.
+  // trigger before the caret. The active module's live text is pushed first so a
+  // just-typed `.`/`::` is reflected; the other modules resolve from the session's
+  // held workspace. Returns `[{ label, kind, detail }]`; an empty list on any wasm
+  // error so a transient parse failure never breaks typing.
   const completionsAt: CompletionFetcher = (cmContext: CompletionContext) => {
     const src = cmContext.state.doc.toString();
     const offset = charToByte(src, cmContext.pos);
-    const modules: Module[] = ctx.modules.map((m) =>
-      m.fqn === ctx.moduleFqn ? { ...m, source: src } : m,
-    );
     try {
-      return symbolCompletion(modules, ctx.moduleFqn, offset);
+      syncBuffer(src);
+      return ideCompletion(ctx.moduleFqn, offset);
     } catch {
       return [];
     }
@@ -717,7 +758,7 @@
       pseudoscriptCompletion(completionsAt),
       pdsFoldService,
       lintGutter(),
-      pseudoscriptLinter(),
+      pseudoscriptLinter(() => diagnostics),
       hoverTooltip(symbolTooltip, { hoverTime: 600 }),
     ];
   };
@@ -726,6 +767,14 @@
   $effect(() => {
     keybindings.version;
     editor?.dispatch({ effects: keysCompartment.reconfigure(shortcutKeymap()) });
+  });
+
+  // Re-lint when this file's workspace diagnostics change. The linter reads them
+  // through a getter, so a recompute (after an edit elsewhere, or a structural
+  // mount) doesn't re-trigger it on its own.
+  $effect(() => {
+    void diagnostics;
+    if (editor) forceLinting(editor);
   });
 
   // Swap the language bundle when the file type flips (file switch) or the
@@ -813,8 +862,10 @@
               const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
               let fqn: string | null = null;
               if (pos != null) {
+                const src = view.state.doc.toString();
                 try {
-                  fqn = symbolDefinition(ctx.modules, ctx.moduleFqn, charToByte(view.state.doc.toString(), pos));
+                  syncBuffer(src);
+                  fqn = ideDefinition(ctx.moduleFqn, charToByte(src, pos));
                 } catch {
                   fqn = null;
                 }
@@ -832,7 +883,16 @@
           }),
           theme,
           EditorView.updateListener.of((u) => {
-            if (u.docChanged && !applyingExternal) onchange?.(u.state.doc.toString());
+            if (!u.docChanged || applyingExternal) return;
+            onchange?.(u.state.doc.toString());
+            // Open completion at a `.`/`::` boundary: there's no prefix yet for
+            // typing-activation to latch onto, so trigger it explicitly (the
+            // engine offers the member / submodule set there).
+            if (u.transactions.some((t) => t.isUserEvent("input.type"))) {
+              const pos = u.state.selection.main.head;
+              const before = u.state.sliceDoc(Math.max(0, pos - 2), pos);
+              if (before.endsWith(".") || before.endsWith("::")) startCompletion(u.view);
+            }
           }),
         ],
       }),
@@ -961,6 +1021,11 @@
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && findUsages(editor, m.pos))}>Find usages</button>
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => m.fqn && onopensymbol?.(m.fqn))}>Reveal on canvas</button>
       <button role="menuitem" class="cm-ctx-item" disabled={!m.fqn} onclick={() => runEditorAction(() => editor && onrename?.(charToByte(editor.state.doc.toString(), m.pos)))}>Rename symbol…</button>
+      <div class="cm-ctx-sep"></div>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => foldBlockAt(m.pos))}>Fold</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => unfoldBlockAt(m.pos))}>Unfold</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => editor && applyFold(editor, null))}>Fold all members</button>
+      <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => editor && unfoldAll(editor))}>Unfold all</button>
       <div class="cm-ctx-sep"></div>
       <button role="menuitem" class="cm-ctx-item" onclick={() => runEditorAction(() => onformat?.())}>Format document</button>
     </div>

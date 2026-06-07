@@ -17,7 +17,7 @@ Feature: Formatting is idempotent
     Then formatting is idempotent
 
   Scenario: a disclosed container with control flow
-    Given the source "public container M for B {\n public Get(id:number):Result<Info,NotFound>{\nr:Result<Info,NotFound>=Repo.fetch(id)\nif(r.isErr){return Err(r.error)}\nreturn Ok(r.value)\n}\n}"
+    Given the source "public container M for B {\n public Get(id:number):Result<Info,NotFound>{\nr=Result<Info,NotFound> from Repo.fetch(id)\nif(r.isErr){return Err(r.error)}\nreturn Ok(r.value)\n}\n}"
     Then formatting is idempotent
 
   Scenario: a union with inline records
