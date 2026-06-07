@@ -1,3 +1,12 @@
+<script module lang="ts">
+  // Baked layout cache, shared across remounts. The component remounts on every model
+  // edit and theme toggle; the force sim is deterministic, so when the graph topology
+  // (node ids + edges) is unchanged we reuse the settled positions instead of re-running
+  // ~400 ticks on the main thread. Theme toggles and non-structural edits become cheap.
+  type Baked = { x: number; y: number; z: number };
+  let layoutCache: { sig: string; pos: Map<string, Baked> } | null = null;
+</script>
+
 <script lang="ts">
   // A 3D force-directed graph of the workspace, clustered by C4 containment and with
   // relationships *routed through their gateways*. A relationship between two
@@ -26,6 +35,9 @@
   // chain between them and frame it (takes precedence over `focusFqn`).
   // One call in a flow: caller → callee node ids, plus the message label.
   type FlowHop = { from: string; to: string; label: string };
+  // A whole flow: an entry point's call chain as ordered legs, plus the colour keyed
+  // to its start. Each leg is drawn as its own filament in the resting view.
+  type FlowDef = { fqn: string; color: string; hops: FlowHop[] };
   type Props = {
     snapshot: Snapshot;
     onclose?: (() => void) | null;
@@ -34,23 +46,26 @@
     flowSequence?: FlowHop[] | null;
     flowColor?: string | null;
     ondeselect?: (() => void) | null;
-    // Clicking a node → pick it (same effect as picking it in the structure panel).
+    // Every flow in the model, drawn as resting filaments (one per leg, flow-coloured).
+    flows?: FlowDef[] | null;
+    // Clicking a node or a flow filament → pick it (same effect as the structure panel).
     onpick?: ((fqn: string) => void) | null;
   };
-  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null, onpick = null }: Props = $props();
+  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, ondeselect = null, flows = null, onpick = null }: Props = $props();
 
-  // An in-canvas relationship selection (clicking traffic), separate from the prop-
-  // driven flow selection. Set by onMount's handlers.
-  let localSelected = $state(false);
+  // Reset handle into onMount's scene (clears the in-canvas highlight on Deselect/Esc).
   let clearLocal: (() => void) | null = null;
   // Whether a selection is active (drives the Deselect button + background-click reset).
-  const hasSelection = $derived(!!focusFqn || !!(highlightPath?.length) || !!(flowSequence?.length) || localSelected);
+  const hasSelection = $derived(!!focusFqn || !!(highlightPath?.length) || !!(flowSequence?.length));
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let tipEl = $state<HTMLDivElement | null>(null);
   // The selected flow's ordered steps + which one the request is on, for the timeline.
   let flowSteps = $state<{ from: string; to: string; label: string }[]>([]);
   let flowStep = $state(-1);
+  // When a clicked leg carries several flows, the chooser: where to anchor it (canvas
+  // coords) and the flows to pick from. Null = closed.
+  let flowChoice = $state<{ x: number; y: number; items: { fqn: string; name: string; color: string }[] } | null>(null);
 
   // Set by onMount once the scene exists; the effect drives focus/highlight on change.
   let applyFocus: ((fqn: string) => void) | null = null;
@@ -105,41 +120,52 @@
       .filter((e) => e.from !== e.to && ids.has(e.from) && ids.has(e.to))
       .map((e) => ({ from: e.from, to: e.to, traffic: e.traffic, ...routeOf(e.from, e.to, parentOf) }));
 
-    // ---- d3-force-3d layout --------------------------------------------------
-    const nodes = snapshot.nodes.map((n) => ({ id: n.id, level: n.level }));
+    // ---- d3-force-3d layout (baked once; reused across remounts) -------------
     // Containment links cluster: short + strong for container→component, wider for
-    // system→container so component balls don't collide.
+    // system→container so component balls don't collide. Also drives the faint tree.
     const contain = snapshot.nodes
       .filter((n) => n.parent && ids.has(n.parent))
       .map((n) => ({ source: n.parent as string, target: n.id, dist: levelOf.get(n.parent as string) === "system" ? 60 : 16 }));
-    // Relationships pull at their *gateway bridge*, not component-to-component — so
-    // related systems/containers drift together while their internals stay clustered.
-    const relForce = routes
-      .filter((r) => r.bridge && r.bridge[0] !== r.bridge[1])
-      .map((r) => {
-        const [u, v] = r.bridge as [string, string];
-        const lv = (x: string) => levelOf.get(x);
-        const dist = lv(u) === "system" || lv(v) === "system" ? 110 : lv(u) === "container" || lv(v) === "container" ? 45 : 25;
-        return { source: u, target: v, dist };
-      });
-    const sim = forceSimulation(nodes, 3)
-      .force("charge", forceManyBody().strength(-55))
-      .force("contain", forceLink(contain).id((d: { id: string }) => d.id).distance((l: { dist: number }) => l.dist).strength(0.9))
-      .force("link", forceLink(relForce).id((d: { id: string }) => d.id).distance((l: { dist: number }) => l.dist).strength(0.12))
-      .force("collide", forceCollide((d: { level: string }) => (SIZE[d.level] ?? 2) + 1.5))
-      .force("x", forceX().strength(0.04))
-      .force("y", forceY().strength(0.04))
-      .force("z", forceZ().strength(0.04))
-      .force("center", forceCenter())
-      .stop();
-    for (let i = 0; i < 400; i++) sim.tick();
-    const pos = new Map<string, THREE.Vector3>(
-      (nodes as unknown as { id: string; x: number; y: number; z: number }[]).map((n) => [n.id, new THREE.Vector3(n.x, n.y, n.z)]),
-    );
+    // The graph topology — the only thing the layout depends on. Same signature → the
+    // cached positions are still valid, so skip the (deterministic) force sim entirely.
+    const sig = snapshot.nodes.map((n) => n.id).join(",") + "|" + snapshot.edges.map((e) => e.from + ">" + e.to).join(",");
+    const pos = new Map<string, THREE.Vector3>();
+    if (layoutCache && layoutCache.sig === sig) {
+      for (const [id, p] of layoutCache.pos) pos.set(id, new THREE.Vector3(p.x, p.y, p.z));
+    } else {
+      const nodes = snapshot.nodes.map((n) => ({ id: n.id, level: n.level }));
+      // Relationships pull at their *gateway bridge*, not component-to-component — so
+      // related systems/containers drift together while their internals stay clustered.
+      const relForce = routes
+        .filter((r) => r.bridge && r.bridge[0] !== r.bridge[1])
+        .map((r) => {
+          const [u, v] = r.bridge as [string, string];
+          const lv = (x: string) => levelOf.get(x);
+          const dist = lv(u) === "system" || lv(v) === "system" ? 110 : lv(u) === "container" || lv(v) === "container" ? 45 : 25;
+          return { source: u, target: v, dist };
+        });
+      const sim = forceSimulation(nodes, 3)
+        .force("charge", forceManyBody().strength(-55))
+        .force("contain", forceLink(contain).id((d: { id: string }) => d.id).distance((l: { dist: number }) => l.dist).strength(0.9))
+        .force("link", forceLink(relForce).id((d: { id: string }) => d.id).distance((l: { dist: number }) => l.dist).strength(0.12))
+        .force("collide", forceCollide((d: { level: string }) => (SIZE[d.level] ?? 2) + 1.5))
+        .force("x", forceX().strength(0.04))
+        .force("y", forceY().strength(0.04))
+        .force("z", forceZ().strength(0.04))
+        .force("center", forceCenter())
+        .stop();
+      for (let i = 0; i < 400; i++) sim.tick();
+      const baked = new Map<string, Baked>();
+      for (const n of nodes as unknown as { id: string; x: number; y: number; z: number }[]) {
+        baked.set(n.id, { x: n.x, y: n.y, z: n.z });
+        pos.set(n.id, new THREE.Vector3(n.x, n.y, n.z));
+      }
+      layoutCache = { sig, pos: baked };
+    }
 
     // ---- Three.js render ----------------------------------------------------
     const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); // cap retina cost (4x→2.25x pixels)
     renderer.setSize(W(), H());
     const scene = new THREE.Scene();
     scene.background = bgColor;
@@ -149,26 +175,36 @@
     scene.add(new THREE.AmbientLight(0xffffff, 0.75));
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.85); keyLight.position.set(1, 1, 1); scene.add(keyLight);
 
-    // Nodes.
-    const sphere = new THREE.SphereGeometry(1, 20, 20);
-    const pickNodes: THREE.Mesh[] = [];
-    const nodeMats: { id: string; mat: THREE.MeshStandardMaterial; base: THREE.Color }[] = [];
-    for (const n of snapshot.nodes) {
-      const p = pos.get(n.id); if (!p) continue;
-      const base = COLOR[n.level] ?? fallbackColor;
-      const mat = new THREE.MeshStandardMaterial({ color: base, roughness: 0.5, metalness: 0.1, transparent: true });
-      const mesh = new THREE.Mesh(sphere, mat);
-      mesh.position.copy(p); mesh.scale.setScalar(SIZE[n.level] ?? 2.2); (mesh as THREE.Object3D).userData = n;
-      scene.add(mesh); pickNodes.push(mesh); nodeMats.push({ id: n.id, mat, base });
+    // Nodes: every placed sphere in ONE InstancedMesh — a single draw call for the lot
+    // (vs. one per node). Selection dims/brightens via per-instance colour, not opacity,
+    // so the mesh stays opaque (no per-object transparency sort).
+    const placed = snapshot.nodes.filter((n) => pos.has(n.id));
+    const nodeIdx = new Map(placed.map((n, i) => [n.id, i] as const));
+    const baseCol = placed.map((n) => (COLOR[n.level] ?? fallbackColor).clone());
+    const nodeGeo = new THREE.SphereGeometry(1, 12, 8);
+    const nodeMat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.15 });
+    const nodes3d = new THREE.InstancedMesh(nodeGeo, nodeMat, placed.length);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < placed.length; i++) {
+      const n = placed[i];
+      dummy.position.copy(pos.get(n.id)!);
+      dummy.scale.setScalar(SIZE[n.level] ?? 2.2);
+      dummy.updateMatrix();
+      nodes3d.setMatrixAt(i, dummy.matrix);
+      nodes3d.setColorAt(i, baseCol[i]);
     }
-    // Brighten the nodes in `set`, dim the rest; `null` restores all.
+    nodes3d.instanceMatrix.needsUpdate = true;
+    if (nodes3d.instanceColor) nodes3d.instanceColor.needsUpdate = true;
+    scene.add(nodes3d);
+    // Brighten the nodes in `set`, darken the rest; `null` restores all. Colour-only.
+    const dimC = new THREE.Color();
     const paintNodes = (set: Set<string> | null) => {
-      for (const e of nodeMats) {
-        const on = !set || set.has(e.id);
-        e.mat.opacity = set && !on ? 0.12 : 1;
-        e.mat.emissive.copy(set && on ? e.base : new THREE.Color(0x000000));
-        e.mat.emissiveIntensity = set && on ? 0.6 : 0;
+      for (let i = 0; i < placed.length; i++) {
+        const on = !set || set.has(placed[i].id);
+        dimC.copy(baseCol[i]); if (set && !on) dimC.multiplyScalar(0.18);
+        nodes3d.setColorAt(i, dimC);
       }
+      if (nodes3d.instanceColor) nodes3d.instanceColor.needsUpdate = true;
     };
 
     // Labels on every node, sized relative to the node — big suns read large, small
@@ -213,33 +249,17 @@
     // Two DIFFERENT things, drawn separately:
     //  • LAYOUT relationships — the structural edges routed up through the containment
     //    *parent pathway*. Pure layout: plain, faint, overlap is fine.
-    //  • DATA FLOWS — the actual flows running directly between two spheres (not routed
-    //    through the parent), each its own colour, with beads of light tracking along.
-    const ARC_SAMPLES = 22;
-    const UP = new THREE.Vector3(0, 1, 0), ALT = new THREE.Vector3(1, 0, 0);
-    const ftan = new THREE.Vector3(), frt = new THREE.Vector3(), fup = new THREE.Vector3();
+    //  • DATA FLOWS — the actual flows running directly between two spheres, each leg a
+    //    straight line, with beads of light tracking along.
     // The parent-pathway polyline (gateway stops). Plain — no offset, overlap allowed.
     const parentLine = (ids: string[]): THREE.Vector3[] =>
       ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
-    // A data-flow filament: a direct, gently-bowed arc straight from source to dest.
-    const dataArc = (fromId: string, toId: string): THREE.Vector3[] => {
+    // A straight segment between two nodes — endpoints only. Used for both the resting
+    // leg filaments and the selected flow's bus route, so flows read dead-straight.
+    const straight = (fromId: string, toId: string): THREE.Vector3[] => {
       const a = pos.get(fromId), b = pos.get(toId);
-      if (!a || !b) return [];
-      ftan.subVectors(b, a); const len = ftan.length();
-      if (len < 1e-3) return [];
-      ftan.normalize();
-      frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
-      fup.crossVectors(frt, ftan).normalize();
-      const bow = Math.min(len * 0.12, 14); // gentle arc so flows between the same pair don't sit dead-straight
-      const pts: THREE.Vector3[] = [];
-      for (let k = 0; k <= ARC_SAMPLES; k++) {
-        const t = k / ARC_SAMPLES;
-        pts.push(new THREE.Vector3().lerpVectors(a, b, t).addScaledVector(fup, Math.sin(Math.PI * t) * bow));
-      }
-      return pts;
+      return a && b ? [a.clone(), b.clone()] : [];
     };
-    // Every flow (relationship) its own colour, keyed by the directed pair.
-    const relColorOf = (from: string, to: string) => new THREE.Color(flowHexOf(`${from}>${to}`));
 
     // A polyline with cumulative segment lengths, so a fraction `t` can be resolved to a
     // point along it in constant time (see `along`). `total` is floored at 1 to keep
@@ -259,40 +279,58 @@
         new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.16 })));
     }
 
-    // Data flows: the direct filament you hover/click to trace, with beads of light.
-    type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; from: string; to: string };
-    const rels: Rel[] = [];
+    // Data flows: one filament per leg -- a straight line between two nodes, shared by
+    // every flow that crosses it. The line is neutral; the TRAFFIC carries the colour:
+    // each flow on the leg streams beads in its own hue, so a leg used by five flows is
+    // one line with five colours of dots. Click a leg to choose which flow to open.
+    const flowDefs = flows ?? [];
+    type LegFlow = { fqn: string; name: string; hex: string; color: THREE.Color };
+    type Filament = Poly & { from: string; to: string; legFlows: LegFlow[]; line: THREE.Line; mat: THREE.LineBasicMaterial };
+    const filaments: Filament[] = [];
     const pickLines: THREE.Line[] = [];
-    type FlowRoute = Poly & { from: string; to: string; speed: number; color: THREE.Color };
-    const flowRoutes: FlowRoute[] = [];
-    const particles: { route: number; off: number }[] = [];
-    for (const r of routes) {
-      const pts = dataArc(r.from, r.to);
-      if (pts.length < 2) continue;
-      const color = relColorOf(r.from, r.to);
-      const mat = new THREE.LineBasicMaterial({ color: color.clone(), transparent: true, opacity: REL_OPACITY });
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
-      (line as THREE.Object3D).userData = { rel: rels.length }; line.renderOrder = 1;
-      scene.add(line); pickLines.push(line);
-      rels.push({ line, mat, base: color.clone(), from: r.from, to: r.to });
-      flowRoutes.push({ from: r.from, to: r.to, ...polyline(pts), speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
-      const count = Math.min(2 + r.traffic, 10);
-      for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
-    }
-    // Does relationship `rl` belong to node `id` — is `id` an endpoint or an ancestor
-    // (container/system) of one? Lets hovering a hub light all relationships under it.
-    const relUnder = (rl: Rel, id: string) => anc(rl.from).includes(id) || anc(rl.to).includes(id);
-    // Each bead is a comet: a bright lead point + a few fading tail points behind it.
-    const TRAIL = 6, TRAIL_GAP = 0.012; // tail length (points) and phase spacing
-    const fade = (k: number) => (1 - k / TRAIL) ** 1.5;
-    const flowArr = new Float32Array(particles.length * TRAIL * 3);
-    const flowColArr = new Float32Array(particles.length * TRAIL * 3);
-    for (let i = 0; i < particles.length; i++) {
-      const c = flowRoutes[particles[i].route].color;
-      for (let k = 0; k < TRAIL; k++) {
-        const o = (i * TRAIL + k) * 3, f = fade(k);
-        flowColArr[o] = c.r * f; flowColArr[o + 1] = c.g * f; flowColArr[o + 2] = c.b * f;
+    const legByKey = new Map<string, number>();
+    const particles: { fil: number; off: number; color: THREE.Color }[] = [];
+    const BEADS = 2; // beads per flow on a leg
+    // 1. One straight filament per directed leg; record which flows run over it.
+    for (const fl of flowDefs) {
+      const color = new THREE.Color(fl.color);
+      const name = shortName(fl.fqn);
+      for (const h of fl.hops) {
+        if (h.from === h.to || !pos.has(h.from) || !pos.has(h.to)) continue;
+        const key = h.from + ">" + h.to;
+        let fi = legByKey.get(key);
+        if (fi === undefined) {
+          const pts = straight(h.from, h.to); // straight line
+          const mat = new THREE.LineBasicMaterial({ color: relColor, transparent: true, opacity: REL_OPACITY });
+          const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+          (line as THREE.Object3D).userData = { fil: filaments.length }; line.renderOrder = 1;
+          scene.add(line); pickLines.push(line);
+          fi = filaments.length;
+          filaments.push({ from: h.from, to: h.to, legFlows: [], line, mat, ...polyline(pts) });
+          legByKey.set(key, fi);
+        }
+        const leg = filaments[fi];
+        if (!leg.legFlows.some((f) => f.fqn === fl.fqn)) leg.legFlows.push({ fqn: fl.fqn, name, hex: fl.color, color });
       }
+    }
+    // 2. Beads: per leg, every flow streams its own colour, phase-staggered so the hues
+    //    interleave into one multi-coloured stream.
+    for (let fi = 0; fi < filaments.length; fi++) {
+      const fs = filaments[fi].legFlows, F = fs.length;
+      for (let j = 0; j < F; j++)
+        for (let i = 0; i < BEADS; i++) particles.push({ fil: fi, off: (i + j / F) / BEADS, color: fs[j].color });
+    }
+    // Does filament `f` touch node `id` — is `id` an endpoint or an ancestor (its
+    // container / system) of one? Lets hovering a hub light every flow under it.
+    const filUnder = (f: Filament, id: string) => anc(f.from).includes(id) || anc(f.to).includes(id);
+    // One round dot per bead (no trail — cheaper, and reads cleanly on a busy graph).
+    const REST_SPEED = 0.06; // one gentle constant bead speed along every filament
+    let beadsOn = true; // resting beads are hidden while a flow is selected — skip their per-frame work
+    const flowArr = new Float32Array(particles.length * 3);
+    const flowColArr = new Float32Array(particles.length * 3);
+    for (let i = 0; i < particles.length; i++) {
+      const c = particles[i].color, o = i * 3; // each bead carries its flow's colour
+      flowColArr[o] = c.r; flowColArr[o + 1] = c.g; flowColArr[o + 2] = c.b;
     }
     const flowGeo = new THREE.BufferGeometry();
     flowGeo.setAttribute("position", new THREE.BufferAttribute(flowArr, 3));
@@ -316,17 +354,18 @@
       const seg = cum[k + 1] - cum[k] || 1;
       out.copy(pts[k]).lerp(pts[k + 1], (d - cum[k]) / seg);
     };
-    // Show only the traffic on routes matching `keep` (a selection); `null` shows all.
-    // Hidden particles get colour (0,0,0) — invisible under additive blending.
-    const filterFlow = (keep: ((fr: FlowRoute) => boolean) | null) => {
+    // Show only the beads on filaments matching `keep` (a selection); `null` shows all.
+    // Hidden beads get colour (0,0,0) — invisible under additive blending. `beadsOn`
+    // lets the frame loop skip moving beads no one can see.
+    const filterFlow = (keep: ((f: Filament) => boolean) | null) => {
+      let any = false;
       for (let i = 0; i < particles.length; i++) {
-        const fr = flowRoutes[particles[i].route];
-        const on = !keep || keep(fr);
-        for (let k = 0; k < TRAIL; k++) {
-          const o = (i * TRAIL + k) * 3, f = on ? fade(k) : 0;
-          flowColArr[o] = fr.color.r * f; flowColArr[o + 1] = fr.color.g * f; flowColArr[o + 2] = fr.color.b * f;
-        }
+        const c = particles[i].color, o = i * 3;
+        const on = !keep || keep(filaments[particles[i].fil]);
+        if (on) any = true;
+        flowColArr[o] = on ? c.r : 0; flowColArr[o + 1] = on ? c.g : 0; flowColArr[o + 2] = on ? c.b : 0;
       }
+      beadsOn = any;
       flowGeo.attributes.color.needsUpdate = true;
     };
 
@@ -359,10 +398,10 @@
         stepRoutes = []; current = null; streamGeo.setDrawRange(0, 0); flowSteps = []; flowStep = -1;
         return;
       }
-      flowColor = color ? (typeof color === "string" ? new THREE.Color(color) : color) : relColorOf(hops[0].from, hops[hops.length - 1].to); // every flow its own colour
+      flowColor = color ? (typeof color === "string" ? new THREE.Color(color) : color) : new THREE.Color(flowHexOf(`${hops[0].from}>${hops[hops.length - 1].to}`)); // every flow its own colour
       streamMat.color.copy(flowColor);
       // One direct arc per call step (caller → callee) — the real flow path.
-      stepRoutes = hops.map((h) => polyline(dataArc(h.from, h.to))); // direct data-flow arc per leg
+      stepRoutes = hops.map((h) => polyline(straight(h.from, h.to))); // straight leg per hop
       // Draw every leg of the route (the bus line).
       for (const sr of stepRoutes) {
         if (sr.pts.length < 2) { busSegs.push({ line: new THREE.Line(), mat: new THREE.LineBasicMaterial() }); continue; }
@@ -392,14 +431,15 @@
     };
     popToStep = doStep;
 
-    // Highlight every relationship matching `match` (hovered line, or any chain through
-    // a hovered hub); dim the rest. `null` resets to the resting state.
-    const setHighlight = (match: ((r: Rel) => boolean) | null) => {
-      for (const r of rels) {
-        const on = match?.(r) ?? false;
-        if (on) { r.mat.color.copy(hotColor); r.mat.opacity = 0.95; r.line.renderOrder = 1; }
-        else if (match) { r.mat.color.copy(r.base); r.mat.opacity = 0.05; r.line.renderOrder = 0; }
-        else { r.mat.color.copy(r.base); r.mat.opacity = REL_OPACITY; r.line.renderOrder = 0; }
+    // Highlight every leg matching `match` (the hovered leg, or every leg through a
+    // hovered hub); dim the rest. The line is neutral — its colour brightens, the beads
+    // keep their per-flow hues. `null` resets to resting.
+    const setHighlight = (match: ((f: Filament) => boolean) | null) => {
+      for (const f of filaments) {
+        const on = match?.(f) ?? false;
+        if (on) { f.mat.color.copy(hotColor); f.mat.opacity = 0.9; f.line.renderOrder = 1; }
+        else if (match) { f.mat.color.copy(relColor); f.mat.opacity = 0.05; f.line.renderOrder = 0; }
+        else { f.mat.color.copy(relColor); f.mat.opacity = REL_OPACITY; f.line.renderOrder = 0; }
       }
     };
 
@@ -447,7 +487,7 @@
 
     // The persistent (selection-driven) highlight; hover overrides it transiently and
     // falls back to it when the pointer leaves a target.
-    let resting: ((r: Rel) => boolean) | null = null;
+    let resting: ((f: Filament) => boolean) | null = null;
 
     // Focus: fly to a node (keeping the current view direction) and light its chains.
     // Driven by the `focusFqn` prop via `applyFocus` — used by "Show in 3D graph".
@@ -460,12 +500,12 @@
       while (id && !pos.has(id)) { const i = id.lastIndexOf("::"); id = i < 0 ? "" : id.slice(0, i); }
       const p = id ? pos.get(id) : undefined; if (!p) return;
       camFocus = { target: p.clone(), dist: FOCUS_DIST[levelOf.get(id) ?? "component"] ?? 60 };
-      resting = (rl) => relUnder(rl, id);
+      resting = (f) => filUnder(f, id);
       setHighlight(resting);
       const nodeSet = new Set([id]);
       for (const a of anc(id)) if (pos.has(a)) nodeSet.add(a);
       paintNodes(nodeSet);
-      filterFlow((fr) => fr.from === id || fr.to === id);
+      filterFlow((f) => filUnder(f, id));
     };
     applyFocus = focusNode;
 
@@ -482,7 +522,7 @@
       resting = () => false; // dim the chart; the bus route carries the highlight
       setHighlight(resting);
       paintNodes(nodeSet);
-      filterFlow((fr) => set.has(fr.from) && set.has(fr.to));
+      filterFlow((f) => set.has(f.from) && set.has(f.to));
       const fbox = new THREE.Box3();
       for (const id of nodeSet) fbox.expandByPoint(pos.get(id)!);
       const c = fbox.getCenter(new THREE.Vector3()), s = fbox.getSize(new THREE.Vector3());
@@ -491,22 +531,8 @@
     applyPath = focusPath;
     applyFlowSeq = setFlowStream;
 
-    // Click a relationship (its traffic) → reveal its routed path as a bus route: the
-    // full journey through the gateways, each segment a leg, the current leg lit, with
-    // the request bead and the step timeline. Dims the rest of the chart.
-    const selectRelationship = (rl: Rel) => {
-      if (!pos.has(rl.from) || !pos.has(rl.to)) return;
-      resting = () => false; setHighlight(resting);    // dim the chart
-      paintNodes(new Set([rl.from, rl.to]));           // light the two ends
-      const fbox = new THREE.Box3().expandByPoint(pos.get(rl.from)!).expandByPoint(pos.get(rl.to)!);
-      const c = fbox.getCenter(new THREE.Vector3()), s = fbox.getSize(new THREE.Vector3());
-      camFocus = { target: c, dist: Math.max(70, Math.max(s.x, s.y, s.z) * 1.4 + 50) };
-      // The real flow of this relationship: a single direct leg, in its own colour.
-      setFlowStream([{ from: rl.from, to: rl.to, label: shortName(rl.to) }], rl.base);
-      localSelected = true;
-    };
     // Clear any selection back to the resting chart.
-    const clearSelection = () => { focusPath(null); setFlowStream(null); localSelected = false; };
+    const clearSelection = () => { focusPath(null); setFlowStream(null); flowChoice = null; };
     clearLocal = clearSelection;
 
     if (highlightPath) focusPath(highlightPath);
@@ -527,29 +553,31 @@
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       ray.setFromCamera(ndc, camera);
-      // A hub (node) first: light every relationship it owns (itself or a descendant).
-      const nodeHit = ray.intersectObjects(pickNodes, false)[0];
-      if (nodeHit) {
-        const n = (nodeHit.object as THREE.Object3D).userData as Node;
-        setHighlight((rl) => relUnder(rl, n.id));
-        const through = rels.filter((rl) => relUnder(rl, n.id)).length;
-        showTip(e.clientX, e.clientY, `<b>${shortName(n.id)}</b><em>${n.level}${through ? ` · ${through} relationship${through === 1 ? "" : "s"}` : ""}</em>`);
+      // A hub (node) first: light every leg through it (itself or a descendant).
+      const nodeHit = ray.intersectObject(nodes3d, false)[0];
+      if (nodeHit && nodeHit.instanceId != null) {
+        const n = placed[nodeHit.instanceId];
+        setHighlight((f) => filUnder(f, n.id));
+        const through = new Set(filaments.filter((f) => filUnder(f, n.id)).flatMap((f) => f.legFlows.map((x) => x.fqn))).size;
+        showTip(e.clientX, e.clientY, `<b>${shortName(n.id)}</b><em>${n.level}${through ? ` · ${through} flow${through === 1 ? "" : "s"}` : ""}</em>`);
         cv.style.cursor = "pointer"; return;
       }
+      // A leg: light it and say how many flows it carries (click to choose / open).
       const lineHit = ray.intersectObjects(pickLines, false)[0];
       if (lineHit) {
-        const idx = ((lineHit.object as THREE.Object3D).userData as { rel: number }).rel;
-        const rl = rels[idx];
-        setHighlight((x) => x === rl);
-        showTip(e.clientX, e.clientY, `<b>${shortName(rl.from)} → ${shortName(rl.to)}</b>`);
+        const fil = filaments[((lineHit.object as THREE.Object3D).userData as { fil: number }).fil];
+        setHighlight((f) => f === fil);
+        const n = fil.legFlows.length;
+        showTip(e.clientX, e.clientY, `<b>${shortName(fil.from)} → ${shortName(fil.to)}</b><em>${n} flow${n === 1 ? "" : "s"} · click to ${n === 1 ? "open" : "choose"}</em>`);
         cv.style.cursor = "pointer"; return;
       }
       setHighlight(resting); tip.style.opacity = "0"; cv.style.cursor = "grab";
     };
     cv.addEventListener("pointermove", onMove);
 
-    // A click (not a drag): on a node → pick it (same as the structure panel); on a
-    // relationship → reveal its real-flow route; on empty space → clear the chart.
+    // A click (not a drag): on a node → pick it (same as the structure panel); on a leg
+    // → open its flow, or offer a choice when several flows share the leg; on empty
+    // space → dismiss any open chooser, else clear the chart.
     let down = { x: 0, y: 0 };
     const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
     const onUp = (e: PointerEvent) => {
@@ -558,16 +586,20 @@
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
       ray.setFromCamera(ndc, camera);
-      const nodeHit = ray.intersectObjects(pickNodes, false)[0];
-      if (nodeHit) {
-        onpick?.(((nodeHit.object as THREE.Object3D).userData as Node).id);
+      const nodeHit = ray.intersectObject(nodes3d, false)[0];
+      if (nodeHit && nodeHit.instanceId != null) {
+        flowChoice = null;
+        onpick?.(placed[nodeHit.instanceId].id);
         return;
       }
       const lineHit = ray.intersectObjects(pickLines, false)[0];
       if (lineHit) {
-        selectRelationship(rels[((lineHit.object as THREE.Object3D).userData as { rel: number }).rel]);
+        const fil = filaments[((lineHit.object as THREE.Object3D).userData as { fil: number }).fil];
+        if (fil.legFlows.length === 1) { flowChoice = null; onpick?.(fil.legFlows[0].fqn); }
+        else flowChoice = { x: e.clientX - r.left, y: e.clientY - r.top, items: fil.legFlows.map((f) => ({ fqn: f.fqn, name: f.name, color: f.hex })) };
         return;
       }
+      if (flowChoice) { flowChoice = null; return; } // a click-away dismisses the chooser
       clearSelection(); ondeselect?.();
     };
     cv.addEventListener("pointerdown", onDown);
@@ -590,20 +622,19 @@
         camera.position.copy(controls.target).add(offset.setLength(camFocus.dist));
         if (controls.target.distanceTo(camFocus.target) < 0.4) camFocus = null;
       }
-      // Stream the traffic comets along their routes (caller → callee): each is a lead
-      // dot plus a short fading tail trailing behind it.
+      // Stream the traffic beads along their legs (caller → callee), one dot each. Skip
+      // it entirely while a flow is selected (resting beads are hidden then).
       flowT += dt;
-      for (let i = 0; i < particles.length; i++) {
-        const p = particles[i], fr = flowRoutes[p.route];
-        const lead = flowT * fr.speed + p.off;
-        for (let k = 0; k < TRAIL; k++) {
-          let t = (lead - k * TRAIL_GAP) % 1; if (t < 0) t += 1;
-          along(fr, t, flowTmp);
-          const o = (i * TRAIL + k) * 3;
+      if (beadsOn) {
+        for (let i = 0; i < particles.length; i++) {
+          const p = particles[i];
+          let t = (flowT * REST_SPEED + p.off) % 1; if (t < 0) t += 1;
+          along(filaments[p.fil], t, flowTmp);
+          const o = i * 3;
           flowArr[o] = flowTmp.x; flowArr[o + 1] = flowTmp.y; flowArr[o + 2] = flowTmp.z;
         }
+        flowGeo.attributes.position.needsUpdate = true;
       }
-      flowGeo.attributes.position.needsUpdate = true;
       flowMat.opacity = 0.7 + 0.25 * Math.sin(flowT * 2.2); // gentle volume-agnostic pulse
       // Traffic flows continuously along the current step's routed segment (manual
       // control via `flowStep`): a spaced string of dots looping caller → callee.
@@ -632,14 +663,27 @@
       removeEventListener("resize", resize); removeEventListener("keydown", onKey);
       // Free GPU resources — renderer.dispose() doesn't reclaim user geometries /
       // materials / textures, and this component remounts on theme + workspace changes.
+      // Collect each resource ONCE (a texture shared by two materials, e.g. the bead
+      // sprite, must not be disposed twice), then free. Sets dedupe; the InstancedMesh's
+      // instance buffers need its own dispose(); live bus-route segments are freed first.
+      clearBus();
+      const geos = new Set<THREE.BufferGeometry>();
+      const mats = new Set<THREE.Material>();
+      const texs = new Set<THREE.Texture>();
       scene.traverse((o) => {
-        const obj = o as THREE.Mesh & { geometry?: THREE.BufferGeometry; material?: THREE.Material | THREE.Material[] };
-        obj.geometry?.dispose();
-        for (const m of obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : []) {
-          (m as THREE.Material & { map?: THREE.Texture }).map?.dispose();
-          m.dispose();
+        const obj = o as THREE.Mesh;
+        if (obj.geometry) geos.add(obj.geometry);
+        const m = obj.material;
+        if (m) for (const mm of Array.isArray(m) ? m : [m]) {
+          mats.add(mm);
+          const map = (mm as THREE.Material & { map?: THREE.Texture | null }).map;
+          if (map) texs.add(map);
         }
       });
+      texs.forEach((t) => t.dispose());
+      mats.forEach((m) => m.dispose());
+      geos.forEach((g) => g.dispose());
+      nodes3d.dispose(); // frees instanceMatrix + instanceColor
       controls.dispose(); renderer.dispose();
     };
   });
@@ -652,8 +696,18 @@
     {#if onclose}<button onclick={() => onclose?.()}>✕ Close (Esc)</button>{/if}
   </div>
   <div class="hint">
-    {snapshot.nodes.length} nodes · {snapshot.edges.length} relations · <b>hover</b> a relationship or hub to trace it · <b>drag</b> orbit · <b>scroll</b> zoom
+    {snapshot.nodes.length} nodes · {flows?.length ?? 0} flows · <b>hover</b> a leg · <b>click</b> to open a flow · <b>drag</b> orbit · <b>scroll</b> zoom
   </div>
+  {#if flowChoice}
+    <div class="flow-choice" style="left:{flowChoice.x}px; top:{flowChoice.y}px">
+      <div class="fc-head">Open flow</div>
+      {#each flowChoice.items as f (f.fqn)}
+        <button onclick={() => { onpick?.(f.fqn); flowChoice = null; }}>
+          <i style="background:{f.color}"></i>{f.name}
+        </button>
+      {/each}
+    </div>
+  {/if}
   <div class="legend">
     <span><i style="background:var(--k-system)"></i>system</span>
     <span><i style="background:var(--k-container)"></i>container</span>
@@ -695,6 +749,21 @@
   .legend { position: absolute; left: 18px; bottom: 16px; display: flex; gap: 14px; font: 12px/1.5 var(--font-sans); color: var(--ink-soft); pointer-events: none; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
+  /* The flow chooser: anchored where you clicked a leg carrying several flows. */
+  .flow-choice {
+    position: absolute; z-index: 8; min-width: 150px; max-height: 50%; overflow-y: auto;
+    padding: 5px; border-radius: 9px; transform: translate(8px, 8px);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    border: 1px solid var(--line); box-shadow: 0 8px 28px #0007;
+  }
+  .flow-choice .fc-head { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); padding: 3px 7px 5px; }
+  .flow-choice button {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    padding: 5px 7px; border: 0; border-radius: 6px; background: none; cursor: pointer;
+    font: 12px/1.4 var(--font-sans); color: var(--ink-soft);
+  }
+  .flow-choice button:hover { background: var(--surface-3); color: var(--ink); }
+  .flow-choice i { width: 9px; height: 9px; flex: none; border-radius: 50%; box-shadow: 0 0 7px currentColor; }
   .timeline {
     position: absolute; right: 16px; bottom: 16px; width: 260px; max-height: 46%;
     overflow-y: auto; padding: 10px 12px; border-radius: 10px;

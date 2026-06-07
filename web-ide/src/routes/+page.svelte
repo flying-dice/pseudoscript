@@ -47,6 +47,7 @@
   import BottomDock from "$lib/components/shell/BottomDock.svelte";
   import Splitter from "$lib/components/shell/Splitter.svelte";
   import StatusBar from "$lib/components/shell/StatusBar.svelte";
+  import PerfMeter from "$lib/components/shell/PerfMeter.svelte";
   import CommandPalette from "$lib/components/shell/CommandPalette.svelte";
   import TabBar from "$lib/components/shell/TabBar.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
@@ -494,6 +495,24 @@
     walk(scene.items ?? []);
     return { participants, hops };
   }
+
+  // Every flow in the model, for the 3D view's resting filaments: each entry point's
+  // whole call chain, coloured by its start. Entry points are the callables that begin
+  // a flow — a person's actions, plus anything explicitly triggered (scheduled / http /
+  // event). Each becomes one or more stacked filaments via its hops.
+  const spaceFlows = $derived.by(() => {
+    if (selection.view !== "space" || !spaceSnapshot) return [];
+    const personFqns = new Set(nodes.filter((n) => n.kind === "person").map((n) => n.fqn));
+    const out: { fqn: string; color: string; hops: { from: string; to: string; label: string }[] }[] = [];
+    for (const n of nodes) {
+      if (n.kind !== "callable") continue;
+      const isEntry = n.triggered || (n.parent != null && personFqns.has(n.parent));
+      if (!isEntry) continue;
+      const flow = flowOf(n.fqn);
+      if (flow && flow.hops.length) out.push({ fqn: n.fqn, color: flowColor(n.fqn), hops: flow.hops });
+    }
+    return out;
+  });
 
   // Entering edit mode freezes the current arrangement: every node is pinned at the
   // cell it currently occupies, so dragging one box leaves the rest exactly where
@@ -2666,7 +2685,7 @@ show('index.html');
             <div class="layer space-layer">
               {#if spaceSnapshot}
                 {#key spaceKey}
-                  <ForceGraph snapshot={spaceSnapshot} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} ondeselect={resetSpace} onpick={openUniverse} />
+                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} ondeselect={resetSpace} onpick={openUniverse} />
                 {/key}
               {:else}
                 <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>
@@ -2725,6 +2744,7 @@ show('index.html');
 
   <StatusBar>
     {#if ready && workspace}{@render breadcrumb()}{/if}
+    <PerfMeter />
   </StatusBar>
 </div>
 
