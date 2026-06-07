@@ -234,40 +234,57 @@
     treeGeo.setAttribute("position", new THREE.Float32BufferAttribute(treePos, 3));
     scene.add(new THREE.LineSegments(treeGeo, new THREE.LineBasicMaterial({ color: treeColor, transparent: true, opacity: 0.14 })));
 
-    // One routed polyline per relationship — the thing you hover to trace end-to-end.
-    type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; path: string[]; pathSet: Set<string>; from: string; to: string };
+    // ---- filaments ---------------------------------------------------------
+    // Each relationship is its own smooth filament. Filaments are laterally offset by
+    // a per-strand amount (a packed disc cross-section) so that strands sharing a
+    // gateway run *parallel* and stacked, like the fibres in an optic cable — never
+    // overlapping. Built once from the (fixed) node positions.
+    const FIL_GAP = 0.85; // spacing between strands in the bundle cross-section
+    const filOffset = (i: number): [number, number] => {
+      const a = i * 2.39996323, r = FIL_GAP * Math.sqrt(i + 0.5); // sunflower packing
+      return [Math.cos(a) * r, Math.sin(a) * r];
+    };
+    const UP = new THREE.Vector3(0, 1, 0), ALT = new THREE.Vector3(1, 0, 0);
+    const ftan = new THREE.Vector3(), frt = new THREE.Vector3(), fup = new THREE.Vector3();
+    const buildFilament = (ids: string[], idx: number): THREE.Vector3[] => {
+      const base = ids.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
+      if (base.length < 2) return [];
+      const [ox, oy] = filOffset(idx);
+      const off = base.map((p, j) => {
+        const prev = base[Math.max(0, j - 1)], next = base[Math.min(base.length - 1, j + 1)];
+        ftan.subVectors(next, prev); if (ftan.lengthSq() < 1e-9) ftan.set(0, 0, 1); ftan.normalize();
+        frt.crossVectors(ftan, Math.abs(ftan.y) > 0.9 ? ALT : UP).normalize();
+        fup.crossVectors(frt, ftan).normalize();
+        return p.clone().addScaledVector(frt, ox).addScaledVector(fup, oy);
+      });
+      // Smooth the offset polyline into a fibre — rounds the gateway corners.
+      return new THREE.CatmullRomCurve3(off).getPoints(Math.max(16, (off.length - 1) * 8));
+    };
+
+    // The filament line you hover to trace, and the beads-of-light flow that travels
+    // it (caller → callee), coloured per destination, denser/faster with traffic.
+    type Rel = { line: THREE.Line; mat: THREE.LineBasicMaterial; base: THREE.Color; path: string[]; pathSet: Set<string>; from: string; to: string };
     const rels: Rel[] = [];
     const pickLines: THREE.Line[] = [];
-    for (const r of routes) {
-      const pts = r.path.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
-      if (pts.length < 2) continue;
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      const mat = new THREE.LineBasicMaterial({ color: relColor, transparent: true, opacity: REL_OPACITY });
-      const line = new THREE.Line(geo, mat);
-      (line as THREE.Object3D).userData = { rel: rels.length };
-      scene.add(line); pickLines.push(line);
-      rels.push({ line, mat, path: r.path, pathSet: new Set(r.path), from: r.from, to: r.to });
-    }
-
-    // ---- traffic flow ------------------------------------------------------
-    // Particles stream caller → callee along each routed path — so you see both the
-    // direction and the volume: busier relationships get more particles moving faster
-    // (the pulse scales with traffic). Positions update on the GPU each frame.
     type FlowRoute = { from: string; to: string; pts: THREE.Vector3[]; cum: number[]; total: number; speed: number; color: THREE.Color };
     const flowRoutes: FlowRoute[] = [];
     const particles: { route: number; off: number }[] = [];
+    let fi = 0;
     for (const r of routes) {
-      const pts = r.path.map((id) => pos.get(id)).filter((v): v is THREE.Vector3 => !!v);
+      const pts = buildFilament(r.path, fi);
       if (pts.length < 2) continue;
+      fi++;
+      const color = new THREE.Color(FLOW_PALETTE[flowHash(r.to) % FLOW_PALETTE.length]);
+      const mat = new THREE.LineBasicMaterial({ color: color.clone(), transparent: true, opacity: REL_OPACITY });
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+      (line as THREE.Object3D).userData = { rel: rels.length };
+      scene.add(line); pickLines.push(line);
+      rels.push({ line, mat, base: color.clone(), path: r.path, pathSet: new Set(r.path), from: r.from, to: r.to });
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-      const total = cum[cum.length - 1];
-      if (total < 1e-3) continue;
-      const ri = flowRoutes.length;
-      const color = new THREE.Color(FLOW_PALETTE[flowHash(r.to) % FLOW_PALETTE.length]);
-      flowRoutes.push({ from: r.from, to: r.to, pts, cum, total, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
+      flowRoutes.push({ from: r.from, to: r.to, pts, cum, total: cum[cum.length - 1] || 1, speed: 0.02 + Math.min(r.traffic, 12) * 0.008, color });
       const count = Math.min(2 + r.traffic, 10);
-      for (let i = 0; i < count; i++) particles.push({ route: ri, off: i / count });
+      for (let i = 0; i < count; i++) particles.push({ route: flowRoutes.length - 1, off: i / count });
     }
     const flowArr = new Float32Array(particles.length * 3);
     const flowColArr = new Float32Array(particles.length * 3);
@@ -370,8 +387,8 @@
       for (const r of rels) {
         const on = match?.(r) ?? false;
         if (on) { r.mat.color.copy(hotColor); r.mat.opacity = 0.95; r.line.renderOrder = 1; }
-        else if (match) { r.mat.color.copy(relColor); r.mat.opacity = 0.05; r.line.renderOrder = 0; }
-        else { r.mat.color.copy(relColor); r.mat.opacity = REL_OPACITY; r.line.renderOrder = 0; }
+        else if (match) { r.mat.color.copy(r.base); r.mat.opacity = 0.05; r.line.renderOrder = 0; }
+        else { r.mat.color.copy(r.base); r.mat.opacity = REL_OPACITY; r.line.renderOrder = 0; }
       }
     };
 
