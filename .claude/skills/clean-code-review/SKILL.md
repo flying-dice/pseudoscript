@@ -16,9 +16,24 @@ Launch parallel sub-agents, each scanning files touched by the current change + 
 1. **SRP** — functions doing two jobs, classes with multiple reasons to change, mixed I/O and logic.
 2. **DRY** — copy-pasted blocks, duplicated constants, near-identical functions, repeated conditionals.
 3. **Naming** — unclear/misleading names, generic names (manager/handler/processor), no intent revealed.
-4. **Coupling** — concrete deps constructed inline, modules reaching into each other's internals, shared mutable state.
+4. **Coupling** — concrete deps constructed inline, shared mutable state.
 5. **Dead code** — unused functions, unreachable branches, commented-out code, stale imports.
 6. **KISS** — unnecessary complexity, over-engineered abstractions, premature generalisation. 5-whys each finding. Can't justify it → violation.
+7. **BOUNDARY** — contract-not-implementation coupling across module/system seams.
+   - Consumer imports a concrete type from another module's internals instead of its
+     published face (client, facade, package root, __all__).
+   - Signatures, return types, or DI wiring name a concrete impl where the published
+     contract belongs — so swapping the impl forces edits in the consumer.
+   - Remote/service dep constructed against a specific node/version/impl rather than
+     routed through its gateway/client abstraction.
+   - Foreign bounded-context model used raw across the seam, no translation (missing ACL).
+   - Dependency points toward the more-volatile side (stable code depending on volatile concretes).
+
+## BOUNDARY gate (inverse of KISS)
+Fire ONLY where a real seam exists: a cross-system or cross-context call, a trust/security
+perimeter, or a swap that is actual or credibly imminent. Each finding must name the decision
+the boundary lets change independently. Can't name one → don't flag — and flagging it anyway
+is itself a KISS violation.
 
 ## Each agent
 
@@ -30,7 +45,7 @@ Launch parallel sub-agents, each scanning files touched by the current change + 
 For each violation scoring **> 0.5**:
 
 ```
-// TODO: clean-code - <0-1 score> - <SRP|DRY|NAMING|COUPLING|DEAD|KISS>: <description>
+// TODO: clean-code - <0-1 score> - <SRP|DRY|NAMING|COUPLING|DEAD|KISS|BOUNDARY>: <description>
 ```
 
 Add at the violation site. Violations you introduced this session scoring > 0.5 → fix immediately.

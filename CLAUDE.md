@@ -19,6 +19,17 @@ The language is defined across four artifacts that must stay consistent with eac
 
 When changing a language rule, the change usually touches several of these at once: the `LANG.md` clause, a `decisions/` entry if a fork was resolved, and a `CONFORMANCE/` case that exercises it. The ADRs each list the `LANG.md` sections they affect.
 
+### Where `.pds` examples live — keep every one valid under the current rules
+
+A rule change (FQN form, visibility, syntax) must leave every worked example compiling and exemplary. The example surfaces, beyond the four artifacts above:
+
+- **`.claude/skills/pseudocode/SKILL.md`** — the authoring/mapping skill, with a worked model. The IDE's "Download skill" button serves it from **`web-ide/static/pseudocode-skill.zip`**, rebuilt by `npm run bundle:skill` (in `web-ide`); the zip also vendors `references/LANG.md`. Re-bundle and commit the zip whenever the skill or `LANG.md` changes.
+- **`web-ide/src/lib/workspace.ts`** — `starterModule` / `emptySeed`, the `.pds` a brand-new empty project scaffolds. It is the first model every user sees, so it MUST compile clean.
+- **`model/`** and **`web-ide/src/lib/samples/<name>/`** — buildable example workspaces (each has a `pds.toml`).
+- The worked example in **`LANG.md`** and the snippets in **`PATTERNS.md`**.
+
+Validate an example as a **workspace**: `pds doc <dir>` resolves each file to its module FQN and applies the full-qualification checks (a reference is its flat FQN `module::Name`, §8.1). The doc site is written to `<dir>/target/doc`.
+
 ## Conformance case conventions
 
 - Filenames start with the `LANG.md` section they exercise, then a slug: `static/6-result-wrong-accessor.pds`. `2-4` means §2.4.

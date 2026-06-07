@@ -40,7 +40,7 @@ Four comment forms; two are documentation.
 Every cross-reference is a **fully-qualified name (FQN)**, derived from the file system (§8).
 
 - Identifiers: letter or `_`, then letters, digits, `_`. Case-sensitive (`Banking` ≠ `banking`); PascalCase nodes and lowercase locals are convention, not enforced.
-- `::` walks the module/node path: `banking::core::Ledger`.
+- `::` separates an FQN's segments — the module path, then the node or type name (§8.1): `banking::core::Ledger` is the node `Ledger` in module `banking::core`.
 - `.` invokes a method on, or reads a field of, a resolved node/value: `Repository.store(x)`, `r.value`. The member MUST exist on the receiver's type where it resolves (ADR-022). Chains freely: `Repo.fetch(id).value.owner` (§7).
 
 ### 2.3 Keywords
