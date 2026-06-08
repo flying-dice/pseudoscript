@@ -68,6 +68,8 @@ pub struct Diagnostic {
     pub severity: String,
     pub message: String,
     pub code: Option<String>,
+    /// The article URL the `code` resolves to (the editor's clickable link).
+    pub code_description: Option<String>,
     pub start: u32,
     pub end: u32,
     pub start_line: u32,
@@ -1383,6 +1385,7 @@ fn enrich(diagnostics: &[SynDiagnostic], source: &str) -> Vec<Diagnostic> {
                 severity: severity_word(d.severity).to_owned(),
                 message: d.message.clone(),
                 code: d.code.clone(),
+                code_description: d.code_description.clone(),
                 start: d.span.start,
                 end: d.span.end,
                 start_line,

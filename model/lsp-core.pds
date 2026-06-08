@@ -20,9 +20,12 @@ public data TextEdit { range: lsp_core::Range, newText: string }
 /// Markdown hover content the editor renders in a tooltip.
 public data Hover { contents: string }
 
-/// One diagnostic mapped to LSP shape: its range, severity, message, and optional
-/// code. Converted from the parser/checker's byte-span diagnostics.
-public data Diagnostic { range: lsp_core::Range, severity: number, message: string, code: string }
+/// One diagnostic mapped to LSP shape: its range, severity, message, optional
+/// code, and the code's article URL (`codeDescription`, the editor's clickable
+/// link — empty when the code carries no article). Converted from the
+/// parser/checker's byte-span diagnostics; the code and its URL pass through
+/// unchanged.
+public data Diagnostic { range: lsp_core::Range, severity: number, message: string, code: string, codeDescription: string }
 
 /// One completion candidate: the inserted label, the integer LSP
 /// `CompletionItemKind`, and detail text.

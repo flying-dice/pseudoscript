@@ -94,6 +94,10 @@ export interface Diagnostic {
     severity: string;
     message: string;
     code: string | undefined;
+    /**
+     * The article URL the `code` resolves to (the editor\'s clickable link).
+     */
+    code_description: string | undefined;
     start: number;
     end: number;
     start_line: number;
