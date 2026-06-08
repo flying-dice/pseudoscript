@@ -9,7 +9,7 @@
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
-  import { viewKey, getPins, serializeLayoutDoc, cellAt, type GridGeom } from "$lib/core/pins.js";
+  import { viewKey, getPins, serializeLayoutDoc } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import type { Depth, SceneItem } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
@@ -580,27 +580,11 @@
     return out;
   });
 
-  // Entering edit mode freezes the current arrangement: every node is pinned at the
-  // cell it currently occupies, so dragging one box leaves the rest exactly where
-  // they are (no auto-reshuffle). Locking again keeps the manual arrangement.
+  // Unlocking only arms drag-to-pin; it pins nothing. A dragged card pins just itself
+  // (the engine fixes pinned nodes and re-flows the rest), so only nodes you place
+  // stay put. Locking keeps those manual placements.
   function toggleUnlock(next: boolean): void {
-    if (next && !pinStore.unlocked) freezeCurrentView();
     pinStore.unlocked = next;
-  }
-
-  function freezeCurrentView(): void {
-    const l = canvas.layout as {
-      nodes?: { fqn: string; rect: { x: number; y: number; w: number; h: number } }[];
-      grid?: GridGeom;
-    } | null;
-    const g = l?.grid;
-    if (!g || !Array.isArray(l?.nodes)) return; // not a grid layout — nothing to freeze
-    const list = l.nodes.map((n) => ({
-      fqn: n.fqn,
-      ...cellAt(g, n.rect.x + n.rect.w / 2, n.rect.y + n.rect.h / 2),
-    }));
-    pinStore.freeze(currentViewKey, list);
-    void persistPins();
   }
 
   // Load the workspace's manual placements from `pds.layout`. Folder-backed only;

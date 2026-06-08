@@ -21,14 +21,7 @@ public data ChargeStatus =
 
 /// A charge record: one authorisation attempt for an intent, tracking its network
 /// references.
-public data Charge {
-  id: shared::ChargeId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  status: charges::ChargeStatus,
-  auth: Option<context::NetworkAuthRef>,
-  capture: Option<context::NetworkCaptureRef>
-}
+public data Charge { id: shared::ChargeId, intent: shared::PaymentIntentId, amount: shared::Money, status: charges::ChargeStatus, auth: Option<context::NetworkAuthRef>, capture: Option<context::NetworkCaptureRef> }
 
 /// A key that makes a network call safe to retry exactly once.
 public data IdempotencyKey { value: string }
@@ -43,27 +36,13 @@ public data AuthResult =
 public data Receipt { charge: shared::ChargeId, capture: context::NetworkCaptureRef }
 
 /// A charge proven to be authorised and uncaptured.
-public data AuthorizedCharge {
-  charge: shared::ChargeId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  auth: context::NetworkAuthRef
-}
+public data AuthorizedCharge { charge: shared::ChargeId, intent: shared::PaymentIntentId, amount: shared::Money, auth: context::NetworkAuthRef }
 
 /// A charge proven to await a 3-D Secure challenge.
-public data PendingCharge {
-  charge: shared::ChargeId,
-  intent: shared::PaymentIntentId,
-  auth: context::NetworkAuthRef
-}
+public data PendingCharge { charge: shared::ChargeId, intent: shared::PaymentIntentId, auth: context::NetworkAuthRef }
 
 /// A charge proven to hold a capture.
-public data CapturedCharge {
-  charge: shared::ChargeId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  capture: context::NetworkCaptureRef
-}
+public data CapturedCharge { charge: shared::ChargeId, intent: shared::PaymentIntentId, amount: shared::Money, capture: context::NetworkCaptureRef }
 
 /// Why a charge operation failed.
 public data ChargeError =
@@ -75,13 +54,46 @@ public data ChargeError =
 
 /// `charges` — the charge engine and network gateway.
 /// #headline
-public container Charges for context::AcmePay;
+public container Charges for context::AcmePay {
+  /// Authorise (hold) an intent's amount, creating a new charge for this attempt.
+  public authorize(intent: shared::PaymentIntentId, amount: shared::Money, instrument: context::NetworkInstrument): Result<charges::AuthResult, charges::ChargeError> {
+    return charges::ChargeService.authorize(intent, amount, instrument)
+  }
+  /// Complete a 3-D Secure challenge on a charge awaiting action.
+  public completeAction(intent: shared::PaymentIntentId, outcome: context::NetworkChallengeResult): Result<charges::AuthResult, charges::ChargeError> {
+    return charges::ChargeService.completeAction(intent, outcome)
+  }
+  /// Capture (settle) an authorised charge; idempotent.
+  public capture(intent: shared::PaymentIntentId): Result<charges::Receipt, charges::ChargeError> {
+    return charges::ChargeService.capture(intent)
+  }
+  /// Void an authorised-but-uncaptured hold, releasing the cardholder's funds.
+  public release(intent: shared::PaymentIntentId): void {
+    charges::ChargeService.release(intent)
+  }
+  /// Refund a captured charge.
+  public refund(intent: shared::PaymentIntentId, amount: shared::Money): Result<context::NetworkRefund, charges::ChargeError> {
+    return charges::ChargeService.refund(intent, amount)
+  }
+  /// Resolve a capture whose outcome was indeterminate against the network.
+  public reconcileCapture(intent: shared::PaymentIntentId): void {
+    charges::ChargeService.reconcileCapture(intent)
+  }
+  /// The completed receipt for an intent's latest charge, if its capture succeeded.
+  public receiptFor(intent: shared::PaymentIntentId): Option<charges::Receipt> {
+    return charges::ChargeService.receiptFor(intent)
+  }
+  /// `Ok` only if the ledger definitively records the latest attempt as declined or failed.
+  public definitelyFailed(intent: shared::PaymentIntentId): Result<void, charges::ChargeError> {
+    return charges::ChargeService.definitelyFailed(intent)
+  }
+}
 
 /// Orchestrates the authorise → capture → refund lifecycle and owns the charge
 /// ledger. Idempotency keys make each network call safe to retry, and a repeat of
 /// an already-completed step returns the existing result.
 /// #headline
-public component ChargeService for charges::Charges {
+component ChargeService for charges::Charges {
   /// Authorise (hold) an intent's amount, creating a new charge for this attempt.
   /// A 3-D Secure requirement is surfaced as `NeedsAction` rather than treated as
   /// success or failure. Network-call idempotency comes from the per-charge key;
@@ -314,16 +326,16 @@ component ChargeStore for charges::Charges {
 /// A re-sent capture does not settle the hold twice.
 feature CaptureIsIdempotent for charges::ChargeService {
   given "an intent whose charge has already been captured"
-  when  "capture is requested again"
-  then  "the existing receipt is returned"
-  but   "the network is not called a second time"
+  when "capture is requested again"
+  then "the existing receipt is returned"
+  but "the network is not called a second time"
 }
 
 /// A network timeout leaves the charge recoverable, not failed.
 feature TimeoutIsReconciled for charges::ChargeService {
   given "an authorise that times out with the outcome unknown"
-  when  "reconciliation runs against the network"
-  then  "a charge the network confirms is driven to captured"
-  and   "a charge the network denies is marked failed"
-  but   "an outcome still unknown is left for the next sweep"
+  when "reconciliation runs against the network"
+  then "a charge the network confirms is driven to captured"
+  and "a charge the network denies is marked failed"
+  but "an outcome still unknown is left for the next sweep"
 }

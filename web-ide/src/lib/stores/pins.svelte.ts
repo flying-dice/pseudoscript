@@ -11,7 +11,6 @@ import {
   emptyLayoutDoc,
   parseLayoutDoc,
   setPin,
-  setPins,
   type LayoutDoc,
   type Pin,
 } from "$lib/core/pins.js";
@@ -41,12 +40,6 @@ class PinStore {
   /** Pin a node to a cell in `key`'s view (reassigns `doc` for reactivity). */
   pin(key: string, pin: Pin): void {
     this.doc = setPin(this.doc, key, pin);
-  }
-
-  /** Freeze a view's whole arrangement (pin every node at its current cell), so
-   *  dragging one box leaves the rest exactly where they are. */
-  freeze(key: string, list: Pin[]): void {
-    this.doc = setPins(this.doc, key, list);
   }
 
   /** Un-pin a node in `key`'s view. */

@@ -43,8 +43,8 @@
   type BoundaryFrame = { fqn: string; title: string; kind: string; rect: Rect };
   // The grid geometry, present only for an experimental-grid layout; lets a drop
   // pixel map back to a cell (drag-to-pin). Cell (r,c) centres at
-  // `origin + (c·cell_w, r·cell_h)`.
-  type GridInfo = { cols: number; rows: number; cell_w: number; cell_h: number; origin: Pt };
+  // `origin + (c·cell_w, r·cell_h)`; `pad` is the drag-room frame cellAt subtracts.
+  type GridInfo = { cols: number; rows: number; cell_w: number; cell_h: number; origin: Pt; pad: number };
   type Layout = {
     width: number;
     height: number;

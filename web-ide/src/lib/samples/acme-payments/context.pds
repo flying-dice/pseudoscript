@@ -12,13 +12,13 @@ public person Cardholder {
   /// Tokenise a card into a reusable payment method (publishable-key path).
   #[manual]
   public enterCard(key: identity::PublishableKey, card: vault::CardEntry): void {
-    gateway::TokenApi.tokenize(key, card)
+    gateway::Gateway.tokenize(key, card)
   }
 
   /// Complete a 3-D Secure challenge so a pending authorisation can proceed.
   #[manual]
   public authenticate(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): void {
-    gateway::IntentApi.confirmAction(intent, outcome)
+    gateway::Gateway.confirmAction(intent, outcome)
   }
 }
 
@@ -28,31 +28,31 @@ public person Merchant {
   /// Create a PaymentIntent for an amount to collect, under an idempotency key.
   #[manual]
   public createPayment(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: intents::CreateIntent): void {
-    gateway::IntentApi.create(key, idem, req)
+    gateway::Gateway.createIntent(key, idem, req)
   }
 
   /// Confirm a PaymentIntent, attaching a payment method and charging it.
   #[manual]
   public confirmPayment(key: identity::SecretKey, req: intents::ConfirmIntent): void {
-    gateway::IntentApi.confirm(key, req)
+    gateway::Gateway.confirm(key, req)
   }
 
   /// Capture a previously authorised PaymentIntent (manual-capture flow).
   #[manual]
   public capturePayment(key: identity::SecretKey, intent: shared::PaymentIntentId): void {
-    gateway::IntentApi.capture(key, intent)
+    gateway::Gateway.capture(key, intent)
   }
 
   /// Refund a captured payment, in full or part, under an idempotency key.
   #[manual]
   public refundPayment(key: identity::SecretKey, idem: gateway::IdempotencyKey, req: refunds::RefundRequest): void {
-    gateway::RefundApi.create(key, idem, req)
+    gateway::Gateway.createRefund(key, idem, req)
   }
 
   /// Submit evidence contesting a chargeback.
   #[manual]
   public contestDispute(key: identity::SecretKey, req: disputes::EvidenceSubmission): void {
-    gateway::DisputeApi.submitEvidence(key, req)
+    gateway::Gateway.submitEvidence(key, req)
   }
 }
 
@@ -62,7 +62,7 @@ public person RiskAnalyst {
   /// Approve (clear) or reject (refund) a flagged payment.
   #[manual]
   public review(key: identity::RestrictedKey, decision: backoffice::ReviewDecision): void {
-    backoffice::Console.resolveReview(key, decision)
+    backoffice::Backoffice.resolveReview(key, decision)
   }
 }
 
@@ -72,7 +72,7 @@ public person SupportAgent {
   /// Refund a captured payment on a customer's behalf.
   #[manual]
   public refund(key: identity::RestrictedKey, req: refunds::RefundRequest): void {
-    backoffice::Console.refund(key, req)
+    backoffice::Backoffice.refund(key, req)
   }
 }
 

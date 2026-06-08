@@ -14,7 +14,25 @@ public data AccessError =
   | NotFound
 
 /// `gateway` — the public API.
-public container Gateway for context::AcmeTickets;
+public container Gateway for context::AcmeTickets {
+  /// Join the queue for an event.
+  #[http("POST /events/{eventId}/queue")]
+  public join(eventId: shared::EventId, token: identity::SessionToken): Result<waitingroom::QueueTicket, gateway::QueueDenied> {
+    return gateway::QueueApi.join(eventId, token)
+  }
+
+  /// Hold seats once admitted.
+  #[http("POST /reservations")]
+  public reserve(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
+    return gateway::ReservationApi.reserve(req)
+  }
+
+  /// Pay for a held reservation.
+  #[http("POST /checkout")]
+  public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
+    return gateway::CheckoutApi.checkout(req)
+  }
+}
 
 /// Event browsing — served from the cacheable storefront read model, not the
 /// authoritative catalog store, so a surge of anonymous browse traffic never
@@ -23,7 +41,7 @@ public component EventApi for gateway::Gateway {
   /// Find one event's storefront listing by id.
   #[http("GET /events/{eventId}")]
   public getEvent(eventId: shared::EventId): Result<catalog::EventListing, gateway::AccessError> {
-    found = Option<EventListing> from catalog::Listings.listing(eventId)
+    found = Option<EventListing> from catalog::Catalog.listing(eventId)
     if (found.isNone) {
       return Err(gateway::AccessError::NotFound)
     }
@@ -33,20 +51,19 @@ public component EventApi for gateway::Gateway {
   /// List the on-sale events' storefront listings.
   #[http("GET /events")]
   public listEvents(): catalog::EventListing[] {
-    return catalog::Listings.onSale()
+    return catalog::Catalog.onSaleListings()
   }
 }
 
 /// Waiting-room endpoints.
-public component QueueApi for gateway::Gateway {
+component QueueApi for gateway::Gateway {
   /// Join the queue for an event.
-  #[http("POST /events/{eventId}/queue")]
   public join(eventId: shared::EventId, token: identity::SessionToken): Result<waitingroom::QueueTicket, gateway::QueueDenied> {
-    user = Result<User, AuthError> from identity::Sessions.authenticate(token)
+    user = Result<User, AuthError> from identity::Identity.authenticate(token)
     if (user.isErr) {
       return Err(gateway::QueueDenied::NotAuthenticated)
     }
-    joined = Result<QueueTicket, WaitingError> from waitingroom::Queue.join(eventId, user.value.id)
+    joined = Result<QueueTicket, WaitingError> from waitingroom::WaitingRoom.join(eventId, user.value.id)
     if (joined.isErr) {
       return Err(gateway::QueueDenied::Closed)
     }
@@ -56,25 +73,23 @@ public component QueueApi for gateway::Gateway {
   /// Poll a queue position.
   #[http("GET /queue/{ticket}")]
   public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
-    return waitingroom::Queue.position(ticket)
+    return waitingroom::WaitingRoom.position(ticket)
   }
 }
 
 /// Reservation endpoint (admission-gated).
-public component ReservationApi for gateway::Gateway {
+component ReservationApi for gateway::Gateway {
   /// Hold seats once admitted.
-  #[http("POST /reservations")]
   public reserve(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
-    return orders::Reservation.hold(req)
+    return orders::Orders.hold(req)
   }
 }
 
 /// Checkout endpoint (admission-gated).
-public component CheckoutApi for gateway::Gateway {
+component CheckoutApi for gateway::Gateway {
   /// Pay for a held reservation.
-  #[http("POST /checkout")]
   public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
-    return orders::OrderService.checkout(req)
+    return orders::Orders.checkout(req)
   }
 }
 
@@ -84,11 +99,11 @@ public component AccountApi for gateway::Gateway {
   /// order — ownership is checked, not assumed from the id.
   #[http("GET /orders/{orderId}")]
   public getOrder(token: identity::SessionToken, orderId: shared::OrderId): Result<orders::Order, gateway::AccessError> {
-    user = Result<User, AuthError> from identity::Sessions.authenticate(token)
+    user = Result<User, AuthError> from identity::Identity.authenticate(token)
     if (user.isErr) {
       return Err(gateway::AccessError::NotAuthenticated)
     }
-    found = Result<Order, CheckoutError> from orders::OrderService.getFor(user.value.id, orderId)
+    found = Result<Order, CheckoutError> from orders::Orders.getFor(user.value.id, orderId)
     if (found.isErr) {
       return Err(gateway::AccessError::NotFound)
     }
@@ -99,11 +114,11 @@ public component AccountApi for gateway::Gateway {
   /// from a caller-supplied id.
   #[http("GET /tickets")]
   public tickets(token: identity::SessionToken): Result<tickets::Ticket[], identity::AuthError> {
-    user = Result<User, AuthError> from identity::Sessions.authenticate(token)
+    user = Result<User, AuthError> from identity::Identity.authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }
-    return Ok(tickets::Issuer.mine(user.value.id))
+    return Ok(tickets::Tickets.mine(user.value.id))
   }
 }
 
@@ -112,18 +127,18 @@ public component UserApi for gateway::Gateway {
   /// Register an attendee.
   #[http("POST /users")]
   public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
-    return identity::Users.register(form)
+    return identity::Identity.register(form)
   }
 
   /// Sign in.
   #[http("POST /sessions")]
   public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
-    return identity::Sessions.login(creds)
+    return identity::Identity.login(creds)
   }
 
   /// Sign out.
   #[http("DELETE /sessions")]
   public logout(token: identity::SessionToken): void {
-    identity::Sessions.logout(token)
+    identity::Identity.logout(token)
   }
 }

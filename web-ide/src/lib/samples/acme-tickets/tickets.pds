@@ -9,14 +9,7 @@ public data TicketStatus =
   | Redeemed
 
 /// A delivered ticket: a redeemable credential bound to an order and holder.
-public data Ticket {
-  id: shared::TicketId,
-  order: shared::OrderId,
-  event: shared::EventId,
-  holder: shared::UserId,
-  barcode: string,
-  status: tickets::TicketStatus
-}
+public data Ticket { id: shared::TicketId, order: shared::OrderId, event: shared::EventId, holder: shared::UserId, barcode: string, status: tickets::TicketStatus }
 
 /// Why issuance failed.
 public data IssueError =
@@ -30,10 +23,23 @@ public data RedeemError =
   | TicketRevoked
 
 /// `tickets` — ticket minting, delivery, and redemption.
-public container Tickets for context::AcmeTickets;
+public container Tickets for context::AcmeTickets {
+  /// The tickets currently held by a user.
+  public mine(holder: shared::UserId): tickets::Ticket[] {
+    return tickets::Issuer.mine(holder)
+  }
+  /// Redeem a ticket by its barcode at the gate.
+  public redeem(barcode: string): Result<tickets::Ticket, tickets::RedeemError> {
+    return tickets::Redemption.redeem(barcode)
+  }
+  /// The orders awaiting manual resolution.
+  public pending(): shared::OrderId[] {
+    return tickets::Quarantine.pending()
+  }
+}
 
 /// Mints and delivers tickets for confirmed orders, and revokes them on refund.
-public component Issuer for tickets::Tickets {
+component Issuer for tickets::Tickets {
   /// React to a confirmed order by issuing its tickets. Issuance is idempotent
   /// (ticket ids are derived from the allocation, so a re-delivered event upserts
   /// the same tickets). If issuance cannot complete it is quarantined for manual
@@ -84,7 +90,7 @@ public component Issuer for tickets::Tickets {
 }
 
 /// Redemption at the venue: admits each ticket exactly once.
-public component Redemption for tickets::Tickets {
+component Redemption for tickets::Tickets {
   /// Redeem a ticket by its barcode at the gate. Refused if unknown, already
   /// redeemed (no double entry), or revoked (refunded).
   public redeem(barcode: string): Result<tickets::Ticket, tickets::RedeemError> {
@@ -127,7 +133,7 @@ component Delivery for tickets::Tickets {
 /// the event forever — the give-up boundary for poison messages. The queue is
 /// drained by support (`backoffice`), not silently — a stranded buyer is a human
 /// task, not a lost message.
-public component Quarantine for tickets::Tickets {
+component Quarantine for tickets::Tickets {
   /// Record an order whose tickets could not be issued.
   stranded(order: shared::OrderId): void;
   /// The orders awaiting manual resolution (read by the support console).
@@ -137,22 +143,22 @@ public component Quarantine for tickets::Tickets {
 /// Confirming an order issues and delivers its tickets.
 feature ConfirmIssuesTickets for tickets::Issuer {
   given "an order has just been confirmed"
-  when  "the tickets context handles the order-confirmed event"
-  then  "a ticket is minted for the allocation"
-  and   "the tickets are delivered to the buyer"
+  when "the tickets context handles the order-confirmed event"
+  then "a ticket is minted for the allocation"
+  and "the tickets are delivered to the buyer"
 }
 
 /// A refunded order's tickets are revoked.
 feature RefundRevokesTickets for tickets::Issuer {
   given "a confirmed order with delivered tickets"
-  when  "the order is refunded"
-  then  "every ticket for the order is revoked"
-  and   "a revoked ticket cannot be redeemed at the gate"
+  when "the order is refunded"
+  then "every ticket for the order is revoked"
+  and "a revoked ticket cannot be redeemed at the gate"
 }
 
 /// A ticket admits its holder exactly once.
 feature NoDoubleRedeem for tickets::Redemption {
   given "a ticket that has already been redeemed"
-  when  "it is scanned again at the gate"
-  then  "redemption is refused as already-redeemed"
+  when "it is scanned again at the gate"
+  then "redemption is refused as already-redeemed"
 }

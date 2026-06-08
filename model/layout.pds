@@ -1,0 +1,165 @@
+//! layout — positional algorithms for the diagram projections (crate
+//! `pseudoscript-layout`).
+//!
+//! A shared geometry/text core plus one engine per diagram kind. Each engine
+//! turns a structural input into absolute coordinates a consumer renders
+//! verbatim, so layout lives in exactly one place, is unit-testable in isolation,
+//! and stays identical across the static SVG renderer (`emit`) and the web IDE.
+//! Pure and wasm-safe: no rendering, no I/O. The sequence engine is implemented;
+//! the C4 and flowchart engines are built on the same core via the `Projection`
+//! contract.
+
+/// A point in renderer coordinates.
+data Point { x: number, y: number }
+
+/// A width/height extent.
+data Size { w: number, h: number }
+
+/// An axis-aligned rectangle: its top-left corner and extent.
+public data Rect { x: number, y: number, w: number, h: number }
+
+/// A structural sequence diagram: the participants (lifelines) and the ordered
+/// items — messages and nested fragments — traced down them. The sequence
+/// engine's input.
+public data Diagram { participants: layout::Participant[], items: layout::Item[] }
+
+/// One lifeline: its id (FQN), display label, C4 kind for the head card, optional
+/// summary, and the ancestry path shown under the name for container/component
+/// lifelines.
+data Participant { id: string, label: string, kind: string, summary: string, parentPath: string }
+
+/// One ordered item down the lifelines: a message or a nested fragment.
+data Item =
+  | MessageItem { message: layout::Message }
+  | FragmentItem { fragment: layout::Fragment }
+
+/// A message between two lifelines: its source and target ids (equal for a
+/// self-message), kind, primary label (method name or return marker), and the
+/// dimmed detail after it (a call signature or return type).
+data Message { source: string, to: string, kind: layout::MsgKind, label: string, detail: string }
+
+/// The kind of a sequence message: a call to another lifeline, a return to the
+/// caller, or a self-message on the sender's own lifeline.
+data MsgKind =
+  | Call
+  | Return
+  | SelfMsg
+
+/// A nestable fragment over a body of items, drawn as an enclosing frame: its
+/// kind and the labelled sections it splits into (an `alt` has several).
+data Fragment { kind: layout::FragKind, sections: layout::Section[] }
+
+/// One compartment of a fragment: its guard label (shown in the operator tab or
+/// beside a divider) over a body of items.
+data Section { guard: string, body: layout::Item[] }
+
+/// The kind of a fragment frame: an `alt` (if/else) or a `loop` (for/while).
+data FragKind =
+  | Alt
+  | Loop
+
+/// A laid-out sequence diagram: the canvas size plus every participant, message,
+/// activation bar, and fragment placed at absolute coordinates the renderer draws
+/// verbatim. The sequence engine's output.
+public data SequenceLayout { width: number, height: number, participants: layout::PlacedParticipant[], messages: layout::PlacedMessage[], activations: layout::Activation[], fragments: layout::PlacedFragment[] }
+
+/// A placed lifeline: its id, label, kind, ancestry path, wrapped summary lines,
+/// head-card rectangle, the lifeline's centre x, and the y span of its dashed
+/// line.
+data PlacedParticipant { id: string, label: string, kind: string, parentPath: string, summaryLines: string[], card: layout::Rect, lifelineX: number, top: number, bottom: number }
+
+/// A placed message: its kind, source/target ids, endpoint x-positions, row y,
+/// direction (+1 left-to-right, -1 right-to-left), reading-order step, label, and
+/// detail.
+data PlacedMessage { kind: layout::MsgKind, source: string, to: string, fromX: number, toX: number, y: number, dir: number, step: number, label: string, detail: string }
+
+/// An execution-activation bar on a lifeline, spanning a participant's first-to-
+/// last involvement; `owner` marks the entry's focus lifeline.
+data Activation { participant: string, x: number, top: number, bottom: number, owner: bool }
+
+/// A placed fragment frame: its box, the operator-tab label (the first section's
+/// guard), and the dividers splitting later sections.
+data PlacedFragment { kind: layout::FragKind, rect: layout::Rect, label: string, dividers: layout::Divider[] }
+
+/// A horizontal split between two fragment sections: its y and the following
+/// section's guard.
+data Divider { y: number, guard: string }
+
+/// `crates/pseudoscript-layout`. The geometry/text core and the per-kind layout
+/// engines; each engine implements the `Projection` contract — turn a structural
+/// input into a positioned output under tunable metrics.
+public container Layout for context::Pseudoscript {
+  /// Lay a sequence diagram out into placed geometry.
+  public layout(diagram: layout::Diagram): layout::SequenceLayout {
+    return layout::Sequence.layout(diagram)
+  }
+}
+
+/// The shared geometry/text core: measures label and title widths, wraps
+/// descriptions to a width, and accumulates bounding boxes. Every engine builds
+/// on it, so text sizing and bounds math live in exactly one place.
+public component Core for layout::Layout {
+  /// The rendered width of a label string under the configured font metrics.
+  labelWidth(text: string): number;
+
+  /// The rendered width of a title string (the bolder card heading).
+  titleWidth(text: string): number;
+
+  /// Wrap a description to a pixel width, capped at a maximum number of lines.
+  wrapDesc(text: string, widthPx: number, maxLines: number): string[];
+
+  /// Grow a running bounds accumulator to include a rectangle.
+  includeRect(rect: layout::Rect): void;
+
+  /// The tight rectangle over everything accumulated, or nothing when empty.
+  bounds(): layout::Rect;
+}
+
+/// The sequence engine: lays a structural `Diagram` out into a `SequenceLayout` —
+/// lifeline x-positions in first-appearance order, message rows stacked by
+/// evaluation order, and fragment frames sized to their bodies. The implemented
+/// engine; C4 and flowchart follow the same contract.
+component Sequence for layout::Layout {
+  /// Lay a sequence diagram out under its metrics into placed geometry.
+  layout(diagram: layout::Diagram): layout::SequenceLayout;
+}
+
+/// The C4 engine: places nodes within their boundary box — the next engine on
+/// the shared core. Inputs are sized rectangles; the layered pass itself is
+/// delegated to `dot`, and `emit` drives both.
+public component C4 for layout::Layout {
+  /// Place sized boxes into laid-out rectangles within their bounds.
+  layout(boxes: layout::Size[]): layout::Rect[];
+}
+
+/// The flowchart engine: lays a step sequence out top-to-bottom into placed
+/// rectangles — the next engine on the shared core.
+public component Flowchart for layout::Layout {
+  /// Place an ordered step list into laid-out rectangles and connectors.
+  layout(steps: string[]): layout::Rect[];
+}
+
+/// Every engine implements one contract: structure in, coordinates out.
+feature OneContractPerEngine for layout::Layout {
+  given "a structural diagram description and its tunable metrics"
+  when "the matching engine lays it out"
+  then "the input is turned into absolute coordinates under the metrics"
+  and "the result is positioned geometry the consumer renders verbatim"
+}
+
+/// Layout is pure and shared — one place, identical everywhere.
+feature LayoutIsPureAndShared for layout::Layout {
+  given "the same structural input laid out twice"
+  when "the results are compared"
+  then "the coordinates are identical and deterministic"
+  and "the static SVG renderer and the web IDE share this one implementation"
+  but "the engine performs no rendering and no I/O"
+}
+
+/// The geometry/text core is the single home for sizing and bounds.
+feature SharedGeometryCore for layout::Core {
+  given "an engine that must size labels and accumulate a bounding box"
+  when "it measures text or grows its bounds"
+  then "it calls the shared core rather than re-implementing the math"
+  and "text sizing and bounds accumulation live in exactly one place"
+}

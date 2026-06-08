@@ -29,10 +29,35 @@ public data SignupError =
   | EmailTaken { email: string }
 
 /// `identity` — accounts and access.
-public container Identity for context::AcmeTickets;
+public container Identity for context::AcmeTickets {
+  /// Register a new attendee account; the email must not already be in use.
+  public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
+    return identity::Users.register(form)
+  }
+  /// Resolve a session token to its user, or `Err(NoSession)`.
+  public authenticate(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
+    return identity::Sessions.authenticate(token)
+  }
+  /// Sign in with credentials, issuing a session token.
+  public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
+    return identity::Sessions.login(creds)
+  }
+  /// Sign out, revoking the session token.
+  public logout(token: identity::SessionToken): void {
+    identity::Sessions.logout(token)
+  }
+  /// Authenticate, then require the `Organizer` role.
+  public requireOrganizer(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
+    return identity::Sessions.requireOrganizer(token)
+  }
+  /// Authenticate, then require the `Support` role.
+  public requireSupport(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
+    return identity::Sessions.requireSupport(token)
+  }
+}
 
 /// User lifecycle.
-public component Users for identity::Identity {
+component Users for identity::Identity {
   /// Register a new attendee account; the email must not already be in use.
   public register(form: identity::Registration): Result<identity::User, identity::SignupError> {
     existing = Option<User> from identity::UserStore.find(form.email)
@@ -47,7 +72,7 @@ public component Users for identity::Identity {
 }
 
 /// Sign-in, sign-out, and the authentication and authorisation checks.
-public component Sessions for identity::Identity {
+component Sessions for identity::Identity {
   /// Sign in with credentials, issuing a session token.
   public login(creds: identity::Credentials): Result<identity::SessionToken, identity::AuthError> {
     user = Option<User> from identity::UserStore.find(creds.email)
@@ -126,6 +151,6 @@ component SessionStore for identity::Identity {
 /// A non-organiser cannot perform organiser actions.
 feature OrganizerRoleEnforced for identity::Sessions {
   given "a session that belongs to an attendee, not an organiser"
-  when  "an organiser-only action is attempted"
-  then  "the action is refused as forbidden"
+  when "an organiser-only action is attempted"
+  then "the action is refused as forbidden"
 }

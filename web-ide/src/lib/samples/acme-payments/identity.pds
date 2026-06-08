@@ -39,10 +39,25 @@ public data ApiKeyError =
   | InsufficientScope
 
 /// `identity` — merchant accounts and API keys.
-public container Identity for context::AcmePay;
+public container Identity for context::AcmePay {
+  /// Resolve a secret key to its merchant, or `Err(InvalidKey)`.
+  public authenticateSecret(key: identity::SecretKey): Result<identity::Merchant, identity::ApiKeyError> {
+    return identity::Keys.authenticateSecret(key)
+  }
+
+  /// Resolve a publishable key to its merchant (tokenisation only).
+  public authenticatePublishable(key: identity::PublishableKey): Result<identity::Merchant, identity::ApiKeyError> {
+    return identity::Keys.authenticatePublishable(key)
+  }
+
+  /// Resolve a restricted key to its merchant and require it to carry `need`.
+  public authenticateRestricted(key: identity::RestrictedKey, need: identity::Scope): Result<identity::Merchant, identity::ApiKeyError> {
+    return identity::Keys.authenticateRestricted(key, need)
+  }
+}
 
 /// Resolves and scope-checks API keys.
-public component Keys for identity::Identity {
+component Keys for identity::Identity {
   /// Resolve a secret key to its merchant, or `Err(InvalidKey)`.
   public authenticateSecret(key: identity::SecretKey): Result<identity::Merchant, identity::ApiKeyError> {
     merchant = Option<Merchant> from identity::KeyStore.resolveSecret(key)
@@ -92,14 +107,14 @@ component KeyStore for identity::Identity {
 /// A publishable key cannot move money.
 feature PublishableKeyIsTokenisationOnly for identity::Keys {
   given "a publishable key"
-  when  "it is presented to a payment-creating endpoint"
-  then  "the request is refused"
-  and   "only the tokenisation endpoint accepts it"
+  when "it is presented to a payment-creating endpoint"
+  then "the request is refused"
+  and "only the tokenisation endpoint accepts it"
 }
 
 /// A restricted key without the right scope is refused.
 feature RestrictedKeyHonoursScope for identity::Keys {
   given "a restricted key that lacks the refunds permission"
-  when  "it is used to issue a refund"
-  then  "the request is refused as insufficient scope"
+  when "it is used to issue a refund"
+  then "the request is refused as insufficient scope"
 }

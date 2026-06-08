@@ -17,34 +17,14 @@ public data OrderStatus =
   | Failed
 
 /// A confirmed purchase.
-public data Order {
-  id: shared::OrderId,
-  event: shared::EventId,
-  tier: shared::TierId,
-  quantity: shared::Quantity,
-  buyer: shared::UserId,
-  amount: shared::Money,
-  hold: shared::HoldId,
-  status: orders::OrderStatus
-}
+public data Order { id: shared::OrderId, event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity, buyer: shared::UserId, amount: shared::Money, hold: shared::HoldId, status: orders::OrderStatus }
 
 /// A request to hold seats: an admission token, the buyer's session, and the
 /// tier and quantity wanted.
-public data ReserveRequest {
-  session: identity::SessionToken,
-  admission: waitingroom::AdmissionToken,
-  event: shared::EventId,
-  tier: shared::TierId,
-  quantity: shared::Quantity
-}
+public data ReserveRequest { session: identity::SessionToken, admission: waitingroom::AdmissionToken, event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity }
 
 /// A request to check out a held reservation and pay for it.
-public data CheckoutRequest {
-  session: identity::SessionToken,
-  admission: waitingroom::AdmissionToken,
-  hold: shared::HoldId,
-  method: payments::PaymentMethod
-}
+public data CheckoutRequest { session: identity::SessionToken, admission: waitingroom::AdmissionToken, hold: shared::HoldId, method: payments::PaymentMethod }
 
 /// Why a reservation was refused.
 public data ReserveError =
@@ -77,22 +57,51 @@ public data OrderRefunded { order: orders::Order }
 
 /// `orders` — the reservation and checkout engine.
 /// #headline
-public container Orders for context::AcmeTickets;
+public container Orders for context::AcmeTickets {
+  /// Hold seats: verify admission and session, then take an inventory hold.
+  public hold(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
+    return orders::Reservation.hold(req)
+  }
+  /// Check out a held reservation: price, charge, then confirm into tickets.
+  public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
+    return orders::OrderService.checkout(req)
+  }
+  /// Refund a confirmed order: reverse the charge, then release the seats.
+  public refund(id: shared::OrderId): Result<orders::Order, orders::CheckoutError> {
+    return orders::OrderService.refund(id)
+  }
+  /// Resume a stuck order after a crash from the payment ledger.
+  public resume(id: shared::OrderId): void {
+    orders::OrderService.resume(id)
+  }
+  /// Orders left mid-saga past their recovery threshold.
+  public stuck(): orders::Order[] {
+    return orders::OrderService.stuck()
+  }
+  /// Read an order on behalf of `owner`, refusing one owned by another user.
+  public getFor(owner: shared::UserId, id: shared::OrderId): Result<orders::Order, orders::CheckoutError> {
+    return orders::OrderService.getFor(owner, id)
+  }
+  /// Confirmed orders whose provider settlement is still pending.
+  public unsettled(): orders::Order[] {
+    return orders::OrderService.unsettled()
+  }
+}
 
 /// Reservation: the admission-gated path that takes an inventory hold.
-public component Reservation for orders::Orders {
+component Reservation for orders::Orders {
   /// Hold seats: verify waiting-room admission and the session, then take an
   /// inventory hold with a time-to-live.
   public hold(req: orders::ReserveRequest): Result<inventory::Hold, orders::ReserveError> {
-    admitted = Result<void, WaitingError> from waitingroom::Admission.verify(req.admission)
+    admitted = Result<void, WaitingError> from waitingroom::WaitingRoom.verify(req.admission)
     if (admitted.isErr) {
       return Err(orders::ReserveError::NotAdmitted)
     }
-    buyer = Result<User, AuthError> from identity::Sessions.authenticate(req.session)
+    buyer = Result<User, AuthError> from identity::Identity.authenticate(req.session)
     if (buyer.isErr) {
       return Err(orders::ReserveError::NotAuthenticated)
     }
-    sellable = Result<void, NotSellable> from catalog::Events.onSaleNow(req.event)
+    sellable = Result<void, NotSellable> from catalog::Catalog.onSaleNow(req.event)
     if (sellable.isErr) {
       return Err(orders::ReserveError::NotOnSale)
     }
@@ -100,16 +109,16 @@ public component Reservation for orders::Orders {
     if (within.isErr) {
       return Err(orders::ReserveError::ExceedsLimit)
     }
-    held = Result<Hold, InventoryError> from inventory::Holds.reserve(req.event, req.tier, req.quantity, buyer.value.id)
+    held = Result<Hold, InventoryError> from inventory::Inventory.reserve(req.event, req.tier, req.quantity, buyer.value.id)
     if (held.isErr) {
       return Err(self.unavailable(held.error))
     }
-    quote = Result<Quote, PricingError> from pricing::Quotes.quote(req.event, req.tier, req.quantity)
+    quote = Result<Quote, PricingError> from pricing::Pricing.quote(req.event, req.tier, req.quantity)
     if (quote.isErr) {
-      inventory::Holds.release(held.value.id)
+      inventory::Inventory.release(held.value.id)
       return Err(orders::ReserveError::Unpriced)
     }
-    pricing::Locks.lock(held.value.id, quote.value)
+    pricing::Pricing.lock(held.value.id, quote.value)
     return Ok(held.value)
   }
 
@@ -122,18 +131,18 @@ public component Reservation for orders::Orders {
 
 /// Checkout: the saga that turns a held reservation into paid-for tickets.
 /// #headline
-public component OrderService for orders::Orders {
+component OrderService for orders::Orders {
   /// Check out a held reservation: re-verify admission, authenticate, validate
   /// the hold, price it at the current surge rate, charge the card, then confirm
   /// the hold into tickets. If the charge fails the hold is released; if
   /// allocation fails after charging, the charge is refunded.
   /// #headline
   public checkout(req: orders::CheckoutRequest): Result<orders::Order, orders::CheckoutError> {
-    admitted = Result<void, WaitingError> from waitingroom::Admission.verify(req.admission)
+    admitted = Result<void, WaitingError> from waitingroom::WaitingRoom.verify(req.admission)
     if (admitted.isErr) {
       return Err(orders::CheckoutError::NotAdmitted)
     }
-    buyer = Result<User, AuthError> from identity::Sessions.authenticate(req.session)
+    buyer = Result<User, AuthError> from identity::Identity.authenticate(req.session)
     if (buyer.isErr) {
       return Err(orders::CheckoutError::NotAuthenticated)
     }
@@ -144,34 +153,34 @@ public component OrderService for orders::Orders {
     // ^ Idempotent replay: a hold has at most one order. The returned order
     //   carries its own status (Confirmed / Pending-in-flight / Failed), which
     //   the caller inspects — a retry never creates a second order or charge.
-    hold = Result<Hold, InventoryError> from inventory::Holds.validate(req.hold, buyer.value.id)
+    hold = Result<Hold, InventoryError> from inventory::Inventory.validate(req.hold, buyer.value.id)
     if (hold.isErr) {
       return Err(orders::CheckoutError::HoldInvalid)
     }
-    locked = Option<Quote> from pricing::Locks.priceFor(req.hold)
+    locked = Option<Quote> from pricing::Pricing.priceFor(req.hold)
     if (locked.isNone) {
       return Err(orders::CheckoutError::PriceUnavailable)
     }
-    committed = Result<Hold, InventoryError> from inventory::Holds.commit(req.hold)
+    committed = Result<Hold, InventoryError> from inventory::Inventory.commit(req.hold)
     if (committed.isErr) {
       return Err(orders::CheckoutError::HoldInvalid)
     }
     id = shared::OrderId from orders::OrderStore.idFor(req.hold)
     order = Order from { id, hold.value, buyer.value.id, locked.value.total, orders::OrderStatus::Pending }
     orders::OrderStore.save(order)
-    charged = Result<Receipt, PaymentError> from payments::PaymentService.charge(id, locked.value.total, req.method)
+    charged = Result<Receipt, PaymentError> from payments::Payments.charge(id, locked.value.total, req.method)
     if (charged.isErr) {
       return Err(self.afterChargeFailure(order, charged.error))
     }
     paid = Order from self.mark(order, orders::OrderStatus::Charged)
     orders::OrderStore.save(paid)
-    allocated = Result<Allocation, InventoryError> from inventory::Holds.confirm(req.hold)
+    allocated = Result<Allocation, InventoryError> from inventory::Inventory.confirm(req.hold)
     if (allocated.isErr) {
-      reversal = Result<Payment, PaymentError> from payments::PaymentService.refund(id)
+      reversal = Result<Payment, PaymentError> from payments::Payments.refund(id)
       if (reversal.isErr) {
         return Err(RefundFailed from { id })
       }
-      inventory::Holds.release(req.hold)
+      inventory::Inventory.release(req.hold)
       orders::OrderStore.save(self.mark(order, orders::OrderStatus::Refunded))
       return Err(orders::CheckoutError::AllocationFailed)
     }
@@ -193,7 +202,7 @@ public component OrderService for orders::Orders {
     if (sure.isErr) {
       return orders::CheckoutError::PaymentUncertain
     }
-    inventory::Holds.release(order.hold)
+    inventory::Inventory.release(order.hold)
     orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
     return self.declined(e)
   }
@@ -211,11 +220,11 @@ public component OrderService for orders::Orders {
     if (ready.isErr) {
       return Err(ready.error)
     }
-    reversal = Result<Payment, PaymentError> from payments::PaymentService.refund(id)
+    reversal = Result<Payment, PaymentError> from payments::Payments.refund(id)
     if (reversal.isErr) {
       return Err(RefundFailed from { id })
     }
-    inventory::Holds.releaseSold(order.value.hold)
+    inventory::Inventory.releaseSold(order.value.hold)
     refunded = Order from self.mark(order.value, orders::OrderStatus::Refunded)
     orders::OrderStore.save(refunded)
     event = OrderRefunded from { refunded }
@@ -245,12 +254,12 @@ public component OrderService for orders::Orders {
   public resume(id: shared::OrderId): void {
     order = Result<Order, CheckoutError> from self.get(id)
     if (order.isOk) {
-      payments::PaymentService.reconcileCharge(id)
-      receipt = Option<Receipt> from payments::PaymentService.receiptFor(id)
+      payments::Payments.reconcileCharge(id)
+      receipt = Option<Receipt> from payments::Payments.receiptFor(id)
       if (receipt.isSome) {
         self.complete(order.value)
       } else {
-        failed = Result<void, PaymentError> from payments::PaymentService.definitelyFailed(id)
+        failed = Result<void, PaymentError> from payments::Payments.definitelyFailed(id)
         if (failed.isOk) {
           self.abandon(order.value)
         }
@@ -266,7 +275,7 @@ public component OrderService for orders::Orders {
   /// Drive a charged order to `Confirmed`: idempotently confirm its hold and
   /// re-publish the confirmation (consumers de-duplicate on the order id).
   complete(order: orders::Order): void {
-    allocated = Result<Allocation, InventoryError> from inventory::Holds.confirm(order.hold)
+    allocated = Result<Allocation, InventoryError> from inventory::Inventory.confirm(order.hold)
     if (allocated.isOk) {
       confirmed = Order from self.mark(order, orders::OrderStatus::Confirmed)
       orders::OrderStore.save(confirmed)
@@ -277,7 +286,7 @@ public component OrderService for orders::Orders {
 
   /// Abandon an order whose charge never completed: release the hold, fail it.
   abandon(order: orders::Order): void {
-    inventory::Holds.release(order.hold)
+    inventory::Inventory.release(order.hold)
     orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
   }
 
@@ -355,33 +364,33 @@ component Events for orders::Orders {
 /// A successful checkout charges the card and issues tickets.
 feature CheckoutChargesAndConfirms for orders::OrderService {
   given "an admitted buyer with a valid hold"
-  when  "the buyer checks out with a valid payment method"
-  then  "the card is charged at the current surge price"
-  and   "the hold is confirmed into an allocation"
-  and   "an order-confirmed event is raised"
+  when "the buyer checks out with a valid payment method"
+  then "the card is charged at the current surge price"
+  and "the hold is confirmed into an allocation"
+  and "an order-confirmed event is raised"
 }
 
 /// A declined card frees the held seats and leaves the order recorded as failed.
 feature DeclineReleasesHold for orders::OrderService {
   given "an admitted buyer with a valid hold"
-  when  "the buyer checks out but the card is declined"
-  then  "the hold is released back to the pool"
-  and   "the checkout is rejected"
-  and   "the order is recorded as failed"
+  when "the buyer checks out but the card is declined"
+  then "the hold is released back to the pool"
+  and "the checkout is rejected"
+  and "the order is recorded as failed"
 }
 
 /// If seats cannot be allocated after the card is charged, the charge is refunded.
 feature AllocationFailureRefunds for orders::OrderService {
   given "a buyer whose card was charged at checkout"
-  when  "the hold cannot be confirmed into an allocation"
-  then  "the charge is refunded"
-  and   "the checkout is rejected as allocation-failed"
+  when "the hold cannot be confirmed into an allocation"
+  then "the charge is refunded"
+  and "the checkout is rejected as allocation-failed"
 }
 
 /// A failed refund never silently cancels the order.
 feature RefundFailureSurfaced for orders::OrderService {
   given "a confirmed order whose provider refund fails"
-  when  "a refund is attempted"
-  then  "the failure is surfaced as refund-failed"
-  but   "the order stays confirmed and the seats stay sold"
+  when "a refund is attempted"
+  then "the failure is surfaced as refund-failed"
+  but "the order stays confirmed and the seats stay sold"
 }

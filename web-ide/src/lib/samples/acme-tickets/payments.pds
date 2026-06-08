@@ -19,14 +19,7 @@ public data PaymentStatus =
   | Failed { reason: string }
 
 /// A payment record: one per order, tracking its provider references.
-public data Payment {
-  id: payments::PaymentId,
-  order: shared::OrderId,
-  amount: shared::Money,
-  status: payments::PaymentStatus,
-  auth: Option<context::ProviderAuthRef>,
-  capture: Option<context::ProviderCaptureRef>
-}
+public data Payment { id: payments::PaymentId, order: shared::OrderId, amount: shared::Money, status: payments::PaymentStatus, auth: Option<context::ProviderAuthRef>, capture: Option<context::ProviderCaptureRef> }
 
 /// A payment's stable identifier.
 public data PaymentId { value: string }
@@ -38,12 +31,7 @@ public data IdempotencyKey { value: string }
 public data Receipt { payment: payments::PaymentId, capture: context::ProviderCaptureRef }
 
 /// A loaded payment known to hold a capture (no optional capture ref).
-public data ChargedPayment {
-  id: payments::PaymentId,
-  order: shared::OrderId,
-  amount: shared::Money,
-  capture: context::ProviderCaptureRef
-}
+public data ChargedPayment { id: payments::PaymentId, order: shared::OrderId, amount: shared::Money, capture: context::ProviderCaptureRef }
 
 /// Why a payment operation failed.
 public data PaymentError =
@@ -53,12 +41,7 @@ public data PaymentError =
   | NotCharged
 
 /// A settlement event delivered by the provider's webhook.
-public data SettlementEvent {
-  eventId: string,
-  order: shared::OrderId,
-  capture: context::ProviderCaptureRef,
-  signature: string
-}
+public data SettlementEvent { eventId: string, order: shared::OrderId, capture: context::ProviderCaptureRef, signature: string }
 
 /// Acknowledgement returned to the provider for a processed webhook.
 public data Acknowledged { eventId: string }
@@ -69,13 +52,38 @@ public data WebhookError =
 
 /// `payments` — the payment engine and provider gateway.
 /// #headline
-public container Payments for context::AcmeTickets;
+public container Payments for context::AcmeTickets {
+  /// Charge an order: authorise then capture in one idempotent flow.
+  public charge(order: shared::OrderId, amount: shared::Money, method: payments::PaymentMethod): Result<payments::Receipt, payments::PaymentError> {
+    return payments::PaymentService.charge(order, amount, method)
+  }
+  /// `Ok` only if the ledger DEFINITIVELY records no charge for the order.
+  public definitelyFailed(order: shared::OrderId): Result<void, payments::PaymentError> {
+    return payments::PaymentService.definitelyFailed(order)
+  }
+  /// The completed receipt for an order, if its charge already succeeded.
+  public receiptFor(order: shared::OrderId): Option<payments::Receipt> {
+    return payments::PaymentService.receiptFor(order)
+  }
+  /// Pull-based reconciliation for orders the settlement webhook may have missed.
+  public reconcile(order: shared::OrderId): void {
+    payments::PaymentService.reconcile(order)
+  }
+  /// Resolve a charge whose outcome was indeterminate, converging the ledger.
+  public reconcileCharge(order: shared::OrderId): void {
+    payments::PaymentService.reconcileCharge(order)
+  }
+  /// Refund a charged payment in full.
+  public refund(order: shared::OrderId): Result<payments::Payment, payments::PaymentError> {
+    return payments::PaymentService.refund(order)
+  }
+}
 
 /// Orchestrates the charge → refund lifecycle and owns the payment ledger. Every
 /// provider call goes through `Gateway`; idempotency keys make each provider call
 /// safe to retry, and a re-charge of an already-charged order is a no-op.
 /// #headline
-public component PaymentService for payments::Payments {
+component PaymentService for payments::Payments {
   /// Charge an order: authorise then capture in one flow. Idempotent — a second
   /// charge of an already-charged order returns the existing receipt without
   /// calling the provider again.
@@ -324,23 +332,23 @@ component EventLog for payments::Payments {
 /// A re-sent charge does not double-bill the card.
 feature ChargeIsIdempotent for payments::PaymentService {
   given "an order that has already been charged"
-  when  "a charge is requested again"
-  then  "the existing receipt is returned"
-  but   "the provider is not called a second time"
+  when "a charge is requested again"
+  then "the existing receipt is returned"
+  but "the provider is not called a second time"
 }
 
 /// A replayed settlement webhook is acknowledged but changes nothing.
 feature WebhookReplayIgnored for payments::WebhookHandler {
   given "a settlement webhook whose event id was already processed"
-  when  "the webhook is received again"
-  then  "it is acknowledged"
-  but   "the payment is not modified"
+  when "the webhook is received again"
+  then "it is acknowledged"
+  but "the payment is not modified"
 }
 
 /// A late webhook cannot resurrect a refunded payment.
 feature LateWebhookCannotResurrect for payments::PaymentService {
   given "a payment that has already been refunded"
-  when  "a stale settlement webhook arrives for it"
-  then  "the payment is left untouched"
-  and   "it stays refunded"
+  when "a stale settlement webhook arrives for it"
+  then "the payment is left untouched"
+  and "it stays refunded"
 }

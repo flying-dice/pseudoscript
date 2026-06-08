@@ -156,54 +156,42 @@ struct Ctx {
     unpinned_nodes: Vec<usize>,
 }
 
-/// The grid extent plus the offset applied to every pinned cell, so the pinned
-/// content keeps a [`MARGIN`]-cell band on every side (see [`grid_window`]).
+/// The inner search grid plus the drag-room frame added at emit (see [`grid_window`]).
 struct GridWindow {
+    /// Columns and rows the search fills (the inner region, frame excluded).
     cols: usize,
     rows: usize,
-    shift_r: usize,
-    shift_c: usize,
+    /// Cells of drag-room frame wrapped around the inner grid on every side at emit.
+    pad: usize,
 }
 
-/// Size the grid and the pin shift for `n` nodes under reading direction `lr`.
+/// Size the inner search grid for `n` nodes under reading direction `lr`.
 ///
 /// A balanced base grid (longer axis along the reading direction, `long =
-/// ceil(sqrt(n))`) carries a one-cell band all round — search room the optimiser
-/// uses to seat a node on an edge cell or separate a cluster from externals. The
-/// pinned content is then shifted inward so a [`MARGIN`]-cell band sits above and to
-/// the left (cells are 0-indexed, so top/left room exists only as an offset), and
-/// the grid grows so the same band exists below and to the right. The shift is
-/// saturating: content already `MARGIN` cells in is left where the user put it. With
-/// no pins the shift is zero and the extent is the bare base, so the un-pinned
-/// layout is byte-identical to before.
+/// ceil(sqrt(n))`) carries a one-cell band all round — search room the optimiser uses
+/// to seat a node on an edge cell or separate a cluster from externals — grown to fit
+/// the furthest pin. These are the cells the search permutes; the [`MARGIN`]-cell
+/// drag-room frame is wrapped on at emit ([`attach_grid_meta`]), so it costs the search
+/// nothing: an un-pinned graph keeps the bare base extent (byte-identical, exact-search
+/// eligible) yet the client still sees a MARGIN-cell band to drag into on every side.
 fn grid_window(n: usize, lr: bool, pins: &[Pin]) -> GridWindow {
     let long = (1..=n).find(|c| c * c >= n).unwrap_or(1);
     let short = n.div_ceil(long);
     let (base_cols, base_rows) = if lr { (long, short) } else { (short, long) };
 
     let valid_pins = || pins.iter().filter(|p| p.node < n);
-    let shift_r = valid_pins()
-        .map(|p| p.row)
-        .min()
-        .map_or(0, |r| MARGIN.saturating_sub(r));
-    let shift_c = valid_pins()
-        .map(|p| p.col)
-        .min()
-        .map_or(0, |c| MARGIN.saturating_sub(c));
-
     let mut cols = base_cols + 2;
     let mut rows = base_rows + 2;
     if let Some(mc) = valid_pins().map(|p| p.col).max() {
-        cols = cols.max(mc + shift_c + 1 + MARGIN);
+        cols = cols.max(mc + 2);
     }
     if let Some(mr) = valid_pins().map(|p| p.row).max() {
-        rows = rows.max(mr + shift_r + 1 + MARGIN);
+        rows = rows.max(mr + 2);
     }
     GridWindow {
         cols,
         rows,
-        shift_r,
-        shift_c,
+        pad: MARGIN,
     }
 }
 
@@ -219,12 +207,7 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
     }
 
     let lr = graph.rankdir == RankDir::LeftRight;
-    let GridWindow {
-        cols,
-        rows,
-        shift_r,
-        shift_c,
-    } = grid_window(n, lr, pins);
+    let GridWindow { cols, rows, pad } = grid_window(n, lr, pins);
     let m = rows * cols;
     // The gap between cells follows the spacing control (compact/comfortable/roomy).
     // The deviation from 1.0 is amplified so compact/roomy move the gap about twice
@@ -263,16 +246,16 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
         .collect();
     let clusters = effective_members(graph, n);
 
-    // Resolve pins to fixed cells (shifted into the padded window), dropping any out
-    // of the current grid or colliding with an already-pinned cell (the dropped node
-    // then places freely).
+    // Resolve pins to their fixed cells in the inner grid (the frame is added at emit,
+    // so a pin cell is the client's coordinate as-is). Drop any out of the current grid
+    // or colliding with an already-pinned cell (the dropped node then places freely).
     let mut fixed = vec![None; n];
     let mut taken = vec![false; m];
     for p in pins {
         if p.node >= n {
             continue;
         }
-        let (row, col) = (p.row + shift_r, p.col + shift_c);
+        let (row, col) = (p.row, p.col);
         if col >= cols || row >= rows {
             continue;
         }
@@ -324,12 +307,14 @@ pub fn grid_layout(graph: &Graph, params: GridParams, pins: &[Pin]) -> Layout {
     };
 
     let layout = build_layout(graph, &cells, &best);
-    attach_grid_meta(layout, &best, cols, rows, cell_w, cell_h)
+    attach_grid_meta(layout, &best, cols, rows, cell_w, cell_h, pad)
 }
 
-/// Record the grid geometry on the layout so a client can map a pixel back to a
-/// cell (drag-to-pin). Cell (0,0)'s centre is node 0's laid-out centre minus its
-/// cell offset (the uniform origin-shift cancels out).
+/// Record the grid geometry on the layout so a client can map a pixel back to a cell
+/// (drag-to-pin). The emitted grid wraps the inner search grid in a `pad`-cell
+/// drag-room frame: cell (0,0) sits `pad` cells up-left of the inner origin, and the
+/// extent grows by `2·pad`. A pixel recovers its raw cell from `origin` then subtracts
+/// `pad`, round-tripping to the exact (frame-free) cell a node sits on.
 fn attach_grid_meta(
     mut layout: Layout,
     best: &[usize],
@@ -337,18 +322,19 @@ fn attach_grid_meta(
     rows: usize,
     cell_w: f64,
     cell_h: f64,
+    pad: usize,
 ) -> Layout {
     if let Some(first) = layout.nodes.first() {
         let (c0, r0) = (best[0] % cols, best[0] / cols);
+        let inner_x = first.center.x - coord(c0) * cell_w;
+        let inner_y = first.center.y - coord(r0) * cell_h;
         layout.grid = Some(GridMeta {
-            cols,
-            rows,
+            cols: cols + 2 * pad,
+            rows: rows + 2 * pad,
             cell_w,
             cell_h,
-            origin: Pt::new(
-                first.center.x - coord(c0) * cell_w,
-                first.center.y - coord(r0) * cell_h,
-            ),
+            origin: Pt::new(inner_x - coord(pad) * cell_w, inner_y - coord(pad) * cell_h),
+            pad,
         });
     }
     layout
@@ -976,15 +962,16 @@ mod tests {
         );
     }
 
-    /// The cell (row, col) a laid-out node landed on, recovered from its centre via
-    /// the emitted grid metadata.
+    /// The pin cell (row, col) a laid-out node landed on, recovered from its centre
+    /// via the emitted grid metadata — the inverse of drag-to-pin (raw cell minus the
+    /// frame `pad`), so it reports the same coordinates a pin is expressed in.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     fn cell_of(l: &Layout, id: &str) -> (usize, usize) {
         let g = l.grid.expect("grid layout emits grid metadata");
         let c = l.nodes.iter().find(|n| n.id == id).unwrap().center;
         let col = ((c.x - g.origin.x) / g.cell_w).round().max(0.0) as usize;
         let row = ((c.y - g.origin.y) / g.cell_h).round().max(0.0) as usize;
-        (row, col)
+        (row.saturating_sub(g.pad), col.saturating_sub(g.pad))
     }
 
     fn pin(node: usize, row: usize, col: usize) -> Pin {
@@ -1040,6 +1027,47 @@ mod tests {
     }
 
     #[test]
+    fn unpinned_grid_reserves_a_drag_room_frame() {
+        // With nothing pinned the client still gets a MARGIN-cell band on every side to
+        // drag boxes into: the emitted grid wraps the content in a `pad`-cell frame.
+        let mut g = Graph::new();
+        for id in ["a", "b", "c", "d", "e"] {
+            g.nodes.push(node(id));
+        }
+        g.edges.push(Edge::new("a", "b"));
+        let l = grid_layout(&g, GridParams::default(), &[]);
+        let meta = l.grid.expect("grid layout emits grid metadata");
+        assert_eq!(meta.pad, MARGIN, "frame reserved even with no pins");
+        // Every node's raw cell sits at least MARGIN cells from each edge of the grid.
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        for nd in &l.nodes {
+            let raw_c = ((nd.center.x - meta.origin.x) / meta.cell_w).round() as usize;
+            let raw_r = ((nd.center.y - meta.origin.y) / meta.cell_h).round() as usize;
+            assert!(raw_c >= MARGIN && raw_r >= MARGIN, "top/left frame");
+            assert!(meta.cols - 1 - raw_c >= MARGIN, "right frame");
+            assert!(meta.rows - 1 - raw_r >= MARGIN, "bottom frame");
+        }
+    }
+
+    #[test]
+    fn drag_to_pin_round_trips() {
+        // The web reads where a node landed (cellAt over the emitted grid — raw cell
+        // minus `pad`), then pins it at that cell. Re-laying out must report it on the
+        // same pin cell, or drag-to-pin would jump the box out from under the cursor.
+        let mut g = Graph::new();
+        for id in ["a", "b", "c", "d"] {
+            g.nodes.push(node(id));
+        }
+        g.edges.push(Edge::new("a", "b"));
+        g.edges.push(Edge::new("a", "c"));
+        let l1 = grid_layout(&g, GridParams::default(), &[]);
+        let (r, c) = cell_of(&l1, "c");
+        let l2 = grid_layout(&g, GridParams::default(), &[pin(2, r, c)]);
+        assert_eq!(cell_of(&l2, "c"), (r, c), "pinned node holds its dropped cell");
+        distinct_cells(&l2);
+    }
+
+    #[test]
     fn pinned_node_stays_at_its_cell() {
         let mut g = Graph::new();
         for id in ["a", "b", "c", "d", "e"] {
@@ -1047,8 +1075,7 @@ mod tests {
         }
         g.edges.push(Edge::new("a", "b"));
         g.edges.push(Edge::new("a", "c"));
-        // Pin "a" to (3, 3) — past the top-left margin, so no shift applies — a cell
-        // its edges would otherwise pull it off.
+        // Pin "a" to (3, 3) — a cell its edges would otherwise pull it off.
         let l = grid_layout(&g, GridParams::default(), &[pin(0, 3, 3)]);
         assert_eq!(cell_of(&l, "a"), (3, 3), "pinned node holds its cell");
         distinct_cells(&l);
@@ -1061,7 +1088,7 @@ mod tests {
             g.nodes.push(node(id));
         }
         g.edges.push(Edge::new("a", "b"));
-        // Pin "c" past the margin so it holds its cell with no shift.
+        // Pin "c" to a cell; it holds it while a, b, d fill around.
         let l = grid_layout(&g, GridParams::default(), &[pin(2, 2, 2)]);
         assert_eq!(cell_of(&l, "c"), (2, 2));
         distinct_cells(&l); // a, b, d placed around it, no overlap
@@ -1073,7 +1100,7 @@ mod tests {
         for id in ["a", "b", "c", "d"] {
             g.nodes.push(node(id));
         }
-        // Cell (99, 99) is off the 2×2 grid → ignored; "a" places freely, no panic.
+        // A far-off pin grows the grid to fit it; no panic, every node distinct.
         let l = grid_layout(&g, GridParams::default(), &[pin(0, 99, 99)]);
         assert_eq!(l.nodes.len(), 4);
         distinct_cells(&l);
@@ -1105,7 +1132,7 @@ mod tests {
         for id in ["a", "b", "c", "d"] {
             g.nodes.push(node(id));
         }
-        // Every node pinned to a distinct cell, past the top-left margin (no shift).
+        // Every node pinned to a distinct cell.
         let pins = [pin(0, 2, 2), pin(1, 2, 3), pin(2, 3, 2), pin(3, 3, 3)];
         let l = grid_layout(&g, GridParams::default(), &pins);
         assert_eq!(cell_of(&l, "a"), (2, 2));
@@ -1121,23 +1148,19 @@ mod tests {
             g.nodes.push(node(id));
         }
         g.edges.push(Edge::new("a", "b"));
-        // Pin both against the top-left origin. The engine shifts them inward so a
-        // MARGIN-cell band sits above and to the left, and sizes the grid so the
-        // same band exists below and to the right — drag room in every direction.
+        // Pin both against the top-left origin. A pin holds its exact cell in pin
+        // coordinates; the engine offsets pinned content inward by `pad`, reserving a
+        // MARGIN-cell drag-room frame above/left, and grows the grid so the same band
+        // sits below/right — drag room on every side.
         let l = grid_layout(&g, GridParams::default(), &[pin(0, 0, 0), pin(1, 0, 1)]);
         let meta = l.grid.expect("grid layout emits grid metadata");
-        let (ra, ca) = cell_of(&l, "a");
-        let (rb, cb) = cell_of(&l, "b");
-        // Relative arrangement preserved: "a" left of "b" on the same row.
-        assert_eq!(ra, rb, "same row");
-        assert_eq!(cb, ca + 1, "a immediately left of b");
-        // At least MARGIN empty cells on every side of the bounding box.
-        let (min_r, max_r) = (ra.min(rb), ra.max(rb));
-        let (min_c, max_c) = (ca.min(cb), ca.max(cb));
-        assert!(min_r >= MARGIN, "top margin");
-        assert!(min_c >= MARGIN, "left margin");
-        assert!(meta.rows - 1 - max_r >= MARGIN, "bottom margin");
-        assert!(meta.cols - 1 - max_c >= MARGIN, "right margin");
+        assert_eq!(cell_of(&l, "a"), (0, 0), "a holds its exact pin cell");
+        assert_eq!(cell_of(&l, "b"), (0, 1), "b holds its exact pin cell");
+        assert_eq!(meta.pad, MARGIN, "top/left drag-room frame reserved");
+        // The raw (framed) cell of the furthest pin, with MARGIN room past it.
+        let (max_raw_r, max_raw_c) = (meta.pad, 1 + meta.pad);
+        assert!(meta.rows - 1 - max_raw_r >= MARGIN, "bottom drag room");
+        assert!(meta.cols - 1 - max_raw_c >= MARGIN, "right drag room");
     }
 
     #[test]

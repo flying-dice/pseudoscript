@@ -12,11 +12,10 @@ import {
   parseLayoutDoc,
   serializeLayoutDoc,
   setPin,
-  setPins,
   viewKey,
 } from "./pins.js";
 
-const geom: GridGeom = { cols: 4, rows: 3, cell_w: 100, cell_h: 50, origin: { x: 10, y: 20 } };
+const geom: GridGeom = { cols: 4, rows: 3, cell_w: 100, cell_h: 50, origin: { x: 10, y: 20 }, pad: 0 };
 
 describe("cellAt", () => {
   it("inverts the cell-centre formula", () => {
@@ -32,6 +31,16 @@ describe("cellAt", () => {
   it("clamps below 0 and above the last cell", () => {
     expect(cellAt(geom, -500, -500)).toEqual({ col: 0, row: 0 });
     expect(cellAt(geom, 9999, 9999)).toEqual({ col: 3, row: 2 });
+  });
+
+  it("subtracts the frame pad so a pixel maps to its pin cell", () => {
+    // 8×8 grid, 2-cell frame. Raw cell (3, 3) → pin cell (1, 1).
+    const g: GridGeom = { cols: 8, rows: 8, cell_w: 100, cell_h: 100, origin: { x: 0, y: 0 }, pad: 2 };
+    expect(cellAt(g, 300, 300)).toEqual({ col: 1, row: 1 });
+    // The top-left frame clamps to pin cell 0 (you can't pin into the reserved band).
+    expect(cellAt(g, 0, 0)).toEqual({ col: 0, row: 0 });
+    // The bottom-right frame clamps to the last pin cell (cols - 1 - 2·pad = 3).
+    expect(cellAt(g, 9999, 9999)).toEqual({ col: 3, row: 3 });
   });
 });
 
@@ -91,31 +100,22 @@ describe("setPin", () => {
   });
 });
 
-describe("setPins / clearPin / clearView", () => {
+describe("clearPin / clearView", () => {
   const k = "c4|";
 
-  it("replaces a view's pins wholesale", () => {
-    const list = [{ fqn: "a", row: 0, col: 0 }];
-    const doc = setPins(emptyLayoutDoc(), k, list);
-    expect(getPins(doc, k)).toEqual(list);
-    expect(getPins(doc, k)).not.toBe(list); // copied
-  });
-
   it("clears one pin, leaving the rest", () => {
-    const doc = setPins(emptyLayoutDoc(), k, [
-      { fqn: "a", row: 0, col: 0 },
-      { fqn: "b", row: 1, col: 1 },
-    ]);
+    let doc = setPin(emptyLayoutDoc(), k, { fqn: "a", row: 0, col: 0 });
+    doc = setPin(doc, k, { fqn: "b", row: 1, col: 1 });
     expect(getPins(clearPin(doc, k, "a"), k)).toEqual([{ fqn: "b", row: 1, col: 1 }]);
   });
 
   it("clearPin on an absent fqn is a no-op", () => {
-    const doc = setPins(emptyLayoutDoc(), k, [{ fqn: "a", row: 0, col: 0 }]);
+    const doc = setPin(emptyLayoutDoc(), k, { fqn: "a", row: 0, col: 0 });
     expect(getPins(clearPin(doc, k, "z"), k)).toEqual([{ fqn: "a", row: 0, col: 0 }]);
   });
 
   it("clearView deletes the key entirely", () => {
-    const doc = setPins(emptyLayoutDoc(), k, [{ fqn: "a", row: 0, col: 0 }]);
+    const doc = setPin(emptyLayoutDoc(), k, { fqn: "a", row: 0, col: 0 });
     const next = clearView(doc, k);
     expect(Object.keys(next.views)).not.toContain(k);
   });

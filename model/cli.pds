@@ -2,32 +2,48 @@
 //! `pseudoscript`).
 //!
 //! The composition root and the sole I/O edge: every other context is pure over
-//! in-memory modules, while file reading/writing, HTTP serving, and filesystem
-//! watching live here. I/O failures travel back to the process exit code.
+//! in-memory modules, while file reading/writing, HTTP serving, filesystem
+//! watching, and dependency fetching live here. Workspace loading delegates to
+//! `project`; I/O failures travel back to the process exit code.
 //! Command surface:
-//! pds init   [path] [--name N]                       bootstrap a workspace
-//! pds doc    [path] [--serve] [--watch] [--port N]    headline (ADR-017)
-//! pds check  <file.pds>                               diagnostics; non-zero on error
+//! pds init    [path] [--name N]                       bootstrap a workspace
+//! pds doc     [path] [--serve] [--watch] [--all] [--format html|md]   headline (ADR-017)
+//! pds check   [path] [--all]                          diagnostics; non-zero on error
 //! pds eval                                            stdin diagnostics; non-zero on error
-//! pds fmt    <file.pds> [--write]                     canonical formatting
-//! pds tokens <file.pds>                               lexical token stream
+//! pds fmt     <file.pds> [--write]                    canonical formatting
+//! pds tokens  <file.pds>                              lexical token stream
+//! pds outline [path]                                  workspace symbol outline as JSON
+//! pds svg     [path] [--symbol F | --view V --target T] [--theme]   one diagram to SVG
 //! pds lsp                                             language server over stdio
+//! pds lang | skill                                    print the language reference / authoring skill
+//! pds add <url> | install | update | remove <name> | list [root]    dependency management (§8.3)
+//! pds upgrade [version]                               self-update the binary
 
-/// The subcommand clap parsed from argv, with its resolved options: `init`,
-/// `doc`, `check`, `eval`, `fmt`, `tokens`, or `lsp`.
+/// The subcommand clap parsed from argv, with its resolved options.
 public data Command =
   | InitCmd { path: string, name: string }
-  | DocOpts { path: string, serve: bool, watch: bool, port: number }
-  | CheckOpts { file: string }
+  | DocOpts { path: string, serve: bool, watch: bool, port: number, all: bool, format: string }
+  | CheckOpts { file: string, all: bool }
   | EvalOpts
   | FmtOpts { file: string, write: bool }
   | TokensOpts { file: string }
+  | OutlineOpts { path: string }
+  | SvgOpts { path: string, symbol: string, view: string, target: string, theme: string }
   | LspOpts
+  | LangOpts
+  | SkillOpts
+  | AddOpts { url: string, tag: string, rev: string, branch: string, path: string, name: string }
+  | InstallOpts
+  | UpdateOpts
+  | RemoveOpts { name: string }
+  | ListOpts { root: string }
+  | UpgradeOpts { version: string }
 
 /// The loaded project: the `[doc]` config, the resolved output directory
-/// (`<root>/<out>`, default `target/doc`), and every module, sorted by FQN.
-/// Produced from the nearest `pds.toml`.
-public data Workspace { config: doc::DocConfig, outDir: string, modules: model::WorkspaceModule[] }
+/// (`<root>/<out>`, default `target/doc`), every module sorted by FQN, the
+/// dependency-name-prefixed dependency modules (§8.3; empty without a `pds.lock`),
+/// and the preferred doc output format. Produced from the nearest `pds.toml`.
+public data Workspace { config: doc::DocConfig, outDir: string, modules: model::WorkspaceModule[], dependencies: model::WorkspaceModule[], format: string }
 
 /// A filesystem, parse-config, or serving failure surfaced to the CLI exit code.
 public data IoError { message: string }
@@ -35,7 +51,17 @@ public data IoError { message: string }
 /// `crates/pseudoscript` — the binary crate (`pds`). The composition root and
 /// only I/O edge; a thin frontend that wires the pure library crates to disk,
 /// HTTP, and a filesystem watcher.
-public container Cli for context::Pseudoscript;
+public container Cli for context::Pseudoscript {
+  /// Generate the documentation site for the workspace containing `path`.
+  public runDoc(path: string): Result<void, cli::IoError> {
+    return cli::DocCmd.run(path)
+  }
+
+  /// Boot the language server over stdio.
+  public runLsp(): Result<void, cli::IoError> {
+    return cli::LspHost.run()
+  }
+}
 
 /// Parses argv with clap-derive into the chosen subcommand and its options, then
 /// dispatches to the matching command handler.
@@ -47,12 +73,20 @@ component Args for cli::Cli {
   dispatch(command: cli::Command): number;
 }
 
-/// The filesystem loader: resolves the project root by walking up to the nearest
-/// `pds.toml`, then parses the `[doc]` table and reads every `.pds` module.
+/// The CLI loader: resolves the project root and reads its modules through the
+/// `project` crate (the shared filesystem edge), then parses the cli-specific
+/// `[doc]` table on top. Root-finding and module-walking are `project`'s job;
+/// the manifest's doc config is the CLI's.
 component Loader for cli::Cli {
-  /// Walk the ancestors of `start` (a file begins at its parent) to the nearest
-  /// directory holding `pds.toml`; no `pds.toml` anywhere is an error.
-  findRoot(start: string): Result<string, cli::IoError>;
+  /// Walk the ancestors of `start` to the nearest directory holding `pds.toml`,
+  /// delegating to `project`; no `pds.toml` anywhere is an error.
+  findRoot(start: string): Result<string, cli::IoError> {
+    found = Result<string, project::IoError> from project::Project.findRoot(start)
+    if (found.isErr) {
+      return Err(self.ioError(found.error))
+    }
+    return Ok(found.value)
+  }
 
   /// Load the project rooted at `root`: parse the manifest and collect modules.
   load(root: string): Result<cli::Workspace, cli::IoError> {
@@ -72,9 +106,17 @@ component Loader for cli::Cli {
   /// resolved output directory; an unknown `theme` is rejected.
   loadManifest(root: string): Result<cli::Workspace, cli::IoError>;
 
-  /// Walk `root` (skipping `target/` and hidden dirs) for `*.pds` files, deriving
-  /// each module FQN from its path relative to `root`, sorted by FQN.
-  loadModules(root: string): Result<model::WorkspaceModule[], cli::IoError>;
+  /// Read every `.pds` module under `root` through `project`, sorted by FQN.
+  loadModules(root: string): Result<model::WorkspaceModule[], cli::IoError> {
+    loaded = Result<model::WorkspaceModule[], project::IoError> from project::Project.load(root)
+    if (loaded.isErr) {
+      return Err(self.ioError(loaded.error))
+    }
+    return Ok(loaded.value)
+  }
+
+  /// Lift a `project` I/O failure into the CLI's exit-code error.
+  ioError(e: project::IoError): cli::IoError;
 }
 
 /// `pds init` — bootstrap a workspace: write `pds.toml` and a starter `main.pds`.
@@ -103,7 +145,7 @@ component InitCmd for cli::Cli {
 /// hosts it over HTTP; `--watch` adds a filesystem watcher and browser live
 /// reload.
 /// #headline
-public component DocCmd for cli::Cli {
+component DocCmd for cli::Cli {
   /// Generate the documentation site for the workspace containing `path`.
   /// Invoked by the Developer (`context::Developer.renderDocs`).
   /// #headline
@@ -116,10 +158,10 @@ public component DocCmd for cli::Cli {
     if (project.isErr) {
       return Err(project.error)
     }
-    diagnostics = syntax::Diagnostic[] from model::Checks.checkWorkspace(project.value.modules)
+    diagnostics = syntax::Diagnostic[] from model::Model.checkWorkspace(project.value.modules)
     self.report(diagnostics)
-    graph = Graph from model::Builder.graph(project.value.modules)
-    site = Result<Site, RenderError> from doc::SiteBuilder.render(graph, project.value.config)
+    graph = Graph from model::Model.graph(project.value.modules)
+    site = Result<Site, RenderError> from doc::Doc.render(graph, project.value.config)
     written = Result<void, IoError> from self.write(site.value, project.value.outDir)
     if (written.isErr) {
       return Err(written.error)
@@ -160,7 +202,7 @@ public component DocCmd for cli::Cli {
 component CheckCmd for cli::Cli {
   #[manual]
   public run(text: string): Result<void, cli::IoError> {
-    diagnostics = syntax::Diagnostic[] from model::Checks.check(text)
+    diagnostics = syntax::Diagnostic[] from model::Model.check(text)
     if (self.anyError(diagnostics)) {
       err = IoError from { diagnostics }
       return Err(err)
@@ -179,7 +221,7 @@ component CheckCmd for cli::Cli {
 component EvalCmd for cli::Cli {
   #[manual]
   public run(text: string): Result<void, cli::IoError> {
-    diagnostics = syntax::Diagnostic[] from model::Checks.check(text)
+    diagnostics = syntax::Diagnostic[] from model::Model.check(text)
     if (self.anyError(diagnostics)) {
       err = IoError from { diagnostics }
       return Err(err)
@@ -197,7 +239,7 @@ component EvalCmd for cli::Cli {
 component FmtCmd for cli::Cli {
   #[manual]
   public run(text: string, write: bool): Result<void, format::FormatError> {
-    out = Result<string, FormatError> from format::Formatter.format(text)
+    out = Result<string, FormatError> from format::Format.format(text)
     if (out.isErr) {
       return Err(out.error)
     }
@@ -220,7 +262,7 @@ component FmtCmd for cli::Cli {
 component TokensCmd for cli::Cli {
   #[manual]
   public run(text: string): Result<void, cli::IoError> {
-    stream = string from syntax::Lexer.renderTokens(text)
+    stream = string from syntax::Syntax.renderTokens(text)
     self.print(stream)
     return Ok
   }
@@ -231,11 +273,119 @@ component TokensCmd for cli::Cli {
 
 /// `pds lsp` — boot a Tokio runtime and launch the language server over stdio.
 /// Spawned as a child process by an editor (`context::Editor.openDocument`).
-public component LspHost for cli::Cli {
+component LspHost for cli::Cli {
   public run(): Result<void, cli::IoError> {
-    lsp::Server.runStdio()
+    lsp::Lsp.runStdio()
     return Ok
   }
+}
+
+/// `pds lang` (alias `spec`) and `pds skill` — print the bundled, version-pinned
+/// language reference and the authoring skill to stdout. Fed to an LLM to author
+/// `.pds`; no workspace needed.
+component ReferenceCmd for cli::Cli {
+  /// Print the bundled language reference (spec, patterns, conformance/grammar).
+  #[manual]
+  lang(): void;
+  /// Print the bundled authoring skill — the method for modelling with `.pds`.
+  #[manual]
+  skill(): void;
+}
+
+/// `pds outline` — load the workspace, build its graph, and print the symbol
+/// outline as JSON: each node's `fqn`, `name`, `kind`, `parent`, whether it is a
+/// triggered flow entry, and its declaration site. The structure tree an editor
+/// draws.
+component OutlineCmd for cli::Cli {
+  #[manual]
+  public run(path: string): Result<void, cli::IoError> {
+    root = Result<string, IoError> from cli::Loader.findRoot(path)
+    if (root.isErr) {
+      return Err(root.error)
+    }
+    project = Result<Workspace, IoError> from cli::Loader.load(root.value)
+    if (project.isErr) {
+      return Err(project.error)
+    }
+    graph = Graph from model::Model.graph(project.value.modules)
+    self.print(self.render(graph))
+    return Ok
+  }
+
+  /// Serialise each graph node to an outline row — fqn, name, kind, parent, the
+  /// triggered-flow flag, and its declaration module/line/col — as JSON.
+  render(graph: model::Graph): string;
+
+  /// Print the outline JSON to stdout.
+  print(json: string): void;
+}
+
+/// `pds svg` — render a single diagram to a self-contained SVG on stdout. With
+/// `--symbol`, draws that symbol's fitting view; otherwise draws `--view` (paired
+/// with `--target`) over the whole workspace. The static counterpart of the IDE
+/// canvas.
+component SvgCmd for cli::Cli {
+  #[manual]
+  public run(path: string, symbol: string, view: string, target: string, theme: string): Result<void, cli::IoError> {
+    root = Result<string, IoError> from cli::Loader.findRoot(path)
+    if (root.isErr) {
+      return Err(root.error)
+    }
+    project = Result<Workspace, IoError> from cli::Loader.load(root.value)
+    if (project.isErr) {
+      return Err(project.error)
+    }
+    graph = Graph from model::Model.graph(project.value.modules)
+    scene = Result<Scene, EmitError> from self.projectChosen(graph, symbol, view, target)
+    if (scene.isErr) {
+      return Err(self.emitError(scene.error))
+    }
+    self.print(emit::Emit.render(scene.value))
+    return Ok
+  }
+
+  /// Pick the view from `--symbol` or `--view`/`--target` and project it.
+  projectChosen(graph: model::Graph, symbol: string, view: string, target: string): Result<emit::Scene, emit::EmitError>;
+
+  /// Lift an emit projection failure into the CLI's exit-code error.
+  emitError(e: emit::EmitError): cli::IoError;
+
+  /// Print the SVG document to stdout.
+  print(svg: string): void;
+}
+
+/// `pds add`/`install`/`update`/`remove`/`list` — git workspace dependency
+/// management (§8.3). `add` resolves a git URL into `pds.toml` + `pds.lock` and
+/// vendors it; `install` restores `pds_modules/` from the lock; `update`
+/// re-pins; `remove` drops one; `list` discovers every workspace under a root.
+/// Resolution delegates to `project`; fetching is the CLI's I/O.
+component Deps for cli::Cli {
+  /// Add a git dependency: pin it in `pds.toml`/`pds.lock` and vendor its modules.
+  #[manual]
+  add(url: string, tag: string, rev: string, branch: string, path: string, name: string): Result<void, cli::IoError>;
+
+  /// Restore `pds_modules/` from `pds.lock`.
+  #[manual]
+  install(): Result<void, cli::IoError>;
+
+  /// Re-resolve git dependencies, repinning `pds.lock` to current commits.
+  #[manual]
+  update(): Result<void, cli::IoError>;
+
+  /// Remove a dependency from `pds.toml` and `pds.lock`.
+  #[manual]
+  remove(name: string): Result<void, cli::IoError>;
+
+  /// List every `pds.toml` workspace under a root directory.
+  #[manual]
+  list(root: string): Result<void, cli::IoError>;
+}
+
+/// `pds upgrade` — download a release and install it over the running binary.
+component UpgradeCmd for cli::Cli {
+  /// Install the named release (default: latest) over the current binary.
+  #[manual]
+  run(version: string): Result<void, cli::IoError>;
 }
 
 /// HTTP host for the generated site (`--serve`/`--watch`): `tiny_http` on
@@ -274,11 +424,42 @@ feature CompositionRoot for cli::Cli {
 
 /// argv is parsed into one subcommand and dispatched.
 feature ParseSubcommand for cli::Cli {
-  given "a command line for one of init, doc, check, eval, fmt, tokens, or lsp"
+  given "a command line for one of init, doc, check, eval, fmt, tokens, outline, svg, lsp, lang, skill, add, install, update, remove, list, or upgrade"
   when "the CLI starts"
   then "clap parses argv into the chosen subcommand and its options"
   and "the matching command handler is invoked"
   but "an unrecognised command or bad option is rejected with a usage error"
+}
+
+/// `pds outline` prints the workspace symbol tree as JSON.
+feature OutlineAsJson for cli::OutlineCmd {
+  given "a workspace under the path"
+  when "the developer runs `pds outline`"
+  then "the workspace loads and its graph is built"
+  and "each node's fqn, name, kind, parent, triggered flag, and declaration site is printed as JSON"
+}
+
+/// `pds svg` renders one diagram to a self-contained SVG.
+feature RenderOneSvg for cli::SvgCmd {
+  given "a workspace and either a --symbol or a --view/--target selection"
+  when "the developer runs `pds svg`"
+  then "the chosen view is projected and rendered to a standalone SVG on stdout"
+  but "a missing or wrong-kind target fails non-zero with the projection error"
+}
+
+/// Dependency commands manage git workspaces via pds.toml and pds.lock (§8.3).
+feature ManageDependencies for cli::Deps {
+  given "a workspace declaring git dependencies"
+  when "the developer runs add, install, update, remove, or list"
+  then "add pins and vendors a dependency, install restores from the lock, update re-pins, remove drops one"
+  and "resolution delegates to the project crate while fetching is the CLI's I/O"
+}
+
+/// `pds lang`/`pds skill` print the bundled reference and authoring skill.
+feature PrintReference for cli::ReferenceCmd {
+  given "no workspace is needed"
+  when "the developer runs `pds lang` or `pds skill`"
+  then "the version-pinned language reference or the authoring skill is printed to stdout"
 }
 
 /// `pds init` bootstraps a workspace and refuses to clobber an existing one.

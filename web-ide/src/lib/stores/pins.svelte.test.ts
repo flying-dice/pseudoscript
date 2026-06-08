@@ -27,13 +27,13 @@ describe("PinStore", () => {
     expect(pins.doc).toEqual(emptyLayoutDoc());
   });
 
-  it("pin/freeze/unpin/clear delegate and reassign doc for reactivity", () => {
+  it("pin/unpin/clear delegate and reassign doc for reactivity", () => {
     const before = pins.doc;
     pins.pin("c4|", { fqn: "a", row: 1, col: 1 });
     expect(pins.doc).not.toBe(before);
     expect(getPins(pins.doc, "c4|")).toEqual([{ fqn: "a", row: 1, col: 1 }]);
 
-    pins.freeze("c4|", [{ fqn: "a", row: 0, col: 0 }, { fqn: "b", row: 0, col: 1 }]);
+    pins.pin("c4|", { fqn: "b", row: 0, col: 1 });
     expect(getPins(pins.doc, "c4|")).toHaveLength(2);
 
     pins.unpin("c4|", "a");

@@ -1,7 +1,8 @@
 //! doc — resolved graph to a Svelte-rendered documentation site (crate `pseudoscript-doc`).
 //!
-//! The headline subsystem (ADR-017). Sits above `model` and `emit`: turns a
-//! resolved `model::Graph` into a cargo-doc-style site. Each page is authored in
+//! The headline subsystem (ADR-017). Sits above `model`, `emit`, and `layout`:
+//! turns a resolved `model::Graph` into a cargo-doc-style site, pre-positioning
+//! each embedded sequence figure with the `layout` engine. Each page is authored in
 //! Svelte and server-rendered through an embedded JavaScript engine at generation
 //! time, so the shipped tool needs no JS toolchain — only the prebuilt bundles. The
 //! server pass renders the page chrome and all text for first paint; diagrams ship
@@ -11,7 +12,15 @@
 
 /// Site presentation, filled by the CLI from the `[doc]` table of `pds.toml`.
 /// `[doc]` tunes presentation only, never what is documented.
-public data DocConfig { name: string, theme: doc::Theme, logo: string }
+public data DocConfig { name: string, theme: doc::Theme, logo: string, docs: doc::DocGroup[] }
+
+/// One `[[doc.sidebar]]` group of authored Markdown pages: a heading and its
+/// ordered pages, rendered above the auto-generated module tree.
+public data DocGroup { title: string, pages: doc::DocPage[] }
+
+/// One authored Markdown page: its sidebar title and source path (relative to
+/// `pds.toml`), from which the host and this crate derive the same stable slug.
+public data DocPage { title: string, path: string }
 
 /// Doc-site colour scheme, written as the `data-theme` attribute on the root
 /// `<html>` to select the light or dark CSS variable set.
@@ -62,19 +71,7 @@ public data ModuleCard { name: string, href: string, meta: string }
 
 /// One node's documentation section: head fields, `///` docs, tags, relationship
 /// groups, scenario cards, and embedded diagrams.
-public data NodeSection {
-  id: string,
-  kind: string,
-  name: string,
-  fqn: string,
-  visibility: string,
-  summary: string,
-  extended: string,
-  tags: string[],
-  relationships: doc::RelGroup[],
-  scenarios: doc::ScenarioCard[],
-  diagrams: doc::Diagram[]
-}
+public data NodeSection { id: string, kind: string, name: string, fqn: string, visibility: string, summary: string, extended: string, tags: string[], relationships: doc::RelGroup[], scenarios: doc::ScenarioCard[], diagrams: doc::Diagram[] }
 
 /// One relationship group ("Parent", "Inbound", or "Outbound") and its endpoints.
 public data RelGroup { title: string, items: doc::RelItem[] }
@@ -105,21 +102,26 @@ public data RenderedPage { head: string, body: string }
 /// engine, or the props codec — never user model data; well-formed props always
 /// render.
 public data RenderError =
-  | EngineFailed { message: string }
-  | RenderCallFailed { message: string }
-  | CodecFailed { message: string }
+  | Engine { message: string }
+  | Call { message: string }
+  | Codec { message: string }
 
 /// `crates/pseudoscript-doc`. Turns a resolved graph into a Svelte-rendered,
 /// cargo-doc-style site: each node's `///` docs and relationships on its page, C4
 /// and sequence diagrams as interactive client islands. Pure: returns in-memory
 /// files, the CLI writes.
 /// #headline
-public container Doc for context::Pseudoscript;
+public container Doc for context::Pseudoscript {
+  /// Render the documentation site for `graph` under `config`.
+  public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
+    return doc::SiteBuilder.render(graph, config)
+  }
+}
 
 /// Orchestrates the whole site: build the URL map, project each page's props, server
 /// render it through the SSR engine, wrap it in the document shell, and ship the
 /// shared assets. Pure: returns in-memory `Site` files, writes none.
-public component SiteBuilder for doc::Doc {
+component SiteBuilder for doc::Doc {
   /// Render the documentation site for `graph` under `config`: build the FQN→URL
   /// map, render the index and a page per module (sorted by FQN), then add the
   /// shared assets. Any failed server-render aborts with its `RenderError`.
@@ -221,12 +223,16 @@ component Ssr for doc::Doc {
 /// Owns the document shell that wraps each server-rendered body — the part Rust
 /// renders, not Svelte: doctype, `<html data-theme>`, font + stylesheet links, the
 /// hydration data, and the client-bundle script. The rendered body mounts into
-/// `#app`, which the client hydrates.
+/// `
+/// `, which the client hydrates.
+/// #app
 component Shell for doc::Doc {
   /// Wrap a server-rendered page in the full HTML document: escape the title and
   /// theme into the document attributes, embed the props as `window.__DATA__` for
   /// hydration, link the depth-relative `style.css` and `client.js`, and mount the
-  /// body into `#app`.
+  /// body into `
+  /// `.
+  /// #app
   wrap(path: string, props: doc::PageProps, rendered: doc::RenderedPage): string {
     title = string from doc::Escape.text(props.site.name)
     return self.document(path, title, props, rendered)
@@ -333,16 +339,32 @@ component Diagrams for doc::Doc {
   /// `Empty` placeholder on an `EmitError` (e.g. an empty boundary), so a failed
   /// projection never aborts the build.
   figure(graph: model::Graph, view: emit::View, eyebrow: string, caption: string): doc::Diagram {
-    scene = Result<Scene, EmitError> from emit::Projector.project(graph, view)
+    scene = Result<Scene, EmitError> from emit::Emit.project(graph, view)
     if (scene.isErr) {
       return Empty from { caption, eyebrow }
     }
     return self.embed(scene.value, caption)
   }
 
-  /// Wrap a laid-out scene in its matching figure: a C4 scene as a `C4` diagram, a
-  /// sequence scene as a `Sequence` diagram.
-  embed(scene: emit::Scene, caption: string): doc::Diagram;
+  /// Wrap a laid-out scene in its matching figure: a C4 scene as a `C4` diagram; a
+  /// sequence scene is pre-positioned by the `layout` sequence engine so the
+  /// diagram island's props ship ready-to-draw geometry.
+  embed(scene: emit::Scene, caption: string): doc::Diagram {
+    if (scene.isSequenceScene) {
+      placed = layout::SequenceLayout from layout::Layout.layout(self.asSequenceDiagram(scene))
+      return self.sequenceFigure(scene, caption, placed)
+    }
+    return self.c4Figure(scene, caption)
+  }
+
+  /// Translate a sequence scene into the `layout` engine's structural diagram.
+  asSequenceDiagram(scene: emit::Scene): layout::Diagram;
+
+  /// Build a `Sequence` figure carrying the pre-positioned geometry.
+  sequenceFigure(scene: emit::Scene, caption: string, placed: layout::SequenceLayout): doc::Diagram;
+
+  /// Build a `C4` figure carrying the laid-out scene.
+  c4Figure(scene: emit::Scene, caption: string): doc::Diagram;
 
   /// One sequence figure per triggered callable the node owns; a callable with no
   /// trigger is skipped, since only entry points get a sequence diagram.
@@ -430,94 +452,94 @@ component Escape for doc::Doc {
 /// #headline
 feature GenerateDocSite for doc::Doc {
   given "a resolved graph and the [doc] configuration"
-  when  "the site is rendered"
-  then  "an index, one page per module, and a section per node are produced"
-  and   "the files are returned in memory, with no filesystem I/O"
+  when "the site is rendered"
+  then "an index, one page per module, and a section per node are produced"
+  and "the files are returned in memory, with no filesystem I/O"
 }
 
 /// Generation is deterministic and pure.
 feature DeterministicGeneration for doc::SiteBuilder {
   given "the same resolved graph and configuration rendered twice"
-  when  "the two sites are compared"
-  then  "modules and nodes are ordered by FQN with no clock or randomness consulted"
-  and   "the file lists are byte-for-byte identical"
+  when "the two sites are compared"
+  then "modules and nodes are ordered by FQN with no clock or randomness consulted"
+  and "the file lists are byte-for-byte identical"
 }
 
 /// Pages are server-rendered through an embedded JS engine for first paint.
 feature ServerRenderedFirstPaint for doc::Ssr {
   given "a page's precomputed props"
-  when  "the page is server-rendered"
-  then  "the page chrome and all text content are present in the emitted HTML before any script runs"
-  and   "the renderer needs no JavaScript toolchain, only the embedded prebuilt bundle"
+  when "the page is server-rendered"
+  then "the page chrome and all text content are present in the emitted HTML before any script runs"
+  and "the renderer needs no JavaScript toolchain, only the embedded prebuilt bundle"
 }
 
 /// Each page embeds its props so client islands hydrate without refetching.
 feature HydrationDataEmbedded for doc::Shell {
   given "a server-rendered page"
-  when  "the document shell is assembled"
-  then  "the page props are embedded as window.__DATA__ and the client bundle is linked"
-  and   "the rendered body is mounted in #app for the client to hydrate"
+  when "the document shell is assembled"
+  then "the page props are embedded as window.__DATA__ and the client bundle is linked"
+  and "the rendered body is mounted in #app for the client to hydrate"
 }
 
 /// Diagrams ship as scene geometry and render as interactive client islands.
 feature InteractiveDiagramIslands for doc::Diagrams {
   given "a node that anchors a C4 boundary or owns a triggered callable"
-  when  "its page is rendered"
-  then  "a system carries a container diagram and a container carries a component diagram"
-  and   "each triggered callable carries its sequence diagram"
-  and   "each diagram's laid-out scene geometry is carried in the page data for a client island to draw"
+  when "its page is rendered"
+  then "a system carries a container diagram and a container carries a component diagram"
+  and "each triggered callable carries its sequence diagram"
+  and "each diagram's laid-out scene geometry is carried in the page data for a client island to draw"
 }
 
 /// A failed projection degrades to a placeholder rather than aborting.
 feature ProjectionFailureDegrades for doc::Diagrams {
   given "a view that fails to project with an EmitError"
-  when  "the figure is built"
-  then  "an Empty placeholder figure is produced in place of the diagram"
-  but   "the build continues and the rest of the site still renders"
+  when "the figure is built"
+  then "an Empty placeholder figure is produced in place of the diagram"
+  but "the build continues and the rest of the site still renders"
 }
 
 /// Feature scenarios render on their target node's page (§9.3).
 feature RenderScenarioCards for doc::Scenarios {
   given "a model whose nodes carry `feature` scenarios"
-  when  "the site is generated"
-  then  "each node's page lists its scenarios as given/when/then cards"
-  but   "a node with no features renders no scenarios section"
+  when "the site is generated"
+  then "each node's page lists its scenarios as given/when/then cards"
+  but "a node with no features renders no scenarios section"
 }
 
 /// Cross-links resolve to anchors; unresolved references stay plain text.
 feature CrossLinksResolve for doc::Urls {
   given "a relationship endpoint named by FQN"
-  when  "the link is rendered"
-  then  "an FQN naming a real node becomes an anchor link to its section"
-  but   "an unresolved or synthesised endpoint renders as plain text"
+  when "the link is rendered"
+  then "an FQN naming a real node becomes an anchor link to its section"
+  but "an unresolved or synthesised endpoint renders as plain text"
 }
 
 /// Shared assets ship once and every page links them.
 feature SharedAssetsShipOnce for doc::Assets {
   given "a multi-page site"
-  when  "it is generated"
-  then  "style.css and client.js are emitted once at the site root"
-  and   "every page links them by a depth-relative path rather than inlining them"
+  when "it is generated"
+  then "style.css and client.js are emitted once at the site root"
+  and "every page links them by a depth-relative path rather than inlining them"
 }
 
 /// The theme is chosen from the `[doc]` configuration.
 feature ThemeFromConfig for doc::Shell {
   given "a DocConfig carrying a light or dark theme"
-  when  "the document shell is rendered"
-  then  "the root html carries the matching data-theme attribute"
+  when "the document shell is rendered"
+  then "the root html carries the matching data-theme attribute"
 }
 
 /// Document attributes are HTML-escaped; content is escaped by the renderer.
 feature EscapeDocumentText for doc::Escape {
   given "a site title containing HTML-significant characters"
-  when  "the document shell is assembled"
-  then  "the five significant characters are escaped in the document attributes"
-  but   "page content text is carried raw and escaped by the renderer on interpolation"
+  when "the document shell is assembled"
+  then "the five significant characters are escaped in the document attributes"
+  but "page content text is carried raw and escaped by the renderer on interpolation"
 }
 
 /// The sidebar tree mirrors the C4 hierarchy.
 feature SidebarMirrorsHierarchy for doc::Pages {
   given "modules whose nodes nest containers, components, and declarations"
-  when  "the sidebar is rendered"
-  then  "each module holds its top-level nodes and every node nests its same-module children"
+  when "the sidebar is rendered"
+  then "each module holds its top-level nodes and every node nests its same-module children"
 }

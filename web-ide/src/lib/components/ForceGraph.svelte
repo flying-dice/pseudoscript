@@ -91,7 +91,7 @@
   $effect(() => { const s = flowStep; if (popToStep && s >= 0) popToStep(s); });
 
   const SIZE: Record<string, number> = { system: 6, container: 3.4, component: 1.9, person: 3 };
-  const REL_OPACITY = 0.3;
+  const REL_OPACITY = 0.15;
 
   onMount(() => {
     const cv = canvas!, tip = tipEl!;
@@ -111,6 +111,9 @@
     const treeColor = cssColor("--ink-faint", "#71747f");
     const relColor = cssColor("--ink-soft", "#aeb0ba");
     const hotColor = cssColor("--accent", "#ff5a36");
+    // A pale sheet vs the dark void: drives additive-vs-alpha choices throughout (additive
+    // glow is a no-op on near-white, so the bright effects switch to alpha there).
+    const lightBg = bgColor.r + bgColor.g + bgColor.b > 1.5;
 
     // ---- containment + routing ----------------------------------------------
     // `ancestors`/`routeOf` are the pure gateway-routing logic (tested in graph-route.ts).
@@ -175,8 +178,12 @@
     const camera = new THREE.PerspectiveCamera(55, W() / H(), 0.1, 8000);
     const controls = new OrbitControls(camera, cv);
     controls.enableDamping = true;
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.85); keyLight.position.set(1, 1, 1); scene.add(keyLight);
+    // Lighting builds form, not just brightness: a hemisphere light (white sky → backdrop-
+    // tinted ground) wraps each orb in a top-to-bottom gradient, an angled key light carves
+    // the highlight, and a dim opposite fill keeps the shadow side from going flat-black.
+    scene.add(new THREE.HemisphereLight(0xffffff, bgColor, 0.5));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.8); keyLight.position.set(1, 1.3, 0.7); scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.22); fillLight.position.set(-1, -0.2, -0.6); scene.add(fillLight);
 
     // Nodes: every placed sphere in ONE InstancedMesh — a single draw call for the lot
     // (vs. one per node). Selection dims/brightens via per-instance colour, not opacity,
@@ -184,7 +191,7 @@
     const placed = snapshot.nodes.filter((n) => pos.has(n.id));
     const nodeIdx = new Map(placed.map((n, i) => [n.id, i] as const));
     const baseCol = placed.map((n) => (COLOR[n.level] ?? fallbackColor).clone());
-    const nodeGeo = new THREE.SphereGeometry(1, 12, 8);
+    const nodeGeo = new THREE.SphereGeometry(1, 24, 16); // doubled segments per axis — smoother orbs (shared by one InstancedMesh, so cost is paid once)
     const nodeMat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.15 });
     const nodes3d = new THREE.InstancedMesh(nodeGeo, nodeMat, placed.length);
     const dummy = new THREE.Object3D();
@@ -199,6 +206,7 @@
     nodes3d.instanceMatrix.needsUpdate = true;
     if (nodes3d.instanceColor) nodes3d.instanceColor.needsUpdate = true;
     scene.add(nodes3d);
+
     // Brighten the nodes in `set`, darken the rest; `null` restores all. Colour-only.
     const dimC = new THREE.Color();
     const paintNodes = (set: Set<string> | null) => {
@@ -329,26 +337,35 @@
     // One round dot per bead (no trail — cheaper, and reads cleanly on a busy graph).
     const REST_SPEED = 0.06; // one gentle constant bead speed along every filament
     let beadsOn = true; // resting beads are hidden while a flow is selected — skip their per-frame work
+    const beadShown = new Uint8Array(particles.length).fill(1); // per-bead visibility; hidden beads are parked off-screen, not recoloured
+    // Additive glow reads on the dark sheet but is invisible on a pale one (adding light
+    // to near-white is a no-op) — so alpha-blend the beads as solid coloured dots there.
+    const beadBlend = lightBg ? THREE.NormalBlending : THREE.AdditiveBlending;
+    // Alpha-blended dots sit at full brightness on the pale sheet; darken them so they
+    // read as crisp coloured beads, not pastel smudges. (Additive beads stay untouched.)
+    const beadDim = lightBg ? 0.55 : 1;
     const flowArr = new Float32Array(particles.length * 3);
     const flowColArr = new Float32Array(particles.length * 3);
     for (let i = 0; i < particles.length; i++) {
       const c = particles[i].color, o = i * 3; // each bead carries its flow's colour
-      flowColArr[o] = c.r; flowColArr[o + 1] = c.g; flowColArr[o + 2] = c.b;
+      flowColArr[o] = c.r * beadDim; flowColArr[o + 1] = c.g * beadDim; flowColArr[o + 2] = c.b * beadDim;
     }
     const flowGeo = new THREE.BufferGeometry();
     flowGeo.setAttribute("position", new THREE.BufferAttribute(flowArr, 3));
     flowGeo.setAttribute("color", new THREE.BufferAttribute(flowColArr, 3));
-    // A soft round sprite so particles are dots, not squares (PointsMaterial's default).
+    // A round sprite so particles are dots, not squares (PointsMaterial's default). The
+    // dark sheet wants a soft glow (additive); the pale sheet wants a near-solid disc —
+    // a soft halo just reads as a pale smudge there, so hold full alpha almost to the rim.
     const dotCanvas = document.createElement("canvas");
     dotCanvas.width = dotCanvas.height = 64;
     const dctx = dotCanvas.getContext("2d")!;
     const grad = dctx.createRadialGradient(32, 32, 0, 32, 32, 32);
     grad.addColorStop(0, "rgba(255,255,255,1)");
-    grad.addColorStop(0.5, "rgba(255,255,255,0.85)");
+    grad.addColorStop(lightBg ? 0.82 : 0.5, lightBg ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.85)");
     grad.addColorStop(1, "rgba(255,255,255,0)");
     dctx.fillStyle = grad; dctx.beginPath(); dctx.arc(32, 32, 32, 0, Math.PI * 2); dctx.fill();
     const dotTex = new THREE.CanvasTexture(dotCanvas);
-    const flowMat = new THREE.PointsMaterial({ vertexColors: true, map: dotTex, size: 2.2, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    const flowMat = new THREE.PointsMaterial({ vertexColors: true, map: dotTex, size: 2.2, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: beadBlend, depthWrite: false });
     scene.add(new THREE.Points(flowGeo, flowMat));
     // Position `out` at fraction `t` along a polyline (its points + cumulative lengths).
     const along = ({ pts, cum, total }: Poly, t: number, out: THREE.Vector3) => {
@@ -358,18 +375,20 @@
       out.copy(pts[k]).lerp(pts[k + 1], (d - cum[k]) / seg);
     };
     // Show only the beads on filaments matching `keep` (a selection); `null` shows all.
-    // Hidden beads get colour (0,0,0) — invisible under additive blending. `beadsOn`
-    // lets the frame loop skip moving beads no one can see.
+    // Hidden beads are parked at NaN — the GPU discards the point, so they vanish under
+    // any blend mode (a recolour-to-transparent would smudge over orbs the bead overlaps).
+    // `beadsOn` lets the frame loop skip moving beads no one can see; the loop only
+    // repositions shown beads, so parked ones stay parked.
     const filterFlow = (keep: ((f: Filament) => boolean) | null) => {
       let any = false;
       for (let i = 0; i < particles.length; i++) {
-        const c = particles[i].color, o = i * 3;
         const on = !keep || keep(filaments[particles[i].fil]);
         if (on) any = true;
-        flowColArr[o] = on ? c.r : 0; flowColArr[o + 1] = on ? c.g : 0; flowColArr[o + 2] = on ? c.b : 0;
+        beadShown[i] = on ? 1 : 0;
+        if (!on) { const o = i * 3; flowArr[o] = flowArr[o + 1] = flowArr[o + 2] = NaN; }
       }
       beadsOn = any;
-      flowGeo.attributes.color.needsUpdate = true;
+      flowGeo.attributes.position.needsUpdate = true;
     };
 
     // The flow request: you pick the step manually (the whole flow stays highlighted),
@@ -380,7 +399,7 @@
     const streamGeo = new THREE.BufferGeometry();
     streamGeo.setAttribute("position", new THREE.BufferAttribute(streamArr, 3));
     streamGeo.setDrawRange(0, 0);
-    const streamMat = new THREE.PointsMaterial({ color: hotColor, map: dotTex, size: 3.6, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    const streamMat = new THREE.PointsMaterial({ color: hotColor.clone().multiplyScalar(beadDim), map: dotTex, size: 3.6, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: beadBlend, depthWrite: false });
     scene.add(new THREE.Points(streamGeo, streamMat));
     const FLOW_SPEED = 55; // world units / second — one constant crossing speed
     let stepRoutes: Poly[] = [];
@@ -452,6 +471,14 @@
     controls.target.copy(centre);
     camera.position.copy(centre).add(new THREE.Vector3(size.x * 0.4, size.y * 0.3, Math.max(size.x, size.y, size.z) * 1.5 + 40));
     controls.update();
+
+    // Distance fog tinted to the backdrop: nearer orbs read crisp, far ones recede into
+    // the sheet, adding aerial depth. Camera-relative, so it tracks orbit/zoom for free.
+    // Scaled off the framed scene so it fits any model (near just ahead of the front face,
+    // far past the back so distant nodes fade without vanishing).
+    const maxDim = Math.max(size.x, size.y, size.z, 1);
+    const camDist = camera.position.distanceTo(centre);
+    scene.fog = new THREE.Fog(bgColor, camDist - maxDim * 0.5, camDist + maxDim * 1.3);
 
     // An *infinite* ground grid: a huge horizontal plane whose lines are drawn in
     // world space and fade with distance, so it reads as an endless floor (a
@@ -630,6 +657,7 @@
       flowT += dt;
       if (beadsOn) {
         for (let i = 0; i < particles.length; i++) {
+          if (!beadShown[i]) continue; // parked at NaN by filterFlow — leave it hidden
           const p = particles[i];
           let t = (flowT * REST_SPEED + p.off) % 1; if (t < 0) t += 1;
           along(filaments[p.fil], t, flowTmp);

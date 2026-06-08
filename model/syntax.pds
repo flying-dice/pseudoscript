@@ -88,14 +88,7 @@ public data AliasDecl { name: string, target: syntax::Path, leadingTrivia: synta
 
 /// A documented, annotated structural declaration (§4): the shared
 /// `doc → macros → public` prefix plus the structural payload.
-public data Declaration {
-  doc: syntax::DocBlock,
-  macros: syntax::Macro[],
-  isPublic: bool,
-  kind: syntax::DeclKind,
-  leadingTrivia: syntax::SpannedTrivia[],
-  span: syntax::Span
-}
+public data Declaration { doc: syntax::DocBlock, macros: syntax::Macro[], isPublic: bool, kind: syntax::DeclKind, leadingTrivia: syntax::SpannedTrivia[], span: syntax::Span }
 
 /// The structural payload of a declaration: a node (person/system/container/
 /// component) or a `data` type.
@@ -106,13 +99,7 @@ public data DeclKind =
 /// A `person` / `system` / `container` / `component` declaration. `parent` is
 /// the `for <Parent>` path, present for container/component. `body` is the
 /// disclosed member list, or absent for a black box (`;`).
-public data NodeDecl {
-  kind: syntax::NodeKind,
-  name: string,
-  parent: syntax::Path,
-  body: syntax::BodyMember[],
-  span: syntax::Span
-}
+public data NodeDecl { kind: syntax::NodeKind, name: string, parent: syntax::Path, body: syntax::BodyMember[], span: syntax::Span }
 
 /// The structural keyword class of a node.
 public data NodeKind =
@@ -145,17 +132,7 @@ public data Variant { name: string, record: syntax::Field[], span: syntax::Span 
 
 /// A callable (implicit operation) declared inside a disclosed node (§5.1).
 /// `returnTy` absent means `void`; `body` absent means a black box (`;`).
-public data CallableDecl {
-  doc: syntax::DocBlock,
-  macros: syntax::Macro[],
-  isPublic: bool,
-  name: string,
-  params: syntax::Param[],
-  returnTy: syntax::Type,
-  body: syntax::Block,
-  leadingTrivia: syntax::SpannedTrivia[],
-  span: syntax::Span
-}
+public data CallableDecl { doc: syntax::DocBlock, macros: syntax::Macro[], isPublic: bool, name: string, params: syntax::Param[], returnTy: syntax::Type, body: syntax::Block, leadingTrivia: syntax::SpannedTrivia[], span: syntax::Span }
 
 /// A callable parameter `name: Type`.
 public data Param { name: string, ty: syntax::Type, span: syntax::Span }
@@ -163,14 +140,7 @@ public data Param { name: string, ty: syntax::Type, span: syntax::Span }
 /// A `feature Name for Path { given* when+ then+ }` BDD scenario (§5.2). Steps
 /// are prose, not resolved against the model; the strict given→when→then order
 /// is enforced by the parser. A feature takes no macros and no `public`.
-public data FeatureDecl {
-  doc: syntax::DocBlock,
-  name: string,
-  target: syntax::Path,
-  steps: syntax::FeatureStep[],
-  leadingTrivia: syntax::SpannedTrivia[],
-  span: syntax::Span
-}
+public data FeatureDecl { doc: syntax::DocBlock, name: string, target: syntax::Path, steps: syntax::FeatureStep[], leadingTrivia: syntax::SpannedTrivia[], span: syntax::Span }
 
 /// One step line in a feature flow: a step keyword and its prose string (§5.2).
 public data FeatureStep { kind: syntax::StepKind, text: string, span: syntax::Span }
@@ -240,10 +210,14 @@ public data Path { segments: string[], span: syntax::Span }
 
 /// A `///` doc block split into summary and extended on the first blank `///`
 /// line (ADR-009): summary feeds compact diagrams, extended feeds tooltips,
-/// tags carry the `#name` markers.
+/// tags carry the `
+/// ` markers.
+/// #name
 public data DocBlock { summary: string[], extended: string[], tags: syntax::Tag[] }
 
-/// A `#name` tag from a doc block, including the leading `#` (§2.4).
+/// A `
+/// ` tag from a doc block, including the leading `#` (§2.4).
+/// #name
 public data Tag { text: string, span: syntax::Span }
 
 /// A `#[..]` macro (outer attribute) on a callable (§2.4): its name path and
@@ -270,14 +244,24 @@ public data Parsed { ast: syntax::Module, diagnostics: syntax::Diagnostic[] }
 /// `crates/pseudoscript-syntax`. The foundation crate: source text to tokens
 /// and a typed AST, emitting the shared `Diagnostic`. WASM-safe and I/O-free.
 /// #critical
-public container Syntax for context::Pseudoscript;
+public container Syntax for context::Pseudoscript {
+  /// Render the conformance token stream for source text.
+  public renderTokens(text: string): string {
+    return syntax::Lexer.renderTokens(text)
+  }
+
+  /// Parse source text into a tree plus diagnostics.
+  public parse(text: string): syntax::Parsed {
+    return syntax::Parser.parse(text)
+  }
+}
 
 /// Hand-written lexer for LANG.md §2. One pass yields the conformance token
 /// stream (comments discarded, `///`→`Doc`+`Tag`, `//!`→`InnerDoc`) and
 /// full-fidelity trivia for the formatter. Infallible: lexical anomalies surface
 /// as parser diagnostics, never a failed lex.
 /// #critical
-public component Lexer for syntax::Syntax {
+component Lexer for syntax::Syntax {
   /// The conformance token stream (LANG.md §2).
   tokenize(text: string): syntax::Token[] {
     lexed = Lexed from self.lex(text)
@@ -289,10 +273,12 @@ public component Lexer for syntax::Syntax {
   /// macro), `"` (string), a digit, an identifier-start, or punctuation.
   lex(text: string): syntax::Lexed;
 
-  /// Splits a `///` line into `Doc` prose segments and `Tag` tokens. A `#name`
+  /// Splits a `///` line into `Doc` prose segments and `Tag` tokens. A `
+  /// `
   /// run becomes a `Tag`; prose before/between tags becomes a trimmed `Doc`. A
   /// blank `///` line emits one empty `Doc` so the parser can detect the
   /// summary/body split (ADR-009).
+  /// #name
   lexDocLine(text: string, markerStart: number): syntax::Token[];
 
   /// Disambiguates a leading `/` (LANG.md §2.1): `//!`→`InnerDoc`, `///`→a doc
@@ -337,7 +323,7 @@ public component LineIndex for syntax::Syntax {
 /// statement/declaration boundary, and continues. Always yields a (possibly
 /// partial) `Module`; never panics.
 /// #critical
-public component Parser for syntax::Syntax {
+component Parser for syntax::Syntax {
   /// Lex, then build the module; bundle the tree with collected diagnostics.
   public parse(text: string): syntax::Parsed {
     tokens = Token[] from syntax::Lexer.tokenize(text)
@@ -428,84 +414,86 @@ public component Parser for syntax::Syntax {
 /// #critical
 feature ParsingIsInfallible for syntax::Parser {
   given "source text that may contain syntax errors"
-  when  "the parser runs"
-  then  "a syntax tree is returned, recovered around the errors"
-  and   "each error rides alongside as a diagnostic"
-  but   "parsing never throws or aborts"
+  when "the parser runs"
+  then "a syntax tree is returned, recovered around the errors"
+  and "each error rides alongside as a diagnostic"
+  but "parsing never throws or aborts"
 }
 
 /// A stray `;` in statement position never spins the block loop (regression).
 feature StrayTokenTerminates for syntax::Parser {
   given "a callable body with a stray `;` in statement position"
-  when  "the block is parsed"
-  then  "the stray token is reported as a diagnostic"
-  and   "the forward-progress guard advances past it"
-  but   "the surrounding callable still parses"
+  when "the block is parsed"
+  then "the stray token is reported as a diagnostic"
+  and "the forward-progress guard advances past it"
+  but "the surrounding callable still parses"
 }
 
 /// The lexer is greedy and never stalls on bad input.
 feature LexerNeverStalls for syntax::Lexer {
   given "source containing an unknown byte or an unterminated string"
-  when  "the lexer scans it"
-  then  "the offending bytes are skipped or the string is closed at end of line"
-  and   "lexing reaches the end of input"
+  when "the lexer scans it"
+  then "the offending bytes are skipped or the string is closed at end of line"
+  and "lexing reaches the end of input"
 }
 
 /// The longest identifier wins, then a keyword lookup classifies it.
 feature GreedyKeywordMatch for syntax::Lexer {
   given "an identifier-start byte"
-  when  "the lexer consumes the run of identifier bytes"
-  then  "a reserved spelling lexes as its keyword kind"
-  but   "a primitive name or `Result` stays an identifier, classified later"
+  when "the lexer consumes the run of identifier bytes"
+  then "a reserved spelling lexes as its keyword kind"
+  but "a primitive name or `Result` stays an identifier, classified later"
 }
 
 /// A leading `/` resolves to a comment, doc, or inner doc by its run length.
 feature DocCommentDisambiguation for syntax::Lexer {
   given "a line beginning with two or more slashes"
-  when  "the lexer reads the marker"
-  then  "`//!` becomes an inner-doc token"
-  and   "`///` becomes a doc line of prose and tag tokens"
-  but   "plain `//` is discarded as line-comment trivia"
+  when "the lexer reads the marker"
+  then "`//!` becomes an inner-doc token"
+  and "`///` becomes a doc line of prose and tag tokens"
+  but "plain `//` is discarded as line-comment trivia"
 }
 
-/// On a `///` line, `#name` is a tag while `#[` is a macro.
+/// On a `///` line, `
+/// ` is a tag while `#[` is a macro.
+/// #name
 feature HashDisambiguation for syntax::Lexer {
   given "a `#` in the source"
-  when  "the lexer classifies it"
-  then  "`#name` on a doc line becomes a tag token including the `#`"
-  and   "`#[` becomes a macro-open token"
-  but   "a bare `#` in ordinary prose is skipped, with no grammar role"
+  when "the lexer classifies it"
+  then "`#name` on a doc line becomes a tag token including the `#`"
+  and "`#[` becomes a macro-open token"
+  but "a bare `#` in ordinary prose is skipped, with no grammar role"
 }
 
 /// A blank `///` line splits the doc block into summary and extended.
 feature DocSummaryBodySplit for syntax::Parser {
   given "a doc block whose lines are separated by one blank `///` line"
-  when  "the doc block is parsed"
-  then  "lines before the blank become the summary"
-  and   "lines after it become the extended description"
-  and   "tags are gathered regardless of which side they sit on"
+  when "the doc block is parsed"
+  then "lines before the blank become the summary"
+  and "lines after it become the extended description"
+  and "tags are gathered regardless of which side they sit on"
 }
 
 /// Comments and blank-line runs are preserved for the formatter.
 feature TriviaPreservedForFormatter for syntax::Lexer {
   given "source interleaving tokens with comments and blank lines"
-  when  "the lexer runs"
-  then  "the token stream carries no comment trivia"
-  and   "comments and blank-line runs are returned alongside as spanned trivia"
+  when "the lexer runs"
+  then "the token stream carries no comment trivia"
+  and "comments and blank-line runs are returned alongside as spanned trivia"
 }
 
 /// Token rendering matches the conformance golden form.
 feature ConformanceTokenRendering for syntax::Lexer {
   given "a source string"
-  when  "its tokens are rendered"
-  then  "each token prints as `KIND@line:col \"lexeme\"` on its own line"
-  and   "interior backslashes and quotes in the lexeme are escaped"
+  when "its tokens are rendered"
+  then "each token prints as `KIND@line:col \"lexeme\"` on its own line"
+  and "interior backslashes and quotes in the lexeme are escaped"
 }
 
 /// A byte offset maps to a 1-based line and column.
 feature OffsetToLineColumn for syntax::LineIndex {
   given "a line index built over a source string"
-  when  "a byte offset is looked up"
-  then  "the 1-based line and byte column are returned"
-  but   "an offset past the end clamps to the end of the source"
+  when "a byte offset is looked up"
+  then "the 1-based line and byte column are returned"
+  but "an offset past the end clamps to the end of the source"
 }

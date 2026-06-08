@@ -7,12 +7,16 @@
 //! is string-built.
 
 /// Which view to project from the graph (LANG.md §9). Context is the C1 whole;
-/// Container/Component zoom into one boundary; Sequence traces one entry point.
+/// Container/Component zoom into one boundary; Sequence traces one entry point;
+/// Data draws a `data` type's entity (ER) view (§9.4); Feature draws a `feature`
+/// scenario's flow (§9.5).
 public data View =
   | Context
   | Container { of: string }
   | Component { of: string }
   | Sequence { entry: string }
+  | Data { of: string }
+  | Feature { of: string }
 
 /// Which C4 view a `C4Scene` is — drives the golden header keyword.
 data C4View =
@@ -28,18 +32,13 @@ data C4View =
 public data Scene =
   | C4Scene { view: emit::C4View, of: string, nodes: emit::PlacedNode[], edges: emit::RoutedEdge[] }
   | SequenceScene { entry: string, participants: emit::Lifeline[], items: emit::SeqItem[] }
+  | DataScene { of: string, entities: emit::DataEntity[], links: emit::DataLink[], width: number, height: number }
+  | FeatureScene { entry: string, targetFqn: string, targetLabel: string, name: string, steps: emit::FeatureStepNode[], width: number, height: number }
 
 /// A node placed in a C4 view: its FQN, C4 kind, display label, optional `///`
 /// summary (the card's dimmed description), the boundary it sits inside, and the
 /// layout rectangle assigned by the placer.
-data PlacedNode {
-  fqn: string,
-  kind: string,
-  label: string,
-  summary: string,
-  boundary: string,
-  rect: emit::Rect
-}
+data PlacedNode { fqn: string, kind: string, label: string, summary: string, boundary: string, rect: emit::Rect }
 
 /// An axis-aligned layout rectangle in renderer coordinates.
 data Rect { x: number, y: number, w: number, h: number }
@@ -52,12 +51,16 @@ data C4EdgeKind =
   | Trigger
   | Provenance
 
-/// An edge routed between two C4 nodes, sorted by `(from, to, kind, label)`.
-data RoutedEdge { source: string, to: string, kind: emit::C4EdgeKind, label: string }
+/// An edge routed between two C4 nodes: its endpoints, kind, and the merged call
+/// labels (sorted and de-duplicated; empty for a trigger or provenance edge).
+/// Parallel calls between the same pair collapse into one multi-label edge.
+data RoutedEdge { source: string, to: string, kind: emit::C4EdgeKind, labels: string[] }
 
-/// A sequence lifeline (a participant): its FQN, C4 kind for the head card, and
-/// the layout x-position assigned by the placer.
-data Lifeline { fqn: string, kind: string, x: number }
+/// A sequence lifeline (a participant): its FQN, C4 kind for the head card, the
+/// node's `///` summary shown dimmed under the name, and the structural ancestry
+/// path under a container/component name. No coordinate — the sequence layout
+/// assigns the lifeline x.
+data Lifeline { fqn: string, kind: string, summary: string, parentPath: string }
 
 /// One ordered item in a sequence trace: a message or a nested frame.
 data SeqItem =
@@ -72,8 +75,9 @@ data MessageKind =
   | SelfMsg
 
 /// A message between two lifelines (or a self-message). `label` is the method
-/// name, or `Ok`/`Err`/empty for a return.
-data Message { source: string, to: string, kind: emit::MessageKind, label: string }
+/// name, or `Ok`/`Err`/empty for a return; `detail` is the type detail shown after
+/// it — a call's `(params): ret` signature or a return's concrete type.
+data Message { source: string, to: string, kind: emit::MessageKind, label: string, detail: string }
 
 /// The kind of a sequence frame: `if`/`else` becomes an `alt` frame, `for`/
 /// `while` becomes a `loop` frame.
@@ -85,24 +89,76 @@ data FrameKind =
 /// with its condition label.
 data Frame { kind: emit::FrameKind, cond: string, body: emit::SeqItem[] }
 
-/// Why projecting a view failed: the target FQN names no node, names a node of
-/// the wrong kind, or the sequence entry has no disclosed body.
+/// One entity in a `data` ER view: its FQN, label, disclosed form, rows, whether
+/// it is the focal type, and its laid-out card rectangle.
+data DataEntity { fqn: string, label: string, form: emit::EntityForm, rows: emit::EntityRow[], focal: bool, rect: emit::Rect }
+
+/// The disclosed form of a data entity, driving the card's eyebrow and rows: a
+/// record of typed fields, a discriminated union of variants, or a black box.
+data EntityForm =
+  | Record
+  | Union
+  | BlackBox
+
+/// One row of a data entity: the field or variant name, its rendered type (empty
+/// for a union variant), and the FQN of the data type this row targets when it
+/// references one.
+data EntityRow { name: string, ty: string, target: string }
+
+/// A field-type reference link between two entities in a data view: the
+/// referencing and referenced FQNs and the field driving the reference.
+data DataLink { source: string, to: string, field: string }
+
+/// One step box in a `feature` flow view: the step keyword, its prose, and the
+/// laid-out box rectangle.
+data FeatureStepNode { keyword: string, text: string, rect: emit::Rect }
+
+/// Why projecting a view failed: the target FQN names no node, or names a node of
+/// the wrong kind for the requested view.
 public data EmitError =
   | UnknownNode { fqn: string }
   | WrongKind { fqn: string, expected: string, found: string }
-  | NoBody { entry: string }
+
+/// Which grid search the experimental grid placer runs — the UI's
+/// heuristic-vs-brute-force toggle. Mirrors `dot::SearchMode` so the IDE need not
+/// depend on `dot`.
+public data GridSearch =
+  | Auto
+  | Heuristic
+  | Exhaustive
+
+/// Per-diagram C4 layout tweaks (the UI's "Layout" toggles): run the long-edge
+/// optimiser, lay out left-to-right instead of top-to-bottom, scale the spacing,
+/// and — experimentally — place by brute-force grid search instead of the layered
+/// engine, with its own cost dials and search mode.
+public data C4Tweaks { minimizeLongEdges: bool, leftToRight: bool, spacing: number, experimentalGrid: bool, gridCrossingCost: number, gridDistanceCost: number, gridFlowCost: number, gridSearch: emit::GridSearch }
+
+/// A node the user has pinned to a grid cell (drag-to-pin), identified by FQN;
+/// the emit layer resolves it to a `dot` node index for the current view. Honoured
+/// only under experimental grid placement.
+public data GridPin { fqn: string, row: number, col: number }
 
 /// `crates/pseudoscript-emit`. Projects a view into a `Scene` and renders it to
-/// SVG; C4 views run the `layout-rs` Sugiyama placer, the sequence view orders
-/// messages on lifelines.
+/// SVG; C4 views are placed by the `dot` layered engine, the sequence/data/feature
+/// views by the matching `layout` engine.
 /// #headline
-public container Emit for context::Pseudoscript;
+public container Emit for context::Pseudoscript {
+  /// Project a `View` out of the graph into a `Scene`.
+  public project(graph: model::Graph, view: emit::View): Result<emit::Scene, emit::EmitError> {
+    return emit::Projector.project(graph, view)
+  }
+
+  /// Render a laid-out `Scene` to standalone SVG.
+  public render(scene: emit::Scene): string {
+    return emit::SvgRenderer.render(scene)
+  }
+}
 
 /// Projects a `View` out of the graph (LANG.md §9): dispatches on the view
 /// variant, collecting nodes and edges for a C4 scene or tracing a callable body
 /// for a sequence scene, then hands off to the placer. Fails with `EmitError`
 /// when the view's target is missing or the wrong kind.
-public component Projector for emit::Emit {
+component Projector for emit::Emit {
   /// Dispatch on the view variant: Context and the boundary views project a
   /// `C4Scene`; Sequence traces a callable body. The boundary views check the
   /// `of` node's kind first.
@@ -116,8 +172,33 @@ public component Projector for emit::Emit {
     if (view.isComponent) {
       return self.projectBoundary(graph, view.of, "container", "component")
     }
+    if (view.isData) {
+      return self.projectData(graph, view.of)
+    }
+    if (view.isFeature) {
+      return self.projectFeature(graph, view.of)
+    }
     return self.projectSequence(graph, view.entry)
   }
+
+  /// Project the diagram that best explains a single symbol, picking the view
+  /// from the symbol's kind: a callable traces as a sequence, a system shows its
+  /// containers, a container or component its components, a `data` type its
+  /// entity view. The web IDE's "show this symbol" entry point.
+  public projectSymbol(graph: model::Graph, fqn: string): Result<emit::Scene, emit::EmitError>;
+
+  /// Build the resolved graph for a single-file generation fixture, deriving its
+  /// module FQN from the first `//!` inner-doc token — the conformance harness's
+  /// one-shot source-to-graph helper.
+  public graphOfSource(source: string): model::Graph;
+
+  /// The `data` entity (ER) view of the focal type (§9.4): the type plus the
+  /// types it references, with field-type links between them.
+  projectData(graph: model::Graph, of: string): Result<emit::Scene, emit::EmitError>;
+
+  /// The `feature` flow view of the scenario (§9.5): its given/when/then steps as
+  /// an ordered flow against the node it describes.
+  projectFeature(graph: model::Graph, of: string): Result<emit::Scene, emit::EmitError>;
 
   /// The context view: every person and system, with inter-system edges and
   /// triggers. A cross-container call bubbles to a single system → system edge.
@@ -148,11 +229,8 @@ public component Projector for emit::Emit {
     if (node.isErr) {
       return Err(node.error)
     }
-    body = Result<model::Step[], EmitError> from self.bodyOf(graph, entry)
-    if (body.isErr) {
-      return Err(NoBody from { entry })
-    }
-    scene = Scene from emit::Trace.walk(graph, entry, body.value)
+    body = model::Step[] from self.bodyOf(graph, entry)
+    scene = Scene from emit::Trace.walk(graph, entry, body)
     return Ok(emit::Layout.solveSequence(scene))
   }
 
@@ -173,9 +251,10 @@ public component Projector for emit::Emit {
   /// carries that FQN.
   kindOf(graph: model::Graph, fqn: string): Result<string, emit::EmitError>;
 
-  /// The disclosed sequence trace for `entry`, or an error when the callable is
-  /// black-boxed and carries no body.
-  bodyOf(graph: model::Graph, entry: string): Result<model::Step[], emit::EmitError>;
+  /// The sequence trace for `entry`: a disclosed body expands into a full trace; a
+  /// black-box (bodyless) callable yields the single inbound call + return its
+  /// declared signature describes (§9.2).
+  bodyOf(graph: model::Graph, entry: string): model::Step[];
 
   /// Whether a node's actual kind equals the kind the view requires.
   kindMatches(found: string, expected: string): bool;
@@ -210,7 +289,8 @@ component Edges for emit::Emit {
   /// `parent` chain; a synthesised trigger initiator is kept verbatim.
   lift(graph: model::Graph, fqn: string, inView: emit::PlacedNode[]): string;
 
-  /// Sort edges by `(from, to, kind, label)` and de-duplicate, so the scene is
+  /// Merge parallel edges between the same `(from, to, kind)` into one carrying
+  /// the sorted, de-duplicated label set, then sort the edges — so the scene is
   /// deterministic and order-independent.
   sortDedup(edges: emit::RoutedEdge[]): emit::RoutedEdge[];
 }
@@ -241,36 +321,67 @@ component Trace for emit::Emit {
   participantsOf(graph: model::Graph, owner: string, items: emit::SeqItem[]): emit::Lifeline[];
 }
 
-/// Assigns geometry to a projected scene. C4 views run the `layout-rs` Sugiyama
-/// layered placer over a back-edge-free subset of edges (the engine requires a
-/// DAG), framing a boundary view's children; the sequence view spaces lifelines
-/// across the x-axis and stacks messages top-to-bottom.
+/// Assigns geometry to a projected scene. A C4 scene is placed by the `dot`
+/// layered engine (rank/order/position/splines), boundary children framed as a
+/// cluster; per-diagram `C4Tweaks` and drag-to-pin cells tune it. The
+/// sequence/data/feature scenes are placed by the matching `layout` engine. An
+/// empty or unplaceable view falls back to the scene's own simple coordinates —
+/// the engines never panic.
 component Layout for emit::Emit {
-  /// Place a C4 scene: free nodes flow in a row, boundary children inside their
-  /// boundary box. The renderer's Sugiyama pass refines this; this assigns the
-  /// fallback rects.
+  /// Place a C4 scene with default tweaks and no pins, delegating to `dot`.
   solveC4(scene: emit::Scene): emit::Scene {
-    acyclic = RoutedEdge[] from self.breakCycles(scene)
-    return self.placeC4(scene, acyclic)
+    return self.layoutC4With(scene, self.defaultTweaks(), self.noPins())
   }
 
-  /// Drop back-edges so the edge set fed to the layered placer is acyclic — the
-  /// engine panics on a cycle. DFS in scene order keeps the result deterministic.
-  breakCycles(scene: emit::Scene): emit::RoutedEdge[];
+  /// The empty pin set — the default C4 layout fixes no cells.
+  noPins(): emit::GridPin[];
 
-  /// Assign each node a layout rectangle from the acyclic placement.
-  placeC4(scene: emit::Scene, acyclic: emit::RoutedEdge[]): emit::Scene;
+  /// Place a C4 scene under `tweaks`, with `pins` fixing nodes to grid cells
+  /// (honoured only under experimental grid placement). Builds a `dot::Graph`,
+  /// runs the layered engine (or the grid placer), and reads the placement back.
+  layoutC4With(scene: emit::Scene, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): emit::Scene {
+    g = dot::Graph from self.toDotGraph(scene, tweaks)
+    return self.readBack(scene, dot::Dot.layout(g))
+  }
 
-  /// Place a sequence scene: lifeline x-positions in first-appearance order,
-  /// message rows stacked by evaluation order, frames sized to their body.
-  solveSequence(scene: emit::Scene): emit::Scene;
+  /// The default layout tweaks — the engine's own defaults, one source of truth.
+  defaultTweaks(): emit::C4Tweaks;
+
+  /// Translate a C4 scene into a `dot` input graph, mapping nodes to sized boxes,
+  /// edges to dot edges, and a boundary to a cluster; spacing and direction come
+  /// from the tweaks.
+  toDotGraph(scene: emit::Scene, tweaks: emit::C4Tweaks): dot::Graph;
+
+  /// Read a `dot` placement back onto the scene's nodes and edges as rectangles
+  /// and routed polylines.
+  readBack(scene: emit::Scene, placed: dot::Layout): emit::Scene;
+
+  /// Place a sequence scene with the `layout` sequence engine: lifeline
+  /// x-positions in first-appearance order, message rows stacked by evaluation
+  /// order, frames sized to their body.
+  solveSequence(scene: emit::Scene): emit::Scene {
+    placed = layout::SequenceLayout from layout::Layout.layout(self.toSequenceDiagram(scene))
+    return self.fromSequenceLayout(scene, placed)
+  }
+
+  /// Translate a sequence scene into the `layout` engine's structural diagram.
+  toSequenceDiagram(scene: emit::Scene): layout::Diagram;
+
+  /// Read the `layout` engine's placement back onto the sequence scene.
+  fromSequenceLayout(scene: emit::Scene, placed: layout::SequenceLayout): emit::Scene;
+
+  /// Place a data ER scene: entity cards and the field-type links between them.
+  solveData(scene: emit::Scene): emit::Scene;
+
+  /// Place a feature flow scene: the step boxes stacked top-to-bottom.
+  solveFeature(scene: emit::Scene): emit::Scene;
 }
 
 /// Renders a laid-out `Scene` to standalone SVG markup — string-building, no
 /// template engine and no headless browser (LANG.md §9.3, ADR-017). Dispatches
 /// on the scene variant; the layout engine is wrapped so no input panics the
 /// render, falling back to the scene's own simple coordinates.
-public component SvgRenderer for emit::Emit {
+component SvgRenderer for emit::Emit {
   /// Render any scene to a self-contained SVG document.
   public render(scene: emit::Scene): string {
     if (scene.isC4Scene) {
@@ -278,6 +389,10 @@ public component SvgRenderer for emit::Emit {
     }
     return self.renderSequence(scene)
   }
+
+  /// Render any scene to SVG under a chosen colour theme (light or dark) — the
+  /// themed counterpart `pds svg --theme` drives.
+  public renderThemed(scene: emit::Scene, theme: string): string;
 
   /// Re-emit the laid-out C4 placement as modern C4 cards (coloured left rule,
   /// kind eyebrow, bold title, dimmed wrapped description) and routed edges;
@@ -310,87 +425,114 @@ public component SvgRenderer for emit::Emit {
 /// A view projects to a notation-neutral scene, then to SVG.
 feature ProjectAView for emit::Emit {
   given "a resolved graph and a chosen view"
-  when  "the view is projected"
-  then  "the relevant nodes and edges are selected and laid out into a Scene"
-  and   "the Scene renders to standalone SVG"
-  but   "a missing or wrong-kind target fails with an EmitError"
+  when "the view is projected"
+  then "the relevant nodes and edges are selected and laid out into a Scene"
+  and "the Scene renders to standalone SVG"
+  but "a missing or wrong-kind target fails with an EmitError"
 }
 
 /// Each view kind dispatches to its projection.
 feature DispatchOnViewKind for emit::Projector {
   given "a graph and a View variant"
-  when  "project runs"
-  then  "Context and the boundary views build a C4Scene"
-  and   "Sequence traces the entry callable's body into a SequenceScene"
+  when "project runs"
+  then "Context and the boundary views build a C4Scene"
+  and "Sequence traces the entry callable's body into a SequenceScene"
+  and "Data builds an entity (ER) scene and Feature builds a flow scene"
+}
+
+/// Project-symbol picks the view that best explains one symbol.
+feature ProjectSymbolPicksAView for emit::Projector {
+  given "a single symbol FQN — a callable, system, container, component, or data type"
+  when "the symbol is projected"
+  then "a callable traces as a sequence, a system or container shows its children, a data type shows its entity view"
+  but "an unknown FQN fails with EmitError::UnknownNode"
+}
+
+/// The data and feature views project their own scene families.
+feature DataAndFeatureViews for emit::Projector {
+  given "a Data view of a data type, or a Feature view of a scenario"
+  when "the view is projected"
+  then "the Data view collects the focal entity, its referenced types, and the links between them"
+  and "the Feature view lays the scenario's given/when/then steps out as a flow"
 }
 
 /// The Scene IR is the conformance surface: notation-neutral and deterministic.
 feature SceneIsDeterministic for emit::Emit {
   given "the same resolved graph and view projected twice"
-  when  "the scenes are compared"
-  then  "node order is source-declaration order"
-  and   "edges are sorted by from, to, kind, then label and de-duplicated"
-  but   "renderer coordinates never appear in the golden"
+  when "the scenes are compared"
+  then "node order is source-declaration order"
+  and "parallel edges merge into one multi-label edge, sorted by from, to, then kind"
+  but "renderer coordinates never appear in the golden"
 }
 
 /// SVG is built as a string — no headless browser.
 feature RenderSvgAsString for emit::SvgRenderer {
   given "a laid-out Scene"
-  when  "render runs"
-  then  "a self-contained SVG document is built by string concatenation"
-  but   "no template engine or headless browser is invoked"
+  when "render runs"
+  then "a self-contained SVG document is built by string concatenation"
+  but "no template engine or headless browser is invoked"
 }
 
-/// The C4 placer requires a DAG, so cycles are broken before layout.
-feature LayoutTolerantOfCycles for emit::Layout {
-  given "a C4 scene whose edges form a cycle"
-  when  "the scene is laid out"
-  then  "back-edges are dropped to leave an acyclic edge set for the placer"
-  and   "the placement stays deterministic"
+/// C4 layout is delegated to the `dot` layered engine.
+feature LayoutDelegatesToDot for emit::Layout {
+  given "a projected C4 scene"
+  when "the scene is laid out"
+  then "it is translated into a dot input graph and placed by the dot layered engine"
+  and "a boundary view's children are framed as a dot cluster"
+  but "the engine tolerates cycles and never panics, so the placement stays deterministic"
+}
+
+/// Per-diagram tweaks and pins tune the C4 placement.
+feature TweaksAndPinsTuneC4Layout for emit::Layout {
+  given "a C4 scene and the UI's layout tweaks"
+  when "the scene is laid out with those tweaks"
+  then "the long-edge optimiser, reading direction, and spacing follow the tweaks"
+  and "under experimental grid placement, drag-to-pin cells fix their nodes"
 }
 
 /// A failed layout degrades to simple coordinates rather than crashing.
 feature LayoutFallbackIsPanicSafe for emit::SvgRenderer {
   given "a scene the layout engine cannot place, or an empty view"
-  when  "the C4 scene is rendered"
-  then  "rendering falls back to the scene's own simple coordinates"
-  but   "the render never panics"
+  when "the C4 scene is rendered"
+  then "rendering falls back to the scene's own simple coordinates"
+  but "the render never panics"
 }
 
 /// A missing node fails the projection.
 feature UnknownNodeFails for emit::Projector {
   given "a boundary or sequence view whose target FQN names no node"
-  when  "the view is projected"
-  then  "projection fails with EmitError::UnknownNode"
+  when "the view is projected"
+  then "projection fails with EmitError::UnknownNode"
 }
 
 /// A target of the wrong kind fails the projection.
 feature WrongKindFails for emit::Projector {
   given "a container view whose of node is not a system"
-  when  "the view is projected"
-  then  "projection fails with EmitError::WrongKind carrying expected and found"
+  when "the view is projected"
+  then "projection fails with EmitError::WrongKind carrying expected and found"
 }
 
-/// A sequence entry without a disclosed body fails the projection.
-feature SequenceEntryNeedsBody for emit::Projector {
-  given "a sequence view whose entry callable is black-boxed"
-  when  "the view is projected"
-  then  "projection fails with EmitError::NoBody"
+/// A black-box sequence entry still traces — its signature is the trace.
+feature BlackBoxEntryTracesSignature for emit::Projector {
+  given "a sequence view whose entry callable is black-boxed (no disclosed body)"
+  when "the view is projected"
+  then "the trace is the single inbound call and its return the signature describes"
+  but "a non-callable entry still fails with EmitError::WrongKind"
 }
 
 /// Control flow becomes nested frames in the trace.
 feature ControlFlowBecomesFrames for emit::Trace {
   given "a callable body with if/else and for/while"
-  when  "the body is traced"
-  then  "an if/else becomes an alt frame over its branches"
-  and   "a for/while becomes a loop frame over its body"
+  when "the body is traced"
+  then "an if/else becomes an alt frame over its branches"
+  and "a for/while becomes a loop frame over its body"
 }
 
 /// Body calls become left-to-right messages; self-calls loop on the owner.
 feature CallsBecomeMessages for emit::Trace {
   given "a callable body with calls to other nodes and self-calls"
-  when  "the body is traced"
-  then  "each call to another node is a left-to-right message to that lifeline"
-  and   "each self. call is a self-message on the owner's own lifeline"
-  and   "every target is registered as a participant on first appearance"
+  when "the body is traced"
+  then "each call to another node is a left-to-right message to that lifeline"
+  and "each self. call is a self-message on the owner's own lifeline"
+  and "every target is registered as a participant on first appearance"
 }

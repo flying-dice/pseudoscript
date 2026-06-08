@@ -9,13 +9,7 @@ public data SurgeFactor { multiplier: number, reason: string }
 
 /// A priced order line: the unit price after surge, the factor applied, and the
 /// line total for the quantity.
-public data Quote {
-  event: shared::EventId,
-  tier: shared::TierId,
-  unit: shared::Money,
-  surge: pricing::SurgeFactor,
-  total: shared::Money
-}
+public data Quote { event: shared::EventId, tier: shared::TierId, unit: shared::Money, surge: pricing::SurgeFactor, total: shared::Money }
 
 /// Why a quote could not be produced.
 public data PricingError =
@@ -23,16 +17,29 @@ public data PricingError =
 
 /// `pricing` — the dynamic pricing engine.
 /// #headline
-public container Pricing for context::AcmeTickets;
+public container Pricing for context::AcmeTickets {
+  /// Quote a line at the current surge rate.
+  public quote(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<pricing::Quote, pricing::PricingError> {
+    return pricing::Quotes.quote(event, tier, quantity)
+  }
+  /// Lock a quote to a hold (set when seats are reserved).
+  public lock(hold: shared::HoldId, quote: pricing::Quote): void {
+    pricing::Locks.lock(hold, quote)
+  }
+  /// The price locked to a hold, if the lock is still live.
+  public priceFor(hold: shared::HoldId): Option<pricing::Quote> {
+    return pricing::Locks.priceFor(hold)
+  }
+}
 
 /// Produces quotes at the current surge rate.
 /// #headline
-public component Quotes for pricing::Pricing {
+component Quotes for pricing::Pricing {
   /// Quote a line: take the tier's base price, scale it by the current surge
   /// factor for the event, and total it for the quantity.
   /// #headline
   public quote(event: shared::EventId, tier: shared::TierId, quantity: shared::Quantity): Result<pricing::Quote, pricing::PricingError> {
-    base = Result<shared::Money, TierNotFound> from catalog::Tiers.priceOf(tier)
+    base = Result<shared::Money, TierNotFound> from catalog::Catalog.priceOf(tier)
     if (base.isErr) {
       return Err(TierUnavailable from { tier })
     }
@@ -67,7 +74,7 @@ public component Quotes for pricing::Pricing {
 /// Locks a surge price to a hold at reservation time. The buyer pays the price
 /// they were quoted when they reserved, not a higher price if surge climbs while
 /// they check out — the price lock is the fairness guarantee of surge pricing.
-public component Locks for pricing::Pricing {
+component Locks for pricing::Pricing {
   /// Lock a quote to a hold (set when seats are reserved).
   lock(hold: shared::HoldId, quote: pricing::Quote): void;
   /// The price locked to a hold, if the lock is still live.
@@ -118,15 +125,15 @@ component DemandLog for pricing::Pricing {
 /// Surge multiplier rises with demand pressure.
 feature SurgeReflectsDemand for pricing::Quotes {
   given "a tier whose demand pressure is high"
-  when  "a quote is requested"
-  then  "the surge multiplier is above one"
-  and   "the quoted unit price exceeds the base price"
+  when "a quote is requested"
+  then "the surge multiplier is above one"
+  and "the quoted unit price exceeds the base price"
 }
 
 /// Price eases back as demand cools.
 feature SurgeEasesAsDemandCools for pricing::Quotes {
   given "a tier whose demand pressure has fallen back to normal"
-  when  "a quote is requested"
-  then  "the surge multiplier returns toward one"
-  and   "the quoted unit price approaches the base price"
+  when "a quote is requested"
+  then "the surge multiplier returns toward one"
+  and "the quoted unit price approaches the base price"
 }

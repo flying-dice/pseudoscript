@@ -1,57 +1,50 @@
-//! lsp — language server over stdio (crate `pseudoscript-lsp`).
+//! lsp — the stdio language server (crate `pseudoscript-lsp`).
 //!
-//! The editor's edge: a tower-lsp `Backend` over stdin/stdout on tokio, holding
-//! a workspace-aware document store (open buffers overlaying on-disk `.pds`).
-//! Every notification/request is answered from the document's current text; all
-//! language logic delegates to `syntax` (parse/tokenize), `model` (check,
-//! resolve, infer), and `format`. This crate owns I/O — it is not WASM-safe —
-//! and owns almost no data: it speaks the core crates' vocabulary and translates
+//! The editor's edge: a tower-lsp `Backend` over stdin/stdout on tokio, holding a
+//! workspace-aware document store (open buffers overlaying on-disk `.pds`). It
+//! owns transport and I/O — it is not WASM-safe — and almost no language logic:
+//! every cursor query delegates to `lsp_core` (the transport-neutral handlers the
+//! browser wasm shares), workspace loading to `project`, and checking to `model`.
+//! The store translates between file URIs and module FQNs; `lsp_core` translates
 //! byte spans to LSP positions.
 
 /// One open editor buffer: its document URI, current source text, and the
 /// editor's version counter. The buffer overlays on-disk text until closed.
 data OpenDocument { uri: string, text: string, version: number }
 
-/// A resolved cursor hit, computed at the token level so it survives a partial
-/// parse: the clicked identifier's span, the module and span of the definition
-/// it points at, and the Markdown title/body for hover.
-data Hit {
-  clicked: syntax::Span,
-  targetModule: string,
-  targetSpan: syntax::Span,
-  title: string,
-  body: string
+/// One resolved editor location: the file URI a target FQN maps back to, and the
+/// range within it. The server's transport-level mapping of a `lsp_core` answer.
+data Occurrence { uri: string, range: lsp_core::Range }
+
+/// `crates/pseudoscript-lsp`. The stdio language server (tower-lsp): workspace
+/// diagnostics on change, and hover, definition, completion, references, rename,
+/// semantic tokens, symbols, folding, and formatting — every language answer
+/// delegated to `lsp_core`. Owns the transport, the document store, and the
+/// URI↔FQN mapping, nothing more.
+public container Lsp for context::Pseudoscript {
+  /// Build the server over stdin/stdout and drive it until the editor exits.
+  public runStdio(): void {
+    lsp::Server.runStdio()
+  }
+
+  /// Re-converge the store on a document change and republish diagnostics.
+  public onChange(doc: model::WorkspaceModule): void {
+    lsp::Server.onChange(doc)
+  }
 }
 
-/// A go-to-definition target: the FQN of the module the definition lives in and
-/// its span within that module's source. The server maps the FQN back to a file.
-data DefTarget { fqn: string, span: syntax::Span }
-
-/// One occurrence of a symbol for find-references and rename: the module FQN it
-/// lies in and the identifier's span in that module's source.
-data Occurrence { fqn: string, span: syntax::Span }
-
-/// An inferred local binding for inlay hints and hover: the binding name, the
-/// span of that name, and its inferred type rendered as a shape hint.
-data LocalType { name: string, nameSpan: syntax::Span, ty: string }
-
-/// `crates/pseudoscript-lsp`. Language Server for IDEs (tower-lsp over stdio):
-/// workspace diagnostics on change, hover, go-to-definition, completion,
-/// references, rename, semantic tokens, document/workspace symbols, folding,
-/// inlay hints, and whole-document formatting. Delegates all language logic.
-public container Lsp for context::Pseudoscript;
-
-/// The tower-lsp `Backend`: owns the stdio transport, the workspace document
-/// store, the server lifecycle, and request routing. Holds no language logic —
-/// it locks the store, hands the active text to `Analysis`, and maps the result
-/// back to LSP positions via `Convert`.
-public component Server for lsp::Lsp {
+/// The tower-lsp `Backend`: owns the stdio transport, the document store, the
+/// server lifecycle, and request routing. Holds no language logic — it locks the
+/// store, hands the active text and the resolved workspace to a `lsp_core`
+/// handler, and maps the result back to file locations.
+component Server for lsp::Lsp {
   /// Build the server over stdin/stdout and drive it until the editor sends
   /// `exit`. The function `pds lsp` awaits.
   public runStdio(): void;
 
   /// Initialize: discover the workspace root from the editor's folders, load
-  /// every `.pds` file under it, and advertise the supported capabilities.
+  /// every `.pds` file under it through the `project` loader, and advertise the
+  /// supported capabilities.
   initialize(rootUri: string): void {
     lsp::Store.discover(rootUri)
   }
@@ -64,16 +57,15 @@ public component Server for lsp::Lsp {
     self.publishAll()
   }
 
-  /// `didClose`: drop the unsaved overlay and re-sync to disk so other files
-  /// stop seeing the closed buffer's edits, then republish.
+  /// `didClose`: drop the unsaved overlay and re-sync to disk so other files stop
+  /// seeing the closed buffer's edits, then republish.
   onClose(uri: string): void {
     lsp::Store.close(uri)
     self.publishAll()
   }
 
   /// Recompute diagnostics for the whole workspace and push each module's set to
-  /// the editor against its own file. Computed under the store lock, published
-  /// without it.
+  /// the editor against its own file.
   publishAll(): void {
     payloads = model::ModuleDiagnostics[] from lsp::Store.diagnostics()
     for (p in payloads) {
@@ -84,42 +76,54 @@ public component Server for lsp::Lsp {
   /// Push one module's diagnostics to the editor, keyed by file URI.
   publish(uri: string, diags: syntax::Diagnostic[]): void;
 
-  /// Hover the symbol under the cursor in the active document.
-  hover(uri: string, line: number, col: number): string {
+  /// Hover the symbol under the cursor: hand the active text, the resolved
+  /// workspace, and the position to `lsp_core`.
+  hover(uri: string, position: lsp_core::Position): lsp_core::Hover {
     text = string from lsp::Store.source(uri)
-    return lsp::Analysis.hover(text, line, col)
+    fqn = string from lsp::Store.fqnFor(uri, text)
+    return lsp_core::LspCore.hover(lsp::Store.workspace(), fqn, text, position)
   }
 
-  /// Go-to-definition: resolve the cursor; if it resolves, map the target FQN
-  /// back to its file and span. Nothing under the cursor yields no location.
-  gotoDefinition(uri: string, line: number, col: number): Option<lsp::Occurrence> {
+  /// Go-to-definition: ask `lsp_core` for the target FQN and span, then map the
+  /// FQN back to its file URI. Nothing under the cursor yields no location.
+  gotoDefinition(uri: string, position: lsp_core::Position): lsp::Occurrence {
     text = string from lsp::Store.source(uri)
-    target = Option<DefTarget> from lsp::Analysis.definition(text, line, col)
-    if (target.isNone) {
-      return None
-    }
-    return Some(self.locate(target.value.fqn, target.value.span))
+    fqn = string from lsp::Store.fqnFor(uri, text)
+    target = lsp_core::Range from lsp_core::LspCore.definition(lsp::Store.workspace(), fqn, text, position)
+    return self.locate(uri, target)
   }
 
   /// Whole-document formatting edit, or nothing when the buffer does not parse.
-  formatting(uri: string): string {
+  formatting(uri: string): lsp_core::TextEdit {
     text = string from lsp::Store.source(uri)
-    return lsp::Analysis.formatEdit(text)
+    return lsp_core::LspCore.formatEdit(text)
   }
 
-  /// Map a resolved `(targetFqn, span)` to an editor `Location` via the target
-  /// module's file URI and its own line index.
-  locate(fqn: string, span: syntax::Span): lsp::Occurrence;
+  /// Map a resolved `(targetFqn, range)` to an editor location via the target
+  /// module's file URI.
+  locate(uri: string, range: lsp_core::Range): lsp::Occurrence;
 }
 
-/// The workspace document store: the filesystem edge. Finds the project root
-/// (`pds.toml`, LANG.md §8.1), loads every `.pds` file, derives each module's
-/// FQN from its path, and overlays open buffers on disk text. Caches each parse
-/// and memoises the resolved `model::Workspace`, both invalidated on any edit.
+/// The workspace document store: the filesystem edge, delegated to `project`.
+/// Discovers the project root (`pds.toml`, §8.1) and loads every `.pds` file
+/// through `project::Loader`, derives each module's FQN from its path, and
+/// overlays open buffers on disk text. Caches each parse and memoises the
+/// resolved `model::Workspace`, both invalidated on any edit.
 component Store for lsp::Lsp {
-  /// Discover the project rooted at or above `rootUri` and load every `.pds`
-  /// file under it; a root resolving to no `pds.toml` leaves the store empty.
-  discover(rootUri: string): void;
+  /// Discover the project rooted at or above `rootUri` and load every `.pds` file
+  /// under it through the `project` loader; a root with no `pds.toml` leaves the
+  /// store empty.
+  discover(rootUri: string): void {
+    root = Result<string, project::IoError> from project::Project.findRoot(rootUri)
+    if (root.isErr) {
+      return
+    }
+    loaded = Result<model::WorkspaceModule[], project::IoError> from project::Project.load(root.value)
+    self.seed(loaded.value)
+  }
+
+  /// Seed the store with the loaded modules.
+  seed(modules: model::WorkspaceModule[]): void;
 
   /// Record or replace a buffer's text (full document sync), re-derive its FQN,
   /// cache its parse, and invalidate the resolved-workspace cache.
@@ -133,21 +137,17 @@ component Store for lsp::Lsp {
   source(uri: string): string;
 
   /// The memoised resolved workspace, rebuilt from cached parses on first use
-  /// after an edit. Backs hover, definition, completion, references.
-  workspace(): model::ModuleEntry[] {
-    entries = syntax::Diagnostic[] from model::Checks.checkWorkspace(self.modules())
-    return self.entries()
-  }
+  /// after an edit. Backs every cursor query.
+  workspace(): model::Workspace;
 
   /// Every known module as an `(fqn, text)` unit, for whole-workspace scans.
   modules(): model::WorkspaceModule[];
 
-  /// The resolved entries indexed by FQN, for cross-file target mapping.
-  entries(): model::ModuleEntry[];
-
   /// Diagnostics for every module — parse errors plus static analysis — each
-  /// keyed by its file URI and mapped to the LSP shape by `Analysis`.
-  diagnostics(): model::ModuleDiagnostics[];
+  /// keyed by its file URI.
+  diagnostics(): model::ModuleDiagnostics[] {
+    return model::Model.checkWorkspaceModules(self.modules())
+  }
 
   /// The file URI a resolved target FQN maps back to.
   uriOf(fqn: string): string;
@@ -157,349 +157,52 @@ component Store for lsp::Lsp {
   fqnFor(uri: string, text: string): string;
 }
 
-/// Pure language logic, free of any server or I/O. Each function maps source
-/// text (and, for cursor features, a position) to an LSP value, delegating to
-/// the core crates. The behaviour lives here and is tested without a server.
-component Analysis for lsp::Lsp {
-  /// Diagnostics for one document's text: run the check pipeline and map every
-  /// diagnostic's byte span to a UTF-16 range.
-  diagnostics(text: string): syntax::Diagnostic[] {
-    return model::Checks.check(text)
-  }
-
-  /// A whole-document formatting edit rewriting the source to canonical form, or
-  /// an error when it does not parse (the buffer is then left untouched).
-  formatEdit(text: string): Result<string, format::FormatError> {
-    return format::Formatter.format(text)
-  }
-
-  /// Hover content for the identifier under the cursor: its kind/FQN or member
-  /// signature plus any `///` summary. Falls back to a local binding's inferred
-  /// type when the cursor resolves to no declaration.
-  hover(text: string, line: number, col: number): string {
-    offset = number from lsp::Convert.positionToOffset(text, line, col)
-    hit = Result<Hit, void> from lsp::Resolve.resolveAt(text, offset)
-    if (hit.isErr) {
-      return lsp::Infer.bindingHover(text, offset)
-    }
-    return self.renderHover(hit.value)
-  }
-
-  /// Resolve the cursor to its definition target (module FQN + span), across
-  /// files, through aliases, and into `self.`/node members; `None` when the
-  /// cursor rests on nothing resolvable.
-  definition(text: string, line: number, col: number): Option<lsp::DefTarget> {
-    offset = number from lsp::Convert.positionToOffset(text, line, col)
-    hit = Result<Hit, void> from lsp::Resolve.resolveAt(text, offset)
-    if (hit.isErr) {
-      return None
-    }
-    target = DefTarget from { hit.value }
-    return Some(target)
-  }
-
-  /// Render a resolved hit as a Markdown hover: bold title, then the body.
-  renderHover(hit: lsp::Hit): string;
-}
-
-/// Cursor resolution shared by hover, go-to-definition, references, and rename.
-/// Works at the token level so it survives a partial parse, then consults the
-/// resolved workspace. Understands three reference forms: a `::` path (bare or
-/// FQN, §8.2), a `.` member after `self` or a node base, and an `alias` (§8.3).
-/// A caret resting just past an identifier's last character still resolves it.
-component Resolve for lsp::Lsp {
-  /// Resolve the identifier under `offset` in the active source to its
-  /// definition. Tokenizes, picks the identifier (or the one ending at the
-  /// caret), then dispatches: a `.member`, a self/field declaration, or a path.
-  resolveAt(text: string, offset: number): Result<lsp::Hit, void> {
-    tokens = Token[] from syntax::Lexer.tokenize(text)
-    idx = Result<number, void> from self.identIndex(tokens, offset)
-    if (idx.isErr) {
-      return Err(idx.error)
-    }
-    return self.resolveToken(text, tokens, idx.value)
-  }
-
-  /// Dispatch a resolved identifier index to the member, self, or path resolver.
-  resolveToken(text: string, tokens: syntax::Token[], idx: number): Result<lsp::Hit, void>;
-
-  /// The index of the identifier token at `offset`, or the one ending exactly at
-  /// `offset` (caret just past the word); none if no identifier is there.
-  identIndex(tokens: syntax::Token[], offset: number): Result<number, void>;
-
-  /// The contiguous `Ident (:: Ident)*` path the token at `idx` belongs to, as
-  /// segment texts in source order — the path a bare-name or FQN reference forms.
-  pathSegments(tokens: syntax::Token[], idx: number): string[];
-
-  /// Resolve a `::` path to the node/data it names: an alias or local symbol for
-  /// a bare name (following alias chains, bounded against cycles), the global
-  /// FQN index for a qualified one, with a unique-leaf fallback for goto leniency.
-  resolveNode(segments: string[], depth: number): Result<model::Symbol, void>;
-
-  /// Resolve `.member` after a `self` or node/data base — including a qualified,
-  /// cross-module base and an alias base — to the owner's callable or field.
-  resolveMember(text: string, tokens: syntax::Token[], idx: number): Result<lsp::Hit, void>;
-
-  /// The single workspace symbol named `name`, or nothing when zero or more than
-  /// one exists (an ambiguous bare reference is never guessed).
-  uniqueSymbol(name: string): Result<model::Symbol, void>;
-
-  /// The name of the innermost node whose span contains `offset` — the enclosing
-  /// node a `self` reference resolves against.
-  enclosingNode(offset: number): string;
-}
-
-/// Local-binding type inference, for inlay hints and hover. Assignments are
-/// untyped (`x = expr`); this infers the binding's type from its right-hand side
-/// — a call's return type, a field access, a `from` expression, or a literal.
-/// Best-effort: an expression it can't type yields no hint rather than a guess.
-component Infer for lsp::Lsp {
-  /// Every typed local binding in the active module: walk each callable body,
-  /// inferring the type of each assignment and `for`-binding it can.
-  localTypes(text: string): lsp::LocalType[];
-
-  /// The inferred type of the binding named by the identifier under `offset`,
-  /// rendered as a `name: Type` hover; empty when nothing is inferable.
-  bindingHover(text: string, offset: number): string;
-
-  /// The inferred type of an expression: literal kind, the `from` type, or a
-  /// postfix chain's last member type. Unknown forms infer nothing.
-  exprType(expr: syntax::Expr): string;
-
-  /// The type of a `.member` chain: walk each segment, the result is the last
-  /// member's type; each non-final member's type must name a node/data so the
-  /// chain can continue.
-  postfixType(base: syntax::Expr, segments: syntax::PostfixSeg[]): string;
-}
-
-/// AST-aware semantic tokens (`textDocument/semanticTokens`): colour by declared
-/// role. Two passes feed one sorted, non-overlapping, delta-encoded list — a
-/// token pass colours keywords, docs, literals, and `#[`; an AST pass colours
-/// identifiers by role (node→namespace, `data`→class, callable→method, param,
-/// `.f()` call→method). The legend the server advertises and the encoder index
-/// stay in step.
-component Semantic for lsp::Lsp {
-  /// The semantic tokens for the source as a full-document set: run both passes,
-  /// then encode.
-  semanticTokens(text: string): string {
-    raws = syntax::Token[] from self.tokenPass(text)
-    coloured = syntax::Token[] from self.astPass(text)
-    return self.encode(text, coloured)
-  }
-
-  /// Colour the leaves the tree does not expose as spans: keywords, doc
-  /// comments, string/number literals, and the `#[` macro opener.
-  tokenPass(text: string): syntax::Token[];
-
-  /// Colour identifiers by their declared role across the whole module: a node
-  /// name as a namespace, a `data` name as a class, a callable as a method, a
-  /// parameter as a parameter, a call segment as a method.
-  astPass(text: string): syntax::Token[];
-
-  /// Sort the coloured spans and delta-encode them, dropping any that overlap a
-  /// predecessor, cross a line, or are zero width (the protocol requires
-  /// single-line, non-overlapping tokens).
-  encode(text: string, raws: syntax::Token[]): string;
-}
-
-/// Document outline, folding ranges, and workspace symbol search. The outline
-/// and folds are pure over one module's source; workspace search scans the
-/// resolved index by name.
-component Symbols for lsp::Lsp {
-  /// The hierarchical outline of the source: nodes with their callables and
-  /// nested declarations, `data` types with their fields or variants, aliases,
-  /// and features.
-  documentSymbols(text: string): string;
-
-  /// The foldable regions: every multi-line disclosed declaration and statement
-  /// block. A black-box `;` declaration has nothing to fold.
-  foldingRanges(text: string): string;
-
-  /// Workspace symbols whose name contains `query` (case-insensitive); an empty
-  /// query returns every declared symbol, each located via its module's URI.
-  workspaceSymbols(query: string): string;
-}
-
-/// Find-references, document-highlight, and rename — one engine: resolve the
-/// definition under the cursor, then scan every name-position identifier in the
-/// workspace and keep those resolving to the same definition. A `::` qualifier
-/// names a module, not the symbol, so it is never an occurrence.
-component Refs for lsp::Lsp {
-  /// Every occurrence of the symbol under `offset` across all modules. With
-  /// `includeDecl` false the defining occurrence is omitted (find-references
-  /// convention).
-  references(text: string, offset: number, includeDecl: bool): lsp::Occurrence[];
-
-  /// The occurrences of the symbol under `offset` confined to the active file
-  /// (document highlight).
-  highlights(text: string, offset: number): syntax::Span[];
-
-  /// The editor range of the identifier under the cursor when it resolves to a
-  /// renameable symbol (`prepareRename`); empty otherwise.
-  renameable(text: string, offset: number): syntax::Span;
-
-  /// Whether two `(module, span)` pairs denote the same definition site.
-  same(aMod: string, a: syntax::Span, bMod: string, b: syntax::Span): bool;
-}
-
-/// Context-aware completion. The context is read from the token left of the
-/// caret: after `.` → the base node's members; after `::` → the named module's
-/// public symbols (§8.2); after `#[` → the built-in macros; in type position
-/// (`:`/`<`) → primitives, `Result`, and declared types; otherwise → keywords,
-/// this module's symbols, and its aliases.
-component Complete for lsp::Lsp {
-  /// Completion items for the caret position: dispatch on the trigger token.
-  completion(text: string, line: number, col: number): string {
-    offset = number from lsp::Convert.positionToOffset(text, line, col)
-    tokens = Token[] from syntax::Lexer.tokenize(text)
-    return self.dispatch(tokens, offset)
-  }
-
-  /// Select the candidate set from the trigger token left of the caret.
-  dispatch(tokens: syntax::Token[], offset: number): string;
-
-  /// Callables and fields of the node named by the base before a `.`.
-  memberItems(tokens: syntax::Token[], dot: number): string;
-
-  /// Public symbols of the module named by a `::` path (or all when local).
-  pathItems(tokens: syntax::Token[], ccolon: number): string;
-
-  /// Primitive types, `Result`, and every declared node/data type.
-  typeItems(): string;
-}
-
-/// Byte-offset spans to LSP positions and back. PseudoScript spans are byte
-/// offsets; LSP positions are 0-based line and 0-based UTF-16 code-unit column.
-/// A line index turns a byte offset into a line/column pair.
-component Convert for lsp::Lsp {
-  /// A byte offset to a 0-based LSP position, summing each character's UTF-16
-  /// width from the line start.
-  offsetToPosition(text: string, offset: number): string;
-
-  /// A byte span to an LSP range (start and end positions).
-  spanToRange(text: string, span: syntax::Span): string;
-
-  /// The range covering the whole source, for a full-document format edit.
-  fullRange(text: string): string;
-
-  /// A 0-based LSP position back to a byte offset, clamping a position past a
-  /// line's end to that line's end.
-  positionToOffset(text: string, line: number, col: number): number;
-}
-
 /// The editor spawns `pds lsp` as a child process and drives it over stdio.
 feature SpawnedOverStdio for lsp::Server {
   given "an editor that speaks the Language Server Protocol"
-  when  "it needs language support for a .pds document"
-  then  "it spawns `pds lsp` as a child process"
-  and   "the server reads requests and writes responses over stdin and stdout"
+  when "it needs language support for a .pds document"
+  then "it spawns `pds lsp` as a child process"
+  and "the server reads requests and writes responses over stdin and stdout"
 }
 
 /// Every change re-checks and republishes diagnostics for the whole workspace.
 feature RepublishOnChange for lsp::Server {
   given "a document open in the editor"
-  when  "the editor sends didOpen, didChange, or didClose"
-  then  "the store re-converges from the document's current text"
-  and   "every module's diagnostics are published against its own file"
-  but   "a cross-file issue surfaces in the file that causes it"
+  when "the editor sends didOpen, didChange, or didClose"
+  then "the store re-converges from the document's current text"
+  and "every module's diagnostics are published against its own file"
+  but "a cross-file issue surfaces in the file that causes it"
 }
 
 /// Full document sync: each change carries the entire new text.
 feature FullDocumentSync for lsp::Server {
   given "the server advertised full text-document sync"
-  when  "the editor sends a didChange notification"
-  then  "the last content change carries the whole new document text"
-  and   "the store replaces the buffer wholesale rather than patching a range"
+  when "the editor sends a didChange notification"
+  then "the last content change carries the whole new document text"
+  and "the store replaces the buffer wholesale rather than patching a range"
 }
 
 /// All requests are answered from the document's current source.
-feature AnswerFromCurrentText for lsp::Analysis {
+feature AnswerFromCurrentText for lsp::Server {
   given "a document with unsaved edits open in the editor"
-  when  "the editor requests hover, definition, completion, or formatting"
-  then  "the answer is computed from the open buffer's current text"
-  but   "the on-disk version is not consulted while a buffer is open"
+  when "the editor requests hover, definition, completion, or formatting"
+  then "the active buffer's current text is handed to lsp_core"
+  but "the on-disk version is not consulted while a buffer is open"
 }
 
-/// The server owns no language logic — it delegates to the core crates.
-feature DelegatesAllLanguageLogic for lsp::Analysis {
-  given "a request that needs parsing, checking, or formatting"
-  when  "Analysis handles it"
-  then  "parsing and tokenizing delegate to the syntax crate"
-  and   "checking and resolution delegate to the model crate"
-  and   "formatting delegates to the format crate"
-  but   "the server adds no language rules of its own"
-}
-
-/// Hover shows the `///` summary of the symbol under the cursor.
-feature HoverShowsDocSummary for lsp::Analysis {
-  given "the cursor resting on a declared node, data type, or member"
-  when  "the editor requests hover"
-  then  "the symbol's kind and FQN, or its member signature, is shown"
-  and   "its `///` summary is appended under the title"
-}
-
-/// An unresolved cursor on a local binding falls back to its inferred type.
-feature HoverFallsBackToInferredType for lsp::Analysis {
-  given "the cursor resting on a local binding rather than a declaration"
-  when  "hover finds no declared symbol there"
-  then  "the binding's inferred type is shown as `name: Type`"
-  but   "an expression that cannot be typed yields no hover"
+/// The server owns no language logic — it delegates to lsp_core.
+feature DelegatesAllLanguageLogic for lsp::Server {
+  given "a request that needs parsing, checking, resolution, or formatting"
+  when "the server handles it"
+  then "every language answer is computed by the lsp_core handlers"
+  and "workspace loading delegates to the project crate, checking to the model crate"
+  but "the server adds no language rules of its own — only transport and URI mapping"
 }
 
 /// Go-to-definition jumps to the declaring span, across files.
 feature DefinitionJumpsToDeclaration for lsp::Server {
   given "the cursor on a reference to a node, member, or data type"
-  when  "the editor requests go-to-definition"
-  then  "the reference resolves to its declaring span"
-  and   "the target FQN maps back to its file, even in another module"
-}
-
-/// Whole-document format produces an edit, or nothing on a parse error.
-feature FormatOrLeaveUntouched for lsp::Analysis {
-  given "an open document"
-  when  "the editor requests formatting"
-  then  "a parseable document yields one whole-document edit to canonical form"
-  but   "an unparseable document yields no edit and is left untouched"
-}
-
-/// Cursor resolution survives a partial parse by working at the token level.
-feature ResolutionSurvivesPartialParse for lsp::Resolve {
-  given "a document that does not fully parse"
-  when  "the cursor rests on an identifier in a well-formed region"
-  then  "resolution still tokenizes and resolves that identifier"
-  and   "a caret just past the identifier's last character still resolves it"
-}
-
-/// An unresolved cursor yields nothing rather than erroring.
-feature UnresolvedCursorYieldsNothing for lsp::Resolve {
-  given "the cursor on whitespace, punctuation, or an unknown name"
-  when  "a cursor feature runs"
-  then  "resolution returns no hit"
-  but   "the request completes with an empty result rather than failing"
-}
-
-/// Spans map to UTF-16 LSP positions.
-feature SpansMapToUtf16Positions for lsp::Convert {
-  given "a byte-offset span over source containing non-ASCII characters"
-  when  "it is converted to an LSP range"
-  then  "each column counts UTF-16 code units from the line start"
-  and   "converting a position back to a byte offset round-trips"
-}
-
-/// Semantic tokens colour identifiers by their declared role.
-feature ColourByDeclaredRole for lsp::Semantic {
-  given "a parsed module"
-  when  "the editor requests full semantic tokens"
-  then  "each identifier is coloured by its role — node, data, callable, parameter"
-  and   "keywords, docs, and literals are coloured by the token pass"
-  but   "overlapping, multi-line, or zero-width spans are dropped before encoding"
-}
-
-/// Rename rewrites every occurrence of one definition across the workspace.
-feature RenameAcrossWorkspace for lsp::Refs {
-  given "the cursor on a renameable symbol"
-  when  "the editor requests rename"
-  then  "every identifier resolving to the same definition is collected"
-  and   "each occurrence is rewritten across all files that reference it"
-  but   "a `::` module qualifier is never treated as an occurrence"
+  when "the editor requests go-to-definition"
+  then "lsp_core resolves the reference to its declaring module FQN and span"
+  and "the server maps that FQN back to its file URI, even in another module"
 }

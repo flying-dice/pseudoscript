@@ -29,10 +29,27 @@ public data Admitted { event: shared::EventId, token: waitingroom::AdmissionToke
 
 /// `waitingroom` — the virtual queue and admission control.
 /// #headline
-public container WaitingRoom for context::AcmeTickets;
+public container WaitingRoom for context::AcmeTickets {
+  /// Join the queue for an event; refuses when the queue is shedding load.
+  public join(event: shared::EventId, user: shared::UserId): Result<waitingroom::QueueTicket, waitingroom::WaitingError> {
+    return waitingroom::Queue.join(event, user)
+  }
+  /// The caller's current position and estimated wait, from a published snapshot.
+  public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
+    return waitingroom::Queue.position(ticket)
+  }
+  /// Verify an admission token is valid and unexpired for its event.
+  public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
+    return waitingroom::Admission.verify(token)
+  }
+  /// Admit as many queued attendees as the event currently has headroom for.
+  public admitNext(event: shared::EventId): void {
+    waitingroom::Gatekeeper.admitNext(event)
+  }
+}
 
 /// The queue an attendee joins and polls.
-public component Queue for waitingroom::WaitingRoom {
+component Queue for waitingroom::WaitingRoom {
   /// Join the queue for an event. Refuses with `QueueClosed` when the queue is
   /// shedding load — the backpressure valve for a surge that outruns capacity.
   public join(event: shared::EventId, user: shared::UserId): Result<waitingroom::QueueTicket, waitingroom::WaitingError> {
@@ -59,7 +76,7 @@ public component Queue for waitingroom::WaitingRoom {
 
 /// Admission control: grants entry to the purchase flow, and gates every step
 /// that consumes inventory or money.
-public component Admission for waitingroom::WaitingRoom {
+component Admission for waitingroom::WaitingRoom {
   /// Verify an admission token is valid and unexpired for its event. The gate
   /// reservation and checkout call before doing anything expensive.
   public verify(token: waitingroom::AdmissionToken): Result<void, waitingroom::WaitingError> {
@@ -77,7 +94,7 @@ public component Admission for waitingroom::WaitingRoom {
 /// The rate controller: admits queued attendees only as fast as the event can
 /// safely absorb. Driven by the scheduled drainer (`batch`).
 /// #headline
-public component Gatekeeper for waitingroom::WaitingRoom {
+component Gatekeeper for waitingroom::WaitingRoom {
   /// Admit as many queued attendees as the event currently has headroom for,
   /// granting each an admission token and alerting them. Headroom is a function
   /// of remaining inventory and in-flight checkouts, so admission never outruns
@@ -99,7 +116,7 @@ public component Gatekeeper for waitingroom::WaitingRoom {
   /// apart the loop can only ever under-admit, never oversell the path. The
   /// drain interval is an ops knob; this bound holds at any interval.
   headroom(event: shared::EventId): number {
-    seats = Option<CapacitySnapshot> from inventory::Capacity.snapshot(event)
+    seats = Option<CapacitySnapshot> from inventory::Inventory.snapshot(event)
     if (seats.isNone) {
       return self.budget(0, 0)
     }
@@ -143,18 +160,18 @@ component AdmissionStore for waitingroom::WaitingRoom {
 /// Admission only opens at the controlled rate, protecting the purchase path.
 feature AdmitsAtControlledRate for waitingroom::Gatekeeper {
   given "thousands of attendees are queued for a hot on-sale"
-  and   "the event currently has headroom for a limited number of buyers"
-  when  "the drainer runs"
-  then  "only as many attendees as there is headroom for are admitted"
-  and   "each admitted attendee is granted an admission token and alerted"
-  but   "the rest keep their place in line"
+  and "the event currently has headroom for a limited number of buyers"
+  when "the drainer runs"
+  then "only as many attendees as there is headroom for are admitted"
+  and "each admitted attendee is granted an admission token and alerted"
+  but "the rest keep their place in line"
 }
 
 /// No purchase step proceeds without a valid admission token.
 feature AdmissionGatesPurchase for waitingroom::Admission {
   given "an admission token that has expired"
-  when  "a reservation or checkout presents it"
-  then  "the step is refused as an expired admission"
+  when "a reservation or checkout presents it"
+  then "the step is refused as an expired admission"
 }
 
 /// The queue's guarantee is admission RATE, not seat order. Among admitted
@@ -163,8 +180,7 @@ feature AdmissionGatesPurchase for waitingroom::Admission {
 /// exists to spread.
 feature QueueGatesRateNotSeatOrder for waitingroom::Queue {
   given "two attendees admitted from the queue in order"
-  when  "both reserve from the same tier"
-  then  "seats are assigned best-available across shards"
-  but   "not guaranteed in queue order"
+  when "both reserve from the same tier"
+  then "seats are assigned best-available across shards"
+  but "not guaranteed in queue order"
 }
-

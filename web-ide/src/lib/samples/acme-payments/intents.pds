@@ -29,26 +29,14 @@ public data CaptureMethod =
   | Manual
 
 /// A payment the platform is collecting on a merchant's behalf.
-public data PaymentIntent {
-  id: shared::PaymentIntentId,
-  merchant: shared::MerchantId,
-  amount: shared::Money,
-  capture: intents::CaptureMethod,
-  status: intents::IntentStatus
-}
+public data PaymentIntent { id: shared::PaymentIntentId, merchant: shared::MerchantId, amount: shared::Money, capture: intents::CaptureMethod, status: intents::IntentStatus }
 
 /// A request to create a PaymentIntent. The merchant is taken from the
 /// authenticated API key at the edge, never from the body.
-public data CreateIntent {
-  amount: shared::Money,
-  capture: intents::CaptureMethod
-}
+public data CreateIntent { amount: shared::Money, capture: intents::CaptureMethod }
 
 /// A request to confirm a PaymentIntent with a payment method.
-public data ConfirmIntent {
-  intent: shared::PaymentIntentId,
-  method: shared::PaymentMethodId
-}
+public data ConfirmIntent { intent: shared::PaymentIntentId, method: shared::PaymentMethodId }
 
 /// A cardholder's completed 3-D Secure challenge.
 public data ChallengeOutcome { value: string }
@@ -78,12 +66,45 @@ public data PaymentCanceled { intent: intents::PaymentIntent }
 
 /// `intents` — the PaymentIntent engine.
 /// #headline
-public container Intents for context::AcmePay;
+public container Intents for context::AcmePay {
+  /// Create a PaymentIntent ready to confirm.
+  public create(merchant: shared::MerchantId, req: intents::CreateIntent): intents::PaymentIntent {
+    return intents::PaymentIntents.create(merchant, req)
+  }
+  /// Confirm an intent: screen, authorise, and (for automatic capture) capture.
+  public confirm(merchant: shared::MerchantId, req: intents::ConfirmIntent): Result<intents::PaymentIntent, intents::IntentError> {
+    return intents::PaymentIntents.confirm(merchant, req)
+  }
+  /// Complete a 3-D Secure challenge, then resume authorise-and-capture.
+  public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, intents::IntentError> {
+    return intents::PaymentIntents.confirmAction(intent, outcome)
+  }
+  /// Capture a manually-captured intent the merchant has decided to settle.
+  public capture(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
+    return intents::PaymentIntents.capture(merchant, intent)
+  }
+  /// Cancel an intent before capture, releasing any authorised hold.
+  public cancel(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
+    return intents::PaymentIntents.cancel(merchant, intent)
+  }
+  /// Resume an intent stuck mid-saga after a crash or timeout.
+  public resume(intent: shared::PaymentIntentId): void {
+    intents::PaymentIntents.resume(intent)
+  }
+  /// Intents left mid-saga (`Processing`) past their recovery threshold.
+  public stuck(): intents::PaymentIntent[] {
+    return intents::PaymentIntents.stuck()
+  }
+  /// Read an intent on behalf of `merchant`, refusing another merchant's.
+  public getFor(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
+    return intents::PaymentIntents.getFor(merchant, intent)
+  }
+}
 
 /// The PaymentIntent saga: create, confirm, authenticate, capture, cancel, and
 /// crash recovery.
 /// #headline
-public component PaymentIntents for intents::Intents {
+component PaymentIntents for intents::Intents {
   /// Create a PaymentIntent ready to confirm.
   public create(merchant: shared::MerchantId, req: intents::CreateIntent): intents::PaymentIntent {
     id = shared::PaymentIntentId from intents::IntentStore.nextId()
@@ -108,19 +129,19 @@ public component PaymentIntents for intents::Intents {
     if (ready.isErr) {
       return Err(ready.error)
     }
-    instrument = Option<context::NetworkInstrument> from vault::Instruments.instrumentFor(merchant, req.method)
+    instrument = Option<context::NetworkInstrument> from vault::Vault.instrumentFor(merchant, req.method)
     if (instrument.isNone) {
       return Err(intents::IntentError::InvalidInstrument)
     }
     input = risk::RiskInput from { merchant, req.intent, intent.value.amount, req.method }
-    outcome = RiskOutcome from risk::Engine.screen(input)
-    blocked = Result<void, RiskError> from risk::Engine.isBlocked(outcome)
+    outcome = RiskOutcome from risk::Risk.screen(input)
+    blocked = Result<void, RiskError> from risk::Risk.isBlocked(outcome)
     if (blocked.isOk) {
       return Err(self.reject(intent.value, outcome))
     }
-    review = Result<void, RiskError> from risk::Engine.isReview(outcome)
+    review = Result<void, RiskError> from risk::Risk.isReview(outcome)
     if (review.isOk) {
-      risk::ReviewQueue.flag(req.intent, "elevated risk")
+      risk::Risk.flag(req.intent, "elevated risk")
     }
     return self.proceed(intent.value, instrument.value)
   }
@@ -136,7 +157,7 @@ public component PaymentIntents for intents::Intents {
     if (pending.isErr) {
       return Err(pending.error)
     }
-    cleared = Result<AuthResult, ChargeError> from charges::ChargeService.completeAction(intent, self.challengeResult(outcome))
+    cleared = Result<AuthResult, ChargeError> from charges::Charges.completeAction(intent, self.challengeResult(outcome))
     if (cleared.isErr) {
       return Err(self.afterChargeFailure(loaded.value, cleared.error))
     }
@@ -167,7 +188,7 @@ public component PaymentIntents for intents::Intents {
     if (cancelable.isErr) {
       return Err(cancelable.error)
     }
-    charges::ChargeService.release(intent)
+    charges::Charges.release(intent)
     canceled = PaymentIntent from self.mark(loaded.value, intents::IntentStatus::Canceled)
     intents::IntentStore.save(canceled)
     intents::Events.canceled(PaymentCanceled from { canceled })
@@ -183,12 +204,12 @@ public component PaymentIntents for intents::Intents {
   public resume(intent: shared::PaymentIntentId): void {
     loaded = Result<PaymentIntent, IntentError> from self.get(intent)
     if (loaded.isOk) {
-      charges::ChargeService.reconcileCapture(intent)
-      receipt = Option<Receipt> from charges::ChargeService.receiptFor(intent)
+      charges::Charges.reconcileCapture(intent)
+      receipt = Option<Receipt> from charges::Charges.receiptFor(intent)
       if (receipt.isSome) {
         self.complete(loaded.value, receipt.value)
       } else {
-        failed = Result<void, ChargeError> from charges::ChargeService.definitelyFailed(intent)
+        failed = Result<void, ChargeError> from charges::Charges.definitelyFailed(intent)
         if (failed.isOk) {
           self.abandon(loaded.value)
         }
@@ -227,7 +248,7 @@ public component PaymentIntents for intents::Intents {
   /// Authorise, then branch on the outcome: a 3-D Secure requirement parks the
   /// intent in `RequiresAction`; otherwise continue to capture-or-hold.
   proceed(intent: intents::PaymentIntent, instrument: context::NetworkInstrument): Result<intents::PaymentIntent, intents::IntentError> {
-    auth = Result<AuthResult, ChargeError> from charges::ChargeService.authorize(intent.id, intent.amount, instrument)
+    auth = Result<AuthResult, ChargeError> from charges::Charges.authorize(intent.id, intent.amount, instrument)
     if (auth.isErr) {
       return Err(self.afterChargeFailure(intent, auth.error))
     }
@@ -254,7 +275,7 @@ public component PaymentIntents for intents::Intents {
 
   /// Capture the hold and succeed the intent, raising `PaymentSucceeded`.
   finalize(intent: intents::PaymentIntent): Result<intents::PaymentIntent, intents::IntentError> {
-    receipt = Result<Receipt, ChargeError> from charges::ChargeService.capture(intent.id)
+    receipt = Result<Receipt, ChargeError> from charges::Charges.capture(intent.id)
     if (receipt.isErr) {
       return Err(self.afterChargeFailure(intent, receipt.error))
     }
@@ -346,41 +367,41 @@ component Events for intents::Intents {
 /// A successful confirmation screens, authorises, and captures the payment.
 feature ConfirmAuthorizesAndCaptures for intents::PaymentIntents {
   given "a confirmable intent and a valid payment method"
-  when  "the merchant confirms with automatic capture"
-  then  "the payment is screened for fraud"
-  and   "the card is authorised and captured"
-  and   "a payment-succeeded event is raised"
+  when "the merchant confirms with automatic capture"
+  then "the payment is screened for fraud"
+  and "the card is authorised and captured"
+  and "a payment-succeeded event is raised"
 }
 
 /// A 3-D Secure requirement parks the intent until the cardholder authenticates.
 feature ThreeDSecureParksTheIntent for intents::PaymentIntents {
   given "a confirmable intent whose issuer demands 3-D Secure"
-  when  "the merchant confirms"
-  then  "the intent is parked in requires-action"
-  but   "no capture happens until the cardholder completes the challenge"
+  when "the merchant confirms"
+  then "the intent is parked in requires-action"
+  but "no capture happens until the cardholder completes the challenge"
 }
 
 /// A blocked payment never reaches the network.
 feature BlockedPaymentNeverCharges for intents::PaymentIntents {
   given "an intent the fraud engine blocks"
-  when  "the merchant confirms"
-  then  "the confirmation is rejected as blocked"
-  but   "the card is never authorised"
+  when "the merchant confirms"
+  then "the confirmation is rejected as blocked"
+  but "the card is never authorised"
 }
 
 /// A flagged-for-review payment still completes; the review is post-hoc.
 feature ReviewDoesNotHaltPayment for intents::PaymentIntents {
   given "an intent the fraud engine flags for review (not block)"
-  when  "the merchant confirms"
-  then  "the payment is authorised and captured normally"
-  and   "the intent is flagged for a human to review afterwards"
+  when "the merchant confirms"
+  then "the payment is authorised and captured normally"
+  and "the intent is flagged for a human to review afterwards"
 }
 
 /// An indeterminate authorisation is reconciled, never failed on a guess.
 feature UncertainChargeIsRecovered for intents::PaymentIntents {
   given "a confirmation whose authorisation times out with the outcome unknown"
-  when  "the intent saga handles the timeout"
-  then  "the intent is parked in processing"
-  and   "the sweeper later reconciles it to succeeded or failed against the network"
-  but   "the cardholder is never failed while the charge might be real"
+  when "the intent saga handles the timeout"
+  then "the intent is parked in processing"
+  and "the sweeper later reconciles it to succeeded or failed against the network"
+  but "the cardholder is never failed while the charge might be real"
 }

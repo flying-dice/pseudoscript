@@ -6,10 +6,7 @@
 
 /// A request to refund a captured payment. The merchant is taken from the
 /// authenticated API key at the edge, never from the body.
-public data RefundRequest {
-  intent: shared::PaymentIntentId,
-  amount: shared::Money
-}
+public data RefundRequest { intent: shared::PaymentIntentId, amount: shared::Money }
 
 /// A refund's lifecycle.
 public data RefundStatus =
@@ -18,13 +15,7 @@ public data RefundStatus =
   | Failed { reason: string }
 
 /// A refund record.
-public data Refund {
-  id: shared::RefundId,
-  intent: shared::PaymentIntentId,
-  merchant: shared::MerchantId,
-  amount: shared::Money,
-  status: refunds::RefundStatus
-}
+public data Refund { id: shared::RefundId, intent: shared::PaymentIntentId, merchant: shared::MerchantId, amount: shared::Money, status: refunds::RefundStatus }
 
 /// Why a refund was refused.
 public data RefundError =
@@ -38,10 +29,15 @@ public data RefundError =
 public data RefundSucceeded { refund: shared::RefundId, merchant: shared::MerchantId, amount: shared::Money }
 
 /// `refunds` — the refund engine.
-public container Refunds for context::AcmePay;
+public container Refunds for context::AcmePay {
+  /// Refund a captured payment. Idempotent on the request.
+  public create(merchant: shared::MerchantId, req: refunds::RefundRequest): Result<refunds::Refund, refunds::RefundError> {
+    return refunds::RefundService.create(merchant, req)
+  }
+}
 
 /// Orchestrates refunds against the charge engine and the ledger.
-public component RefundService for refunds::Refunds {
+component RefundService for refunds::Refunds {
   /// Refund a captured payment. Idempotent on the request: a repeat returns the
   /// existing refund. The payment must be a succeeded intent owned by the
   /// merchant; the network is reversed before any balance moves, and a failed
@@ -51,7 +47,7 @@ public component RefundService for refunds::Refunds {
     if (prior.isSome) {
       return Ok(prior.value)
     }
-    intent = Result<PaymentIntent, IntentError> from intents::PaymentIntents.getFor(merchant, req.intent)
+    intent = Result<PaymentIntent, IntentError> from intents::Intents.getFor(merchant, req.intent)
     if (intent.isErr) {
       return Err(refunds::RefundError::IntentNotFound)
     }
@@ -62,7 +58,7 @@ public component RefundService for refunds::Refunds {
     id = shared::RefundId from refunds::RefundStore.nextId()
     pending = Refund from { id, merchant, req, refunds::RefundStatus::Pending }
     refunds::RefundStore.save(pending)
-    back = Result<context::NetworkRefund, ChargeError> from charges::ChargeService.refund(req.intent, req.amount)
+    back = Result<context::NetworkRefund, ChargeError> from charges::Charges.refund(req.intent, req.amount)
     if (back.isErr) {
       refunds::RefundStore.save(self.markFailed(pending, back.error))
       return Err(self.declined(back.error))
@@ -100,15 +96,15 @@ component Events for refunds::Refunds {
 /// A failed network refund never debits the merchant's balance.
 feature FailedRefundDoesNotDebit for refunds::RefundService {
   given "a captured payment whose network refund fails"
-  when  "a refund is attempted"
-  then  "the refund is recorded as failed"
-  but   "no balance is debited and no refund-succeeded event is raised"
+  when "a refund is attempted"
+  then "the refund is recorded as failed"
+  but "no balance is debited and no refund-succeeded event is raised"
 }
 
 /// A retried refund reverses the payment only once.
 feature RefundIsIdempotent for refunds::RefundService {
   given "a refund request that already succeeded"
-  when  "the same request is sent again"
-  then  "the existing refund is returned"
-  but   "the network is not reversed a second time"
+  when "the same request is sent again"
+  then "the existing refund is returned"
+  but "the network is not reversed a second time"
 }

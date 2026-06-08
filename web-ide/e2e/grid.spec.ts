@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { createProject, stubPicker } from "./harness";
 
-// Grid placement: enabling it unlocks drag-to-pin, which freezes every node onto a
-// cell. Pinned cards show a badge; the inline ✕ clears one; the Reset control drops
-// the whole diagram's placements back to the auto-layout. (The symmetric-margin
-// geometry is covered by the Rust grid_layout tests.)
+// Grid placement: enabling it unlocks drag-to-pin. Unlocking pins nothing — only a card
+// you drag is pinned (the rest keep flowing). A pinned card shows a pin badge; clicking
+// it clears that node's pin; the Reset control drops the whole diagram's placements back
+// to the auto-layout. (The grid geometry is covered by the Rust grid_layout tests.)
 test.beforeEach(async ({ page }) => {
   await stubPicker(page);
 });
@@ -17,43 +17,64 @@ async function openMultiNodeCanvas(page: import("@playwright/test").Page): Promi
   await expect(page.locator(".svelte-flow__node-card").nth(1)).toBeVisible({ timeout: 20_000 });
 }
 
-// Turn on grid placement via the Layout dropdown, then unlock (freezes all nodes).
+// Turn on grid placement via the Layout dropdown, then unlock drag-to-pin. Unlocking
+// pins nothing, so no badges appear until a card is dragged.
 async function enableGridAndUnlock(page: import("@playwright/test").Page): Promise<void> {
   await page.getByRole("button", { name: "Layout" }).click();
   await page.getByRole("menuitemcheckbox", { name: "Grid placement" }).click();
   await page.keyboard.press("Escape"); // close the dropdown
   const lock = page.getByTestId("grid-lock");
   await expect(lock).toBeVisible({ timeout: 20_000 });
-  await lock.click(); // freeze the current arrangement → every card pinned
+  await lock.click(); // arm drag-to-pin — pins nothing yet
 }
 
-test("unlocking grid mode pins every node and shows a badge", async ({ page }) => {
+// Drag one card a short hop and drop it, snapping it to a grid cell → one pin. A
+// svelte-flow node drag needs a manual stepped mouse gesture to trip `onnodedragstop`.
+async function pinFirstCard(page: import("@playwright/test").Page): Promise<void> {
+  const card = page.locator(".svelte-flow__node-card").first();
+  const box = await card.boundingBox();
+  if (!box) throw new Error("no card to drag");
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 40, cy + 30, { steps: 8 });
+  await page.mouse.up();
+}
+
+test("unlocking arms editing but pins nothing", async ({ page }) => {
   await openMultiNodeCanvas(page);
   await enableGridAndUnlock(page);
 
-  const badges = page.getByTestId("pin-badge");
-  await expect(badges.first()).toBeVisible({ timeout: 20_000 });
-  const cards = page.locator(".svelte-flow__node-card");
-  // Freeze pins the whole arrangement, so a badge per card.
-  expect(await badges.count()).toBe(await cards.count());
+  // No node is pinned until the user drags one.
+  await expect(page.getByTestId("pin-badge")).toHaveCount(0);
 });
 
-test("the inline ✕ clears a single node's pin", async ({ page }) => {
+test("dragging a card pins just that card", async ({ page }) => {
   await openMultiNodeCanvas(page);
   await enableGridAndUnlock(page);
+  await pinFirstCard(page);
 
   const badges = page.getByTestId("pin-badge");
-  await expect(badges.first()).toBeVisible({ timeout: 20_000 });
-  const before = await badges.count();
-  expect(before).toBeGreaterThan(1);
+  await expect(badges).toHaveCount(1, { timeout: 20_000 });
+});
 
-  await page.getByTestId("unpin-btn").first().click();
-  await expect(badges).toHaveCount(before - 1, { timeout: 20_000 });
+test("clicking the pin badge clears a single node's pin", async ({ page }) => {
+  await openMultiNodeCanvas(page);
+  await enableGridAndUnlock(page);
+  await pinFirstCard(page);
+
+  const badges = page.getByTestId("pin-badge");
+  await expect(badges).toHaveCount(1, { timeout: 20_000 });
+
+  await badges.first().click();
+  await expect(badges).toHaveCount(0, { timeout: 20_000 });
 });
 
 test("Reset drops the whole diagram's placements", async ({ page }) => {
   await openMultiNodeCanvas(page);
   await enableGridAndUnlock(page);
+  await pinFirstCard(page);
 
   await expect(page.getByTestId("pin-badge").first()).toBeVisible({ timeout: 20_000 });
   const reset = page.getByTestId("grid-reset");

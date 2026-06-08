@@ -1,0 +1,163 @@
+//! universe — the software-graph model behind the 3D relationship view (crate
+//! `pseudoscript-universe`).
+//!
+//! Sits above `model`: adapts the resolved C4 `Graph` into a relationship graph
+//! the web IDE's `ForceGraph` renders — structural nodes (systems, containers,
+//! components, people) with the containment tree, plus directed relationship
+//! edges weighted by traffic. Positions are NOT computed here: the renderer lays
+//! the graph out with d3-force-3d in the browser. Pure and wasm-safe: no
+//! rendering, no layout, no I/O.
+
+/// The C4 abstraction level a node sits at. Only these four enter the graph;
+/// data and callables do not — a relationship through them is lifted to the
+/// nearest enclosing structural node.
+public data C4Level =
+  | System
+  | Container
+  | Component
+  | Person
+
+/// A structural node in the software graph: its stable model FQN, its C4 level,
+/// and its place in the containment tree (the enclosing node, empty for a
+/// top-level system, and the ids it contains). No position — the renderer
+/// places it.
+data GraphNode { id: string, level: universe::C4Level, parent: string, children: string[] }
+
+/// A directed relationship between two structural nodes, weighted by `traffic` —
+/// the number of underlying calls lifted onto the pair. Self-relationships are
+/// dropped; the count drives the renderer's flow animation.
+data Relationship { source: string, to: string, traffic: number }
+
+/// The software graph: structural nodes with the containment tree, directed
+/// relationship edges weighted by traffic, and the top-level systems (the
+/// containment roots, in model-declaration order). The crate's in-memory form,
+/// before flattening to a renderer-facing `Snapshot`.
+public data SoftwareGraph { nodes: universe::GraphNode[], relationships: universe::Relationship[], roots: string[] }
+
+/// One node in the flat snapshot: its id, C4 level as a lowercase string, and the
+/// id of its containment parent (empty for a top-level system).
+data NodeOut { id: string, level: string, parent: string }
+
+/// One relationship in the flat snapshot, with its traffic (call count).
+data EdgeOut { source: string, to: string, traffic: number }
+
+/// The flat, serialisable contract the web IDE's `ForceGraph` consumes: nodes
+/// and directed weighted edges, with no engine internals (petgraph indices)
+/// leaking across the boundary. Positions are not here.
+public data Snapshot { nodes: universe::NodeOut[], edges: universe::EdgeOut[] }
+
+/// `crates/pseudoscript-universe`. Maps the resolved C4 model into the software
+/// graph the 3D view renders, then flattens it to a determinstic snapshot.
+public container Universe for context::Pseudoscript {
+  /// Build the software graph from module sources.
+  public build(modules: model::WorkspaceModule[]): universe::SoftwareGraph {
+    return universe::Adapter.build(modules)
+  }
+
+  /// Flatten the software graph into the renderer-facing snapshot.
+  public snapshot(graph: universe::SoftwareGraph): universe::Snapshot {
+    return universe::Flatten.snapshot(graph)
+  }
+}
+
+/// Adapts a resolved model into the software graph: keeps only the structural
+/// nodes, hooks each to its structural parent for the containment tree, and lifts
+/// every call to the structural level — tallying directed traffic per
+/// caller→callee pair so the edge carries direction.
+component Adapter for universe::Universe {
+  /// Build the graph from module sources — the same `(fqn, source)` input the
+  /// IDE feeds the model — by resolving the model first, then adapting it.
+  public build(modules: model::WorkspaceModule[]): universe::SoftwareGraph {
+    graph = model::Graph from model::Model.graph(modules)
+    return universe::Adapter.fromModel(graph)
+  }
+
+  /// Adapt an already-resolved model: place the structural nodes, wire
+  /// containment, then lift and tally call traffic into directed edges.
+  public fromModel(graph: model::Graph): universe::SoftwareGraph {
+    nodes = GraphNode[] from self.placeStructural(graph)
+    rooted = SoftwareGraph from self.wireContainment(graph, nodes)
+    return self.tallyTraffic(graph, rooted)
+  }
+
+  /// Each model node whose kind is structural (system/container/component/person)
+  /// becomes a graph node; data and callables are skipped.
+  placeStructural(graph: model::Graph): universe::GraphNode[];
+
+  /// Hook each node to its nearest structural parent, collecting the top-level
+  /// systems as the containment roots.
+  wireContainment(graph: model::Graph, nodes: universe::GraphNode[]): universe::SoftwareGraph;
+
+  /// Lift every `call` edge to the structural level and tally directed traffic
+  /// per `(source, to)` pair, dropping self-relationships. The count becomes the
+  /// edge weight; pairs are added in a stable order so the graph is deterministic.
+  tallyTraffic(graph: model::Graph, rooted: universe::SoftwareGraph): universe::SoftwareGraph;
+
+  /// The structural level of a model kind, or nothing for data and callables.
+  levelOf(kind: model::NodeKind): universe::C4Level;
+
+  /// Walk a model FQN up its parent chain to the nearest structural node present
+  /// in the graph.
+  lift(graph: model::Graph, fqn: string): string;
+}
+
+/// Flattens the software graph into the renderer-facing snapshot: each node's id,
+/// level string, and parent id; each relationship's endpoints and traffic. The
+/// boundary the web IDE reads — petgraph indices never cross it.
+component Flatten for universe::Universe {
+  /// Flatten a graph to a `Snapshot`: map each node and relationship to its flat
+  /// `out` form.
+  public snapshot(graph: universe::SoftwareGraph): universe::Snapshot {
+    nodes = NodeOut[] from self.nodesOf(graph)
+    edges = EdgeOut[] from self.edgesOf(graph)
+    return Snapshot from { nodes, edges }
+  }
+
+  /// Each structural node as a `NodeOut`, its level rendered to a lowercase
+  /// string.
+  nodesOf(graph: universe::SoftwareGraph): universe::NodeOut[];
+
+  /// Each relationship as an `EdgeOut` carrying its traffic.
+  edgesOf(graph: universe::SoftwareGraph): universe::EdgeOut[];
+}
+
+/// Only structural nodes enter the graph; data and callables do not.
+feature StructuralNodesOnly for universe::Adapter {
+  given "a resolved model with systems, containers, components, data, and callables"
+  when "the model is adapted into the software graph"
+  then "every system, container, component, and person becomes a graph node"
+  but "data and callables are not placed"
+}
+
+/// Calls lift to the structural level and tally as directed traffic.
+feature CallsLiftAndTallyTraffic for universe::Adapter {
+  given "a call from one component's body into another node"
+  when "relationships are collected"
+  then "the call lifts to the nearest enclosing structural node on each end"
+  and "repeated calls between the same pair sum into one directed edge's traffic"
+  but "a call that lifts to the same node on both ends is dropped"
+}
+
+/// Containment is a tree rooted at the top-level systems.
+feature ContainmentTree for universe::Adapter {
+  given "a system holding containers that hold components"
+  when "the graph is built"
+  then "each node records its enclosing parent and the ids it contains"
+  and "the top-level systems are the containment roots, in declaration order"
+}
+
+/// The snapshot is deterministic and free of engine internals.
+feature SnapshotIsDeterministic for universe::Flatten {
+  given "the same software graph flattened twice"
+  when "the snapshots are compared"
+  then "nodes and edges appear in the same stable order both times"
+  but "no petgraph index or other engine internal crosses the boundary"
+}
+
+/// Layout is the renderer's job, not this crate's.
+feature PositionsAreTheRenderersJob for universe::Universe {
+  given "a software-graph snapshot"
+  when "the web IDE renders the 3D view"
+  then "d3-force-3d assigns every node a position in the browser"
+  but "the crate carries no coordinates — it is pure structure and traffic"
+}
