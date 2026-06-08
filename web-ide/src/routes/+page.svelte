@@ -759,6 +759,15 @@
     selectNode(fqn, { origin: false });
   }
 
+  // Show a symbol in the 3D universe (the structure panel's right-click). Record the
+  // launch view so Back returns there; openUniverse flies to the node (or lights the
+  // chain for a flow), switches to the space view, and records the new space scope.
+  function showInUniverse(fqn: string) {
+    if (!nodeIndex.has(fqn)) return;
+    recordViewOrigin();
+    openUniverse(fqn);
+  }
+
   // Apply a queued editor jump once the code view is mounted on the right file.
   // Deferred a tick so the editor has synced the (possibly just-switched) file's
   // text before we index into it — otherwise a cross-file jump lands in the old doc.
@@ -2776,6 +2785,7 @@ show('index.html');
           onpicknode={(fqn) => (view === "space" ? openUniverse(fqn) : selectNode(fqn, { goto: true }))}
           ongotodef={(fqn) => selectNode(fqn, { goto: true })}
           onreveal={revealSymbol}
+          onshowuniverse={showInUniverse}
         />
       {/if}
 

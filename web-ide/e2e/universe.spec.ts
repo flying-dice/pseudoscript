@@ -59,6 +59,23 @@ test("reveal on canvas from the universe; Back returns to the universe", async (
   await expect(page.getByTestId("flow-name")).toHaveText("UseInternetBanking");
 });
 
+test("show in 3D view from the structure panel opens the universe; Back returns to the source", async ({ page }) => {
+  // Start outside the universe; left-click a symbol first to seed a code-view origin.
+  await createProject(page, "banking", undefined, { highlight: false });
+  await page.getByTestId(NODE).click();
+  await expect(page.getByTestId("editor")).toBeVisible();
+
+  // Right-click a structural node in the structure panel → Show in 3D view.
+  await page.getByTestId(NODE).click({ button: "right" });
+  await page.getByTestId("ctx-show-universe").click();
+  await expect(page.getByTestId("universe")).toBeVisible({ timeout: 20_000 });
+
+  // Back returns to the originating view (the editor), leaving the universe.
+  await page.getByTestId("nav-back").click();
+  await expect(page.getByTestId("universe")).toHaveCount(0);
+  await expect(page.getByTestId("editor")).toBeVisible();
+});
+
 test("go to definition from the universe opens the source", async ({ page }) => {
   await openUniverse(page);
 

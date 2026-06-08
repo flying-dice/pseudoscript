@@ -19,6 +19,7 @@
         onclick={() => ontogglestructure?.()}
         aria-label={structureOpen ? "Hide structure" : "Show structure"}
         aria-pressed={structureOpen}
+        data-testid="toggle-structure"
       >
         <PanelRight size={18} strokeWidth={1.75} aria-hidden="true" />
       </Tooltip.Trigger>

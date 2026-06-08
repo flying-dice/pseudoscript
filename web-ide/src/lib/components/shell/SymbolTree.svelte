@@ -28,9 +28,10 @@
     // (which is view-aware, e.g. re-targets the 3D graph).
     ongotodef?: (fqn: string) => void;
     onreveal?: (fqn: string) => void;
+    onshowuniverse?: (fqn: string) => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal, onshowuniverse }: Props = $props();
 
   // One icon per C4 level, so a node's place in the hierarchy reads at a glance.
   const ICONS: Record<NodeKind, ComponentType> = {
@@ -93,6 +94,7 @@
         disabled={kids.length === 0}
         aria-label={open ? "Collapse" : "Expand"}
         aria-expanded={open}
+        data-testid="twist-{node.fqn}"
         onclick={() => toggle(node.fqn)}
       >▸</button>
       <ContextMenu.Root>
@@ -112,6 +114,7 @@
         <ContextMenu.Content class="ctx-menu">
           <ContextMenu.Item data-testid="ctx-goto-definition" onSelect={() => (ongotodef ?? onpicknode)?.(node.fqn)}>Go to definition</ContextMenu.Item>
           {#if onreveal}<ContextMenu.Item data-testid="ctx-reveal-canvas" onSelect={() => onreveal?.(node.fqn)}>Reveal on canvas</ContextMenu.Item>{/if}
+          {#if onshowuniverse}<ContextMenu.Item data-testid="ctx-show-universe" onSelect={() => onshowuniverse?.(node.fqn)}>Show in 3D view</ContextMenu.Item>{/if}
         </ContextMenu.Content>
       </ContextMenu.Root>
     </div>
