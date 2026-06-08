@@ -25,6 +25,9 @@
   import * as ops from "$lib/core/workspace-ops.js";
   import { keyOf, computeDirty, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
   import * as share from "$lib/core/share.js";
+  import { pushState, replaceState } from "$app/navigation";
+
+  import { router, parseHash, serializeRoute, type Route, type RouteBase } from "$lib/router.svelte.js";
   import * as docs from "$lib/core/docs.js";
   import * as model from "$lib/core/model.js";
   import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
@@ -788,10 +791,18 @@
     // write a project, so the render shows an unsupported notice and the launcher
     // never opens.
     if (!fsSupported) return;
-    // A `#w=` share link restores its workspace and skips the project panel;
-    // otherwise open the panel on start (never autoload a model).
-    const restored = await restoreFromHash();
+    // The URL hash restores its workspace + location and skips the project panel;
+    // otherwise open the panel on start (never autoload a model). Route history
+    // writes through SvelteKit's shallow-routing API — raw history.replaceState
+    // conflicts with its client router (re-runs effects → update-depth loop).
+    router.configureWriter((url, replace) => (replace ? replaceState(url, {}) : pushState(url, {})));
+    router.start();
+    const restored = await restoreSession();
     ui.projectOpen = !restored;
+    // Enable the live URL sync only after the restore (and its queued caret jump)
+    // has settled, so the first sync doesn't overwrite the restored location.
+    await tick();
+    urlReady = true;
   }
   onMount(boot);
 
@@ -1777,6 +1788,10 @@
     }
     // No autosave: edits stay in the in-memory buffer (and show as dirty on the
     // tab) until an explicit save — Cmd/Ctrl-S or File ▸ Save / Save all.
+    // Keep the URL in step: refresh the embedded base (in-memory only) and the
+    // caret, both debounced so a fast typist isn't re-encoding on every keystroke.
+    recomputeWPayload();
+    scheduleCaretSync();
   }
 
   // Live parse check for the inline error cue; doesn't touch the doc nav.
@@ -2091,6 +2106,7 @@
       saveStore.persisted = {};
       saveStore.saveState = "idle";
       clearTimeout(saveStateTimer);
+      router.clear(); // back to the bare launcher URL
       ui.projectOpen = true;
     };
     if (dirtyCount > 0) {
@@ -2266,10 +2282,11 @@ show('index.html');
 
   // Mount a decoded workspace (from a share link or imported file) in-memory,
   // session-only until "Save to folder" — exactly the sample-load path.
-  function mountDecoded({ workspace: ws, landing }: MountInput) {
+  async function mountDecoded({ workspace: ws, landing }: MountInput) {
     wsStore.moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
     saveStore.persisted = {}; // imported/shared: no on-disk baseline, session-only
-    mountWorkspace(ws, landing);
+    await mountWorkspace(ws, landing);
+    recomputeWPayload(); // session-only: embed the workspace in the URL so refresh restores it
   }
 
   const busyShare = $derived(shareStore.busy);
@@ -2286,16 +2303,22 @@ show('index.html');
         await onexport();
         return;
       }
-      const payload = bytesToBase64Url(bytes);
-      const url = `${location.origin}${location.pathname}#w=${payload}`;
-      // `window.` qualified: the component's nav `history` $state array shadows
-      // the global `history`.
-      window.history.replaceState(null, "", `#w=${payload}`);
+      // A share link always embeds the workspace (the recipient has no disk) and
+      // carries the current location so they land where you are. Built via the
+      // router serializer; not written to our own address bar (which keeps its
+      // folder-reference URL) unless the clipboard write fails.
+      const hash = serializeRoute({
+        base: { kind: "w", value: bytesToBase64Url(bytes) },
+        ...currentLocationFields(),
+      });
+      const url = `${location.origin}${location.pathname}${hash}`;
       try {
         await navigator.clipboard.writeText(url);
         notify("success", "Share link copied to clipboard");
       } catch {
         notify("info", "Share link is in the address bar");
+        // `window.` qualified: the component's nav `history` $state shadows the global.
+        window.history.replaceState(null, "", url);
       }
     } catch (e) {
       notify("error", "Could not create share link", String((e as Error)?.message ?? e));
@@ -2340,22 +2363,148 @@ show('index.html');
     input.click();
   }
 
-  // Restore a workspace from a `#w=<payload>` share link on first load. Cleared
-  // from the URL after mounting so a refresh doesn't re-trigger it.
-  async function restoreFromHash() {
-    const payload = share.parseHashPayload(location.hash);
-    if (!payload) return false;
+  // ── Hash router: the live session in the URL ─────────────────────────────
+  // The URL hash holds the workspace base (a folder reference, or an embedded
+  // in-memory workspace) plus the current location, so a refresh restores where
+  // you were. `router` (router.svelte.ts) owns reading/writing `location.hash`.
+
+  // Gate the live URL sync until the initial restore has settled, so the boot
+  // sync doesn't clobber the restored caret before `pendingGoto` applies.
+  let urlReady = $state(false);
+  // The embedded base64 payload for an in-memory workspace, refreshed (debounced)
+  // off edits so a refresh restores unsaved work. Empty for folder workspaces
+  // (their content lives on disk) and when the workspace exceeds MAX_HASH_BYTES.
+  let wPayload = $state("");
+  let wPayloadTimer: ReturnType<typeof setTimeout> | undefined;
+  let caretSyncTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Re-encode the in-memory workspace into the URL base (debounced). A folder
+  // workspace is a no-op — its base is a stable folder reference.
+  function recomputeWPayload() {
+    clearTimeout(wPayloadTimer);
+    wPayloadTimer = setTimeout(async () => {
+      if (!workspace || workspace.root) return;
+      try {
+        const bytes = await encodeWorkspace(snapshotWorkspace());
+        wPayload = bytes.length > MAX_HASH_BYTES ? "" : bytesToBase64Url(bytes);
+      } catch {
+        wPayload = "";
+      }
+    }, 600);
+  }
+
+  // The current route base: a `f.<folder name>` reference for a disk-backed
+  // project, or a `w.<payload>` embed for an in-memory session.
+  function currentBase(): RouteBase {
+    if (!workspace) return { kind: null, value: "" };
+    if (workspace.root) return { kind: "f", value: workspace.name };
+    return wPayload ? { kind: "w", value: wPayload } : { kind: null, value: "" };
+  }
+
+  // The current location fields (view / file / node / depth) shared by the live
+  // URL sync and the share link, so both encode the same place. In space view the
+  // 3D target is authoritative (a flow's entry callable isn't a placed node);
+  // elsewhere the shared node selection is. Depth only applies to the canvas.
+  function currentLocationFields(): Pick<Route, "view" | "file" | "node" | "depth"> {
+    return {
+      view,
+      file: openFile?.fqn || undefined,
+      node: view === "space" ? (spaceTargetFqn ?? undefined) : (selected?.fqn || undefined),
+      depth: view === "canvas" ? seqDepth : undefined,
+    };
+  }
+
+  // Mirror the live session into the hash. Reads the caret straight off the
+  // editor (no cursor event to react to). No-op until the workspace base is ready.
+  function syncUrl() {
+    if (!urlReady) return;
+    const base = currentBase();
+    if (base.kind === null) return; // nothing addressable yet (no ws / payload pending)
+    const loc = view === "code" ? editorApi?.location?.() : null;
+    router.navigate({ base, ...currentLocationFields(), line: loc?.line, col: loc?.col });
+  }
+
+  // Capture the caret (and a freshly-embedded base) shortly after an edit.
+  function scheduleCaretSync() {
+    clearTimeout(caretSyncTimer);
+    caretSyncTimer = setTimeout(syncUrl, 400);
+  }
+
+  // Reactive: re-sync on a view / file / selection / depth / payload change. The
+  // dependency reads are explicit (the `void`s); the write itself runs untracked
+  // so `router.navigate` reading its own `route` $state can't retrigger this effect.
+  $effect(() => {
+    void workspace;
+    void view;
+    void openFile;
+    void selected;
+    void spaceTargetFqn;
+    void seqDepth;
+    void wPayload;
+    void urlReady;
+    untrack(() => syncUrl());
+  });
+
+  // Apply the URL's location (view / file / node / caret / depth) over a freshly
+  // mounted workspace, reusing the same store writes as `applyLocation`. Runs
+  // after the mount settles, so it wins over the workspace's doc-landing default.
+  function applySession(r: Route) {
+    const ws = wsStore.workspace;
+    if (!ws) return;
+    if (r.file) {
+      const file = ws.files.find((f) => f.fqn === r.file);
+      if (file) selectFile(file);
+    }
+    if (r.depth) selection.seqDepth = r.depth as Depth;
+    // Space view: drive the 3D target through applySpaceTarget so the graph flies
+    // to the node / lights the flow on mount (mirrors applyLocation's space branch);
+    // setting selection.selected alone leaves spaceFocus null and the camera resting.
+    if (r.view === "space") {
+      applySpaceTarget(r.node ?? null);
+      if (r.node) selectNode(r.node, { goto: false, origin: false, record: false });
+      return;
+    }
+    if (r.node) {
+      const hit = nodeIndex.get(r.node);
+      selection.selected = {
+        fqn: r.node,
+        line: hit?.node.line ?? r.line ?? 0,
+        col: hit?.node.col ?? r.col ?? 0,
+        fileFqn: hit?.fileFqn ?? r.file ?? "",
+      };
+    }
+    selection.view = r.view; // after selectFile, which may force "code"
+    if (r.view === "code" && r.line && r.file) {
+      selection.pendingGoto = { line: r.line, col: r.col ?? 0, fileFqn: r.file };
+    }
+  }
+
+  // Restore the session from the URL hash on first load: mount the workspace by
+  // base kind, then apply the location. Returns false (→ launcher) when nothing
+  // could be mounted (bare hash, missing folder handle, denied permission).
+  async function restoreSession(): Promise<boolean> {
+    let r = parseHash(location.hash);
+    if (r.base.kind === null) {
+      // Legacy `#w=<payload>` share links still boot.
+      const legacy = share.parseHashPayload(location.hash);
+      if (!legacy) return false;
+      r = { ...r, base: { kind: "w", value: legacy } };
+    }
     try {
-      const bytes = base64UrlToBytes(payload) as Uint8Array<ArrayBuffer>;
-      mountDecoded(await decodeWorkspace(bytes));
-      window.history.replaceState(null, "", location.pathname + location.search);
-      notify("success", "Restored shared workspace");
-      return true;
+      if (r.base.kind === "w") {
+        const bytes = base64UrlToBytes(r.base.value) as Uint8Array<ArrayBuffer>;
+        await mountDecoded(await decodeWorkspace(bytes));
+      } else {
+        const handle = await reopenFolder("folder:" + r.base.value);
+        if (!handle) return false; // no stored handle / denied — fall back to launcher
+        await adoptWorkspace(await readWorkspace(handle));
+      }
     } catch (e) {
-      notify("error", "Could not open shared link", String((e as Error)?.message ?? e));
-      window.history.replaceState(null, "", location.pathname + location.search);
+      notify("error", "Could not restore from the URL", String((e as Error)?.message ?? e));
       return false;
     }
+    applySession(r);
+    return true;
   }
 
 </script>
