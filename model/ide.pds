@@ -19,7 +19,9 @@
 //!
 //! The arrows that matter: the session *uses* the toolchain libraries for all
 //! language and projection logic and *calls out* through two ports — the file
-//! system and the editor surface. JS exists ONLY at those ports.
+//! system and the editor surface. JS exists at those two ports, plus the one
+//! workspace rule the host runs before mounting: deriving each module's flat FQN
+//! from its path (LANG.md §8.1, ADR-031).
 
 /// A completion candidate offered as the author types: the inserted label, the
 /// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text.
@@ -31,6 +33,16 @@ public data Completion { label: string, kind: number, detail: string }
 /// sample/share link or a local directory loaded through the file-system port.
 /// Edits never leave the tab.
 public data BrowserWorkspace { modules: model::WorkspaceModule[], manifest: string, externals: model::WorkspaceModule[] }
+
+/// One vendored git-dependency file the host reads for `dependencyModules`: its
+/// `pds_modules/` slug, its FQN within the dependency workspace (the host's
+/// path→FQN derivation, LANG.md §8.1), and its source.
+public data VendoredInput { slug: string, fqn: string, source: string }
+
+/// One local-source dependency file the host reads for `dependencyModules`: the
+/// dependency name (ADR-026), its FQN within the dependency workspace, and its
+/// source.
+public data LocalInput { name: string, fqn: string, source: string }
 
 /// One node in the 3D relationship graph the IDE draws: its FQN, C4 level, and
 /// containment parent. The typed boundary form of a `universe::NodeOut`.
@@ -62,6 +74,11 @@ public data References { fqn: string, title: string, occurrences: ide::Occurrenc
 /// source line text with the match offsets within it, and whether it is the
 /// declaration site.
 public data Occurrence { fqn: string, line: number, col: number, endLine: number, endCol: number, text: string, matchStart: number, matchEnd: number, decl: bool }
+
+/// One occurrence the user chose to rename, keyed by the module FQN and the
+/// 1-based line/column an `ide::Occurrence` reported. The rename rewrites only
+/// the selected occurrences, not every match.
+public data RenameSelection { fqn: string, line: number, col: number }
 
 /// One module rewritten by a rename: its FQN and new source text.
 public data RenamedSource { fqn: string, source: string }
@@ -112,14 +129,16 @@ public component Workspace for ide::IdeSession {
   dependencies(): model::WorkspaceModule[] {
     return ide::FsPort.readDependencies()
   }
-  /// Apply an edit to one module's buffer and persist it through the FS port.
+  /// Apply an edit to one module's buffer — re-parse it into the in-memory
+  /// session; the change is not persisted. There is no autosave: edits stay in
+  /// the buffer until an explicit save writes them through the FS port.
   edit(fqn: string, text: string): void {
-    ide::FsPort.writeModule(fqn, text)
+    ide::IdeSession.setSource(fqn, text)
   }
   /// Resolve a workspace's vendored git dependencies (§8.3) into dependency-name
   /// -prefixed modules — the externals `mount` takes — reusing the same
   /// resolution the native loader uses (`model::Deps`).
-  dependencyModules(lockToml: string, vendored: string, local: string): model::WorkspaceModule[];
+  dependencyModules(lockToml: string, vendored: ide::VendoredInput[], local: ide::LocalInput[]): model::WorkspaceModule[];
 }
 
 /// The language session: diagnostics, completion, hover, go-to, references,
@@ -132,9 +151,13 @@ public component LanguageSession for ide::IdeSession {
   /// Re-check the whole project against its externals and push each module's
   /// problems to the editor.
   public refresh(modules: model::WorkspaceModule[], external: model::WorkspaceModule[]): void {
-    diags = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(modules)
+    diags = model::ModuleDiagnostics[] from self.checkAgainstExternals(modules, external)
     ide::EditorPort.showDiagnostics(diags)
   }
+  /// Check every module with the dependency modules bound as externals (§8.3), so
+  /// a `dep::module::Node` reference resolves — the externals-aware counterpart of
+  /// `model::Model.checkWorkspaceModules`.
+  checkAgainstExternals(modules: model::WorkspaceModule[], external: model::WorkspaceModule[]): model::ModuleDiagnostics[];
   /// Parse and statically check one buffer — the editor's per-keystroke linter.
   check(source: string): syntax::Diagnostic[] {
     return model::Model.check(source)
@@ -142,19 +165,39 @@ public component LanguageSession for ide::IdeSession {
   /// Completions at a byte offset, resolved across the workspace and its
   /// externals, for the editor's completion source.
   complete(moduleFqn: string, offset: number): ide::Completion[];
-  /// Markdown hover for the symbol under the caret, pushed to the editor tooltip.
+  /// Markdown hover for the symbol under the caret: compute it through the
+  /// `lsp_core` toolchain over the held workspace, then push the Markdown to the
+  /// editor tooltip. Absent when the cursor rests on no resolvable symbol, in
+  /// which case no tooltip is shown.
   hover(moduleFqn: string, offset: number): void {
-    markdown = string from ide::EditorPort.hoverText(moduleFqn, offset)
+    result = Option<lsp_core::Hover> from self.hoverAt(moduleFqn, offset)
+    if (result.isNone) {
+      return
+    }
+    markdown = string from result.value.contents
     ide::EditorPort.showHover(markdown)
   }
-  /// Go-to-definition: the FQN the identifier under the caret points at.
-  definition(moduleFqn: string, offset: number): string;
+  /// Resolve the hover for the symbol at `offset`, the fallible `lsp_core` lookup
+  /// over the held workspace — absent when the caret resolves to no symbol.
+  hoverAt(moduleFqn: string, offset: number): Option<lsp_core::Hover>;
+  /// The checked workspace the session holds — the `lsp_core` cursor handlers'
+  /// resolution input, with the dependency externals bound (§8.3).
+  heldWorkspace(): model::Workspace;
+  /// The held source buffer of one module, the text the cursor offset indexes into.
+  heldSource(moduleFqn: string): string;
+  /// Map a byte offset to the `lsp_core` caret position the handlers take (the
+  /// boundary's offset→UTF-16-position conversion).
+  caretPosition(src: string, offset: number): lsp_core::Position;
+  /// Go-to-definition: the FQN the identifier under the caret points at, or absent
+  /// when the cursor rests on no resolvable symbol.
+  definition(moduleFqn: string, offset: number): Option<string>;
   /// Every occurrence of the symbol under the caret across the workspace, for the
-  /// editor's reference highlighting.
-  references(moduleFqn: string, offset: number): ide::References;
-  /// Rename the symbol under the caret across the workspace, returning each
-  /// rewritten module's new source.
-  renameApply(moduleFqn: string, offset: number, newName: string): ide::RenamedSource[];
+  /// editor's reference highlighting, or absent when the cursor rests on no
+  /// resolvable symbol.
+  references(moduleFqn: string, offset: number): Option<ide::References>;
+  /// Rename the symbol under the caret, rewriting only the user-chosen
+  /// `selected` occurrences and returning each rewritten module's new source.
+  renameApply(moduleFqn: string, offset: number, newName: string, selected: ide::RenameSelection[]): ide::RenamedSource[];
   /// The workspace symbol outline — the structure tree the editor's outline panel
   /// draws.
   outline(): ide::OutlineNode[];
@@ -248,8 +291,6 @@ public component EditorPort for ide::IdeSession {
   showDiagnostics(diags: model::ModuleDiagnostics[]): void {
     ide::CodeMirrorAdapter.markProblems(diags)
   }
-  /// The Markdown hover text for the symbol at a byte offset (via the session).
-  hoverText(moduleFqn: string, offset: number): string;
   /// Show a Markdown hover tooltip at the cursor.
   showHover(markdown: string): void {
     ide::CodeMirrorAdapter.showTooltip(markdown)
@@ -274,16 +315,32 @@ public container WebIde for context::Pseudoscript {
 }
 
 /// Implements `ide::FsPort` over the browser File System Access API: directory
-/// picker, recursive walk for `.pds` modules, `pds.lock` + `pds_modules/` reads
-/// for dependency externals, and per-file read/write through handles. The only
-/// place FS-Access specifics live.
+/// picker, recursive walk for `.pds` modules, deriving each module's flat FQN
+/// from its path (LANG.md §8.1, ADR-031), `pds.lock` + `pds_modules/` reads for
+/// dependency externals, and per-file read/write through handles. The only place
+/// FS-Access specifics live.
 public component FsAccessAdapter for ide::WebIde {
   /// Walk the picked directory for the project's own modules.
   readModules(): model::WorkspaceModule[];
-  /// Read `pds.lock` and `pds_modules/`, then resolve externals via the session.
+  /// Read `pds.lock` and the dependency files under `pds_modules/` (deriving each
+  /// module's FQN from its path, LANG.md §8.1), then resolve externals via the
+  /// session.
   readDependencies(): model::WorkspaceModule[] {
-    return ide::Workspace.dependencyModules("", "", "")
+    lock = string from self.readLock()
+    vendored = ide::VendoredInput[] from self.readVendored()
+    local = ide::LocalInput[] from self.noLocalSources()
+    return ide::Workspace.dependencyModules(lock, vendored, local)
   }
+  /// The consumer's `pds.lock` text, blank when absent.
+  readLock(): string;
+  /// The vendored git-dependency files walked from `pds_modules/`, each tagged
+  /// with its slug, derived FQN, and source.
+  readVendored(): ide::VendoredInput[];
+  /// Always empty: local-source dependencies (ADR-026) resolve a sibling path
+  /// outside the picked directory, which the File System Access API cannot read,
+  /// so the browser resolves only vendored git dependencies and passes no
+  /// local-source inputs to `dependencyModules`.
+  noLocalSources(): ide::LocalInput[];
   /// Write one module's text back through its file handle.
   writeModule(fqn: string, text: string): void;
 }
@@ -359,13 +416,14 @@ feature LayoutTweaksDriveTheCanvas for ide::Diagrams {
   and "the canvas redraws from the re-positioned scene"
 }
 
-/// JavaScript exists only at the two ports; everything else is Rust.
+/// JavaScript exists only at the two ports plus the host's path→FQN derivation;
+/// all language and projection logic is Rust.
 feature JsOnlyAtPorts for ide::WebIde {
   given "the IDE session, the language queries, and diagram projection all in Rust"
   when "the application reaches the file system or the editor surface"
   then "it crosses a port whose adapter — `FsAccessAdapter`, `CodeMirrorAdapter` —"
   and "is the only JavaScript: File System Access and CodeMirror specifics live there"
-  but "no language or workspace logic lives in JavaScript"
+  but "the FS adapter also derives each module's flat FQN from its path (LANG.md §8.1, ADR-031) — the one workspace rule the host runs before pushing modules to the Rust core"
 }
 
 /// A cross-workspace reference resolves because dependencies load as externals.

@@ -209,29 +209,51 @@ component Projector for emit::Emit {
   }
 
   /// A boundary view: the `of` node plus its `for`-children of `child` kind,
-  /// with edges among them lifted to the contained child. Errors when `of` is
-  /// missing or not of `boundary` kind.
+  /// then the external actors that call in or are called out to — the persons
+  /// and systems (and, in a component view, other containers) outside the
+  /// boundary with a call/trigger/provenance edge to or from a node inside it
+  /// (§9.1) — drawn outside the frame so the cross-boundary edges survive the
+  /// in-view filter.
+  ///
+  /// When the anchor has a parent node that exists in the graph, that parent
+  /// becomes an enclosing **outer** frame: a component view (anchor = container)
+  /// nests inside its system, so the anchor sits inside the outer frame, the
+  /// outer system itself joins the node set, and any external sibling container
+  /// sharing that parent is re-tagged into the outer frame rather than drawn
+  /// outside it. A container view (anchor = system, no parent node) keeps a
+  /// single frame.
+  /// Edges among the resulting node set are lifted to the contained child.
+  /// Errors when `of` is missing or not of `boundary` kind.
   projectBoundary(graph: model::Graph, of: string, boundary: string, child: string): Result<emit::Scene, emit::EmitError> {
     anchor = Result<string, EmitError> from self.requireKind(graph, of, boundary)
     if (anchor.isErr) {
       return Err(anchor.error)
     }
-    nodes = PlacedNode[] from self.childrenOf(graph, of, child)
+    outer = Option<string> from self.outerFrameOf(graph, of)
+    inside = PlacedNode[] from self.childrenOf(graph, of, child, outer)
+    framed = PlacedNode[] from self.withOuterFrame(graph, inside, outer)
+    actors = PlacedNode[] from self.externalActors(graph, of, child, inside)
+    nested = PlacedNode[] from self.nestSiblings(graph, actors, outer)
+    nodes = PlacedNode[] from { framed, nested }
     edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
     return Ok(emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
   }
 
   /// The sequence view: a callable's body trace as lifelines, messages, and
-  /// frames (LANG.md §9.2). Errors when the entry is not a callable, or has no
+  /// frames (LANG.md §9.2). Returns the unpositioned scene — its lifelines and
+  /// items carry no coordinates; the sequence layout engine runs at render
+  /// time, not here. Errors when the entry is not a callable, or has no
   /// disclosed body to trace.
   projectSequence(graph: model::Graph, entry: string): Result<emit::Scene, emit::EmitError> {
     node = Result<string, EmitError> from self.requireKind(graph, entry, "callable")
     if (node.isErr) {
       return Err(node.error)
     }
-    body = model::Step[] from self.bodyOf(graph, entry)
-    scene = Scene from emit::Trace.walk(graph, entry, body)
-    return Ok(emit::Layout.solveSequence(scene))
+    disclosed = Option<model::Step[]> from self.bodyOf(graph, entry)
+    if (disclosed.isNone) {
+      return Ok(emit::Trace.blackBox(graph, entry))
+    }
+    return Ok(emit::Trace.walk(graph, entry, disclosed.value))
   }
 
   /// Looks a node up and asserts its C4 kind, mapping a miss to `UnknownNode`
@@ -251,10 +273,10 @@ component Projector for emit::Emit {
   /// carries that FQN.
   kindOf(graph: model::Graph, fqn: string): Result<string, emit::EmitError>;
 
-  /// The sequence trace for `entry`: a disclosed body expands into a full trace; a
-  /// black-box (bodyless) callable yields the single inbound call + return its
-  /// declared signature describes (§9.2).
-  bodyOf(graph: model::Graph, entry: string): model::Step[];
+  /// The disclosed body steps of `entry`, or `None` when the callable is a black
+  /// box (no `{ }` body) — the caller projects that as the minimal inbound-call +
+  /// return its signature describes, via `Trace.blackBox` (§9.2).
+  bodyOf(graph: model::Graph, entry: string): Option<model::Step[]>;
 
   /// Whether a node's actual kind equals the kind the view requires.
   kindMatches(found: string, expected: string): bool;
@@ -262,9 +284,39 @@ component Projector for emit::Emit {
   /// Every node of the given C4 kinds, placed in source-declaration order.
   collectKinds(graph: model::Graph, a: string, b: string): emit::PlacedNode[];
 
-  /// The boundary anchor plus its `for`-children of `child` kind, each tagged
-  /// with its boundary.
-  childrenOf(graph: model::Graph, of: string, child: string): emit::PlacedNode[];
+  /// The boundary anchor plus its `for`-children of `child` kind. The children
+  /// are tagged with the anchor as their boundary; the anchor itself is tagged
+  /// with `outer`, the enclosing frame it nests inside (`None` for a single-frame
+  /// container view).
+  childrenOf(graph: model::Graph, of: string, child: string, outer: Option<string>): emit::PlacedNode[];
+
+  /// The anchor's enclosing outer frame: its parent node, but only when that
+  /// parent exists in the graph. `None` when the anchor is a top-level system
+  /// (container view) — that keeps a single frame.
+  outerFrameOf(graph: model::Graph, of: string): Option<string>;
+
+  /// Add the outer system node to the node set when an outer frame exists, so the
+  /// enclosing system is drawn as the framing card (placed with no boundary of its
+  /// own). Returns the nodes unchanged for a single-frame container view.
+  withOuterFrame(graph: model::Graph, inside: emit::PlacedNode[], outer: Option<string>): emit::PlacedNode[];
+
+  /// Re-tag each external actor that is a sibling sharing the outer parent into
+  /// the outer frame, so a sibling container of the anchor sits inside the system
+  /// frame rather than outside every frame. Other externals keep their `None`
+  /// boundary. A no-op when there is no outer frame.
+  nestSiblings(graph: model::Graph, actors: emit::PlacedNode[], outer: Option<string>): emit::PlacedNode[];
+
+  /// The external actors a boundary view draws outside its frame: every node
+  /// outside `inside` that has a call/trigger/provenance edge to or from a node
+  /// inside it, each lifted to the peer actor it presents as (§9.1). Sorted by
+  /// FQN for determinism.
+  externalActors(graph: model::Graph, of: string, child: string, inside: emit::PlacedNode[]): emit::PlacedNode[];
+
+  /// The peer actor an external endpoint presents as at this view's level:
+  /// walk up the `parent` chain to the first person or system — and, in a
+  /// component view, a container too — that is not the boundary itself. `None`
+  /// for a synthesised trigger initiator (no node) or the boundary.
+  presentableExternal(graph: model::Graph, fqn: string, of: string, child: string): Option<string>;
 }
 
 /// Builds the routed-edge set for a C4 scene from the graph's edges: maps each
@@ -296,29 +348,84 @@ component Edges for emit::Emit {
 }
 
 /// Walks a callable's body trace into ordered sequence items, registering each
-/// participant on first appearance (LANG.md §9.2, §7). A `call` is a message to
-/// the target; a `self.` call is a self-message; a return marks `Ok`/`Err`;
-/// `if`/`else` nests an `alt` frame, `for`/`while` a `loop` frame.
+/// participant on first appearance (LANG.md §9.2, §7). A real trigger's
+/// initiator leads as the first lifeline with a synthesised inbound call;
+/// absent a trigger the owner leads. A `call` is a message to the target; a
+/// `self.` call is a self-message; a return marks `Ok`/`Err`; `if`/`else` nests
+/// an `alt` frame, `for`/`while` a `loop` frame.
 component Trace for emit::Emit {
-  /// Build the sequence scene: the owner (the callable's parent node) is the
-  /// first lifeline; the body trace registers every other participant on first
-  /// appearance.
+  /// Build the sequence scene. The owner (the callable's parent node) runs the
+  /// entry body. When the entry bears a real trigger, the trigger's initiator
+  /// leads as the first lifeline and a synthesised inbound call (initiator →
+  /// owner, labelled the entry name) heads the trace; absent a real trigger the
+  /// owner leads and no inbound call is synthesised.
   walk(graph: model::Graph, entry: string, body: model::Step[]): emit::Scene {
     owner = string from self.ownerOf(graph, entry)
+    actor = Option<string> from self.triggerActorOf(graph, entry)
+    if (actor.isNone) {
+      return self.untriggered(graph, entry, body, owner)
+    }
+    inbound = SeqItem from self.inboundCall(graph, actor.value, owner, entry)
+    rest = SeqItem[] from self.traceItems(body, owner)
+    items = SeqItem[] from self.prependItem(inbound, rest)
+    participants = Lifeline[] from self.participantsOf(graph, actor.value, items)
+    return SequenceScene from { entry, participants, items }
+  }
+
+  /// Build the scene for an entry with no real trigger: the owner leads, no inbound
+  /// call is synthesised, and the body traces directly into the lifelines.
+  untriggered(graph: model::Graph, entry: string, body: model::Step[], owner: string): emit::Scene {
     items = SeqItem[] from self.traceItems(body, owner)
     participants = Lifeline[] from self.participantsOf(graph, owner, items)
     return SequenceScene from { entry, participants, items }
   }
 
+  /// Build the scene for a black-box (bodyless) callable: the actor leads, a
+  /// single inbound call heads the trace, and a return of the callable's declared
+  /// type closes it. Here the generic `caller` is ALWAYS shown — a black box is
+  /// exactly one request and its reply — unlike a disclosed trace, which
+  /// suppresses the triggerless caller (§9.2).
+  blackBox(graph: model::Graph, entry: string): emit::Scene {
+    owner = string from self.ownerOf(graph, entry)
+    actor = string from self.blackBoxActor(graph, entry)
+    inbound = SeqItem from self.inboundCall(graph, actor, owner, entry)
+    reply = SeqItem from self.returnItem(graph, owner, actor, entry)
+    items = SeqItem[] from { inbound, reply }
+    participants = Lifeline[] from self.participantsOf(graph, actor, items)
+    return SequenceScene from { entry, participants, items }
+  }
+
+  /// The actor leading a black-box trace: `entry`'s first trigger initiator, or
+  /// the generic `caller` when it has none. Always a concrete lifeline (a black
+  /// box draws one inbound call regardless), where `triggerActorOf` would yield
+  /// `None`.
+  blackBoxActor(graph: model::Graph, entry: string): string;
+
+  /// The closing return of a black-box trace: from the owner back to the actor,
+  /// carrying the callable's declared return type.
+  returnItem(graph: model::Graph, owner: string, actor: string, entry: string): emit::SeqItem;
+
   /// The owner FQN of `entry`: its parent node, defaulting to the entry itself.
   ownerOf(graph: model::Graph, entry: string): string;
+
+  /// The initiator of `entry`'s first real trigger — the actor that calls in.
+  /// `None` for a callable projected directly (no trigger), whose generic
+  /// `caller` carries no lifeline.
+  triggerActorOf(graph: model::Graph, entry: string): Option<string>;
+
+  /// Synthesise the inbound `call` leading a triggered trace: from the initiator
+  /// to the owner, labelled the entry's name with its signature detail.
+  inboundCall(graph: model::Graph, actor: string, owner: string, entry: string): emit::SeqItem;
+
+  /// Prepend an item ahead of the traced body items.
+  prependItem(head: emit::SeqItem, rest: emit::SeqItem[]): emit::SeqItem[];
 
   /// Walk a step list into sequence items, recursing into frame bodies.
   traceItems(steps: model::Step[], owner: string): emit::SeqItem[];
 
-  /// The owner lifeline first, then each message target in first-appearance
+  /// The leading lifeline first, then each message target in first-appearance
   /// order, each tagged with its node's C4 kind (defaulting to container).
-  participantsOf(graph: model::Graph, owner: string, items: emit::SeqItem[]): emit::Lifeline[];
+  participantsOf(graph: model::Graph, leading: string, items: emit::SeqItem[]): emit::Lifeline[];
 }
 
 /// Assigns geometry to a projected scene. A C4 scene is placed by the `dot`
@@ -338,11 +445,32 @@ component Layout for emit::Emit {
 
   /// Place a C4 scene under `tweaks`, with `pins` fixing nodes to grid cells
   /// (honoured only under experimental grid placement). Builds a `dot::Graph`,
-  /// runs the layered engine (or the grid placer), and reads the placement back.
+  /// runs the placement the tweaks select, and reads it back onto the scene.
   layoutC4With(scene: emit::Scene, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): emit::Scene {
     g = dot::Graph from self.toDotGraph(scene, tweaks)
-    return self.readBack(scene, dot::Dot.layout(g))
+    return self.readBack(scene, self.place(g, tweaks, pins))
   }
+
+  /// Run the placement the tweaks select: the experimental grid placer (honouring
+  /// the drag-to-pin cells) when grid placement is on; else the layered engine —
+  /// with the long-edge optimiser when `minimizeLongEdges` is set, the plain
+  /// layered layout otherwise.
+  place(g: dot::Graph, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): dot::Layout {
+    if (tweaks.experimentalGrid) {
+      return dot::Dot.gridLayout(g, self.gridParams(tweaks), self.dotPins(pins))
+    }
+    if (tweaks.minimizeLongEdges) {
+      return dot::Dot.layoutShortened(g)
+    }
+    return dot::Dot.layout(g)
+  }
+
+  /// Translate the IDE's tweaks into the `dot` grid placer's parameters.
+  gridParams(tweaks: emit::C4Tweaks): dot::GridParams;
+
+  /// Resolve each scene grid pin to a `dot` node-index pin for the current view;
+  /// a pin for a node not in this view is dropped.
+  dotPins(pins: emit::GridPin[]): dot::Pin[];
 
   /// The default layout tweaks — the engine's own defaults, one source of truth.
   defaultTweaks(): emit::C4Tweaks;
@@ -382,12 +510,19 @@ component Layout for emit::Emit {
 /// on the scene variant; the layout engine is wrapped so no input panics the
 /// render, falling back to the scene's own simple coordinates.
 component SvgRenderer for emit::Emit {
-  /// Render any scene to a self-contained SVG document.
+  /// Render any scene to a self-contained SVG document, dispatching on the
+  /// scene variant.
   public render(scene: emit::Scene): string {
     if (scene.isC4Scene) {
       return self.renderC4(scene)
     }
-    return self.renderSequence(scene)
+    if (scene.isSequenceScene) {
+      return self.renderSequence(scene)
+    }
+    if (scene.isDataScene) {
+      return self.renderData(scene)
+    }
+    return self.renderFeature(scene)
   }
 
   /// Render any scene to SVG under a chosen colour theme (light or dark) — the
@@ -408,6 +543,14 @@ component SvgRenderer for emit::Emit {
   /// per-message rows left-to-right (self/return looped on the owner), and
   /// frame boxes around their bodies.
   renderSequence(scene: emit::Scene): string;
+
+  /// Draw the data ER view: entity cards with typed rows and the field-type
+  /// links routed between them.
+  renderData(scene: emit::Scene): string;
+
+  /// Draw the feature flow view: the step boxes stacked top-to-bottom against
+  /// the node the scenario describes.
+  renderFeature(scene: emit::Scene): string;
 
   /// Whether the layout engine produced no usable placement (empty view or a
   /// panic), so rendering falls back to the scene's own coordinates.

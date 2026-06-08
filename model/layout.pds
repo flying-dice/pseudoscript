@@ -85,9 +85,12 @@ data PlacedFragment { kind: layout::FragKind, rect: layout::Rect, label: string,
 /// section's guard.
 data Divider { y: number, guard: string }
 
-/// `crates/pseudoscript-layout`. The geometry/text core and the per-kind layout
-/// engines; each engine implements the `Projection` contract — turn a structural
-/// input into a positioned output under tunable metrics.
+/// `crates/pseudoscript-layout`. The geometry/text `Core` and the sequence
+/// engine, each built on the `Projection` contract — turn a structural input
+/// into a positioned output under tunable metrics. The sequence engine is the
+/// only one implemented here: C4 placement is delegated to `dot` (the layered
+/// engine), which `emit` drives directly; a flowchart engine is a planned
+/// extension point on the same core, not yet built.
 public container Layout for context::Pseudoscript {
   /// Lay a sequence diagram out into placed geometry.
   public layout(diagram: layout::Diagram): layout::SequenceLayout {
@@ -117,26 +120,12 @@ public component Core for layout::Layout {
 
 /// The sequence engine: lays a structural `Diagram` out into a `SequenceLayout` —
 /// lifeline x-positions in first-appearance order, message rows stacked by
-/// evaluation order, and fragment frames sized to their bodies. The implemented
-/// engine; C4 and flowchart follow the same contract.
+/// evaluation order, and fragment frames sized to their bodies. The only engine
+/// implemented in this crate; C4 placement is `dot`'s job (`emit` drives it), and
+/// a flowchart engine would follow the same `Projection` contract.
 component Sequence for layout::Layout {
   /// Lay a sequence diagram out under its metrics into placed geometry.
   layout(diagram: layout::Diagram): layout::SequenceLayout;
-}
-
-/// The C4 engine: places nodes within their boundary box — the next engine on
-/// the shared core. Inputs are sized rectangles; the layered pass itself is
-/// delegated to `dot`, and `emit` drives both.
-public component C4 for layout::Layout {
-  /// Place sized boxes into laid-out rectangles within their bounds.
-  layout(boxes: layout::Size[]): layout::Rect[];
-}
-
-/// The flowchart engine: lays a step sequence out top-to-bottom into placed
-/// rectangles — the next engine on the shared core.
-public component Flowchart for layout::Layout {
-  /// Place an ordered step list into laid-out rectangles and connectors.
-  layout(steps: string[]): layout::Rect[];
 }
 
 /// Every engine implements one contract: structure in, coordinates out.

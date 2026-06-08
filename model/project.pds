@@ -41,7 +41,11 @@ component Loader for project::Project {
     if (files.isErr) {
       return Err(files.error)
     }
-    return Ok(self.readEach(root, files.value))
+    modules = Result<model::WorkspaceModule[], IoError> from self.readEach(root, files.value)
+    if (modules.isErr) {
+      return Err(modules.error)
+    }
+    return Ok(modules.value)
   }
 
   /// Walk up from `start` to the nearest directory holding `pds.toml`; errors if
@@ -53,8 +57,8 @@ component Loader for project::Project {
   findModules(root: string): Result<string[], project::IoError>;
 
   /// Read each file and pair its source with the flat module FQN derived from its
-  /// path (§8.1).
-  readEach(root: string, files: string[]): model::WorkspaceModule[];
+  /// path (§8.1); errors if a `.pds` file cannot be read.
+  readEach(root: string, files: string[]): Result<model::WorkspaceModule[], project::IoError>;
 
   /// Whether a directory entry is visible to the walk — not a dotfile, not
   /// `target/`, not `pds_modules/`.

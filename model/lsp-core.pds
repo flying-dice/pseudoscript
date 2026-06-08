@@ -28,12 +28,19 @@ public data Diagnostic { range: lsp_core::Range, severity: number, message: stri
 /// `CompletionItemKind`, and detail text.
 public data CompletionItem { label: string, kind: number, detail: string }
 
+/// A go-to-definition target: the FQN of the module the definition lives in and
+/// the byte span of the definition within that module's source. The consuming
+/// edge maps `fqn` to a file URI and converts `span` to an editor range against
+/// *that* file's text — `lsp_core` returns the byte span, not a `Range`, because
+/// it does not hold the target module's source to convert against.
+public data DefTarget { fqn: string, span: syntax::Span }
+
 /// `crates/pseudoscript-lsp-core`. The single home for language intelligence as
 /// transport-neutral handlers — the same logic the stdio server and the browser
 /// wasm both call.
 public container LspCore for context::Pseudoscript {
   /// Go-to-definition for the symbol under the caret.
-  public definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Range {
+  public definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget {
     return lsp_core::Analysis.definition(ws, fromFqn, src, position)
   }
 
@@ -68,7 +75,7 @@ component Analysis for lsp_core::LspCore {
   hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Hover;
 
   /// The FQN and location the identifier under the caret points at.
-  definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Range;
+  definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget;
 
   /// Inlay hints (inferred binding types) across one buffer.
   inlayHints(ws: model::Workspace, fromFqn: string, src: string): string[];

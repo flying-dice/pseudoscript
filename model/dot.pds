@@ -17,9 +17,10 @@ data RankDir =
 /// An input node: its id and its rendered size (the placer reserves this box).
 data Node { id: string, width: number, height: number }
 
-/// An input edge from `tail` to `head`, with its minimum rank span and an
+/// An input edge from `tail` to `head`, with its minimum rank span, its layout
+/// weight (higher pulls the endpoints into vertical alignment harder), and an
 /// optional label size that widens the rank gap to fit.
-data Edge { tail: string, head: string, minlen: number, label: dot::Size }
+data Edge { tail: string, head: string, minlen: number, weight: number, label: dot::Size }
 
 /// A width/height extent.
 data Size { w: number, h: number }
@@ -50,9 +51,11 @@ data EdgeRoute { tail: string, head: string, spline: dot::Pt[], polyline: dot::P
 data ClusterBox { id: string, bbox: dot::Box2 }
 
 /// Grid metadata carried back when the experimental grid placer ran: the grid
-/// dimensions, the cell pitch (centre-to-centre), and the pixel centre of cell
-/// (0,0) — the geometry the IDE reads to map a drag onto a grid cell.
-data GridMeta { cols: number, rows: number, cellW: number, cellH: number, origin: dot::Pt }
+/// dimensions, the cell pitch (centre-to-centre), the pixel centre of cell (0,0),
+/// and the width of the drag-room frame wrapping the grid — the geometry the IDE
+/// reads to map a drag onto a grid cell, recovering the raw cell from `origin`
+/// then subtracting `pad`.
+data GridMeta { cols: number, rows: number, cellW: number, cellH: number, origin: dot::Pt, pad: number }
 
 /// The layout result: the overall bounding box, the placed nodes, the routed
 /// edges, the cluster boxes, and — when the grid placer ran — its grid metadata.
@@ -69,19 +72,31 @@ data SearchMode =
 /// Tunable weights for the experimental grid placer: how strongly it penalises
 /// crossings, distance, and against-flow edges, the cell spacing, and how hard it
 /// searches.
-data GridParams { crossingCost: number, distanceCost: number, flowCost: number, spacing: number, search: dot::SearchMode }
+public data GridParams { crossingCost: number, distanceCost: number, flowCost: number, spacing: number, search: dot::SearchMode }
 
 /// A pin fixing a node to a grid cell: the node's index into `graph.nodes` (the
 /// caller resolves the FQN) at a row and column. The IDE's drag-to-pin.
-data Pin { node: number, row: number, col: number }
+public data Pin { node: number, row: number, col: number }
 
 /// `crates/pseudoscript-dot`. Runs the four-pass layered pipeline over a `Graph`
 /// to produce a `Layout`; also offers the experimental grid placer. The layout
 /// authority `emit` drives for C4 diagrams.
 public container Dot for context::Pseudoscript {
-  /// Lay a graph out into a layout.
+  /// Lay a graph out into a layout (the plain layered pipeline).
   public layout(graph: dot::Graph): dot::Layout {
     return dot::Engine.layout(graph)
+  }
+
+  /// Lay a graph out, then refine it with the long-edge optimiser — what `emit`
+  /// runs when the "minimize long edges" tweak is on.
+  public layoutShortened(graph: dot::Graph): dot::Layout {
+    return dot::Optimize.run(graph)
+  }
+
+  /// Lay a graph out on a grid under the given weights and pinned cells — the
+  /// experimental placer `emit` runs under grid placement.
+  public gridLayout(graph: dot::Graph, params: dot::GridParams, pins: dot::Pin[]): dot::Layout {
+    return dot::Grid.gridLayout(graph, params, pins)
   }
 }
 
@@ -150,6 +165,15 @@ public component Clusters for dot::Dot {
 public component Grid for dot::Dot {
   /// Lay a graph out on a grid under the given weights and pinned cells.
   gridLayout(graph: dot::Graph, params: dot::GridParams, pins: dot::Pin[]): dot::Layout;
+}
+
+/// The long-edge optimiser: a bounded, deterministic post-layout refinement.
+/// Lay the graph out, greedily search for same-rank moves that reduce the sum of
+/// squared edge lengths (never merging across a cluster boundary), and re-lay-out
+/// with the improving moves applied — `dot`'s composable `Pass` over a base layout.
+public component Optimize for dot::Dot {
+  /// Lay out, shorten the long edges, and return the refined layout.
+  run(graph: dot::Graph): dot::Layout;
 }
 
 /// The test oracle: lays the same graph out with the real `dot` binary and

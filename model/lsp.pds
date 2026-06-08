@@ -4,9 +4,10 @@
 //! workspace-aware document store (open buffers overlaying on-disk `.pds`). It
 //! owns transport and I/O — it is not WASM-safe — and almost no language logic:
 //! every cursor query delegates to `lsp_core` (the transport-neutral handlers the
-//! browser wasm shares), workspace loading to `project`, and checking to `model`.
-//! The store translates between file URIs and module FQNs; `lsp_core` translates
-//! byte spans to LSP positions.
+//! browser wasm shares) and checking to `model`. The store is the server's own
+//! filesystem edge: it finds the workspace root and walks the tree for `.pds`
+//! files itself. It translates between file URIs and module FQNs; `lsp_core`
+//! translates byte spans to LSP positions.
 
 /// One open editor buffer: its document URI, current source text, and the
 /// editor's version counter. The buffer overlays on-disk text until closed.
@@ -15,6 +16,11 @@ data OpenDocument { uri: string, text: string, version: number }
 /// One resolved editor location: the file URI a target FQN maps back to, and the
 /// range within it. The server's transport-level mapping of a `lsp_core` answer.
 data Occurrence { uri: string, range: lsp_core::Range }
+
+/// A go-to-definition target straight from `lsp_core`: the FQN of the module the
+/// definition lives in, and its span within that module's source. The server maps
+/// `fqn` to a file URI — the target file, not the file the request came from.
+data DefTarget { fqn: string, span: syntax::Span }
 
 /// `crates/pseudoscript-lsp`. The stdio language server (tower-lsp): workspace
 /// diagnostics on change, and hover, definition, completion, references, rename,
@@ -42,9 +48,9 @@ component Server for lsp::Lsp {
   /// `exit`. The function `pds lsp` awaits.
   public runStdio(): void;
 
-  /// Initialize: discover the workspace root from the editor's folders, load
-  /// every `.pds` file under it through the `project` loader, and advertise the
-  /// supported capabilities.
+  /// Initialize: discover the workspace root from the editor's folders, walk it
+  /// for every `.pds` file into the store, and advertise the supported
+  /// capabilities.
   initialize(rootUri: string): void {
     lsp::Store.discover(rootUri)
   }
@@ -69,7 +75,8 @@ component Server for lsp::Lsp {
   publishAll(): void {
     payloads = model::ModuleDiagnostics[] from lsp::Store.diagnostics()
     for (p in payloads) {
-      self.publish(p.fqn, p.diagnostics)
+      uri = string from lsp::Store.uriOf(p.fqn)
+      self.publish(uri, p.diagnostics)
     }
   }
 
@@ -80,17 +87,19 @@ component Server for lsp::Lsp {
   /// workspace, and the position to `lsp_core`.
   hover(uri: string, position: lsp_core::Position): lsp_core::Hover {
     text = string from lsp::Store.source(uri)
-    fqn = string from lsp::Store.fqnFor(uri, text)
+    fqn = string from lsp::Store.fqnFor(uri)
     return lsp_core::LspCore.hover(lsp::Store.workspace(), fqn, text, position)
   }
 
-  /// Go-to-definition: ask `lsp_core` for the target FQN and span, then map the
-  /// FQN back to its file URI. Nothing under the cursor yields no location.
+  /// Go-to-definition: ask `lsp_core` for the target — the FQN of the module the
+  /// definition lives in, and its span there — then map that FQN to its file URI
+  /// and range the span against *that* file. Nothing under the cursor yields no
+  /// location.
   gotoDefinition(uri: string, position: lsp_core::Position): lsp::Occurrence {
     text = string from lsp::Store.source(uri)
-    fqn = string from lsp::Store.fqnFor(uri, text)
-    target = lsp_core::Range from lsp_core::LspCore.definition(lsp::Store.workspace(), fqn, text, position)
-    return self.locate(uri, target)
+    fqn = string from lsp::Store.fqnFor(uri)
+    target = lsp::DefTarget from lsp_core::LspCore.definition(lsp::Store.workspace(), fqn, text, position)
+    return self.locate(target)
   }
 
   /// Whole-document formatting edit, or nothing when the buffer does not parse.
@@ -99,31 +108,49 @@ component Server for lsp::Lsp {
     return lsp_core::LspCore.formatEdit(text)
   }
 
-  /// Map a resolved `(targetFqn, range)` to an editor location via the target
-  /// module's file URI.
-  locate(uri: string, range: lsp_core::Range): lsp::Occurrence;
-}
-
-/// The workspace document store: the filesystem edge, delegated to `project`.
-/// Discovers the project root (`pds.toml`, §8.1) and loads every `.pds` file
-/// through `project::Loader`, derives each module's FQN from its path, and
-/// overlays open buffers on disk text. Caches each parse and memoises the
-/// resolved `model::Workspace`, both invalidated on any edit.
-component Store for lsp::Lsp {
-  /// Discover the project rooted at or above `rootUri` and load every `.pds` file
-  /// under it through the `project` loader; a root with no `pds.toml` leaves the
-  /// store empty.
-  discover(rootUri: string): void {
-    root = Result<string, project::IoError> from project::Project.findRoot(rootUri)
-    if (root.isErr) {
-      return
-    }
-    loaded = Result<model::WorkspaceModule[], project::IoError> from project::Project.load(root.value)
-    self.seed(loaded.value)
+  /// Map a resolved `(fqn, span)` target to an editor location: look up the target
+  /// module's file URI, read that file's source, and range the span against it —
+  /// the located file is the one declaring the symbol, never the request's file.
+  locate(target: lsp::DefTarget): lsp::Occurrence {
+    uri = string from lsp::Store.uriOf(target.fqn)
+    targetText = string from lsp::Store.source(uri)
+    range = lsp_core::Range from self.rangeIn(targetText, target.span)
+    return Occurrence from { uri, range }
   }
 
-  /// Seed the store with the loaded modules.
-  seed(modules: model::WorkspaceModule[]): void;
+  /// Convert a byte span into an LSP range against the given source — the server's
+  /// transport-level span-to-position mapping for a located target.
+  rangeIn(src: string, span: syntax::Span): lsp_core::Range;
+}
+
+/// The workspace document store: the server's own filesystem edge. Discovers the
+/// project root (`pds.toml`, §8.1) by walking up from the opened URI, walks the
+/// tree for every visible `.pds` file, derives each module's FQN from its path,
+/// and overlays open buffers on disk text. Caches each parse and memoises the
+/// resolved `model::Workspace` — built from the local parses with the workspace's
+/// direct-dependency externals bound (§8.3) — both invalidated on any edit. The
+/// externals are cached separately and reload only on a dependency change.
+component Store for lsp::Lsp {
+  /// Discover the project rooted at or above `rootUri` and load every `.pds` file
+  /// under it; a path with no `pds.toml` on the way to the filesystem root leaves
+  /// the store empty (standalone files are then added as they open).
+  discover(rootUri: string): void {
+    found = bool from self.findRoot(rootUri)
+    if (found) {
+      self.loadRoot()
+    }
+  }
+
+  /// Resolve the project root by walking up from `rootUri` to the nearest
+  /// ancestor holding a `pds.toml`, recording it; no manifest on the way to the
+  /// filesystem root resolves nothing and leaves the store empty.
+  findRoot(rootUri: string): bool;
+
+  /// Walk the resolved root for every visible `.pds` file — skipping `target/`
+  /// and the vendored `pds_modules/`, whose dependency modules load separately as
+  /// externals — and record each as a module keyed by its path-derived FQN,
+  /// keeping any open buffer's unsaved text, then reindex.
+  loadRoot(): void;
 
   /// Record or replace a buffer's text (full document sync), re-derive its FQN,
   /// cache its parse, and invalidate the resolved-workspace cache.
@@ -136,25 +163,57 @@ component Store for lsp::Lsp {
   /// The current source for a URI (open buffer, else disk).
   source(uri: string): string;
 
-  /// The memoised resolved workspace, rebuilt from cached parses on first use
-  /// after an edit. Backs every cursor query.
-  workspace(): model::Workspace;
+  /// The memoised resolved workspace, rebuilt on first use after an edit and
+  /// backing every cursor query. The local modules alone resolve no cross-
+  /// dependency reference, so the build merges them with the workspace's direct-
+  /// dependency externals (§8.3): ensure those are loaded, then build the
+  /// resolved workspace from the cached local parses with the externals bound.
+  workspace(): model::Workspace {
+    external = model::WorkspaceModule[] from self.ensureExternals()
+    return self.buildWithExternals(self.modules(), external)
+  }
+
+  /// Ensure the workspace's direct-dependency modules (§8.3) are loaded as
+  /// externals, returning the cached set. Unlike the resolved workspace this
+  /// survives a keystroke — dependencies change only with `pds.lock`/`pds.toml`/
+  /// `pds_modules/`, not on every edit — and a load failure (e.g. dependencies
+  /// not installed) degrades to no externals so local symbols keep resolving.
+  ensureExternals(): model::WorkspaceModule[];
+
+  /// Build the resolved workspace from the cached local parses with the
+  /// dependency `external` modules bound, so a `dep::module::Node` reference
+  /// resolves across workspaces — the externals-aware build the store memoises.
+  buildWithExternals(local: model::WorkspaceModule[], external: model::WorkspaceModule[]): model::Workspace;
 
   /// Every known module as an `(fqn, text)` unit, for whole-workspace scans.
   modules(): model::WorkspaceModule[];
 
   /// Diagnostics for every module — parse errors plus static analysis — each
-  /// keyed by its file URI.
+  /// keyed by its FQN. Resolve the workspace once (the memoised, externals-aware
+  /// build, §8.3) so a `dep::module::Node` reference resolves, then per module
+  /// combine its cached parse errors with the static diagnostics that resolved
+  /// workspace yields for the module's FQN. Routing through the resolved
+  /// workspace, not a fresh externals-blind re-check, keeps a cross-dependency
+  /// reference resolving rather than falsely diagnosing it.
   diagnostics(): model::ModuleDiagnostics[] {
-    return model::Model.checkWorkspaceModules(self.modules())
+    ws = model::Workspace from self.workspace()
+    return self.collectDiagnostics(ws)
   }
+
+  /// Assemble each module's `ModuleDiagnostics` from its cached parse errors and
+  /// the static diagnostics the resolved workspace `ws` yields for its FQN (its
+  /// per-module checks plus the cross-module references that originate in it,
+  /// §8.2, resolved with the dependency externals bound, §8.3), keyed by FQN.
+  collectDiagnostics(ws: model::Workspace): model::ModuleDiagnostics[];
 
   /// The file URI a resolved target FQN maps back to.
   uriOf(fqn: string): string;
 
-  /// Derive a module's FQN: from its path relative to the root when inside one
-  /// (§8.1), else from its `//!` inner doc, falling back to the file stem.
-  fqnFor(uri: string, text: string): string;
+  /// Derive a module's FQN from its file path (§8.1): the path relative to the
+  /// root when inside one, else the file stem for a standalone file opened
+  /// outside any `pds.toml`. The filename is the sole identity; a `//!` inner
+  /// doc is documentation, never the FQN.
+  fqnFor(uri: string): string;
 }
 
 /// The editor spawns `pds lsp` as a child process and drives it over stdio.
@@ -195,8 +254,8 @@ feature DelegatesAllLanguageLogic for lsp::Server {
   given "a request that needs parsing, checking, resolution, or formatting"
   when "the server handles it"
   then "every language answer is computed by the lsp_core handlers"
-  and "workspace loading delegates to the project crate, checking to the model crate"
-  but "the server adds no language rules of its own — only transport and URI mapping"
+  and "checking delegates to the model crate"
+  but "the server adds no language rules of its own — only transport, the disk walk, and URI mapping"
 }
 
 /// Go-to-definition jumps to the declaring span, across files.

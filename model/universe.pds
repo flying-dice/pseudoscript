@@ -94,11 +94,11 @@ component Adapter for universe::Universe {
   tallyTraffic(graph: model::Graph, rooted: universe::SoftwareGraph): universe::SoftwareGraph;
 
   /// The structural level of a model kind, or nothing for data and callables.
-  levelOf(kind: model::NodeKind): universe::C4Level;
+  levelOf(kind: model::NodeKind): Option<universe::C4Level>;
 
   /// Walk a model FQN up its parent chain to the nearest structural node present
-  /// in the graph.
-  lift(graph: model::Graph, fqn: string): string;
+  /// in the graph, or nothing if the chain reaches the top without one.
+  lift(graph: model::Graph, fqn: string): Option<string>;
 }
 
 /// Flattens the software graph into the renderer-facing snapshot: each node's id,

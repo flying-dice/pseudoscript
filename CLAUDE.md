@@ -30,6 +30,19 @@ A rule change (FQN form, visibility, syntax) must leave every worked example com
 
 Validate an example as a **workspace**: `pds doc <dir>` resolves each file to its module FQN and applies the full-qualification checks (a reference is its flat FQN `module::Name`, §8.1). The doc site is written to `<dir>/target/doc`.
 
+## Model-driven engineering — model first, then impl (mandatory)
+
+The self-model `model/` is the **spec for the toolchain implementation**: changing the behaviour or architecture of any crate MUST start in the model, then the code is aligned to it — never the reverse. (This is distinct from `LANG.md`/`CONFORMANCE/` leading the *language* definition; MDE governs the `crates/` implementation against its self-model.)
+
+The order for any behavioural change:
+
+1. **Amend the model.** Edit `model/<module>.pds` so the disclosed callable bodies state the new business logic — every guard, every `Err`/`Missing`/variant arm, the order of operations, the dependency calls, the `from` provenance. Keep it C4-level: disclose decisions and data-flow, black-box plumbing.
+2. **`pds doc model` clean.** The self-model MUST resolve with zero diagnostics before any code changes.
+3. **Align the implementation.** Translate the disclosed bodies into the crate(s) — preserve every error arm and the order of operations; the disclosed body is normative. Re-add black boxes as adapters and omitted plumbing as glue, but invent no business logic the model doesn't show.
+4. **Keep the guard green.** `crates/pseudoscript/tests/model_conformance.rs` enforces model↔code correspondence: no cross-module call may land on a `component` (publish the contract on the container/system face — see `.claude/skills/pseudocode/SKILL.md`), each crate exposes the public face the model names, and engines the model keeps private stay encapsulated. `cargo test -p pseudoscript --test model_conformance` MUST pass.
+
+A behavioural code change that is not first reflected in `model/` is a defect: the model is the source, the code is its faithful realisation.
+
 ## Conformance case conventions
 
 - Filenames start with the `LANG.md` section they exercise, then a slug: `static/6-result-wrong-accessor.pds`. `2-4` means §2.4.

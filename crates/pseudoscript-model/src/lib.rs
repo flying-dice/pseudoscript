@@ -87,7 +87,8 @@ impl WorkspaceModule {
 /// followed by the cross-module visibility diagnostics (`LANG.md` §8.2).
 ///
 /// This is the multi-module counterpart of [`check`]; [`check`]/[`analyze`]
-/// remain the single-module convenience that derives the module FQN from `//!`.
+/// remain the single-module convenience, building the model with an empty
+/// module FQN.
 #[must_use]
 pub fn check_workspace(modules: &[WorkspaceModule]) -> Vec<Diagnostic> {
     check_workspace_with_externals(modules, &[])

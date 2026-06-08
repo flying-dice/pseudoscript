@@ -52,10 +52,19 @@ public data IoError { message: string }
 /// only I/O edge; a thin frontend that wires the pure library crates to disk,
 /// HTTP, and a filesystem watcher.
 public container Cli for context::Pseudoscript {
-  /// Generate the documentation site for the workspace containing `path`.
+  /// Generate the documentation site for the workspace containing `path`, with no
+  /// `--format` override so the manifest `[doc].format` or HTML decides.
   public runDoc(path: string): Result<void, cli::IoError> {
-    return cli::DocCmd.run(path)
+    built = Result<string, IoError> from cli::DocCmd.run(path, self.noFormatOverride())
+    if (built.isErr) {
+      return Err(built.error)
+    }
+    return Ok
   }
+
+  /// The empty `--format` override: no explicit format was passed, so the manifest
+  /// `[doc].format` or the HTML default decides.
+  noFormatOverride(): string;
 
   /// Boot the language server over stdio.
   public runLsp(): Result<void, cli::IoError> {
@@ -88,7 +97,9 @@ component Loader for cli::Cli {
     return Ok(found.value)
   }
 
-  /// Load the project rooted at `root`: parse the manifest and collect modules.
+  /// Load the project rooted at `root`: parse the manifest, collect modules, and
+  /// resolve its declared dependency modules (§8.3) into the workspace. The
+  /// resolved output directory is `<root>/<out>`, taken from the manifest.
   load(root: string): Result<cli::Workspace, cli::IoError> {
     config = Result<Workspace, IoError> from self.loadManifest(root)
     if (config.isErr) {
@@ -98,12 +109,16 @@ component Loader for cli::Cli {
     if (modules.isErr) {
       return Err(modules.error)
     }
-    project = Workspace from { config.value, root, modules.value }
+    dependencies = Result<model::WorkspaceModule[], IoError> from self.loadDependencies(root)
+    if (dependencies.isErr) {
+      return Err(dependencies.error)
+    }
+    project = Workspace from { config.value.config, config.value.outDir, modules.value, dependencies.value, config.value.format }
     return Ok(project)
   }
 
   /// Read `<root>/pds.toml` and map its `[doc]` table into a `DocConfig` plus the
-  /// resolved output directory; an unknown `theme` is rejected.
+  /// resolved output directory (`<root>/<out>`); an unknown `theme` is rejected.
   loadManifest(root: string): Result<cli::Workspace, cli::IoError>;
 
   /// Read every `.pds` module under `root` through `project`, sorted by FQN.
@@ -114,6 +129,11 @@ component Loader for cli::Cli {
     }
     return Ok(loaded.value)
   }
+
+  /// Resolve the workspace's declared dependency modules (§8.3) through `project`:
+  /// read `pds.lock` + `pds_modules/`, prefixing each by its dependency name.
+  /// Empty without a `pds.lock`.
+  loadDependencies(root: string): Result<model::WorkspaceModule[], cli::IoError>;
 
   /// Lift a `project` I/O failure into the CLI's exit-code error.
   ioError(e: project::IoError): cli::IoError;
@@ -140,16 +160,21 @@ component InitCmd for cli::Cli {
 }
 
 /// `pds doc` — the headline command (ADR-017). Load the workspace, check it
-/// (reported but non-fatal, like `cargo doc`), project the resolved graph, render
-/// a static doc site with embedded C4 and sequence SVGs, and write it. `--serve`
-/// hosts it over HTTP; `--watch` adds a filesystem watcher and browser live
-/// reload.
+/// (reported but non-fatal, like `cargo doc`), project the resolved graph, and
+/// render a static doc site. The output format is resolved by precedence — an
+/// explicit `--format` over the manifest `[doc].format`, else HTML — then a fork
+/// renders the SSR HTML site (embedded C4 and sequence SVGs, logo copied) or a flat
+/// Markdown site (SVG inlined, no logo). `--serve` hosts the HTML site over HTTP;
+/// `--watch` adds a filesystem watcher and browser live reload; both are skipped
+/// for Markdown output, which only writes.
 /// #headline
 component DocCmd for cli::Cli {
-  /// Generate the documentation site for the workspace containing `path`.
-  /// Invoked by the Developer (`context::Developer.renderDocs`).
+  /// Generate the documentation site for the workspace containing `path`,
+  /// resolving the output format and returning the format actually used so the
+  /// serving wrapper can gate on it. `cliFormat` is the optional `--format`
+  /// override. Invoked by the Developer (`context::Developer.renderDocs`).
   /// #headline
-  public run(path: string): Result<void, cli::IoError> {
+  public run(path: string, cliFormat: string): Result<string, cli::IoError> {
     root = Result<string, IoError> from cli::Loader.findRoot(path)
     if (root.isErr) {
       return Err(root.error)
@@ -158,31 +183,79 @@ component DocCmd for cli::Cli {
     if (project.isErr) {
       return Err(project.error)
     }
-    diagnostics = syntax::Diagnostic[] from model::Model.checkWorkspace(project.value.modules)
+    format = string from self.resolveFormat(cliFormat, project.value.format)
+    diagnostics = syntax::Diagnostic[] from model::Model.checkWorkspace(project.value.modules, project.value.dependencies)
     self.report(diagnostics)
     graph = Graph from model::Model.graph(project.value.modules)
-    site = Result<Site, RenderError> from doc::Doc.render(graph, project.value.config)
+    site = Result<Site, IoError> from self.renderSite(graph, project.value.config, format)
+    if (site.isErr) {
+      return Err(site.error)
+    }
     written = Result<void, IoError> from self.write(site.value, project.value.outDir)
     if (written.isErr) {
       return Err(written.error)
     }
-    self.copyLogo(root.value, project.value)
-    return Ok
+    if (self.isHtml(format)) {
+      self.copyLogo(root.value, project.value)
+    }
+    return Ok(format)
   }
 
+  /// Resolve the output format: an explicit `--format` (`cliFormat`) wins over the
+  /// manifest `[doc].format`, else HTML.
+  resolveFormat(cliFormat: string, manifestFormat: string): string;
+
+  /// Render the site in the resolved format: the SSR HTML site through the doc
+  /// face (its `RenderError` lifted to the CLI's exit-code error), or the
+  /// infallible flat-Markdown site. The Markdown site inlines its SVG, so only the
+  /// HTML site references a logo.
+  renderSite(graph: model::Graph, config: doc::DocConfig, format: string): Result<doc::Site, cli::IoError> {
+    if (self.isHtml(format)) {
+      html = Result<Site, RenderError> from doc::Doc.render(graph, config)
+      if (html.isErr) {
+        return Err(self.renderError(html.error))
+      }
+      return Ok(html.value)
+    }
+    return Ok(self.renderMarkdown(graph, config))
+  }
+
+  /// Whether the resolved format is HTML (the SSR site) rather than Markdown.
+  isHtml(format: string): bool;
+
+  /// Lift a doc-crate render defect into the CLI's exit-code error.
+  renderError(e: doc::RenderError): cli::IoError;
+
+  /// The flat-Markdown site for `graph` under `config`, through the doc face.
+  /// Infallible: Markdown needs no SSR engine, so it cannot fail the way HTML can.
+  renderMarkdown(graph: model::Graph, config: doc::DocConfig): doc::Site;
+
   /// Generate once, then optionally serve — with a watcher and live reload when
-  /// `watch` is set. `watch` implies `serve`.
+  /// `watch` is set. Markdown output skips serving entirely: a Markdown build
+  /// returns after writing, even under `--serve`/`--watch`. For HTML, `watch`
+  /// implies `serve`, so serving is gated on `serve || watch`; a plain build
+  /// returns after writing the site.
   #[manual]
-  public serve(path: string, serve: bool, watch: bool, port: number): Result<void, cli::IoError> {
-    built = Result<void, IoError> from self.run(path)
+  public serve(path: string, cliFormat: string, serve: bool, watch: bool, port: number): Result<void, cli::IoError> {
+    built = Result<string, IoError> from self.run(path, cliFormat)
     if (built.isErr) {
       return Err(built.error)
+    }
+    if (!self.isHtml(built.value)) {
+      return Ok
+    }
+    if (!self.shouldServe(serve, watch)) {
+      return Ok
     }
     if (watch) {
       cli::Watcher.watch(path, port)
     }
     return cli::HttpServer.serve(path, port, watch)
   }
+
+  /// Whether to serve after building: true when `serve` or `watch` is set, since
+  /// `watch` implies `serve`. A plain build (neither set) returns after writing.
+  shouldServe(serve: bool, watch: bool): bool;
 
   /// Write each `SiteFile` under the output directory, creating parent dirs.
   write(site: doc::Site, outDir: string): Result<void, cli::IoError>;
@@ -200,15 +273,58 @@ component DocCmd for cli::Cli {
 /// `path:line:col: severity: message`, and exit non-zero on any error-severity
 /// diagnostic. Emits no diagram.
 component CheckCmd for cli::Cli {
+  /// A directory, or a file inside a `pds.toml` workspace, runs the strict,
+  /// FQN-resolving workspace check; only a rootless *file* (no enclosing
+  /// manifest) is checked as a lenient single module (ADR-029/030). A directory
+  /// with no enclosing manifest is a hard error — it is never checked rootless.
   #[manual]
-  public run(text: string): Result<void, cli::IoError> {
-    diagnostics = syntax::Diagnostic[] from model::Model.check(text)
+  public run(path: string): Result<void, cli::IoError> {
+    root = Result<string, IoError> from cli::Loader.findRoot(path)
+    if (root.isErr) {
+      if (self.isDirectory(path)) {
+        return Err(root.error)
+      }
+      return self.checkRootless(path)
+    }
+    return self.checkWorkspace(root.value)
+  }
+
+  /// Whether `path` is a directory — only a rootless file falls back to the
+  /// lenient single-module check; a rootless directory is a hard error.
+  isDirectory(path: string): bool;
+
+  /// The strict path: load the workspace rooted at `root` and check its modules
+  /// with full qualification, failing on any error diagnostic.
+  checkWorkspace(root: string): Result<void, cli::IoError> {
+    project = Result<Workspace, IoError> from cli::Loader.load(root)
+    if (project.isErr) {
+      return Err(project.error)
+    }
+    diagnostics = syntax::Diagnostic[] from model::Model.checkWorkspace(project.value.modules, project.value.dependencies)
     if (self.anyError(diagnostics)) {
       err = IoError from { diagnostics }
       return Err(err)
     }
     return Ok
   }
+
+  /// The lenient path: a file outside any workspace is checked as one anonymous
+  /// module, lenient about full qualification.
+  checkRootless(path: string): Result<void, cli::IoError> {
+    text = Result<string, IoError> from self.readSource(path)
+    if (text.isErr) {
+      return Err(text.error)
+    }
+    diagnostics = syntax::Diagnostic[] from model::Model.check(text.value)
+    if (self.anyError(diagnostics)) {
+      err = IoError from { diagnostics }
+      return Err(err)
+    }
+    return Ok
+  }
+
+  /// Read the source of a single `.pds` file.
+  readSource(path: string): Result<string, cli::IoError>;
 
   /// Whether any diagnostic is error-severity — the non-zero-exit signal.
   anyError(diagnostics: syntax::Diagnostic[]): bool;
@@ -292,10 +408,12 @@ component ReferenceCmd for cli::Cli {
   skill(): void;
 }
 
-/// `pds outline` — load the workspace, build its graph, and print the symbol
-/// outline as JSON: each node's `fqn`, `name`, `kind`, `parent`, whether it is a
-/// triggered flow entry, and its declaration site. The structure tree an editor
-/// draws.
+/// `pds outline` — walk the workspace's modules, build its graph, and print the
+/// symbol outline as JSON: each node's `fqn`, `name`, `kind`, `parent`, whether it
+/// is a triggered flow entry, and its declaration site. The structure tree an
+/// editor draws. Outlining reads the walked modules straight, skipping the manifest
+/// `[doc]` parse and dependency resolution: the structure tree never depends on
+/// presentation config or external modules.
 component OutlineCmd for cli::Cli {
   #[manual]
   public run(path: string): Result<void, cli::IoError> {
@@ -303,11 +421,11 @@ component OutlineCmd for cli::Cli {
     if (root.isErr) {
       return Err(root.error)
     }
-    project = Result<Workspace, IoError> from cli::Loader.load(root.value)
-    if (project.isErr) {
-      return Err(project.error)
+    modules = Result<model::WorkspaceModule[], IoError> from cli::Loader.loadModules(root.value)
+    if (modules.isErr) {
+      return Err(modules.error)
     }
-    graph = Graph from model::Model.graph(project.value.modules)
+    graph = Graph from model::Model.graph(modules.value)
     self.print(self.render(graph))
     return Ok
   }
@@ -323,26 +441,41 @@ component OutlineCmd for cli::Cli {
 /// `pds svg` — render a single diagram to a self-contained SVG on stdout. With
 /// `--symbol`, draws that symbol's fitting view; otherwise draws `--view` (paired
 /// with `--target`) over the whole workspace. The static counterpart of the IDE
-/// canvas.
+/// canvas. Like `pds outline`, it reads the walked modules straight, skipping the
+/// manifest `[doc]` parse and dependency resolution: a diagram never depends on
+/// presentation config or external modules.
 component SvgCmd for cli::Cli {
   #[manual]
   public run(path: string, symbol: string, view: string, target: string, theme: string): Result<void, cli::IoError> {
+    if (!self.isKnownTheme(theme)) {
+      return Err(self.unknownTheme(theme))
+    }
     root = Result<string, IoError> from cli::Loader.findRoot(path)
     if (root.isErr) {
       return Err(root.error)
     }
-    project = Result<Workspace, IoError> from cli::Loader.load(root.value)
-    if (project.isErr) {
-      return Err(project.error)
+    modules = Result<model::WorkspaceModule[], IoError> from cli::Loader.loadModules(root.value)
+    if (modules.isErr) {
+      return Err(modules.error)
     }
-    graph = Graph from model::Model.graph(project.value.modules)
+    graph = Graph from model::Model.graph(modules.value)
     scene = Result<Scene, EmitError> from self.projectChosen(graph, symbol, view, target)
     if (scene.isErr) {
       return Err(self.emitError(scene.error))
     }
-    self.print(emit::Emit.render(scene.value))
+    self.print(self.renderThemed(scene.value, theme))
     return Ok
   }
+
+  /// Whether `theme` is one of the two accepted themes (`light` or `dark`).
+  isKnownTheme(theme: string): bool;
+
+  /// The `unknown theme … (expected light or dark)` failure for an unrecognised
+  /// `--theme`.
+  unknownTheme(theme: string): cli::IoError;
+
+  /// Render the scene to SVG in the chosen theme, through the emit face.
+  renderThemed(scene: emit::Scene, theme: string): string;
 
   /// Pick the view from `--symbol` or `--view`/`--target` and project it.
   projectChosen(graph: model::Graph, symbol: string, view: string, target: string): Result<emit::Scene, emit::EmitError>;
@@ -435,8 +568,9 @@ feature ParseSubcommand for cli::Cli {
 feature OutlineAsJson for cli::OutlineCmd {
   given "a workspace under the path"
   when "the developer runs `pds outline`"
-  then "the workspace loads and its graph is built"
+  then "the workspace's modules are walked and its graph is built"
   and "each node's fqn, name, kind, parent, triggered flag, and declaration site is printed as JSON"
+  but "the manifest [doc] config and dependency modules are not loaded"
 }
 
 /// `pds svg` renders one diagram to a self-contained SVG.
@@ -475,11 +609,29 @@ feature InitWorkspace for cli::InitCmd {
 /// `pds doc` runs the headline pipeline end to end.
 feature DocPipeline for cli::DocCmd {
   given "a project rooted at a pds.toml with one or more .pds modules"
+  and "no --format override, so the HTML default applies"
   when "the developer runs `pds doc`"
   then "the workspace is loaded and checked"
-  and "the resolved graph is built and rendered to a site"
+  and "the resolved graph is built and rendered to the HTML site"
   and "every site file is written under the output directory"
   and "the configured logo is copied beside the site"
+}
+
+/// The output format is resolved by precedence and forks the renderer.
+feature ResolveDocFormat for cli::DocCmd {
+  given "a workspace whose `[doc].format` and the `--format` flag may each set a format"
+  when "the developer runs `pds doc`"
+  then "an explicit `--format` wins over the manifest `[doc].format`, else HTML"
+  and "HTML renders the SSR site and copies the logo"
+  but "Markdown renders the flat site with its SVG inlined and copies no logo"
+}
+
+/// Markdown output writes but never serves or watches.
+feature MarkdownSkipsServing for cli::DocCmd {
+  given "the resolved format is Markdown"
+  when "the developer runs `pds doc --serve` or `--watch`"
+  then "the Markdown site is written to the output directory"
+  but "serving and watching are skipped, so the command returns after writing"
 }
 
 /// The project root is found by walking up to the nearest pds.toml.

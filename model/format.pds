@@ -112,12 +112,9 @@ component Printer for format::Format {
   /// prose.
   writeInnerDoc(state: format::PrinterState, text: string): format::PrinterState;
 
-  /// Dispatch an item to its writer — `alias`, declaration, or `feature` — after
-  /// its leading trivia.
+  /// Dispatch an item to its writer — declaration or `feature` — after its
+  /// leading trivia.
   writeItem(state: format::PrinterState, item: syntax::Item, first: bool): format::PrinterState;
-
-  /// Emit `alias Name = Path;` on one line.
-  writeAlias(state: format::PrinterState, aliasDecl: syntax::AliasDecl): format::PrinterState;
 
   /// Emit the shared declaration prefix in canonical order (§2.1) — doc block,
   /// then macros one per line, then `public` — and dispatch the node or `data`
