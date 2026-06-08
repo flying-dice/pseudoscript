@@ -332,10 +332,10 @@ public component Workspace for model::Model {
   sameModule(fromModule: string, fqn: string): bool;
 }
 
-/// Static analysis (LANG.md §2.3, §2.4, §3.3, §3.5, §4, §5.1, §6, §8): builds the
-/// symbol tables, then runs the well-formedness checks. Every entry returns a
-/// `syntax::Diagnostic[]`; well-formed input yields an empty one. Checks are
-/// conservative — each rule fires only when the violation is certain.
+/// Static analysis (LANG.md §2.2, §2.3, §2.4, §3.3, §3.4, §3.5, §4, §5.1, §5.2, §6,
+/// §7, §8): builds the symbol tables, then runs the well-formedness checks. Every
+/// entry returns a `syntax::Diagnostic[]`; well-formed input yields an empty one.
+/// Checks are conservative — each rule fires only when the violation is certain.
 component Checks for model::Model {
   /// Parse and statically analyze one module's source: parse errors followed by
   /// the static-analysis errors. The CLI's `pds check` driver.
@@ -356,11 +356,21 @@ component Checks for model::Model {
   /// Check a multi-module workspace with its §8.3 dependency modules bound as
   /// `externals` (§8.2): each module's parse and per-module static errors, then
   /// the cross-module visibility pass — resolved with the externals bound so a
-  /// `dep::module::Node` reference resolves rather than falsely diagnosing.
+  /// `dep::module::Node` reference resolves rather than falsely diagnosing. The
+  /// parse errors come first because the `ModuleEntry` the workspace pass walks
+  /// keeps only the recovered AST and drops each module's parse diagnostics.
   public checkWorkspace(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): syntax::Diagnostic[] {
+    parse = syntax::Diagnostic[] from self.parseErrors(modules)
     entries = ModuleEntry[] from model::Workspace.buildWithExternals(modules, externals)
-    return self.runWorkspace(entries)
+    workspace = syntax::Diagnostic[] from self.runWorkspace(entries)
+    return syntax::Diagnostic[] from { parse, workspace }
   }
+
+  /// Collects every local module's parse diagnostics, in module order: parse each
+  /// module's source through `syntax::Syntax.parse` and flatten the per-module
+  /// diagnostic lists. The externals are not parsed for diagnostics — a
+  /// dependency's own parse errors are not the consumer's (§8.3).
+  parseErrors(modules: model::WorkspaceModule[]): syntax::Diagnostic[];
 
   /// The per-file counterpart of `checkWorkspace`: each module's diagnostics keyed
   /// by FQN, resolved against the §8.3 `externals`. A cross-module visibility
@@ -381,11 +391,17 @@ component Checks for model::Model {
     return syntax::Diagnostic[] from { variants, features, reserved, typeRefs, items }
   }
 
-  /// Runs the per-item checks over every declaration: each callable's macro
-  /// targeting (§2.4), single-assignment rebinds (§7.1), return coverage
-  /// (ADR-016), and `Result`/`Option` accessor narrowing (§6), plus, on each
-  /// structural declaration, the macro-target check and the parent-kind check
-  /// (§4 — a container parents a system, a component parents a container).
+  /// Runs the per-item checks over every declaration. On each callable body:
+  /// macro targeting (§2.4), single-assignment rebinds (§7.1), return coverage
+  /// (ADR-016), `Result`/`Option` accessor narrowing (§6), return-type and `from`
+  /// source/target matching (§5.1, §7.2 — ADR-035), `for` iterates an array
+  /// (§7.3 — ADR-014), `self.` calls and bare references resolve (§5.1, §8 —
+  /// ADR-004), `.field` reads name a declared field (§2.2, §3.4), call arity and
+  /// argument types match (§5.1 — ADR-022), `.method(args)` calls name a callable
+  /// of the receiver's type (§6 — ADR-022), and `if`/`while` conditions are `bool`
+  /// (§7 — ADR-023). Plus, on each structural declaration, the macro-target check
+  /// and the parent-kind check (§4 — a container parents a system, a component
+  /// parents a container).
   checkItems(ast: syntax::Module): syntax::Diagnostic[];
 
   /// Runs the per-module checks for every module, then the cross-module pass. The

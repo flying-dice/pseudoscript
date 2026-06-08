@@ -18,9 +18,11 @@ public data DocConfig { name: string, theme: doc::Theme, logo: string, docs: doc
 /// ordered pages, rendered above the auto-generated module tree.
 public data DocGroup { title: string, pages: doc::DocPage[] }
 
-/// One authored Markdown page: its sidebar title and source path (relative to
-/// `pds.toml`), from which the host and this crate derive the same stable slug.
-public data DocPage { title: string, path: string }
+/// One authored Markdown page: its sidebar title, the source path (relative to
+/// `pds.toml`) from which the host and this crate derive the same stable slug,
+/// and the raw Markdown the host has already loaded, rendered to HTML at build
+/// time. The crate reads `markdown`; `path` only names the page, never loads it.
+public data DocPage { title: string, path: string, markdown: string }
 
 /// Doc-site colour scheme, written as the `data-theme` attribute on the root
 /// `<html>` to select the light or dark CSS variable set.
@@ -198,7 +200,7 @@ component Pages for doc::Doc {
   docPage(config: doc::DocConfig, page: doc::DocPage): doc::PageProps {
     docGroups = SidebarDocGroup[] from self.docGroups(config, "../")
     sidebar = SidebarModule[] from self.emptySidebar()
-    html = string from doc::Markdown.render(page.path)
+    html = string from doc::Markdown.render(page.markdown)
     body = DocBody from { page, html }
     return PageProps from { config, docGroups, sidebar, body }
   }
@@ -507,12 +509,13 @@ component Escape for doc::Doc {
 }
 
 /// Renders an authored `[[doc.sidebar]]` page's Markdown source into the HTML that
-/// fills its `Doc` page body (LANG.md §9.3). The host loads the source from the
-/// page's `path`; the rendered HTML carries through unescaped as trusted authored
-/// content.
+/// fills its `Doc` page body (LANG.md §9.3). The host has already loaded the
+/// source into the page's `markdown`; this crate does no I/O and renders that
+/// content in memory. The rendered HTML carries through unescaped as trusted
+/// authored content.
 component Markdown for doc::Doc {
-  /// Render the Markdown at the authored doc page's source `path` to HTML.
-  render(path: string): string;
+  /// Render the authored doc page's raw `markdown` content to HTML.
+  render(markdown: string): string;
 }
 
 /// A partial model still documents.
