@@ -58,8 +58,11 @@ pub(crate) fn run_module(workspace: &Workspace, entry: &ModuleEntry) -> Vec<Diag
     diagnostics.extend(cross_module::check_one(workspace, entry));
     // The architectural lints need the whole-workspace graph. Building it per
     // module mirrors `cross_module::check_one`, which likewise re-walks the
-    // workspace per file; the graph is a pure projection of already-resolved
-    // entries, so the cost is linear and small at workspace scale.
+    // workspace per file. `Graph::build` is an O(nodes + edges) projection of
+    // already-resolved entries (no parse, no resolution) — sub-millisecond for a
+    // workspace of dozens of modules, run on the editor's debounced check. If a
+    // workspace ever grows large enough to feel it, cache the projection on the
+    // `Workspace` rather than rebuilding here.
     diagnostics.extend(architecture::check_for_module(
         &Graph::build(workspace),
         &entry.fqn,

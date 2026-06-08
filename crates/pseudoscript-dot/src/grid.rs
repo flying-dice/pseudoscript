@@ -1063,7 +1063,11 @@ mod tests {
         let l1 = grid_layout(&g, GridParams::default(), &[]);
         let (r, c) = cell_of(&l1, "c");
         let l2 = grid_layout(&g, GridParams::default(), &[pin(2, r, c)]);
-        assert_eq!(cell_of(&l2, "c"), (r, c), "pinned node holds its dropped cell");
+        assert_eq!(
+            cell_of(&l2, "c"),
+            (r, c),
+            "pinned node holds its dropped cell"
+        );
         distinct_cells(&l2);
     }
 

@@ -23,8 +23,7 @@ use crate::graph::{Edge, EdgeKind, Graph, GraphNode, NodeKind};
 
 /// Where the `docs/principles/` articles are published. Each rule's `code`
 /// resolves to `{ARTICLE_BASE}{slug}`; the one place the host/path changes.
-const ARTICLE_BASE: &str =
-    "https://github.com/flying-dice/pseudoscript/blob/main/docs/principles/";
+const ARTICLE_BASE: &str = "https://github.com/flying-dice/pseudoscript/blob/main/docs/principles/";
 
 /// One architectural-principle lint rule: its stable code and the filename of the
 /// article (under [`ARTICLE_BASE`]) that documents it.
@@ -90,9 +89,7 @@ fn call_edges(graph: &Graph) -> impl Iterator<Item = (&Edge, &GraphNode, &GraphN
         .edges()
         .iter()
         .filter(|edge| edge.kind == EdgeKind::Call)
-        .filter_map(move |edge| {
-            Some((edge, graph.node(&edge.from)?, graph.node(&edge.to)?))
-        })
+        .filter_map(move |edge| Some((edge, graph.node(&edge.from)?, graph.node(&edge.to)?)))
 }
 
 /// PDS-ARCH-001 — a `Call` edge into a `component` declared in a different module
@@ -200,71 +197,97 @@ fn system_of<'a>(graph: &'a Graph, fqn: &str) -> Option<&'a str> {
 
 /// Tarjan's strongly-connected components over the module adjacency. Returns each
 /// component as a sorted module list, in a deterministic order.
+///
+/// Iterative (explicit work stack), not recursive: the depth is the longest module
+/// dependency chain, which a recursive walk would push onto the call stack. The
+/// work stack lives on the heap, so a pathologically deep graph cannot overflow.
 fn strongly_connected<'a>(adj: &BTreeMap<&'a str, BTreeSet<&'a str>>) -> Vec<BTreeSet<&'a str>> {
+    /// One node's in-progress DFS frame: the node and its position in its
+    /// successor list (snapshotted so a later `push` cannot invalidate it).
+    struct Frame<'a> {
+        node: &'a str,
+        succ: Vec<&'a str>,
+        next: usize,
+    }
+
     // Every node that appears as a source or a target.
     let mut nodes: BTreeSet<&str> = adj.keys().copied().collect();
     for targets in adj.values() {
         nodes.extend(targets.iter().copied());
     }
 
-    struct State<'a> {
-        index: BTreeMap<&'a str, u32>,
-        low: BTreeMap<&'a str, u32>,
-        on_stack: BTreeSet<&'a str>,
-        stack: Vec<&'a str>,
-        next: u32,
-        out: Vec<BTreeSet<&'a str>>,
-    }
+    let mut index: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut low: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut on_stack: BTreeSet<&str> = BTreeSet::new();
+    let mut tarjan_stack: Vec<&str> = Vec::new();
+    let mut counter: u32 = 0;
+    let mut out: Vec<BTreeSet<&str>> = Vec::new();
 
-    fn visit<'a>(
-        st: &mut State<'a>,
-        adj: &BTreeMap<&'a str, BTreeSet<&'a str>>,
-        v: &'a str,
-    ) {
-        st.index.insert(v, st.next);
-        st.low.insert(v, st.next);
-        st.next += 1;
-        st.stack.push(v);
-        st.on_stack.insert(v);
-        if let Some(targets) = adj.get(v) {
-            for &w in targets {
-                if !st.index.contains_key(w) {
-                    visit(st, adj, w);
-                    let low = st.low[v].min(st.low[w]);
-                    st.low.insert(v, low);
-                } else if st.on_stack.contains(w) {
-                    let low = st.low[v].min(st.index[w]);
-                    st.low.insert(v, low);
-                }
-            }
-        }
-        if st.low[v] == st.index[v] {
-            let mut component = BTreeSet::new();
-            while let Some(w) = st.stack.pop() {
-                st.on_stack.remove(w);
-                component.insert(w);
-                if w == v {
-                    break;
-                }
-            }
-            st.out.push(component);
-        }
-    }
-
-    let mut st = State {
-        index: BTreeMap::new(),
-        low: BTreeMap::new(),
-        on_stack: BTreeSet::new(),
-        stack: Vec::new(),
-        next: 0,
-        out: Vec::new(),
+    let successors = |node: &str| -> Vec<&'a str> {
+        adj.get(node)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
     };
-    for &v in &nodes {
-        if !st.index.contains_key(v) {
-            visit(&mut st, adj, v);
+
+    for &root in &nodes {
+        if index.contains_key(root) {
+            continue;
+        }
+        index.insert(root, counter);
+        low.insert(root, counter);
+        counter += 1;
+        tarjan_stack.push(root);
+        on_stack.insert(root);
+        let mut work: Vec<Frame> = vec![Frame {
+            node: root,
+            succ: successors(root),
+            next: 0,
+        }];
+
+        while let Some(top) = work.last_mut() {
+            let node = top.node;
+            if top.next < top.succ.len() {
+                let w = top.succ[top.next];
+                top.next += 1;
+                if !index.contains_key(w) {
+                    // Descend into `w`: assign its index, then push its frame.
+                    index.insert(w, counter);
+                    low.insert(w, counter);
+                    counter += 1;
+                    tarjan_stack.push(w);
+                    on_stack.insert(w);
+                    work.push(Frame {
+                        node: w,
+                        succ: successors(w),
+                        next: 0,
+                    });
+                } else if on_stack.contains(w) {
+                    let l = low[node].min(index[w]);
+                    low.insert(node, l);
+                }
+            } else {
+                // `node` is fully explored. If it roots an SCC, pop it.
+                if low[node] == index[node] {
+                    let mut component = BTreeSet::new();
+                    while let Some(w) = tarjan_stack.pop() {
+                        on_stack.remove(w);
+                        component.insert(w);
+                        if w == node {
+                            break;
+                        }
+                    }
+                    out.push(component);
+                }
+                work.pop();
+                // Propagate `node`'s low-link to its parent frame.
+                if let Some(parent) = work.last() {
+                    let l = low[parent.node].min(low[node]);
+                    low.insert(parent.node, l);
+                }
+            }
         }
     }
-    st.out
+    out
 }
 
 #[cfg(test)]
@@ -342,6 +365,53 @@ mod tests {
         ]);
         assert!(cs.iter().any(|c| c == "PDS-ARCH-002"), "{cs:?}");
         assert!(!cs.iter().any(|c| c == "PDS-ARCH-003"), "{cs:?}");
+    }
+
+    #[test]
+    fn three_module_cycle_warns_once() {
+        // a → b → c → a, all containers in one system. The iterative SCC must find
+        // the 3-node cycle and report it exactly once.
+        let cs = codes(&[
+            ("s", "//! s\n\npublic system Sys;\n"),
+            (
+                "a",
+                "//! a\n\npublic container Ca for s::Sys {\n  go(): void { b::Cb.run() }\n  run(): void;\n}\n",
+            ),
+            (
+                "b",
+                "//! b\n\npublic container Cb for s::Sys {\n  run(): void { c::Cc.run() }\n}\n",
+            ),
+            (
+                "c",
+                "//! c\n\npublic container Cc for s::Sys {\n  run(): void { a::Ca.run() }\n}\n",
+            ),
+        ]);
+        assert_eq!(
+            cs.iter().filter(|c| *c == "PDS-ARCH-002").count(),
+            1,
+            "one warning for the single 3-module cycle: {cs:?}"
+        );
+    }
+
+    #[test]
+    fn acyclic_chain_does_not_warn() {
+        // a → b → c, no back edge — a DAG, no cycle warning.
+        let cs = codes(&[
+            ("s", "//! s\n\npublic system Sys;\n"),
+            (
+                "a",
+                "//! a\n\npublic container Ca for s::Sys {\n  go(): void { b::Cb.run() }\n}\n",
+            ),
+            (
+                "b",
+                "//! b\n\npublic container Cb for s::Sys {\n  run(): void { c::Cc.run() }\n}\n",
+            ),
+            (
+                "c",
+                "//! c\n\npublic container Cc for s::Sys {\n  run(): void;\n}\n",
+            ),
+        ]);
+        assert!(!cs.iter().any(|c| c == "PDS-ARCH-002"), "{cs:?}");
     }
 
     #[test]
