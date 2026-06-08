@@ -229,6 +229,7 @@
             class:drop={onmovefile && dropDir === node.path}
             style="--depth: {depth}"
             aria-expanded={open}
+            data-testid="folder-{node.path}"
             onclick={() => toggle(node.path)}
             ondragover={(ev) => {
               if (dragFqn) {

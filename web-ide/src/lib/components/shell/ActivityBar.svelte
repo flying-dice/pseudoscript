@@ -50,9 +50,10 @@
           onclick={() => ontoggleproblems?.()}
           aria-label={problemCount === 0 ? "No problems" : `${problemCount} problem${problemCount === 1 ? "" : "s"}`}
           aria-pressed={problemsOpen}
+          data-testid="view-problems"
         >
           <TriangleAlert size={18} strokeWidth={1.75} aria-hidden="true" />
-          {#if problemCount > 0}<span class="count" aria-hidden="true">{problemCount}</span>{/if}
+          {#if problemCount > 0}<span class="count" data-testid="problems-badge" aria-hidden="true">{problemCount}</span>{/if}
         </Tooltip.Trigger>
         <Tooltip.Content side="right" sideOffset={8}>
           {problemCount === 0 ? "No problems" : `${problemCount} problem${problemCount === 1 ? "" : "s"}`}

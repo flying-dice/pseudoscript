@@ -15,7 +15,7 @@
   let { problems = [], onpick, oncopy, oncollapse }: Props = $props();
 </script>
 
-<section class="dock island">
+<section class="dock island" data-testid="bottom-dock">
   <header class="panel-head">
     <span class="title">Problems</span>
     <span class="count">{problems.length}</span>

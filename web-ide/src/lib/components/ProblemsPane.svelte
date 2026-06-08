@@ -26,7 +26,7 @@
   }
 </script>
 
-<div class="problems">
+<div class="problems" data-testid="problems-pane">
   {#if diagnostics.length === 0}
     <div class="empty">
       <span class="ok-dot"></span> No problems — the model is well-formed.
@@ -37,6 +37,7 @@
       <button
         type="button"
         class="copy-all"
+        data-testid="problems-copy-all"
         onclick={() => oncopy?.(diagnostics.map(format).join("\n"), diagnostics.length)}
         title="Copy all problems to the clipboard"
       >
@@ -44,12 +45,13 @@
       </button>
     </div>
     <ul>
-      {#each diagnostics as d}
+      {#each diagnostics as d, i}
         <li class={d.severity}>
           <div class="row">
             <button
               type="button"
               class="nav"
+              data-testid="problem-{i}"
               onclick={() => onpick?.(d)}
               aria-label="{d.severity}{d.file ? ` in ${d.file}` : ''} at line {d.start_line} column {d.start_col}: {d.message}"
             >

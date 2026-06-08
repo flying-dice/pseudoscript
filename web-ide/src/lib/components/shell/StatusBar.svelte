@@ -9,7 +9,7 @@
   let { children }: Props = $props();
 </script>
 
-<footer class="statusbar">
+<footer class="statusbar" data-testid="status-bar">
   {@render children?.()}
 </footer>
 

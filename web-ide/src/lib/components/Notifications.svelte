@@ -23,11 +23,11 @@
 
 <div class="notes" role="region" aria-label="Notifications" aria-live="polite">
   {#each notes as note (note.id)}
-    <div class="note {note.kind}" role="status">
+    <div class="note {note.kind}" role="status" data-testid="toast-{note.kind}">
       <div class="note-head">
         <span class="note-icon" aria-hidden="true">{ICON[note.kind] ?? "i"}</span>
         <span class="note-title">{note.title}</span>
-        <button class="note-close" aria-label="Dismiss notification" onclick={() => ondismiss?.(note.id)}>✕</button>
+        <button class="note-close" data-testid="toast-close" aria-label="Dismiss notification" onclick={() => ondismiss?.(note.id)}>✕</button>
       </div>
       {#if note.body}<p class="note-body">{note.body}</p>{/if}
     </div>

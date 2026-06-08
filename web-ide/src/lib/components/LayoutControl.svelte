@@ -48,7 +48,7 @@
 </script>
 
 <DropdownMenu.Root>
-  <DropdownMenu.Trigger class="export-trigger" aria-label="Layout options">
+  <DropdownMenu.Trigger class="export-trigger" aria-label="Layout options" data-testid="layout-trigger">
     <SlidersHorizontal size={13} strokeWidth={2} aria-hidden="true" />
     Layout
   </DropdownMenu.Trigger>
@@ -56,6 +56,7 @@
     <DropdownMenu.CheckboxItem
       checked={tweaks.minimizeLongEdges}
       onCheckedChange={(v) => set({ minimizeLongEdges: v === true })}
+      data-testid="layout-longedge"
     >
       Minimise long edges
     </DropdownMenu.CheckboxItem>
@@ -66,8 +67,8 @@
       value={tweaks.orientation}
       onValueChange={(v) => set({ orientation: v as LayoutTweaks["orientation"] })}
     >
-      <DropdownMenu.RadioItem value="tb">Top to bottom</DropdownMenu.RadioItem>
-      <DropdownMenu.RadioItem value="lr">Left to right</DropdownMenu.RadioItem>
+      <DropdownMenu.RadioItem value="tb" data-testid="layout-dir-tb">Top to bottom</DropdownMenu.RadioItem>
+      <DropdownMenu.RadioItem value="lr" data-testid="layout-dir-lr">Left to right</DropdownMenu.RadioItem>
     </DropdownMenu.RadioGroup>
 
     <DropdownMenu.Separator />
@@ -76,9 +77,9 @@
       value={tweaks.spacing}
       onValueChange={(v) => set({ spacing: v as LayoutTweaks["spacing"] })}
     >
-      <DropdownMenu.RadioItem value="compact">Compact</DropdownMenu.RadioItem>
-      <DropdownMenu.RadioItem value="comfortable">Comfortable</DropdownMenu.RadioItem>
-      <DropdownMenu.RadioItem value="roomy">Roomy</DropdownMenu.RadioItem>
+      <DropdownMenu.RadioItem value="compact" data-testid="layout-spacing-compact">Compact</DropdownMenu.RadioItem>
+      <DropdownMenu.RadioItem value="comfortable" data-testid="layout-spacing-comfortable">Comfortable</DropdownMenu.RadioItem>
+      <DropdownMenu.RadioItem value="roomy" data-testid="layout-spacing-roomy">Roomy</DropdownMenu.RadioItem>
     </DropdownMenu.RadioGroup>
 
     <DropdownMenu.Separator />
