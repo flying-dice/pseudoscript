@@ -237,12 +237,23 @@
 
   // Report the symbol under the caret to the host, debounced — the caret moves
   // on every keystroke/click and the resolve is a compiler query. `null` when
-  // the caret sits on no symbol. PseudoScript modules only.
+  // the caret sits on no symbol. PseudoScript modules only. The last report is
+  // keyed by (doc identity, identifier range): arrow-keys within one identifier
+  // and repeat clicks skip the query; any edit makes a new doc and misses.
   let cursorTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastCaret: { doc: Text; from: number; to: number } | null = null;
   function scheduleCursorChange(view: EditorView): void {
     if (!ctx.oncursorchange || ctx.plain || !ctx.moduleFqn) return;
     clearTimeout(cursorTimer);
-    cursorTimer = setTimeout(() => ctx.oncursorchange?.(definitionAt(view, view.state.selection.main.head)), 200);
+    cursorTimer = setTimeout(() => {
+      const state = view.state;
+      const head = state.selection.main.head;
+      // Off-identifier positions carry no symbol — a zero-length key, no query.
+      const range = wordRangeAt(state, head) ?? { from: head, to: head };
+      if (lastCaret && lastCaret.doc === state.doc && lastCaret.from === range.from && lastCaret.to === range.to) return;
+      lastCaret = { doc: state.doc, ...range };
+      ctx.oncursorchange?.(range.from === range.to ? null : definitionAt(view, head));
+    }, 200);
   }
 
   // Find usages of the symbol at `pos`, opening the dropdown anchored under it.

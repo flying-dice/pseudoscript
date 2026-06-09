@@ -181,3 +181,26 @@ test("the reveal button is disabled without a selection and re-reveals a collaps
   await expect(page.getByTestId(CHILD)).toBeVisible();
   await expect(page.getByTestId(CHILD)).toHaveClass(/active/);
 });
+
+test("filtering out the selection disarms reveal; clearing the filter re-reveals", async ({ page }) => {
+  await openBanking(page);
+
+  // Select a nested component, then hide it twice over: collapse its parent,
+  // then filter it out of the tree entirely.
+  await page.getByTestId(CHILD).click();
+  await expect(page.getByTestId(CHILD)).toHaveClass(/active/);
+  await page.getByTestId("twist-banking::Backend").click();
+  await expect(page.getByTestId(CHILD)).toHaveCount(0);
+  await page.getByTestId("structure-filter").fill("Customer");
+
+  // The selected row isn't renderable under this filter — reveal would no-op,
+  // so it disarms.
+  await expect(page.getByTestId("structure-reveal")).toBeDisabled();
+
+  // Clearing the filter re-runs the auto-reveal: the collapsed ancestor expands
+  // and the selected row is visible again without touching the button.
+  await page.getByTestId("structure-filter-clear").click();
+  await expect(page.getByTestId(CHILD)).toBeVisible();
+  await expect(page.getByTestId(CHILD)).toHaveClass(/active/);
+  await expect(page.getByTestId("structure-reveal")).toBeEnabled();
+});

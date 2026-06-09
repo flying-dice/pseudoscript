@@ -39,6 +39,10 @@
     }
     return symbols.filter((n) => keep.has(n.fqn));
   });
+
+  // Reveal works only on a row the tree can render — an active filter that
+  // drops the selection would make the button a silent no-op.
+  const revealable = $derived(selectedFqn != null && filtered.some((n) => n.fqn === selectedFqn));
 </script>
 
 <aside class="structure island" data-testid="structure-panel">
@@ -56,7 +60,7 @@
       class="head-btn"
       title="Reveal current item"
       aria-label="Reveal the selected symbol in the tree"
-      disabled={selectedFqn == null}
+      disabled={!revealable}
       onclick={() => revealSignal++}
       data-testid="structure-reveal"
     >

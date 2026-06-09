@@ -687,6 +687,11 @@
       return;
     }
     const fileFqn = file.fqn;
+    // Highlight-only calls (caret-follow, history replay) fire repeatedly with
+    // an unchanged target — skip the fresh `selected` write so identity-tracked
+    // deriveds (canvas scene, hints) don't re-run for nothing. Goto/record
+    // callers fall through: a re-click must still jump or record scope.
+    if (!goto && !record && selection.selected?.fqn === targetFqn && selection.selected.fileFqn === fileFqn) return;
     // Record the launching view's scope before the file/scope changes, so Back
     // returns there (the editor caret in code, the universe's flow/node in space).
     // `origin: false` suppresses it when the caller already recorded the origin.

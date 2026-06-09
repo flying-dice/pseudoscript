@@ -96,11 +96,18 @@
     requestAnimationFrame(() => rowEls[fqn]?.scrollIntoView({ block: "nearest" }));
   }
 
-  // Follow the shared selection (canvas / 3D / editor clicks land here). Tracks
-  // only `selectedFqn`: `untrack` keeps `collapsed` out of the dependency set,
-  // so a manual collapse after the reveal sticks until the selection changes.
+  // Whether the selected row is in the rendered set at all (a filter can drop
+  // it). A boolean derived, so the follow effect re-fires exactly when the row
+  // leaves or re-enters — not on every `symbols` rebuild.
+  const selectedPresent = $derived(selectedFqn != null && symbols.some((n) => n.fqn === selectedFqn));
+
+  // Follow the shared selection (canvas / 3D / editor clicks land here), and
+  // re-reveal when the selected row re-enters the rendered set (filter cleared)
+  // so the highlight and the visible tree can't silently diverge. `untrack`
+  // keeps `collapsed` out of the dependency set, so a manual collapse after the
+  // reveal sticks until the selection (or the row's presence) changes.
   $effect(() => {
-    const fqn = selectedFqn;
+    const fqn = selectedPresent ? selectedFqn : null;
     if (fqn) untrack(() => reveal(fqn));
   });
 
