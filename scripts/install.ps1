@@ -10,6 +10,11 @@ $ErrorActionPreference = "Stop"
 # Windows PowerShell 5.1 defaults to TLS 1.0; GitHub requires TLS 1.2+.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Invoke-WebRequest renders a per-response progress bar that makes a multi-MB
+# download crawl for minutes — and look hung — on Windows PowerShell 5.1.
+# Suppress it so the binary download runs at full speed.
+$ProgressPreference = "SilentlyContinue"
+
 function Fail($Message) {
     [Console]::Error.WriteLine("error: $Message")
     exit 1
