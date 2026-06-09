@@ -83,9 +83,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Checksum the binaries and attach them, SHA256SUMS, and the install scripts
-  # to the release, then mark it the latest release so the install scripts and
-  # /releases/latest/download/* URLs resolve to it.
+  # Checksum the binaries and attach them, SHA256SUMS, and the install scripts to
+  # the release. Does NOT mark the release latest — that is gated behind `smoke`
+  # and performed by `mark-latest`, so a release only goes live after the
+  # freshly-uploaded artifacts install and run on all three OSes.
   publish:
     name: Upload assets
     needs: build
@@ -103,7 +104,7 @@ jobs:
           cd dist
           sha256sum pds-* > SHA256SUMS
           cat SHA256SUMS
-      - name: Upload to release and mark latest
+      - name: Upload assets to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
@@ -112,4 +113,138 @@ jobs:
             dist/pds-*.tar.gz dist/pds-*.zip dist/SHA256SUMS \
             scripts/install.sh scripts/install.ps1 \
             --clobber
-          gh release edit "$TAG" --latest
+
+  # Gate: on each OS, install the just-uploaded binary via the just-uploaded
+  # install script (pinned to the tag — no `latest` resolution, since the release
+  # is deliberately not latest yet), assert it runs, then exercise `pds upgrade`
+  # self-replace. All three legs must pass before the release goes live. No token:
+  # release-download URLs and `pds upgrade` use public URLs only; the `latest` API
+  # is never hit.
+  smoke:
+    name: Smoke ${{ matrix.os }}
+    needs: publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: pwsh
+    steps:
+      # Unix (Linux + macOS): run the uploaded install.sh pinned to the tag, then
+      # exercise the binary and `pds upgrade`.
+      - name: Smoke (unix)
+        if: matrix.shell == 'bash'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Install via the uploaded install.sh asset, pinned to the tag.
+          # PDS_VERSION=<tag> skips the /releases/latest API entirely.
+          curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/install.sh" \
+            | PDS_VERSION="${TAG}" bash
+
+          # install.sh installs to $HOME/.pseudoscript/bin by default.
+          export PATH="$HOME/.pseudoscript/bin:$PATH"
+
+          # Version must match the tag (strip leading 'v': v0.1.0 -> pds 0.1.0).
+          ver_out="$(pds --version)"
+          echo "version: $ver_out"
+          expected="${TAG#v}"
+          if ! printf '%s' "$ver_out" | grep -qE "(^| )${expected}( |$)"; then
+            echo "error: 'pds --version' = '$ver_out', expected to contain '$expected'" >&2
+            exit 1
+          fi
+
+          # Valid single-module model: must eval clean (exit 0).
+          printf '//! smoke\n\npublic system S;\n' | pds eval
+
+          # Genuinely invalid single-module model: must exit non-zero.
+          if printf 'system S { container C }\n' | pds eval; then
+            echo "error: invalid model evaluated successfully (expected failure)" >&2
+            exit 1
+          fi
+
+          # Exercise self-replace on this OS: re-install the same tag.
+          pds upgrade "${TAG}"
+
+          # Binary still works after self-replace.
+          pds --version
+
+      # Windows: run the uploaded install.ps1 pinned to the tag, then exercise the
+      # binary and `pds upgrade`.
+      - name: Smoke (windows)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ProgressPreference = "SilentlyContinue"
+
+          $tag  = $env:TAG
+          $repo = $env:REPO
+
+          # Download the uploaded install.ps1 to a file and run it (file-based, so a
+          # script parse error surfaces clearly and the shipped env-var path is used).
+          $ps1 = Join-Path $env:RUNNER_TEMP "install.ps1"
+          Invoke-WebRequest -Uri "https://github.com/$repo/releases/download/$tag/install.ps1" `
+            -OutFile $ps1 -UseBasicParsing
+
+          $env:PDS_VERSION = $tag
+          & $ps1
+          if ($LASTEXITCODE -ne 0) { Write-Error "install.ps1 failed ($LASTEXITCODE)"; exit 1 }
+
+          # install.ps1 installs to $env:USERPROFILE\.pseudoscript\bin by default.
+          $binDir = Join-Path $env:USERPROFILE ".pseudoscript\bin"
+          $env:PATH = "$binDir;$env:PATH"
+
+          # Version must match the tag (strip leading 'v').
+          $verOut   = (pds --version)
+          Write-Host "version: $verOut"
+          $expected = $tag.TrimStart('v')
+          if ($verOut -notmatch "(^|\s)$([regex]::Escape($expected))(\s|`$)") {
+            Write-Error "'pds --version' = '$verOut', expected to contain '$expected'"
+            exit 1
+          }
+
+          # Valid single-module model: must eval clean (exit 0).
+          "//! smoke`n`npublic system S;" | pds eval
+          if ($LASTEXITCODE -ne 0) { Write-Error "valid model failed to eval"; exit 1 }
+
+          # Genuinely invalid single-module model: must exit non-zero.
+          "system S { container C }" | pds eval
+          if ($LASTEXITCODE -eq 0) { Write-Error "invalid model evaluated successfully"; exit 1 }
+
+          # Exercise self-replace on Windows: re-install the same tag.
+          pds upgrade $tag
+          if ($LASTEXITCODE -ne 0) { Write-Error "pds upgrade failed"; exit 1 }
+
+          # Binary still works after self-replace.
+          pds --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "pds --version failed post-upgrade"; exit 1 }
+
+  # Go-live: mark the release latest, only reachable if all three smoke legs
+  # passed. A failed smoke skips this, so the release stays not-latest and the
+  # pipeline is red. Idempotent on workflow_dispatch re-runs.
+  mark-latest:
+    name: Mark release latest
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Mark latest (go live)
+        run: gh release edit "$TAG" --latest
