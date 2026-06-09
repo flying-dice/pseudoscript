@@ -213,20 +213,24 @@ test("a failing provider surfaces on the chip and a toast, and never blocks typi
   await page.waitForTimeout(1200); // past debounce + response
   await expect(page.getByTestId("toast-error")).toHaveCount(1);
 
-  // A syntactically-broken suggestion is dropped by the wasm parse gate. The
-  // round-trip clears the chip's error state, and the chip says the answer was
-  // dropped instead of staying silent.
+  // A syntactically-broken suggestion still renders — it is the author's to
+  // judge (typing on dismisses it; accepting it lights the live diagnostics) —
+  // and the successful round-trip clears the chip's error state.
   await page.unroute(`${PROVIDER}/chat/completions`);
   await mockProvider(page, "%% not pseudoscript {{");
   await page.keyboard.type("m");
-  await page.waitForTimeout(1200);
-  await expect(page.getByTestId("ghost-text")).toHaveCount(0);
-  await expect(page.getByTestId("llm-status")).toHaveAttribute(
+  const ghost = page.getByTestId("ghost-text");
+  await expect(ghost).toBeVisible({ timeout: 15_000 });
+  await expect(ghost).toContainText("%% not pseudoscript {{");
+  await expect(page.getByTestId("llm-status")).not.toHaveAttribute(
     "title",
-    /wasn't valid PseudoScript/,
+    /AI completion failing/,
   );
 
+  // Typing on clears the unwanted suggestion without inserting it.
   await page.keyboard.type("ents;");
+  await expect(page.getByTestId("ghost-text")).toHaveCount(0);
   await expect(content).toContainText("public system Payments;");
+  await expect(content).not.toContainText("%% not pseudoscript {{");
   expect(errors).toEqual([]);
 });

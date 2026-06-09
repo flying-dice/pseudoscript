@@ -2982,9 +2982,7 @@ show('index.html');
         title={llm.lastError
           ? `AI completion failing — ${llm.lastError.message}. Click to fix.`
           : llm.lastDropReason
-            ? llm.lastDropReason === "invalid"
-              ? `AI suggestion arrived but wasn't valid PseudoScript, so it was dropped — a stronger model than ${llm.model} helps.`
-              : "AI completion answered with nothing to insert."
+            ? "AI completion answered with nothing to insert."
             : llm.ready
               ? `AI completion on — ${llm.model}`
               : "AI completion enabled but not fully configured — click to set it up"}

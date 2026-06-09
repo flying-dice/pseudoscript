@@ -432,8 +432,8 @@ component LlmSettingsStore for ide::WebIde {
   clearFailure(): void;
   /// The session's last completion failure, if any.
   lastFailure(): Option<ide::ProviderError>;
-  /// Record that the provider answered but the suggestion was dropped — blank,
-  /// or rejected by the parse gate. The chip says so instead of staying silent.
+  /// Record that the provider answered but the suggestion was dropped — a
+  /// blank answer. The chip says so instead of staying silent.
   noteDrop(reason: string): void;
   /// Clear the drop note once a suggestion renders.
   clearDrop(): void;
@@ -490,11 +490,11 @@ component FimClient for ide::WebIde {
 /// widget decoration at the caret — Tab accepts, Esc dismisses, any edit clears.
 component GhostText for ide::WebIde {
   /// On an idle pause in typing: assemble the context, ask the provider, and
-  /// show the suggestion — dropped when it breaks the parse, so the ghost text
-  /// never proposes invalid PseudoScript. Every non-rendering outcome is
-  /// reported to the settings store — a provider failure as the classified
-  /// error, a parse-gate drop as a drop note — so the status chip explains the
-  /// silence; none of it ever blocks typing.
+  /// show the suggestion as-is — the author judges it, and the live
+  /// diagnostics flag any syntax error the moment it is accepted. Every
+  /// non-rendering outcome is reported to the settings store — a provider
+  /// failure as the classified error, a blank answer as a drop note — so the
+  /// status chip explains the silence; none of it ever blocks typing.
   suggest(moduleFqn: string, offset: number): void {
     enabled = bool from ide::LlmSettingsStore.isEnabled()
     if (!enabled) {
@@ -513,11 +513,6 @@ component GhostText for ide::WebIde {
       ide::LlmSettingsStore.noteDrop("empty")
       return
     }
-    ok = bool from self.validates(moduleFqn, offset, raw.value)
-    if (!ok) {
-      ide::LlmSettingsStore.noteDrop("invalid")
-      return
-    }
     ide::LlmSettingsStore.clearDrop()
     self.show(raw.value)
   }
@@ -534,20 +529,8 @@ component GhostText for ide::WebIde {
   /// The cached compact grammar summary (LANG.md §10) plus a worked
   /// micro-example — what steers a general model to emit valid `.pds`.
   grammarPrimer(): string;
-  /// Splice the suggestion at the caret and re-check the buffer through the
-  /// session: a suggestion that introduces a syntax error is rejected; static
-  /// warnings are tolerated.
-  validates(moduleFqn: string, offset: number, raw: string): bool {
-    spliced = string from self.splice(moduleFqn, offset, raw)
-    diags = syntax::Diagnostic[] from ide::LanguageSession.check(spliced)
-    return self.noNewSyntaxErrors(moduleFqn, diags)
-  }
-  /// The buffer with the suggestion inserted at the caret.
-  splice(moduleFqn: string, offset: number, raw: string): string;
   /// Whether the answer carries nothing to insert (whitespace only).
   isBlank(raw: string): bool;
-  /// Whether the spliced buffer parses no worse than the buffer did before.
-  noNewSyntaxErrors(moduleFqn: string, diags: syntax::Diagnostic[]): bool;
   /// Render the greyed inline text at the caret.
   show(raw: string): void;
 }
@@ -651,13 +634,14 @@ feature DiagramDrawsFromJsonScene for ide::DiagramCanvas {
   but "no image crosses the IDE wasm — its surface carries only the JSON scene; the `emit` crate's static SVG remains the CLI/doc path"
 }
 
-/// Ghost text comes from the configured provider and is vetted by the parser.
+/// Ghost text comes from the configured provider, rendered as-is for the
+/// author to judge.
 feature GhostTextSuggests for ide::GhostText {
   given "AI completion enabled with a configured OpenAI-compatible provider"
   when "the author pauses typing"
   then "the windowed prefix/suffix and the grammar primer go to the provider"
   and "the suggestion renders as greyed inline text — Tab accepts, Esc dismisses"
-  but "a suggestion that breaks the parse is dropped, and a provider failure surfaces on the AI status chip with the reason — it never blocks typing"
+  but "the suggestion is the author's to judge — accepting one with a syntax error lights the live diagnostics — and a provider failure surfaces on the AI status chip with the reason; it never blocks typing"
 }
 
 /// Setup is preset-first; the connection test explains a failure instead of
