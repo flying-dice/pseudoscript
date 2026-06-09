@@ -249,6 +249,9 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No checkout in this job, so tell gh which repo to act on (it otherwise
+      # infers it from the git remote and fails with "not a git repository").
+      GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag }}
     steps:
       - name: Mark latest (go live)
