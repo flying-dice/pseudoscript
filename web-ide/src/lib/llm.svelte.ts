@@ -65,8 +65,8 @@ export const LLM_DEFAULTS: LlmSettings = {
 function load(): LlmSettings {
   try {
     const obj: Record<string, unknown> = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    const baseUrl = typeof obj.baseUrl === "string" ? obj.baseUrl : LLM_DEFAULTS.baseUrl;
-    const inferred = baseUrl === PRESETS.openai.baseUrl ? "openai" : baseUrl === PRESETS.ollama.baseUrl ? "ollama" : "custom";
+    const storedUrl = typeof obj.baseUrl === "string" ? obj.baseUrl : LLM_DEFAULTS.baseUrl;
+    const inferred = storedUrl === PRESETS.openai.baseUrl ? "openai" : storedUrl === PRESETS.ollama.baseUrl ? "ollama" : "custom";
     const provider =
       obj.provider === "ollama" || obj.provider === "openai" || obj.provider === "custom"
         ? obj.provider
@@ -74,11 +74,12 @@ function load(): LlmSettings {
     return {
       enabled: typeof obj.enabled === "boolean" ? obj.enabled : LLM_DEFAULTS.enabled,
       provider,
-      baseUrl,
+      // A preset pins the endpoint and wire shape — those controls are hidden
+      // there, so a stray stored URL or mode must not survive the migration
+      // (the UI would say "sent only to OpenAI" while the key went elsewhere).
+      baseUrl: provider !== "custom" ? PRESETS[provider].baseUrl : storedUrl,
       apiKey: typeof obj.apiKey === "string" ? obj.apiKey : LLM_DEFAULTS.apiKey,
       model: typeof obj.model === "string" ? obj.model : LLM_DEFAULTS.model,
-      // A preset pins the wire shape — the Request-style control is hidden
-      // there, so a stray stored mode must not survive the migration.
       mode:
         provider !== "custom"
           ? PRESETS[provider].mode

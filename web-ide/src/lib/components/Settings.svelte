@@ -59,6 +59,10 @@
   // static list); refreshed whenever the provider or its credentials change.
   let liveModels = $state<string[] | null>(null);
   let modelsBusy = $state(false);
+  // Whether the last list fetch failed outright — a reachable provider with an
+  // empty list (no models pulled yet) is a different problem than no answer,
+  // and the hint under the model field says which one the author has.
+  let modelsUnreachable = $state(false);
   // Last provider a list was fetched for — plain (non-reactive) on purpose, so
   // a failed fetch doesn't re-trigger the loading effect in a loop.
   let modelsFetchedFor: string | null = null;
@@ -67,12 +71,13 @@
   let testBusy = $state(false);
   let testResult = $state<{ ok: boolean; message: string; hint?: string } | null>(null);
 
-  // Adopt a fetched list only when it's still for the active provider (a slow
-  // response must not land in another preset's dropdown) and only the usable
-  // slice of it — an empty slice falls back to the text input / static list.
-  function adoptModels(forProvider: LlmProvider, ids: string[] | null): void {
+  // Adopt a fetch outcome only when it's still for the active provider (a slow
+  // response must not land in another preset's dropdown), and only the usable
+  // slice of a list — an empty slice falls back to the text input / static list.
+  function adoptModels(forProvider: LlmProvider, outcome: string[] | "unreachable"): void {
     if (llm.provider !== forProvider) return;
-    const usable = ids === null ? null : usableModels(forProvider, ids);
+    modelsUnreachable = outcome === "unreachable";
+    const usable = outcome === "unreachable" ? null : usableModels(forProvider, outcome);
     liveModels = usable?.length ? usable : null;
   }
 
@@ -83,7 +88,7 @@
     try {
       adoptModels(forProvider, await listModels(llm.snapshot(), AbortSignal.timeout(5000)));
     } catch {
-      adoptModels(forProvider, null);
+      adoptModels(forProvider, "unreachable");
     } finally {
       modelsBusy = false;
     }
@@ -93,6 +98,7 @@
     llm.applyPreset(id);
     testResult = null;
     liveModels = null;
+    modelsUnreachable = false;
     modelsFetchedFor = null;
     if (id !== "custom") void refreshModels();
   }
@@ -103,7 +109,10 @@
     testResult = null;
     try {
       const models = await testConnection(llm.snapshot(), new AbortController().signal);
-      testResult = { ok: true, message: `Connected — ${models.length} model(s) available.` };
+      // Count what the dropdown will actually offer, not everything the key
+      // can touch (OpenAI's raw list includes audio/embedding models).
+      const usable = usableModels(forProvider, models);
+      testResult = { ok: true, message: `Connected — ${usable.length} model(s) available.` };
       llm.clearError();
       adoptModels(forProvider, models);
     } catch (e) {
@@ -322,7 +331,9 @@
             {:else if llm.provider === "ollama"}
               {liveModels
                 ? "Models installed on your local Ollama."
-                : "Couldn't reach your local Ollama for its model list — type a model you've pulled (e.g. `ollama pull qwen2.5-coder:7b`)."}
+                : modelsUnreachable
+                  ? "Couldn't reach your local Ollama for its model list — type a model you've pulled (e.g. `ollama pull qwen2.5-coder:7b`)."
+                  : "Ollama is reachable but has no models yet — run `ollama pull qwen2.5-coder:7b`, then Test connection."}
             {:else}
               {liveModels ? "Models your API key can use." : "Common choices — the live list loads once the key works."}
             {/if}

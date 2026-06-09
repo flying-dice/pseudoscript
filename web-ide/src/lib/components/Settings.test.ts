@@ -161,7 +161,7 @@ describe("Settings", () => {
     expect(result).toHaveTextContent("Connected — 1 model(s) available.");
   });
 
-  it("Test connection fills the OpenAI dropdown with chat models only", async () => {
+  it("Test connection fills the OpenAI dropdown with chat models only and counts them", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
@@ -174,10 +174,24 @@ describe("Settings", () => {
     render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
     await userEvent.click(screen.getByTestId("llm-provider-openai"));
     await userEvent.click(screen.getByTestId("llm-test"));
-    await screen.findByTestId("llm-test-result");
+    const result = await screen.findByTestId("llm-test-result");
+    // The count is what the dropdown offers, not the raw list of 3.
+    expect(result).toHaveTextContent("Connected — 1 model(s) available.");
     const options = [...screen.getByTestId<HTMLSelectElement>("llm-model").options].map((o) => o.value);
     expect(options).toContain("gpt-4o-mini");
     expect(options).not.toContain("whisper-1");
     expect(options).not.toContain("text-embedding-3-small");
+  });
+
+  it("a reachable Ollama with no models pulled gets the pull hint, not the unreachable one", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ data: [] }),
+    });
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    expect(
+      await screen.findByText(/reachable but has no models yet/),
+    ).toBeInTheDocument();
   });
 });

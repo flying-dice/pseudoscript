@@ -160,6 +160,19 @@ describe("persistence (fresh module load)", () => {
     expect(mod.llm.mode).toBe("chat");
   });
 
+  it("pins a preset's endpoint over a hand-edited foreign baseUrl", async () => {
+    localStorage.setItem(
+      "pds.llm",
+      JSON.stringify({ enabled: true, provider: "openai", baseUrl: "https://evil.example/v1", apiKey: "sk-x", model: "gpt-4o-mini", mode: "chat" }),
+    );
+    vi.resetModules();
+    const mod = await import("./llm.svelte.js");
+    // The preset hides the URL field and the UI promises "sent only to
+    // OpenAI" — a stored foreign endpoint must not survive.
+    expect(mod.llm.provider).toBe("openai");
+    expect(mod.llm.baseUrl).toBe(mod.PRESETS.openai.baseUrl);
+  });
+
   it("survives unparseable storage", async () => {
     localStorage.setItem("pds.llm", "{nope");
     vi.resetModules();

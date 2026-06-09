@@ -162,6 +162,7 @@ async function fimComplete(
   settings: LlmSettings,
   prompt: FimPrompt,
   signal: AbortSignal,
+  maxTokens: number,
 ): Promise<string> {
   const data = (await request(
     settings,
@@ -172,7 +173,7 @@ async function fimComplete(
         model: settings.model,
         prompt: `${prompt.primer}\n${prompt.prefix}`,
         suffix: prompt.suffix,
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokens,
         temperature: TEMPERATURE,
       },
     },
@@ -188,6 +189,7 @@ async function chatComplete(
   settings: LlmSettings,
   prompt: FimPrompt,
   signal: AbortSignal,
+  maxTokens: number,
 ): Promise<string> {
   const system =
     `You are a code-completion engine for PseudoScript (.pds).\n${prompt.primer}\n` +
@@ -204,7 +206,7 @@ async function chatComplete(
           { role: "system", content: system },
           { role: "user", content: `${prompt.prefix}<CURSOR>${prompt.suffix}` },
         ],
-        max_tokens: MAX_TOKENS,
+        max_tokens: maxTokens,
         temperature: TEMPERATURE,
       },
     },
@@ -222,10 +224,11 @@ export function fetchCompletion(
   settings: LlmSettings,
   prompt: FimPrompt,
   signal: AbortSignal,
+  maxTokens: number = MAX_TOKENS,
 ): Promise<string> {
   return settings.mode === "fim"
-    ? fimComplete(settings, prompt, signal)
-    : chatComplete(settings, prompt, signal);
+    ? fimComplete(settings, prompt, signal, maxTokens)
+    : chatComplete(settings, prompt, signal, maxTokens);
 }
 
 /**
@@ -245,7 +248,8 @@ const PROBE: FimPrompt = { prefix: "// PseudoScript\nsystem ", suffix: "", prime
 
 /**
  * Round-trip probe for the settings tab's "Test connection": list the models,
- * then ask for a one-token completion. Resolves to the model ids; rejects with
+ * then ask for a one-token completion (`max_tokens: 1`, so a click never bills
+ * more than a token on a hosted key). Resolves to the model ids; rejects with
  * the first classified `ProviderError`.
  */
 export async function testConnection(
@@ -253,6 +257,6 @@ export async function testConnection(
   signal: AbortSignal,
 ): Promise<string[]> {
   const models = await listModels(settings, signal);
-  await fetchCompletion(settings, PROBE, signal);
+  await fetchCompletion(settings, PROBE, signal, 1);
   return models;
 }

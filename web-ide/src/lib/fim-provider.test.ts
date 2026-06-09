@@ -166,13 +166,21 @@ describe("listModels and testConnection", () => {
     expect(init.body).toBeUndefined();
   });
 
-  it("testConnection lists models then probes a completion", async () => {
+  it("testConnection lists models then probes a one-token completion", async () => {
     respond({ data: [{ id: "m1" }] });
     respond({ choices: [{ text: "ok" }] });
     const models = await testConnection(SETTINGS, new AbortController().signal);
     expect(models).toEqual(["m1"]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][0]).toBe("https://api.example.test/v1/fim/completions");
+    // A Test-connection click must never bill more than one output token.
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).max_tokens).toBe(1);
+  });
+
+  it("fetchCompletion still asks for full-size completions", async () => {
+    respond({ choices: [{ text: "ok" }] });
+    await fetchCompletion(SETTINGS, PROMPT, new AbortController().signal);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_tokens).toBe(128);
   });
 
   it("testConnection surfaces the first classified failure", async () => {
