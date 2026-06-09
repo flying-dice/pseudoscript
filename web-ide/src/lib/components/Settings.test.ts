@@ -5,13 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 
 import { keybindings } from "$lib/keybindings.svelte.js";
+import { llm } from "$lib/llm.svelte.js";
 import Settings from "./Settings.svelte";
 
-// Settings drives the keybindings singleton directly — reset it between tests.
+// Settings drives the keybindings and llm singletons directly — reset between tests.
 beforeEach(() => {
   localStorage.clear();
   keybindings.setProfile("default");
   keybindings.resetAll();
+  llm.reset();
 });
 afterEach(() => localStorage.clear());
 
@@ -64,5 +66,35 @@ describe("Settings", () => {
     render(Settings, { props: { onclose } });
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onclose).toHaveBeenCalled();
+  });
+
+  it("opens on the keyboard tab and switches to AI Completion", async () => {
+    render(Settings, { props: { onclose: vi.fn() } });
+    expect(screen.getByTestId("keybind-saveDocument")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("settings-tab-ai"));
+    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("keybind-saveDocument")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("settings-tab-keyboard"));
+    expect(screen.getByTestId("keybind-saveDocument")).toBeInTheDocument();
+  });
+
+  it("edits the AI completion settings through the store", async () => {
+    render(Settings, { props: { onclose: vi.fn() } });
+    await userEvent.click(screen.getByTestId("settings-tab-ai"));
+
+    await userEvent.click(screen.getByTestId("llm-enabled"));
+    expect(llm.enabled).toBe(true);
+
+    const url = screen.getByTestId("llm-baseurl");
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://api.example.test/v1");
+    expect(llm.baseUrl).toBe("https://api.example.test/v1");
+
+    await userEvent.type(screen.getByTestId("llm-apikey"), "sk-test");
+    expect(llm.apiKey).toBe("sk-test");
+    expect(screen.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
+
+    await userEvent.selectOptions(screen.getByTestId("llm-mode"), "fim");
+    expect(llm.mode).toBe("fim");
   });
 });

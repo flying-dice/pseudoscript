@@ -1,12 +1,17 @@
 <script lang="ts">
   import type { Command } from "$lib/keybindings.svelte.js";
   import { COMMANDS, PROFILES, chordFromEvent, formatChord, keybindings } from "$lib/keybindings.svelte.js";
+  import { llm } from "$lib/llm.svelte.js";
 
   type Props = {
     onclose: () => void;
   };
 
   let { onclose }: Props = $props();
+
+  // The open settings page. Keyboard first — it predates the AI tab and the
+  // shell's "keyboard shortcuts" actions land here.
+  let tab = $state<"keyboard" | "ai">("keyboard");
 
   // A command row enriched with its effective chord and customised flag.
   type Row = Command & { chord: string; custom: boolean };
@@ -67,12 +72,97 @@
 <svelte:window onkeydowncapture={onKeydown} />
 
 <div class="scrim" role="presentation" onclick={onclose}></div>
-<div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" data-testid="settings-dialog">
+<div class="panel" role="dialog" aria-modal="true" aria-label="Settings" data-testid="settings-dialog">
   <header>
-    <h2>Keyboard shortcuts</h2>
+    <h2>Settings</h2>
     <button class="x" aria-label="Close" onclick={onclose}>✕</button>
   </header>
 
+  <div class="tabs" role="tablist" aria-label="Settings sections">
+    <button
+      role="tab"
+      aria-selected={tab === "keyboard"}
+      class:active={tab === "keyboard"}
+      data-testid="settings-tab-keyboard"
+      onclick={() => (tab = "keyboard")}>Keyboard</button
+    >
+    <button
+      role="tab"
+      aria-selected={tab === "ai"}
+      class:active={tab === "ai"}
+      data-testid="settings-tab-ai"
+      onclick={() => (tab = "ai")}>AI Completion</button
+    >
+  </div>
+
+  {#if tab === "ai"}
+    <div class="body ai" data-testid="llm-panel">
+      <label class="toggle">
+        <input
+          type="checkbox"
+          data-testid="llm-enabled"
+          checked={llm.enabled}
+          onchange={(e) => llm.set({ enabled: e.currentTarget.checked })}
+        />
+        <span>Enable inline AI completion</span>
+      </label>
+      <p class="blurb">
+        Ghost-text suggestions from any OpenAI-compatible endpoint — a local Ollama, or a hosted
+        provider with your own key. Grammar autocomplete stays local either way.
+      </p>
+
+      <div class="field">
+        <label for="llm-baseurl">Endpoint base URL</label>
+        <input
+          id="llm-baseurl"
+          type="url"
+          data-testid="llm-baseurl"
+          placeholder="http://localhost:11434/v1"
+          value={llm.baseUrl}
+          oninput={(e) => llm.set({ baseUrl: e.currentTarget.value })}
+        />
+      </div>
+      <div class="field">
+        <label for="llm-apikey">API key</label>
+        <input
+          id="llm-apikey"
+          type="password"
+          autocomplete="off"
+          data-testid="llm-apikey"
+          placeholder="empty for a local model"
+          value={llm.apiKey}
+          oninput={(e) => llm.set({ apiKey: e.currentTarget.value })}
+        />
+        <p class="hint-line">Stored in this browser only; sent only to the endpoint above.</p>
+      </div>
+      <div class="field">
+        <label for="llm-model">Model</label>
+        <input
+          id="llm-model"
+          type="text"
+          data-testid="llm-model"
+          placeholder="qwen2.5-coder:7b"
+          value={llm.model}
+          oninput={(e) => llm.set({ model: e.currentTarget.value })}
+        />
+      </div>
+      <div class="field">
+        <label for="llm-mode">Request style</label>
+        <select
+          id="llm-mode"
+          data-testid="llm-mode"
+          value={llm.mode}
+          onchange={(e) => llm.set({ mode: e.currentTarget.value === "fim" ? "fim" : "chat" })}
+        >
+          <option value="chat">Chat (works everywhere)</option>
+          <option value="fim">Native fill-in-the-middle</option>
+        </select>
+        <p class="hint-line">
+          Chat suits Ollama / OpenRouter / vLLM; native FIM suits Codestral and DeepSeek.
+        </p>
+      </div>
+    </div>
+  {:else}
   <div class="profile-bar">
     <label for="keymap-profile">Keymap</label>
     <select
@@ -125,6 +215,7 @@
     <span class="hint">Click a shortcut, then press the new key combination.</span>
     <button class="reset-all" data-testid="settings-reset-all" onclick={() => keybindings.resetAll()}>Reset all</button>
   </footer>
+  {/if}
 </div>
 
 <style>
@@ -177,6 +268,85 @@
   .x:hover {
     color: var(--ink);
     background: var(--surface-3);
+  }
+  .tabs {
+    display: flex;
+    gap: 0.2rem;
+    padding: 0.4rem 0.9rem 0;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .tabs button {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    padding: 0.35rem 0.6rem;
+    cursor: pointer;
+  }
+  .tabs button:hover {
+    color: var(--ink);
+  }
+  .tabs button.active {
+    color: var(--accent-hi);
+    border-bottom-color: var(--accent);
+  }
+  .body.ai {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding-top: 0.9rem;
+  }
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .toggle input {
+    accent-color: var(--accent);
+  }
+  .blurb {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .field label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .field input,
+  .field select {
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    padding: 0.35rem 0.5rem;
+  }
+  .field input:focus,
+  .field select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .hint-line {
+    margin: 0;
+    font-size: 0.66rem;
+    color: var(--ink-faint);
   }
   .profile-bar {
     display: flex;
