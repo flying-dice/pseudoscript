@@ -6,9 +6,9 @@
 //! the violation is certain.
 
 use pseudoscript_syntax::ast::{
-    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, Expr, ExprKind, Feature,
+    BinOp, Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, Expr, ExprKind, Feature,
     FromSource, Ident, Item, Literal, Macro, MacroArg, MacroArgs, MarkerKind, Module, Node,
-    NodeKind, Path, Ref, Stmt, StmtKind, Type,
+    NodeKind, Path, Ref, Stmt, StmtKind, Type, UnaryOp,
 };
 use pseudoscript_syntax::{Diagnostic, Span, TokenKind};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -87,6 +87,7 @@ impl Checker<'_> {
         self.collect_unions(module);
         self.check_variant_collisions(module);
         self.check_feature_collisions(module);
+        self.check_constant_collisions(module);
         self.check_reserved_names(module);
         self.check_type_refs(module);
         for item in &module.items {
@@ -149,6 +150,7 @@ impl Checker<'_> {
                     }
                 }
             }
+            DeclKind::Constant(constant) => self.check_reserved_ident(&constant.name),
         }
     }
 
@@ -194,6 +196,7 @@ impl Checker<'_> {
                     }
                 }
             }
+            DeclKind::Constant(_) => {}
         }
     }
 
@@ -206,6 +209,28 @@ impl Checker<'_> {
         }
         let leaf = path_leaf(&ret.name);
         leaf == name || self.unions.get(leaf).is_some_and(|vs| vs.contains(name))
+    }
+
+    // --- §3.6 / ADR-039 value namespace ---------------------------------------
+
+    /// §8.1 / ADR-039: constant names occupy the module's value namespace; two
+    /// constants MUST NOT share a name.
+    fn check_constant_collisions(&mut self, module: &Module) {
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
+        for item in &module.items {
+            if let Item::Decl(decl) = item
+                && let DeclKind::Constant(constant) = &decl.kind
+                && !seen.insert(&constant.name.name)
+            {
+                self.error(
+                    constant.name.span,
+                    format!(
+                        "constant `{name}` collides with constant `{name}`",
+                        name = constant.name.name
+                    ),
+                );
+            }
+        }
     }
 
     // --- §5.2 features ---------------------------------------------------------
@@ -287,6 +312,7 @@ impl Checker<'_> {
                     }
                 }
             }
+            DeclKind::Constant(_) => {}
         }
     }
 
@@ -331,6 +357,10 @@ impl Checker<'_> {
             }
             DeclKind::Data(_) => {
                 self.check_macros_on_decl(&decl.macros, SymbolKind::Data);
+            }
+            DeclKind::Constant(_) => {
+                // §2.4 / ADR-039: no built-in macro targets a constant.
+                self.check_macros_on_decl(&decl.macros, SymbolKind::Constant);
             }
         }
     }
@@ -483,7 +513,7 @@ impl Checker<'_> {
         // §5.1 / §7.2 (ADR-035): a determinable `return` type must match the
         // declared one, and every `from` is checked (target kind, and a
         // single-expression source against the target).
-        let vars = build_vars(callable, body);
+        let vars = build_vars(callable, body, self.model);
         if let Some(ret) = &callable.return_ty {
             self.check_return_types(body, ret, &vars);
         }
@@ -516,6 +546,42 @@ impl Checker<'_> {
 
         // §7 (ADR-023): an `if`/`while` condition is boolean.
         self.check_conditions(body, &vars);
+
+        // §7.5 (ADR-038): a determinable operand must satisfy its operator.
+        self.check_operators(body, &vars);
+    }
+
+    /// §7.5: walks every operator expression and rejects a determinable operand
+    /// that breaks its operator's type rule. An `Unknown` operand fires no check
+    /// (ADR-022).
+    fn check_operators(&mut self, block: &Block, vars: &FxHashMap<String, Ty>) {
+        let mut errors = Vec::new();
+        for_each_expr(block, &mut |expr| match &expr.kind {
+            ExprKind::Binary {
+                left,
+                op,
+                op_span,
+                right,
+            } => {
+                if let Some(msg) = binop_error(*op, &infer(left, vars), &infer(right, vars)) {
+                    // Anchor the diagnostic at the operator token (§7.5).
+                    errors.push((*op_span, msg));
+                }
+            }
+            ExprKind::Unary {
+                op,
+                op_span,
+                expr: operand,
+            } => {
+                if let Some(msg) = unop_error(*op, &infer(operand, vars)) {
+                    errors.push((*op_span, msg));
+                }
+            }
+            _ => {}
+        });
+        for (span, msg) in errors {
+            self.error(span, msg);
+        }
     }
 
     /// §7: an `if`/`while` condition whose type is inferable must be `bool`.
@@ -942,6 +1008,8 @@ impl Checker<'_> {
             return false;
         };
         let message = match symbol.kind {
+            // §3.6: a constant FQN is a value, usable wherever its type is expected.
+            SymbolKind::Constant => return false,
             SymbolKind::Data => format!("`{leaf}` is not a value: compose it with `from`"),
             _ => format!("`{leaf}` is a node, not a value"),
         };
@@ -1085,6 +1153,8 @@ impl Checker<'_> {
                     }
                 }
             }
+            // A constant declares no type annotation; its type is the literal's.
+            DeclKind::Constant(_) => {}
         }
     }
 
@@ -1192,12 +1262,20 @@ impl Ty {
 
 /// Builds the local typing context: parameter types plus each binding's
 /// inferred type (single-assignment, function-scoped).
-fn build_vars(callable: &Callable, body: &Block) -> FxHashMap<String, Ty> {
-    let mut vars: FxHashMap<String, Ty> = callable
-        .params
-        .iter()
-        .map(|p| (p.name.name.clone(), ty_from_ast(&p.ty)))
+fn build_vars(callable: &Callable, body: &Block, model: &Model) -> FxHashMap<String, Ty> {
+    // Seed with each constant's FQN → primitive type (§3.6, ADR-039); a constant
+    // is value-position only as a full FQN, which never collides with a bare
+    // parameter or binding name.
+    let mut vars: FxHashMap<String, Ty> = model
+        .constant_types()
+        .map(|(fqn, prim)| (fqn.to_owned(), Ty::named(prim)))
         .collect();
+    vars.extend(
+        callable
+            .params
+            .iter()
+            .map(|p| (p.name.name.clone(), ty_from_ast(&p.ty))),
+    );
     collect_binding_types(body, &mut vars);
     vars
 }
@@ -1247,7 +1325,19 @@ fn infer(expr: &Expr, vars: &FxHashMap<String, Ty>) -> Ty {
     match &expr.kind {
         ExprKind::Literal(Literal::String { .. }) => Ty::named("string"),
         ExprKind::Literal(Literal::Number { .. }) => Ty::named("number"),
-        ExprKind::Literal(Literal::Bool { .. }) | ExprKind::Unary { .. } => Ty::named("bool"),
+        ExprKind::Literal(Literal::Bool { .. }) => Ty::named("bool"),
+        // §7.5: `!` yields `bool`, unary `-` yields `number`, but only when the
+        // operand is determinable (ADR-022) — else the result is `Unknown`.
+        ExprKind::Unary { op, expr, .. } => match (op, infer(expr, vars)) {
+            (_, Ty::Unknown) => Ty::Unknown,
+            (UnaryOp::Not, _) => Ty::named("bool"),
+            (UnaryOp::Neg, _) => Ty::named("number"),
+        },
+        // §7.5: arithmetic yields `number`, every other operator yields `bool`;
+        // an `Unknown` operand makes the result `Unknown` and fires no check.
+        ExprKind::Binary {
+            left, op, right, ..
+        } => infer_binary(*op, &infer(left, vars), &infer(right, vars)),
         ExprKind::Marker { kind, .. } => match kind {
             MarkerKind::Ok | MarkerKind::Err => Ty::Result,
             MarkerKind::Some | MarkerKind::None => Ty::Option,
@@ -1257,9 +1347,112 @@ fn infer(expr: &Expr, vars: &FxHashMap<String, Ty>) -> Ty {
             .get(&path.segments[0].name)
             .cloned()
             .unwrap_or(Ty::Unknown),
+        // §3.6: a constant FQN reference resolves to its declared primitive type
+        // (seeded into `vars` by FQN); any other `::` path is not inferred.
+        ExprKind::Ref(Ref::Path(path)) => vars.get(&path_str(path)).cloned().unwrap_or(Ty::Unknown),
         ExprKind::Paren(inner) => infer(inner, vars),
         _ => Ty::Unknown,
     }
+}
+
+/// The result type of a binary operator (§7.5): arithmetic produces `number`,
+/// every other operator produces `bool`. An `Unknown` operand makes the result
+/// `Unknown` (ADR-022), so no enclosing check fires on a guess.
+fn infer_binary(op: BinOp, left: &Ty, right: &Ty) -> Ty {
+    if matches!(left, Ty::Unknown) || matches!(right, Ty::Unknown) {
+        return Ty::Unknown;
+    }
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => Ty::named("number"),
+        _ => Ty::named("bool"),
+    }
+}
+
+/// The scalar primitive name of `ty`, or `None` if it is not a determinable
+/// scalar primitive (an array, `Result`/`Option`, a `data` type, or `Unknown`).
+fn scalar_primitive(ty: &Ty) -> Option<&str> {
+    match ty {
+        Ty::Named { name, array: false } if is_primitive(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is determinable (anything but `Unknown`), so an operator check
+/// may fire on it (ADR-022).
+fn determinable(ty: &Ty) -> bool {
+    !matches!(ty, Ty::Unknown)
+}
+
+/// §7.5: the diagnostic for a binary operator whose determinable operands break
+/// its type rule, or `None` when well-formed or not determinable (ADR-038).
+fn binop_error(op: BinOp, left: &Ty, right: &Ty) -> Option<String> {
+    let wrong_scalar = |ty: &Ty, want: &str| determinable(ty) && scalar_primitive(ty) != Some(want);
+    match op {
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::Div
+        | BinOp::Rem
+        | BinOp::Lt
+        | BinOp::Gt
+        | BinOp::Le
+        | BinOp::Ge => (wrong_scalar(left, "number") || wrong_scalar(right, "number")).then(|| {
+            format!(
+                "operator `{}` requires `number` operands, found `{}` and `{}`",
+                op.spelling(),
+                ty_display(left),
+                ty_display(right)
+            )
+        }),
+        BinOp::And | BinOp::Or => {
+            (wrong_scalar(left, "bool") || wrong_scalar(right, "bool")).then(|| {
+                format!(
+                    "operator `{}` requires `bool` operands, found `{}` and `{}`",
+                    op.spelling(),
+                    ty_display(left),
+                    ty_display(right)
+                )
+            })
+        }
+        BinOp::Eq | BinOp::Ne => {
+            // Both must be the same primitive; only fire when both are
+            // determinable (one `Unknown` operand is not checked).
+            if !determinable(left) || !determinable(right) {
+                return None;
+            }
+            let same_primitive = matches!(
+                (scalar_primitive(left), scalar_primitive(right)),
+                (Some(l), Some(r)) if l == r
+            );
+            (!same_primitive).then(|| {
+                format!(
+                    "operator `{}` compares two values of the same primitive type, found `{}` and `{}`",
+                    op.spelling(),
+                    ty_display(left),
+                    ty_display(right)
+                )
+            })
+        }
+    }
+}
+
+/// §7.5: the diagnostic for a unary operator whose determinable operand breaks
+/// its type rule, or `None` when well-formed or not determinable.
+fn unop_error(op: UnaryOp, operand: &Ty) -> Option<String> {
+    if !determinable(operand) {
+        return None;
+    }
+    let (want, ok) = match op {
+        UnaryOp::Not => ("bool", scalar_primitive(operand) == Some("bool")),
+        UnaryOp::Neg => ("number", scalar_primitive(operand) == Some("number")),
+    };
+    (!ok).then(|| {
+        format!(
+            "operator `{}` requires a `{want}` operand, found `{}`",
+            op.spelling(),
+            ty_display(operand)
+        )
+    })
 }
 
 /// Splits a rendered type string into its base leaf and array flag, dropping a
@@ -1477,6 +1670,10 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             ..
         } => walk_expr(payload, f),
         ExprKind::Unary { expr, .. } | ExprKind::Paren(expr) => walk_expr(expr, f),
+        ExprKind::Binary { left, right, .. } => {
+            walk_expr(left, f);
+            walk_expr(right, f);
+        }
         _ => {}
     }
 }

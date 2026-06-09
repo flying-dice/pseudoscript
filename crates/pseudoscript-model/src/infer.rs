@@ -123,6 +123,39 @@ fn expr_type(ws: &Workspace, from_fqn: &str, expr: &ast::Expr) -> Option<String>
         // `T from …` produces a value of the target type (ADR-035).
         ast::ExprKind::From { ty, .. } => Some(crate::model::render_type(ty)),
         ast::ExprKind::Postfix { base, segments } => postfix_type(ws, from_fqn, base, segments),
+        // §7.5: arithmetic yields `number`, every other operator yields `bool`.
+        ast::ExprKind::Binary { op, .. } => Some(
+            match op {
+                ast::BinOp::Add
+                | ast::BinOp::Sub
+                | ast::BinOp::Mul
+                | ast::BinOp::Div
+                | ast::BinOp::Rem => "number",
+                _ => "bool",
+            }
+            .to_owned(),
+        ),
+        ast::ExprKind::Unary { op, .. } => Some(
+            match op {
+                ast::UnaryOp::Not => "bool",
+                ast::UnaryOp::Neg => "number",
+            }
+            .to_owned(),
+        ),
+        // §3.6: a constant FQN resolves to its declared primitive type.
+        ast::ExprKind::Ref(ast::Ref::Path(path)) if !path.is_simple() => {
+            let fqn = path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            let module = crate::resolve::module_of(&fqn);
+            ws.module_model(module)?
+                .constant_types()
+                .find(|(f, _)| *f == fqn)
+                .map(|(_, ty)| ty.to_owned())
+        }
         _ => None,
     }
 }

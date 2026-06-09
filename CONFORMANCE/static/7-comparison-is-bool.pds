@@ -1,0 +1,12 @@
+// LANG.md §7.5 (ADR-038): a comparison yields `bool`, so a comparison/boolean
+// expression is a well-formed `if` condition (§7, ADR-023).
+
+//! example
+
+public system S;
+
+public container C for S {
+  guard(x: number): void {
+    if (x > 0 && x < 100 && x >= 0 && x <= 100) { }
+  }
+}

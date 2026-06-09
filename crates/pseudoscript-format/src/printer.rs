@@ -6,9 +6,9 @@
 //! reproduced at the current indent.
 
 use pseudoscript_syntax::ast::{
-    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind, Feature,
-    Field, FromSource, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs, Module, Node,
-    NodeKind, Param, Path, PostfixSeg, Ref, Stmt, StmtKind, Type, Variant,
+    Block, BodyMember, Callable, Constant, Data, DataBody, Decl, DeclKind, DocBlock, Expr,
+    ExprKind, Feature, Field, FromSource, Ident, InnerDoc, Item, Literal, Macro, MacroArg,
+    MacroArgs, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, Stmt, StmtKind, Type, Variant,
 };
 use pseudoscript_syntax::{SpannedTrivia, Trivia};
 
@@ -202,7 +202,18 @@ impl Printer {
             DeclKind::Container(n) => self.write_node("container", n),
             DeclKind::Component(n) => self.write_node("component", n),
             DeclKind::Data(d) => self.write_data(d),
+            DeclKind::Constant(c) => self.write_constant(c),
         }
+    }
+
+    /// Writes `constant NAME = <literal>` on one line (§3.6); `public` is written
+    /// by [`Self::write_decl`].
+    fn write_constant(&mut self, constant: &Constant) {
+        self.push("constant ");
+        self.push(&constant.name.name);
+        self.push(" = ");
+        self.write_literal(&constant.value);
+        self.newline();
     }
 
     fn write_node(&mut self, keyword: &str, node: &Node) {
@@ -471,9 +482,21 @@ impl Printer {
             }
             ExprKind::Ref(r) => self.write_ref(r),
             ExprKind::Literal(lit) => self.write_literal(lit),
-            ExprKind::Unary { expr, .. } => {
-                self.push("!");
+            ExprKind::Unary { op, expr, .. } => {
+                self.push(op.spelling());
                 self.write_expr(expr);
+            }
+            // §7.5: `left op right`. Explicit grouping is carried by `Paren`
+            // nodes, so the round-trip stays faithful without re-deriving
+            // precedence.
+            ExprKind::Binary {
+                left, op, right, ..
+            } => {
+                self.write_expr(left);
+                self.push(" ");
+                self.push(op.spelling());
+                self.push(" ");
+                self.write_expr(right);
             }
             ExprKind::Paren(inner) => {
                 self.push("(");

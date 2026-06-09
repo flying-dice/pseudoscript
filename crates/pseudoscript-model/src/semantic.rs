@@ -165,6 +165,11 @@ fn decl_tokens(decl: &ast::Decl, out: &mut Vec<SemToken>) {
         | ast::DeclKind::Container(node)
         | ast::DeclKind::Component(node) => node_tokens(node, out),
         ast::DeclKind::Data(data) => data_tokens(data, out),
+        // The constant name is a value name; its literal is coloured by the
+        // token pass (§3.6).
+        ast::DeclKind::Constant(constant) => {
+            push(out, constant.name.span, SemKind::Variable, true);
+        }
     }
 }
 
@@ -309,6 +314,10 @@ fn expr_tokens(expr: &ast::Expr, out: &mut Vec<SemToken>) {
         // `self` is a keyword and literals are coloured by the token pass.
         ast::ExprKind::Ref(ast::Ref::SelfNode(_)) | ast::ExprKind::Literal(_) => {}
         ast::ExprKind::Unary { expr, .. } => expr_tokens(expr, out),
+        ast::ExprKind::Binary { left, right, .. } => {
+            expr_tokens(left, out);
+            expr_tokens(right, out);
+        }
         ast::ExprKind::Paren(inner) => expr_tokens(inner, out),
     }
 }

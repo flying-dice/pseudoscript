@@ -1,0 +1,7 @@
+KW_CONSTANT@4:1 "constant"
+IDENT@4:10 "PI"
+EQ@4:13 "="
+NUMBER@4:15 "3.14"
+IDENT@5:1 "constants"
+EQ@5:11 "="
+IDENT@5:13 "PI"

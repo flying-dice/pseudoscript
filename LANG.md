@@ -14,7 +14,7 @@ Principles:
 - **Flat structure**: containers and components declare their parent with `for`; nothing is physically nested except behavior inside its owner.
 - **Behavior lives with its owner** and never changes ownership.
 - **Progressive disclosure**: any `system`, `container`, `component`, `data` type, or callable MAY disclose internals with a block, or stay a black box with `;`. Sketch the architecture as signatures, then fill in only the flows worth tracing.
-- **High-level**: bodies describe *flow and provenance*, not field-level computation.
+- **High-level**: bodies describe *flow and provenance*, and MAY express static business-rule computation over primitives and constants (operators and `constant`, §7, §3.6, ADR-038); they are never executed.
 - **Fallibility and absence live in the type** (`Result`, `Option`), handled explicitly with `if`.
 - **Fully-qualified names everywhere**.
 - **Tags** are additive visual labels (in docs); **macros** are active annotations (on declarations); **modifiers** are behavior- or styling-altering keywords.
@@ -46,7 +46,7 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 ### 2.3 Keywords
 ```
 system  container  component  person
-data    for        from
+data    constant   for        from
 public  self
 return  Ok    Err   Some  None
 if      else  while  in
@@ -159,6 +159,19 @@ data Severity =          // fieldless variants — an enum
 - A variant's `data` MUST be in the same module as the union. The bare name is a declaration-site binding, not a use-site reference, so the FQN rule (§8.1, ADR-030) does not govern it (ADR-033); a qualified variant (`| other::Name`) MUST be rejected. A cross-module type is composed as a record field, not a variant.
 - A fieldless variant's name MAY repeat across unions and MAY coincide with a node name (§8.1).
 - A record variant is referenced `module::Name`, the same FQN as a top-level `data` (§8.1, ADR-030). A fieldless variant has no module-level form; it is referenced through its union, `module::Union::Variant` (ADR-032). A reference naming no such variant MUST be rejected.
+
+### 3.6 Constants
+A `constant` names a single primitive literal value (ADR-039).
+```pds
+constant PI = 3.14
+public constant LIMIT = 1000
+```
+- `constant NAME = <literal>` declares a constant. It is top-level only — not a body statement and not a node member.
+- The value MUST be a primitive literal (`number`, `string`, or `bool`); its type is inferred from the literal. A non-literal right-hand side MUST be rejected.
+- A constant is immutable (§7.1, ADR-002).
+- `public` makes it addressable across modules (§8.2).
+- A constant is referenced by its FQN `module::NAME` (§8.1), which resolves to its declared primitive type; a bare leaf MUST NOT resolve to it (ADR-030). It is a value, usable wherever a value of that primitive type is expected.
+- A constant occupies the module's **value namespace** (§8.1); its name MUST be unique among value names.
 
 ---
 
@@ -311,7 +324,7 @@ Valid inside callable bodies. Each maps to a sequence-diagram element.
 | For | `for (x in Expr) { }` | `loop` frame |
 | While | `while (C) { }` | `loop` frame |
 
-An `if`/`while` condition `C` MUST be `bool` where its type is inferable (ADR-023).
+An `if`/`while` condition `C` MUST be `bool` where its type is inferable (ADR-023); a comparison or boolean operator expression (§7.5) is the usual way to build one.
 
 ### 7.1 Assignment
 `x = Expr` binds `x` once. A binding states its type through a `from` right-hand side (§7.2): `x = Type from Expr`. A binding whose right-hand side is not a `from` is `Unknown`-typed, and its later uses are not checked. Bindings are immutable: re-binding a name MUST be rejected, including by an inner `if`/`for`/`while` block (no shadowing).
@@ -338,6 +351,35 @@ c = BankingInfo from { a, b }
 ### 7.4 Brace disambiguation
 A `{` opens a **source set** only when it directly follows `from`. Everywhere else `{` opens a **block**. Because control-flow conditions are paren-delimited, the `{` after an `if`/`while`/`for` header always begins that statement's block.
 
+### 7.5 Operators
+Operators state a static business rule over primitives and constants (ADR-038). They are type-checked, never evaluated.
+
+Precedence, lowest to highest; binary operators are left-associative:
+
+| Level | Operators |
+|-------|-----------|
+| 1 | `\|\|` |
+| 2 | `&&` |
+| 3 | `==` `!=` |
+| 4 | `<` `>` `<=` `>=` |
+| 5 | `+` `-` |
+| 6 | `*` `/` `%` |
+| 7 | unary `!` `-` |
+| 8 | postfix `.` (§7) |
+
+Operand and result types, applied where both operands are determinable (ADR-022):
+
+| Operators | Operand rule | Result |
+|-----------|--------------|--------|
+| `+ - * / %` | both `number` | `number` |
+| `< > <= >=` | both `number` | `bool` |
+| `== !=` | both the same primitive | `bool` |
+| `&& \|\|` | both `bool` | `bool` |
+| unary `-` | `number` | `number` |
+| unary `!` | `bool` | `bool` |
+
+A determinable operand that breaks its rule — a non-`number` arithmetic or comparison operand, a non-`bool` boolean operand, equality across mismatched primitives — MUST be rejected. An operand whose type is not determinable makes the result `Unknown` and fires no check. A constant FQN reference (§3.6) resolves to its declared primitive type. `Ok`/`Err`/`Some`/`None` markers (§6) and `from` expressions (§7.2) are not operands of a binary operator.
+
 ---
 
 ## 8. Modules, Names & Visibility
@@ -358,9 +400,9 @@ A node declared in `banking/core.pds` is addressed `banking::core::NodeName`. A 
 
 Each path segment becomes an FQN segment, which MUST be an identifier (§2.2). A hyphen in a directory or filename normalises to `_` so a kebab-case path yields a valid root (ADR-031): `web-ide/file-tree.pds` is the module `web_ide::file_tree`. A dependency name carries no such normalisation — it MUST already be a valid identifier (§8.3).
 
-A module has three distinct namespaces: **type names** (`data` declarations and hoisted record variants, §3.5), **node names** (`system`/`container`/`component`/`person`), and **feature names** (§5.2). A name MUST be unique within its namespace; the three do not collide — a `data`, a `container`, and a `feature` MAY share a name. Callable and parameter names are scoped to their owner, not the module.
+A module has four distinct namespaces: **type names** (`data` declarations and hoisted record variants, §3.5), **node names** (`system`/`container`/`component`/`person`), **feature names** (§5.2), and **value names** (`constant`, §3.6). A name MUST be unique within its namespace; the four do not collide — a `data`, a `container`, a `feature`, and a `constant` MAY share a name. Callable and parameter names are scoped to their owner, not the module.
 
-Every reference to a node, type, or union variant MUST be its FQN, including a reference to one declared in the same module (ADR-030). A bare leaf name MUST NOT resolve to a node, type, or variant; it resolves only to a parameter, a binding, or a `for` binding (§7). `self` and member access (§7.1) are unaffected, as are the primitives (§3.1) and `Result`/`Option` (§3.2). Within `banking/core.pds`, a sibling node is addressed `banking::core::Other`, never `Other`. An FQN names a node by its module path and name only; the system→container→component nesting (§4) is carried by `for`, not the name. A structural drill — a node addressed through its C4 ancestry, `Container::Component` or `module::System::Container::Component` — is not an FQN and MUST NOT resolve (ADR-036).
+Every reference to a node, type, union variant, or constant MUST be its FQN, including a reference to one declared in the same module (ADR-030). A bare leaf name MUST NOT resolve to a node, type, variant, or constant; it resolves only to a parameter, a binding, or a `for` binding (§7). `self` and member access (§7.1) are unaffected, as are the primitives (§3.1) and `Result`/`Option` (§3.2). Within `banking/core.pds`, a sibling node is addressed `banking::core::Other`, never `Other`. An FQN names a node by its module path and name only; the system→container→component nesting (§4) is carried by `for`, not the name. A structural drill — a node addressed through its C4 ancestry, `Container::Component` or `module::System::Container::Component` — is not an FQN and MUST NOT resolve (ADR-036).
 
 An FQN's first segment is a **root**. The file-derived module paths above are the local roots; a `[dependencies]` entry (§8.3) adds one root per declared dependency.
 
@@ -481,7 +523,9 @@ Program     = { InnerDoc } { Decl | Feature } ;
 
 Decl        = DocBlock { Macro } { Modifier } Structural ;
 Modifier    = "public" ;
-Structural  = Person | System | Container | Component | Data ;
+Structural  = Person | System | Container | Component | Data | Constant ;
+
+Constant    = "constant" Ident "=" Literal ;        // top-level, primitive literal only
 
 Person      = "person" Ident Body ;                 // block discloses, ';' = black box
 System      = "system" Ident Body ;
@@ -519,12 +563,18 @@ If          = "if" "(" Expr ")" Block [ "else" Block ] ;
 For         = "for" "(" Ident "in" Expr ")" Block ; // Expr MUST be an array type
 While       = "while" "(" Expr ")" Block ;
 
-Expr        = Marker | FromExpr | Postfix | Literal | Unary ;
+Expr        = Marker | FromExpr | OrExpr ;             // Marker/FromExpr are heads; they do not combine with binary operators
+OrExpr      = AndExpr   { "||" AndExpr } ;
+AndExpr     = EqExpr    { "&&" EqExpr } ;
+EqExpr      = RelExpr   { ( "==" | "!=" ) RelExpr } ;
+RelExpr     = AddExpr   { ( "<" | ">" | "<=" | ">=" ) AddExpr } ;
+AddExpr     = MulExpr   { ( "+" | "-" ) MulExpr } ;
+MulExpr     = UnaryExpr { ( "*" | "/" | "%" ) UnaryExpr } ;
+UnaryExpr   = ( "!" | "-" ) UnaryExpr | Postfix ;
 Postfix     = Primary { "." Ident [ "(" [ Args ] ")" ] } ;   // field access / call, chained
-Primary     = Ref | "(" Expr ")" ;
+Primary     = Ref | Literal | "(" Expr ")" ;
 Marker      = ( "Ok" | "Err" | "Some" ) [ "(" Expr ")" ] | "None" ;   // built-in generic constructors
 FromExpr    = Type "from" ( "{" [ Expr { "," Expr } ] "}" | Expr ) ;   // brace source set, or a single value; "[]" target composes an array
-Unary       = "!" Expr ;
 Args        = Expr { "," Expr } ;
 Ref         = "self" | Ident | Path ;               // self or an FQN
 Path        = Ident { "::" Ident } ;
@@ -558,6 +608,9 @@ public data OpenRequest { owner: string }
 public data NotFound    { id: number }
 public data OpenError   { reason: string }
 
+/// The largest withdrawal a single transaction may request.
+public constant WITHDRAWAL_LIMIT = 10000
+
 public system Banking;
 
 /// Core transaction processor.
@@ -570,6 +623,11 @@ public container Mainframe for banking::core::Banking {
       return Err(r.error)
     }
     return Ok(r.value)
+  }
+
+  /// Whether a withdrawal is within the per-transaction limit.
+  public WithinLimit(amount: number): bool {
+    return amount > 0 && amount <= banking::core::WITHDRAWAL_LIMIT
   }
 
   public OpenAccount(req: banking::core::OpenRequest): Result<banking::core::BankingInfo, banking::core::OpenError>;
@@ -598,6 +656,5 @@ feature OpenAccount for banking::core::Mainframe {
 
 1. **Macro extensibility** — fixed built-in set, or user-definable macros?
 2. **Generics** — only the built-in `Result`/`Option`, or user-defined generic `data` later?
-3. **Expression grammar** — conditions admit only `Ref`/call/`!Expr`; no comparison/boolean operators (`==`, `&&`). Add them for `if`/`while`?
-4. **Branch-aware typing** — how far does the checker track `isOk`/`isErr` narrowing (nested ifs, early returns)?
-5. **`person` parenting** — can a person belong to anything, or always top-level?
+3. **Branch-aware typing** — how far does the checker track `isOk`/`isErr` narrowing (nested ifs, early returns)?
+4. **`person` parenting** — can a person belong to anything, or always top-level?

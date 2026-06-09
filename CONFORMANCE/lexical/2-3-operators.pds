@@ -1,0 +1,9 @@
+// §7.5 — Each operator lexes as a distinct token. A two-character operator wins
+//        over its single-character prefix (`==` over `=`, `<=` over `<`, `&&`,
+//        `||`); `/` is division, not a comment, when no second `/` follows.
+
+a = b + c - d * e / f % g
+h = i == j != k < l > m <= n >= o
+p = q && r || s
+t = !u
+v = -w

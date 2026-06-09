@@ -22,9 +22,10 @@ the whole thing compiles to C4 diagrams, sequence diagrams, and a doc site (`pds
 This skill is the **method**, not the grammar. For any syntax question — keywords, `Result`
 handling, `from` composition, macros, modules, visibility, the EBNF — run **`pds lang`** to print
 the full language reference (spec + patterns + the conformance/grammar suite) and follow it exactly.
-Do **not** invent syntax; if the spec doesn't support a form (e.g. comparison operators in
-conditions — see its Open Questions), model around it with a call that returns a `Result` or `bool`
-instead.
+Do **not** invent syntax. Arithmetic, comparison, and boolean operators (`+ - * / %`, `< > <= >= == !=`,
+`&& ||`) and top-level `constant`s are supported for static business rules (LANG.md §7.5, §3.6) — they
+are type-checked, never evaluated. If the spec still doesn't support a form, model around it with a call
+that returns a `Result` or `bool` instead.
 
 Two jobs only:
 - **Map** an existing application into a `.pds` model (reverse).
@@ -152,8 +153,9 @@ from a model. (Constructs and call syntax are defined in the language reference 
 5. **Disclose the use cases.** Translate each service/interactor method into a disclosed callable,
    tracing the **business logic line for line**: every guard becomes an `if (…isErr) { return Err }`,
    every assembled value becomes `from { … }`, every dependency call becomes a `Target.method(args)`.
-   Every binding states its type through `from` (`x = T from …`). Keep bodies at flow-and-provenance level — never
-   field-level arithmetic.
+   Every binding states its type through `from` (`x = T from …`). Keep bodies at flow-and-provenance level;
+   a static business rule over primitives and constants (operators, `constant`, LANG.md §7.5) is fine, but
+   never general computation a reader would expect to run.
 6. **Mark the entry points.** Attach the trigger macro that matches how each callable is actually
    initiated: `#[http]`, `#[onevent]`, `#[schedule]`, `#[manual]`. These become inbound edges and
    sequence-diagram entry points.

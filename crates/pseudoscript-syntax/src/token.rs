@@ -18,6 +18,7 @@ pub enum TokenKind {
     KwComponent,
     KwPerson,
     KwData,
+    KwConstant,
     KwFor,
     KwFrom,
     KwPublic,
@@ -61,6 +62,18 @@ pub enum TokenKind {
     LAngle,
     RAngle,
     Bang,
+    // Operators (§7.5)
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    EqEq,
+    BangEq,
+    LAngleEq,
+    RAngleEq,
+    AmpAmp,
+    PipePipe,
 
     // Literals
     /// Double-quoted string; the lexeme includes the quotes.
@@ -89,6 +102,7 @@ impl TokenKind {
             TokenKind::KwComponent => "KW_COMPONENT",
             TokenKind::KwPerson => "KW_PERSON",
             TokenKind::KwData => "KW_DATA",
+            TokenKind::KwConstant => "KW_CONSTANT",
             TokenKind::KwFor => "KW_FOR",
             TokenKind::KwFrom => "KW_FROM",
             TokenKind::KwPublic => "KW_PUBLIC",
@@ -128,6 +142,17 @@ impl TokenKind {
             TokenKind::LAngle => "LANGLE",
             TokenKind::RAngle => "RANGLE",
             TokenKind::Bang => "BANG",
+            TokenKind::Plus => "PLUS",
+            TokenKind::Minus => "MINUS",
+            TokenKind::Star => "STAR",
+            TokenKind::Slash => "SLASH",
+            TokenKind::Percent => "PERCENT",
+            TokenKind::EqEq => "EQEQ",
+            TokenKind::BangEq => "BANGEQ",
+            TokenKind::LAngleEq => "LANGLEEQ",
+            TokenKind::RAngleEq => "RANGLEEQ",
+            TokenKind::AmpAmp => "AMPAMP",
+            TokenKind::PipePipe => "PIPEPIPE",
             TokenKind::String => "STRING",
             TokenKind::Number => "NUMBER",
             TokenKind::Doc => "DOC",
@@ -139,12 +164,13 @@ impl TokenKind {
 
     /// The reserved keyword spellings (§2.3), in declaration order. Every entry
     /// is recognised by [`TokenKind::keyword`]; a test pins them in sync.
-    pub const KEYWORDS: [&str; 26] = [
+    pub const KEYWORDS: [&str; 27] = [
         "system",
         "container",
         "component",
         "person",
         "data",
+        "constant",
         "for",
         "from",
         "public",
@@ -181,6 +207,7 @@ impl TokenKind {
             "component" => TokenKind::KwComponent,
             "person" => TokenKind::KwPerson,
             "data" => TokenKind::KwData,
+            "constant" => TokenKind::KwConstant,
             "for" => TokenKind::KwFor,
             "from" => TokenKind::KwFrom,
             "public" => TokenKind::KwPublic,

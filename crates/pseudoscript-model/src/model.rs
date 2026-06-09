@@ -6,7 +6,7 @@
 
 use pseudoscript_syntax::Span;
 use pseudoscript_syntax::ast::{
-    Callable, Decl, DeclKind, Field, Item, Module, Node, NodeKind, Param, Type, Variant,
+    Callable, Decl, DeclKind, Field, Item, Literal, Module, Node, NodeKind, Param, Type, Variant,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -27,6 +27,8 @@ pub enum SymbolKind {
     Component,
     /// `data` (top-level or a hoisted inline union variant).
     Data,
+    /// `constant` — a top-level primitive value (§3.6, ADR-039).
+    Constant,
 }
 
 impl SymbolKind {
@@ -39,6 +41,7 @@ impl SymbolKind {
             SymbolKind::Container => "container",
             SymbolKind::Component => "component",
             SymbolKind::Data => "data",
+            SymbolKind::Constant => "constant",
         }
     }
 
@@ -122,6 +125,10 @@ pub struct Model {
     /// (§3.5). Fieldless variants do not hoist to `symbols`; they are addressed
     /// `module::Union::Variant` (ADR-032), so they index under their union.
     union_variants: FxHashMap<String, Vec<String>>,
+    /// Each `constant`'s declared primitive type (`number`/`string`/`bool`),
+    /// keyed by its FQN (§3.6, ADR-039). Lets inference resolve a `module::NAME`
+    /// reference to its primitive type.
+    constant_types: FxHashMap<String, String>,
 }
 
 impl Model {
@@ -147,6 +154,7 @@ impl Model {
             symbols: FxHashMap::default(),
             members: FxHashMap::default(),
             union_variants: FxHashMap::default(),
+            constant_types: FxHashMap::default(),
         };
         for item in &module.items {
             match item {
@@ -178,6 +186,14 @@ impl Model {
         self.union_variants
             .get(union)
             .is_some_and(|vs| vs.iter().any(|v| v == variant))
+    }
+
+    /// Each `constant`'s FQN paired with its declared primitive type name
+    /// (§3.6, ADR-039), in unspecified order.
+    pub fn constant_types(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.constant_types
+            .iter()
+            .map(|(fqn, ty)| (fqn.as_str(), ty.as_str()))
     }
 
     /// The members (callables, fields) of the node or record named `owner`.
@@ -249,6 +265,22 @@ impl Model {
                     }
                     pseudoscript_syntax::ast::DataBody::BlackBox => {}
                 }
+            }
+            DeclKind::Constant(constant) => {
+                // A constant occupies the module's value namespace (§8.1, ADR-039).
+                self.insert(
+                    &constant.name.name,
+                    SymbolKind::Constant,
+                    is_public,
+                    constant.name.span,
+                );
+                let fqn = if self.module_path.is_empty() {
+                    constant.name.name.clone()
+                } else {
+                    format!("{}::{}", self.module_path, constant.name.name)
+                };
+                self.constant_types
+                    .insert(fqn, literal_prim_name(&constant.value).to_owned());
             }
         }
     }
@@ -508,6 +540,15 @@ fn symbol_module(fqn: &str) -> &str {
 }
 
 /// Builds a [`Member`] for a node callable, with a one-line signature detail.
+/// The primitive type name a constant literal carries (§3.6, ADR-039).
+fn literal_prim_name(literal: &Literal) -> &'static str {
+    match literal {
+        Literal::String { .. } => "string",
+        Literal::Number { .. } => "number",
+        Literal::Bool { .. } => "bool",
+    }
+}
+
 fn callable_member(callable: &Callable) -> Member {
     Member {
         name: callable.name.name.clone(),

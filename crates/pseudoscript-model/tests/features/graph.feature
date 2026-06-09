@@ -103,3 +103,24 @@ Feature: Resolved relationship graph (LANG.md §9)
       loop (items)
         self.handle
       """
+
+  Scenario: a binary condition renders in the alt frame label (§7.5)
+    Given the graph of the model:
+      """
+      //! shop
+      public constant LIMIT = 100
+      public system Shop;
+      public container Web for shop::Shop {
+        public guard(x: number): void {
+          if (x > shop::LIMIT && x >= 0) {
+            self.handle()
+          }
+        }
+        handle(): void { }
+      }
+      """
+    Then the trace of "shop::Web::guard" is:
+      """
+      alt (x > shop::LIMIT && x >= 0)
+        self.handle
+      """

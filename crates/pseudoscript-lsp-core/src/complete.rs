@@ -40,6 +40,7 @@ fn item_kind(kind: CompletionKind) -> CompletionItemKind {
         CompletionKind::Type => CompletionItemKind::STRUCT,
         CompletionKind::Class => CompletionItemKind::CLASS,
         CompletionKind::Module => CompletionItemKind::MODULE,
+        CompletionKind::Constant => CompletionItemKind::CONSTANT,
     }
 }
 

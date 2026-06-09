@@ -41,6 +41,8 @@ pub enum CompletionKind {
     Class,
     /// A node declaration (system / container / component / person).
     Module,
+    /// A `constant` declaration (§3.6).
+    Constant,
 }
 
 /// One completion candidate: its insert text, what it is, and a one-line detail.
@@ -343,6 +345,7 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
 fn symbol_kind(kind: SymbolKind) -> CompletionKind {
     match kind {
         SymbolKind::Data => CompletionKind::Class,
+        SymbolKind::Constant => CompletionKind::Constant,
         _ => CompletionKind::Module,
     }
 }

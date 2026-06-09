@@ -1,0 +1,9 @@
+// LANG.md §3.6 / §10 (ADR-039): `constant NAME = <literal>` declares a top-level
+// primitive constant. `public` makes it addressable across modules; the value is
+// a number, string, or bool literal.
+
+//! example
+
+constant PI = 3.14
+public constant GREETING = "hello"
+public constant ENABLED = true

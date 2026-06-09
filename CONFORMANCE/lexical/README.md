@@ -23,7 +23,7 @@ token-class names; this file defines the taxonomy the goldens assert against.
 
 ```
 KW_SYSTEM  KW_CONTAINER  KW_COMPONENT  KW_PERSON
-KW_DATA    KW_FOR        KW_ALIAS      KW_FROM
+KW_DATA    KW_CONSTANT   KW_FOR        KW_ALIAS      KW_FROM
 KW_PUBLIC  KW_SELF
 KW_RETURN  KW_OK    KW_ERR
 KW_IF      KW_ELSE  KW_WHILE  KW_IN
@@ -51,7 +51,17 @@ LBRACKET    [         RBRACKET    ]
 EQ          =         PIPE        |
 QUESTION    ?         LANGLE      <         RANGLE    >
 BANG        !
+PLUS        +         MINUS       -         STAR      *
+SLASH       /         PERCENT     %
+EQEQ        ==        BANGEQ      !=
+LANGLEEQ    <=        RANGLEEQ    >=
+AMPAMP      &&        PIPEPIPE    ||
 ```
+
+The arithmetic, comparison, equality, and boolean operators (§7.5) are lexical
+only here; their type rules are static (`static/`). A two-character operator is
+matched before its single-character prefix, and `/` lexes as `SLASH` unless a
+second `/` (or `*`) makes it a comment.
 
 `QUESTION` (`?`) is lexed but unused by the grammar (§3.3 has no optionality
 marker); a `?` in type position is a parse error, not a lexical one.

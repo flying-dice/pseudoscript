@@ -223,3 +223,15 @@ Read in full for the non-uniform-fallback root cause and the rejected keep-the-c
 Three C4 structure rules run over the resolved graph beyond §8.2 visibility, each a `Warning` carrying a `PDS-ARCH-NNN` code and the URL of its `docs/principles/` article (threaded as `code_description` so editors render the code as a link): PDS-ARCH-001 facade bypass (a cross-module `Call` into a `component`), PDS-ARCH-002 cyclic dependency (a cycle in the module call graph), PDS-ARCH-003 system-boundary bypass (a cross-`system` `Call` into a `container`). `Diagnostic` gains `code_description`, `Edge` gains the call-site `span`. Warnings never fail a check; the flagship samples ship with their real PDS-ARCH-002 cycles.
 
 Read in full for the warning-not-error rationale and the rejected errors-and-fourth-rule alternatives.
+
+## [038 — Arithmetic, comparison & boolean operators are type-checked, never evaluated](038-expression-operators.md)
+
+Adds the full operator set — arithmetic `+ - * / %`, comparison `< > <= >=`, equality `== !=`, boolean `&& ||`, unary `-` — parsed and type-checked but never run. Operators compose by a precedence cascade; `Marker` and a `from` expression stay heads that do not combine. The static rules type arithmetic/comparison operands as `number`, boolean operands as `bool`, equality across the same primitive, and stay silent on any `Unknown` operand (ADR-022). A condition MAY now be a binary expression yielding `bool`. Resolves §12 #3.
+
+Read in full for the precedence cascade, the operand/result table, and the rejected evaluate-the-operators alternative.
+
+## [039 — Top-level `constant` is a primitive literal in a value namespace](039-top-level-constants.md)
+
+Adds `constant Ident = Literal`: top-level only, a single primitive literal, type inferred from the literal, `public` for cross-module, referenced by FQN `module::NAME` and immutable. Constant names occupy a new value namespace (§8.1) beside type/node/feature. A bare leaf does not resolve to a constant; only `module::NAME` does (ADR-030). A non-literal initialiser and a macro on a constant are rejected.
+
+Read in full for the value-namespace rule, the FQN-only resolution, and the rejected operator-initialiser alternative.

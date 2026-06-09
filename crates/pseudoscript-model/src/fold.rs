@@ -97,6 +97,8 @@ fn collect_decl_spans(decl: &ast::Decl, out: &mut Vec<FoldRange>) {
                 push(out, head_span(data.name.span, decl.span), FoldKind::Data);
             }
         }
+        // A constant is a single line — nothing to fold.
+        ast::DeclKind::Constant(_) => {}
     }
 }
 

@@ -1,0 +1,14 @@
+// LANG.md §3.6 (ADR-039): a constant's type is inferred from its literal. A
+// `string` constant compared with `>` against a `number` is rejected — proving
+// the declared type flows to the reference. (Single-file mode resolves the bare
+// name, §8.1 / ADR-029.)
+
+//! example
+
+constant THRESHOLD = "high"
+
+public system S;
+
+public container C for S {
+  over(x: number): bool { return x > THRESHOLD }
+}
