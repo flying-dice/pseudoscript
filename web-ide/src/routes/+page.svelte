@@ -663,7 +663,7 @@
   // to the declaration; a canvas drill leaves the view alone. A member/field fqn
   // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
   // field opens its declaring type instead of no-opping (PDS-GOTO-002).
-  function selectNode(fqn: string, { goto = false, origin = true, record = true }: { goto?: boolean; origin?: boolean; record?: boolean } = {}) {
+  function selectNode(fqn: string, { goto = false, origin = true, record = true, open = true }: { goto?: boolean; origin?: boolean; record?: boolean; open?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
     // opens its declaring type instead of no-opping (PDS-GOTO-002).
@@ -691,7 +691,9 @@
     // returns there (the editor caret in code, the universe's flow/node in space).
     // `origin: false` suppresses it when the caller already recorded the origin.
     if (goto && view !== "canvas" && origin) recordViewOrigin();
-    if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
+    // `open: false` highlights only — a caret-follow must not yank the open
+    // buffer to a cross-module symbol's declaring file.
+    if (open && openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
     // isn't showing; on the canvas the new scope is the navigation, so stay put.
@@ -2880,6 +2882,11 @@ show('index.html');
                 {symbols}
                 onopensymbol={revealSymbol}
                 ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
+                oncursorchange={(fqn) => {
+                  // Follow the caret in the structure panel: sync the highlight
+                  // without switching view, opening files, or polluting history.
+                  if (fqn) selectNode(fqn, { goto: false, origin: false, record: false, open: false });
+                }}
                 onnavigate={openUsage}
                 onrename={requestRename}
                 {onformat}

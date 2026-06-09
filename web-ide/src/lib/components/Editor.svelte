@@ -63,6 +63,12 @@
     symbols?: SymbolEntry[];
     onopensymbol?: (fqn: string) => void;
     ongotodefinition?: (fqn: string) => void;
+    /**
+     * The symbol under the caret changed — plain cursor movement, debounced.
+     * Resolved via the compiler; `null` when the caret sits on no symbol. Lets
+     * the host follow the caret (e.g. the structure panel) without navigating.
+     */
+    oncursorchange?: (fqn: string | null) => void;
     onnavigate?: (occ: Occurrence) => void;
     onrename?: (offset: number) => void;
     onformat?: () => void;
@@ -108,6 +114,7 @@
     symbols = [],
     onopensymbol,
     ongotodefinition,
+    oncursorchange,
     onnavigate,
     onrename,
     onformat,
@@ -174,9 +181,11 @@
   /** The live state mirror read by the once-built hover/click extensions. */
   type EditorCtx = {
     moduleFqn: string;
+    plain: boolean;
     symbols: SymbolEntry[];
     onopensymbol?: (fqn: string) => void;
     ongotodefinition?: (fqn: string) => void;
+    oncursorchange?: (fqn: string | null) => void;
     onnavigate?: (occ: Occurrence) => void;
   };
 
@@ -185,12 +194,14 @@
 
   // The hover extension is built once but must read live state; this object is
   // kept current by the effect below and closed over by the tooltip source.
-  const ctx: EditorCtx = { moduleFqn, symbols, onopensymbol, ongotodefinition, onnavigate };
+  const ctx: EditorCtx = { moduleFqn, plain, symbols, onopensymbol, ongotodefinition, oncursorchange, onnavigate };
   $effect(() => {
     ctx.moduleFqn = moduleFqn;
+    ctx.plain = plain;
     ctx.symbols = symbols;
     ctx.onopensymbol = onopensymbol;
     ctx.ongotodefinition = ongotodefinition;
+    ctx.oncursorchange = oncursorchange;
     ctx.onnavigate = onnavigate;
   });
 
@@ -200,22 +211,38 @@
   // "current module + its text" contract.
   const syncBuffer = (src: string): void => setIdeSource(ctx.moduleFqn, src);
 
+  // Resolve the symbol at char position `pos` to its definition FQN via the
+  // compiler, syncing the live buffer first. Null when the position sits on no
+  // symbol (or the query fails).
+  function definitionAt(view: EditorView, pos: number): string | null {
+    const src = view.state.doc.toString();
+    try {
+      syncBuffer(src);
+      return ideDefinition(ctx.moduleFqn, charToByte(src, pos));
+    } catch {
+      return null;
+    }
+  }
+
   // Go to the definition of the symbol at byte position `pos`: resolve it via
   // the compiler, then hand the FQN to the host (which opens the declaring file
   // and jumps). Returns whether a symbol was resolved — for the keymap/click.
   function gotoDefinition(view: EditorView, pos: number | null): boolean {
     if (pos == null) return false;
-    const src = view.state.doc.toString();
-    let fqn: string | null;
-    try {
-      syncBuffer(src);
-      fqn = ideDefinition(ctx.moduleFqn, charToByte(src, pos));
-    } catch {
-      return false;
-    }
+    const fqn = definitionAt(view, pos);
     if (!fqn) return false;
     ctx.ongotodefinition?.(fqn);
     return true;
+  }
+
+  // Report the symbol under the caret to the host, debounced — the caret moves
+  // on every keystroke/click and the resolve is a compiler query. `null` when
+  // the caret sits on no symbol. PseudoScript modules only.
+  let cursorTimer: ReturnType<typeof setTimeout> | undefined;
+  function scheduleCursorChange(view: EditorView): void {
+    if (!ctx.oncursorchange || ctx.plain || !ctx.moduleFqn) return;
+    clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(() => ctx.oncursorchange?.(definitionAt(view, view.state.selection.main.head)), 200);
   }
 
   // Find usages of the symbol at `pos`, opening the dropdown anchored under it.
@@ -895,16 +922,7 @@
             // lands on a resolvable identifier.
             contextmenu(e, view) {
               const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
-              let fqn: string | null = null;
-              if (pos != null) {
-                const src = view.state.doc.toString();
-                try {
-                  syncBuffer(src);
-                  fqn = ideDefinition(ctx.moduleFqn, charToByte(src, pos));
-                } catch {
-                  fqn = null;
-                }
-              }
+              const fqn = pos != null ? definitionAt(view, pos) : null;
               editorMenu = { x: e.clientX, y: e.clientY, pos: pos ?? 0, fqn };
               e.preventDefault();
               return true;
@@ -918,6 +936,9 @@
           }),
           theme,
           EditorView.updateListener.of((u) => {
+            // Plain cursor movement (no edit) is still a selection change the
+            // host may follow — resolve the symbol under the caret, debounced.
+            if (u.selectionSet && !applyingExternal) scheduleCursorChange(u.view);
             if (!u.docChanged || applyingExternal) return;
             onchange?.(u.state.doc.toString());
             // Open completion at a `.`/`::` boundary: there's no prefix yet for
@@ -947,7 +968,10 @@
     onready?.({ goto, location, openSettings: () => onopensettings?.() });
   });
 
-  onDestroy(() => editor?.destroy());
+  onDestroy(() => {
+    clearTimeout(cursorTimer);
+    editor?.destroy();
+  });
 
   // Move a node to <body> so its `position: fixed` is viewport-relative — a
   // transformed/contained ancestor would otherwise offset it (CodeMirror's own

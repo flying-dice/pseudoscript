@@ -232,6 +232,28 @@ html, body { height: 100%; margin: 0; }
   overflow: hidden;
 }
 
+/* icon button in an island's header strip — shared by the file tree and the
+   structure panel (reveal / refresh). */
+.head-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.head-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.head-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 body {
   color: var(--ink);
   background-color: var(--bg);

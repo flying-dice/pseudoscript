@@ -279,25 +279,7 @@
     gap: 0.1rem;
     padding: 0.2rem 0.3rem;
   }
-  .head-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.2rem;
-    border: none;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--ink-faint);
-    cursor: pointer;
-  }
-  .head-btn:hover:not(:disabled) {
-    background: var(--surface-2);
-    color: var(--ink);
-  }
-  .head-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
+  /* .head-btn itself is shared chrome — styled in app.css */
   :global(.tree-trigger) {
     display: block;
     flex: 1;

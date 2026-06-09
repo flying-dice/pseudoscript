@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search, X } from "@lucide/svelte";
+  import { LocateFixed, Search, X } from "@lucide/svelte";
 
   import SymbolTree from "./SymbolTree.svelte";
 
@@ -17,6 +17,9 @@
   let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal, onshowuniverse }: Props = $props();
 
   let query = $state("");
+
+  // Bumped by the header button to force-reveal the selected row in the tree.
+  let revealSignal = $state(0);
 
   // Filter to nodes matching the query, keeping their ancestors so the tree still
   // nests. Empty query shows everything.
@@ -39,20 +42,32 @@
 </script>
 
 <aside class="structure island" data-testid="structure-panel">
-  <div class="search">
-    <Search size={13} strokeWidth={2} aria-hidden="true" />
-    <input type="text" placeholder="Filter symbols…" bind:value={query} aria-label="Filter symbols" spellcheck="false" autocomplete="off" data-testid="structure-filter" />
-    {#if query}
-      <button class="clear" onclick={() => (query = "")} aria-label="Clear filter" title="Clear" data-testid="structure-filter-clear">
-        <X size={12} strokeWidth={2.25} aria-hidden="true" />
-      </button>
-    {/if}
+  <div class="head">
+    <div class="search">
+      <Search size={13} strokeWidth={2} aria-hidden="true" />
+      <input type="text" placeholder="Filter symbols…" bind:value={query} aria-label="Filter symbols" spellcheck="false" autocomplete="off" data-testid="structure-filter" />
+      {#if query}
+        <button class="clear" onclick={() => (query = "")} aria-label="Clear filter" title="Clear" data-testid="structure-filter-clear">
+          <X size={12} strokeWidth={2.25} aria-hidden="true" />
+        </button>
+      {/if}
+    </div>
+    <button
+      class="head-btn"
+      title="Reveal current item"
+      aria-label="Reveal the selected symbol in the tree"
+      disabled={selectedFqn == null}
+      onclick={() => revealSignal++}
+      data-testid="structure-reveal"
+    >
+      <LocateFixed size={14} strokeWidth={1.9} aria-hidden="true" />
+    </button>
   </div>
   <div class="panel-body">
     {#if filtered.length === 0 && query}
       <div class="empty" data-testid="structure-no-match">No symbol matches “{query}”.</div>
     {:else}
-      <SymbolTree symbols={filtered as never} {selectedFqn} {onpicknode} {ongotodef} {onreveal} {onshowuniverse} />
+      <SymbolTree symbols={filtered as never} {selectedFqn} {revealSignal} {onpicknode} {ongotodef} {onreveal} {onshowuniverse} />
     {/if}
   </div>
 </aside>
@@ -64,11 +79,18 @@
     min-height: 0;
     background: var(--island-bg);
   }
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin: 0.4rem 0.5rem;
+  }
   .search {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    margin: 0.4rem 0.5rem;
     padding: 0 0.45rem;
     height: 1.55rem;
     background: var(--surface-2);

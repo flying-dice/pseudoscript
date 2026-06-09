@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { Component as ComponentType } from "svelte";
 
   import { Box, Component, Container, Database, FlaskConical, SquareFunction, User } from "@lucide/svelte";
@@ -23,6 +24,9 @@
     // live in another module, so this is workspace-wide, not per-file).
     symbols?: SymbolNode[];
     selectedFqn?: string | null;
+    // Bump to force-reveal the selected row even after the user manually
+    // collapsed its ancestors (the auto-reveal fires only on selection change).
+    revealSignal?: number;
     onpicknode?: (fqn: string) => void;
     // "Go to definition" — always opens the source, distinct from a left-click pick
     // (which is view-aware, e.g. re-targets the 3D graph).
@@ -31,7 +35,7 @@
     onshowuniverse?: (fqn: string) => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal, onshowuniverse }: Props = $props();
+  let { symbols = [], selectedFqn = null, revealSignal = 0, onpicknode, ongotodef, onreveal, onshowuniverse }: Props = $props();
 
   // One icon per C4 level, so a node's place in the hierarchy reads at a glance.
   const ICONS: Record<NodeKind, ComponentType> = {
@@ -72,6 +76,42 @@
     for (const [, list] of children) sort(list);
     return { roots: sort(roots), children };
   });
+
+  // The rendered row button per node fqn, bound by the snippet — reveal scrolls
+  // the target row without querying its own rendered DOM.
+  const rowEls: Record<string, HTMLElement | undefined> = {};
+
+  // Expand every ancestor of `fqn` so its row can render.
+  function expandAncestors(fqn: string): void {
+    const byFqn = new Map(symbols.map((n) => [n.fqn, n]));
+    const next = new Set(collapsed);
+    for (let cur = byFqn.get(fqn); cur?.parent && byFqn.has(cur.parent); cur = byFqn.get(cur.parent)) next.delete(cur.parent);
+    collapsed = next;
+  }
+
+  // Expand, then scroll the row into view once the re-render has materialised
+  // it (rAF — the row may not exist yet while an ancestor is collapsed).
+  function reveal(fqn: string): void {
+    expandAncestors(fqn);
+    requestAnimationFrame(() => rowEls[fqn]?.scrollIntoView({ block: "nearest" }));
+  }
+
+  // Follow the shared selection (canvas / 3D / editor clicks land here). Tracks
+  // only `selectedFqn`: `untrack` keeps `collapsed` out of the dependency set,
+  // so a manual collapse after the reveal sticks until the selection changes.
+  $effect(() => {
+    const fqn = selectedFqn;
+    if (fqn) untrack(() => reveal(fqn));
+  });
+
+  // Explicit reveal (the panel-header button): re-runs even when the selection
+  // is unchanged, overriding manual collapses.
+  $effect(() => {
+    if (revealSignal === 0) return; // mount — nothing requested yet
+    untrack(() => {
+      if (selectedFqn) reveal(selectedFqn);
+    });
+  });
 </script>
 
 {#if tree.roots.length === 0}
@@ -102,6 +142,7 @@
           <button
             class="node kind-{node.kind}"
             class:active={node.fqn === selectedFqn}
+            bind:this={rowEls[node.fqn]}
             onclick={() => onpicknode?.(node.fqn)}
             title="{node.kind} · {node.fqn}"
             data-testid="symbol-{node.fqn}"
