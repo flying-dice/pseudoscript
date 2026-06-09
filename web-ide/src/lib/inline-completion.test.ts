@@ -185,6 +185,39 @@ describe("accept / dismiss", () => {
     expect(currentGhost(view.state)).toBe(" = 1");
   });
 
+  // Keymap-dispatch level: the behaviour under test is the Prec layering
+  // (autocomplete Prec.highest > ghost Prec.high), not the commands themselves.
+  function pressEscape(v: EditorView): void {
+    v.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }),
+    );
+  }
+
+  it("first Escape closes the popup and leaves the ghost; second dismisses the ghost", async () => {
+    view = new EditorView({
+      doc: "",
+      extensions: [
+        inlineCompletion({ fetch: () => Promise.resolve(" = 1") }),
+        autocompletion({ override: [(ctx) => ({ from: ctx.pos, options: [{ label: "xenon" }] })] }),
+      ],
+      parent: document.body,
+    });
+    view.dispatch({ changes: { from: 0, insert: "x" }, selection: { anchor: 1 }, userEvent: "input.type" });
+    await settle();
+    expect(currentGhost(view.state)).toBe(" = 1");
+
+    startCompletion(view);
+    await settle(100);
+    expect(completionStatus(view.state)).toBe("active");
+
+    pressEscape(view);
+    expect(completionStatus(view.state)).toBeNull(); // popup closed
+    expect(currentGhost(view.state)).toBe(" = 1"); // ghost stands
+
+    pressEscape(view);
+    expect(currentGhost(view.state)).toBeNull(); // ghost dismissed
+  });
+
   it("accepting does not immediately refetch", async () => {
     const fetch = vi.fn().mockResolvedValue(" = 1");
     editor({ fetch });
