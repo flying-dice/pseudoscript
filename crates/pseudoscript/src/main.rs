@@ -149,10 +149,11 @@ enum Command {
         #[arg(long, conflicts_with = "view")]
         symbol: Option<String>,
         /// Render a whole-workspace view: `context`, or `container`/`component`/
-        /// `sequence` paired with `--target`. Defaults to `context`.
+        /// `sequence`/`data`/`feature` paired with `--target`. Defaults to
+        /// `context`.
         #[arg(long, conflicts_with = "symbol")]
         view: Option<String>,
-        /// The target FQN a `container`/`component`/`sequence` view is `of`.
+        /// The target FQN a non-`context` view is `of`.
         #[arg(long, requires = "view")]
         target: Option<String>,
         /// Colour theme: `light` (default) or `dark`.
@@ -806,7 +807,17 @@ fn resolve_view(view: &str, target: &str) -> Result<View> {
         "sequence" => View::Sequence {
             entry: target.to_owned(),
         },
-        other => bail!("unknown view `{other}` (expected context/container/component/sequence)"),
+        "data" => View::Data {
+            of: target.to_owned(),
+        },
+        "feature" => View::Feature {
+            of: target.to_owned(),
+        },
+        other => {
+            bail!(
+                "unknown view `{other}` (expected context/container/component/sequence/data/feature)"
+            )
+        }
     })
 }
 
