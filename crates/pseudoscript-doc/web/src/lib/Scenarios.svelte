@@ -1,4 +1,6 @@
 <script>
+  import Diagram from "./Diagram.svelte";
+
   let { scenarios } = $props();
 </script>
 
@@ -23,6 +25,7 @@
             </li>
           {/each}
         </ul>
+        <Diagram diagram={scenario.flow} />
       </div>
     {/each}
   </div>

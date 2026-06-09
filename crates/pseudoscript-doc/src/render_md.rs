@@ -136,7 +136,7 @@ fn render_section(out: &mut String, section: &NodeSection, ctx: &mut Ctx) {
     }
 
     render_relationships(out, &section.relationships);
-    render_scenarios(out, &section.scenarios);
+    render_scenarios(out, &section.scenarios, &section.id, ctx);
     for (i, diagram) in section.diagrams.iter().enumerate() {
         emit_diagram(out, diagram, &format!("{}-{i}", section.id), ctx);
     }
@@ -164,7 +164,7 @@ fn render_relationships(out: &mut String, groups: &[RelGroup]) {
     out.push('\n');
 }
 
-fn render_scenarios(out: &mut String, scenarios: &[ScenarioCard]) {
+fn render_scenarios(out: &mut String, scenarios: &[ScenarioCard], section_id: &str, ctx: &mut Ctx) {
     if scenarios.is_empty() {
         return;
     }
@@ -176,6 +176,9 @@ fn render_scenarios(out: &mut String, scenarios: &[ScenarioCard]) {
         }
     }
     out.push('\n');
+    for (i, scenario) in scenarios.iter().enumerate() {
+        emit_diagram(out, &scenario.flow, &format!("{section_id}-flow-{i}"), ctx);
+    }
 }
 
 /// Writes a diagram as a standalone `diagrams/<stem>.svg` file and references it
@@ -191,6 +194,9 @@ fn emit_diagram(out: &mut String, diagram: &Diagram, stem: &str, ctx: &mut Ctx) 
             caption,
             render_svg_themed(&Scene::Sequence(scene.clone()), ctx.theme),
         ),
+        // Pre-rendered upstream in the site's configured theme — the same theme
+        // this Markdown render uses.
+        Diagram::Svg { caption, svg } => (caption, svg.clone()),
         Diagram::Empty { caption, eyebrow } => {
             let _ = writeln!(out, "_{caption}: no {eyebrow}._\n");
             return;

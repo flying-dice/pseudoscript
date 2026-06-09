@@ -116,11 +116,10 @@ pub fn try_render_site(graph: &Graph, config: &DocConfig) -> Result<Site, Render
 /// HTML site's paths. Needs no SSR engine, so it is available on every target.
 #[must_use]
 pub fn render_markdown_site(graph: &Graph, config: &DocConfig) -> Site {
-    let theme = match config.theme {
-        Theme::Light => pseudoscript_emit::Theme::Light,
-        Theme::Dark => pseudoscript_emit::Theme::Dark,
-    };
     Site {
-        files: render_md::pages_to_markdown(&render::build_pages(graph, config), theme),
+        files: render_md::pages_to_markdown(
+            &render::build_pages(graph, config),
+            config.theme.emit(),
+        ),
     }
 }

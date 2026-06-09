@@ -7,7 +7,7 @@
 use crate::config::{DocConfig, DocPage};
 use crate::nav::{callables_of, child_nodes, module_top_level, sorted_modules};
 use crate::url::{UrlMap, anchor, doc_page_path, module_page_path};
-use pseudoscript_emit::{Scene, View, layout_sequence_scene, project};
+use pseudoscript_emit::{Scene, Theme, View, layout_sequence_scene, project, render_svg_themed};
 use pseudoscript_model::{Edge, EdgeKind, Graph, GraphNode, NodeKind, Visibility};
 use pulldown_cmark::{BlockQuoteKind, Event, Options, Parser, Tag, TagEnd, html};
 
@@ -177,7 +177,7 @@ fn build_module(
     nodes.sort_by(|a, b| a.fqn.cmp(&b.fqn));
     let sections = nodes
         .iter()
-        .map(|node| build_section(graph, node, urls))
+        .map(|node| build_section(graph, node, urls, config.theme.emit()))
         .collect();
 
     let page = PageBody::Module(ModuleProps {
@@ -193,7 +193,7 @@ fn build_module(
 }
 
 /// One node's section: head, docs, tags, relationships, scenarios, diagrams.
-fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> NodeSection {
+fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap, theme: Theme) -> NodeSection {
     NodeSection {
         id: anchor(&node.fqn),
         kind: node.kind.keyword().to_owned(),
@@ -204,8 +204,8 @@ fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap) -> NodeSection 
         extended: node.doc.extended.clone(),
         tags: node.doc.tags.clone(),
         relationships: build_relationships(graph, node, urls),
-        scenarios: build_scenarios(graph, node),
-        diagrams: build_node_diagrams(graph, node),
+        scenarios: build_scenarios(graph, node, theme),
+        diagrams: build_node_diagrams(graph, node, theme),
     }
 }
 
@@ -275,7 +275,7 @@ fn rel_item(edge: &Edge, endpoint: &str, arrow: bool, urls: &UrlMap) -> RelItem 
 
 // ---- scenarios -------------------------------------------------------------
 
-fn build_scenarios(graph: &Graph, node: &GraphNode) -> Vec<ScenarioCard> {
+fn build_scenarios(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<ScenarioCard> {
     graph
         .scenarios_of(&node.fqn)
         .map(|scenario| ScenarioCard {
@@ -291,15 +291,25 @@ fn build_scenarios(graph: &Graph, node: &GraphNode) -> Vec<ScenarioCard> {
                     text: step.text.clone(),
                 })
                 .collect(),
+            flow: build_svg_diagram(
+                graph,
+                View::Feature {
+                    of: format!("{}::{}", scenario.module, scenario.name),
+                },
+                "flow",
+                &format!("Flow — {}", scenario.name),
+                theme,
+            ),
         })
         .collect()
 }
 
 // ---- diagrams --------------------------------------------------------------
 
-/// The diagrams embedded on a node: a C4 sub-view for a system/container, plus a
-/// sequence diagram for each triggered callable it owns.
-fn build_node_diagrams(graph: &Graph, node: &GraphNode) -> Vec<Diagram> {
+/// The diagrams embedded on a node: a C4 sub-view for a system/container, an
+/// entity view for a `data` type (`LANG.md` §9.4), plus a sequence diagram for
+/// each triggered callable it owns.
+fn build_node_diagrams(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<Diagram> {
     let mut diagrams = Vec::new();
 
     match node.kind {
@@ -318,6 +328,15 @@ fn build_node_diagrams(graph: &Graph, node: &GraphNode) -> Vec<Diagram> {
             },
             "Components",
             "Component diagram",
+        )),
+        NodeKind::Data => diagrams.push(build_svg_diagram(
+            graph,
+            View::Data {
+                of: node.fqn.clone(),
+            },
+            "entity",
+            "Entity diagram",
+            theme,
         )),
         _ => {}
     }
@@ -352,11 +371,33 @@ fn build_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> Dia
             layout: layout_sequence_scene(&scene),
             scene,
         },
-        // The doc site never requests data/feature views (it builds C4 and
-        // sequence views explicitly); a placeholder keeps the match total.
+        // Data/feature views go through `build_svg_diagram`, never here; a
+        // placeholder keeps the match total.
         Ok(Scene::Data(_) | Scene::Feature(_)) | Err(_) => Diagram::Empty {
             caption: caption.to_owned(),
             eyebrow: eyebrow.to_lowercase(),
+        },
+    }
+}
+
+/// Projects `view` and pre-renders it to SVG in the site's theme; an
+/// un-projectable view becomes an `Empty` placeholder rather than failing the
+/// page.
+fn build_svg_diagram(
+    graph: &Graph,
+    view: View,
+    eyebrow: &str,
+    caption: &str,
+    theme: Theme,
+) -> Diagram {
+    match project(graph, view) {
+        Ok(scene) => Diagram::Svg {
+            caption: caption.to_owned(),
+            svg: render_svg_themed(&scene, theme),
+        },
+        Err(_) => Diagram::Empty {
+            caption: caption.to_owned(),
+            eyebrow: eyebrow.to_owned(),
         },
     }
 }

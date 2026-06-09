@@ -458,14 +458,14 @@ In a chained expression, each call is its own message, emitted left-to-right; fi
 Each lifeline head card shows the participant's C4 kind and name. A `container` or `component` participant SHOULD also show its `for` ancestry (enclosing node names, outermost first) dimmed beneath the name. Every declared participant SHOULD show its `///` summary, as on a C4 card (§9.1). A synthesised initiator carries neither.
 
 ### 9.3 Documentation site (`pds doc`)
-`pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2) embedded on the relevant pages.
+`pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2, §9.4, §9.5) embedded on the relevant pages.
 
 The site MUST contain:
 - An **index** page: the workspace name and the C4 context diagram (persons, systems, inter-system edges).
 - One page **per module** (§8.1), listing its nodes with their `///` summaries (§2.1) and tags.
-- One section **per node** with its `///` description, tags, visibility, and relationships (its `for` parent, inbound and outbound edges). A `system` section embeds that system's container diagram; a `container` section embeds its component diagram.
+- One section **per node** with its `///` description, tags, visibility, and relationships (its `for` parent, inbound and outbound edges). A `system` section embeds that system's container diagram; a `container` section embeds its component diagram; a `data` section embeds its entity view (§9.4).
 - A **sequence** diagram for each triggered callable (§9.2), on its owning node.
-- A **scenario** card for each `feature` (§5.2), rendered as its given/when/then steps on the target node's section.
+- A **scenario** card for each `feature` (§5.2), rendered as its given/when/then steps and its flow diagram (§9.5), on the target node's section.
 - **Cross-links**: every FQN reference links to the referenced node.
 
 The site MAY also carry **authored documentation pages**: Markdown files declared in `[[doc.sidebar]]` groups (below). Each page renders as its own page; its sidebar group sits **above** the auto-generated module tree. A page whose file cannot be read MUST be skipped, not abort generation.
