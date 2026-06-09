@@ -200,12 +200,17 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/$repo/releases/download/$tag/install.ps1" `
             -OutFile $ps1 -UseBasicParsing
 
+          # Run the installer. install.ps1 is a PowerShell script (not an external
+          # exe), so $LASTEXITCODE is unreliable after `& $ps1` (null on success);
+          # rely on $ErrorActionPreference=Stop for throws and assert the binary
+          # landed instead.
           $env:PDS_VERSION = $tag
           & $ps1
-          if ($LASTEXITCODE -ne 0) { Write-Error "install.ps1 failed ($LASTEXITCODE)"; exit 1 }
 
           # install.ps1 installs to $env:USERPROFILE\.pseudoscript\bin by default.
           $binDir = Join-Path $env:USERPROFILE ".pseudoscript\bin"
+          $exe = Join-Path $binDir "pds.exe"
+          if (-not (Test-Path $exe)) { Write-Error "install.ps1 did not produce $exe"; exit 1 }
           $env:PATH = "$binDir;$env:PATH"
 
           # Version must match the tag (strip leading 'v').
