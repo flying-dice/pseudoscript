@@ -33,7 +33,7 @@ export const COMMANDS: Command[] = [
   { id: "openSearch", label: "Find in file", key: "Mod-f", group: "Editing" },
   { id: "goToDefinition", label: "Go to definition", key: "F12", group: "Navigation" },
   { id: "findUsages", label: "Find usages", key: "Shift-F12", group: "Navigation" },
-  { id: "openSettings", label: "Keyboard shortcuts…", key: "Mod-,", group: "General" },
+  { id: "openSettings", label: "Settings…", key: "Mod-,", group: "General" },
 ];
 
 const DEFAULTS: Record<string, string> = Object.fromEntries(COMMANDS.map((c) => [c.id, c.key]));

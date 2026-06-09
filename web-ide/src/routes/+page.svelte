@@ -61,6 +61,7 @@
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
   import NewProjectDialog from "$lib/components/NewProjectDialog.svelte";
   import Settings from "$lib/components/Settings.svelte";
+  import { llm } from "$lib/llm.svelte.js";
   import PromptDialog from "$lib/components/PromptDialog.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import BuildNoticeDialog from "$lib/components/BuildNoticeDialog.svelte";
@@ -304,6 +305,9 @@
   // Whether the keyboard-shortcuts settings modal is open (toolbar gear or the
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
   const settingsOpen = $derived(ui.settingsOpen);
+  // The tab Settings opens on. "keyboard" for the general openers; the AI status
+  // chip seeds "ai" so its "click to configure" lands on the page it advertised.
+  let settingsTab = $state<"keyboard" | "ai">("keyboard");
   const recents = $derived(ui.recents);
   // Only persisted projects (folders) are recents; in-memory samples re-open
   // from the catalogue, so they're never recorded — and legacy sample entries
@@ -1079,7 +1083,7 @@
       { id: "toggle-structure", label: "Toggle Structure", keywords: "outline symbols panel", run: () => (ui.structureOpen = !ui.structureOpen) },
       { id: "toggle-problems", label: "Toggle Problems", keywords: "diagnostics errors dock panel", run: () => (ui.problemsOpen = !ui.problemsOpen) },
       { id: "theme", label: theme.resolved === "dark" ? "Switch to light theme" : "Switch to dark theme", keywords: "appearance colour dark light", run: () => theme.set(theme.resolved === "dark" ? "light" : "dark") },
-      { id: "settings", label: "Keyboard shortcuts", keywords: "settings keybindings preferences", run: () => (ui.settingsOpen = true) },
+      { id: "settings", label: "Settings", keywords: "settings keybindings shortcuts preferences ai completion", run: () => (ui.settingsOpen = true) },
       { id: "switch-project", label: "Switch project…", keywords: "open recent examples launcher", run: () => (ui.projectOpen = true) },
       { id: "new-project", label: "New project…", keywords: "create template scaffold", run: () => (ui.newProjectOpen = true) },
     ];
@@ -2623,7 +2627,7 @@ show('index.html');
 {/if}
 
 {#if settingsOpen}
-  <Settings onclose={() => (ui.settingsOpen = false)} />
+  <Settings initialTab={settingsTab} onclose={() => ((ui.settingsOpen = false), (settingsTab = "keyboard"))} />
 {/if}
 
 <!-- Canvas usages: a click-away list of references; picking one jumps to it. -->
@@ -2953,6 +2957,17 @@ show('index.html');
 
   <StatusBar>
     {#if ready && workspace}{@render breadcrumb()}{/if}
+    {#if llm.enabled}
+      <button
+        class="ai-chip"
+        class:dim={!llm.ready}
+        data-testid="llm-status"
+        title={llm.ready
+          ? `AI completion on — ${llm.model}`
+          : "AI completion enabled but missing an endpoint or model — click to configure"}
+        onclick={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}>AI</button
+      >
+    {/if}
     <PerfMeter />
   </StatusBar>
 </div>
@@ -3249,6 +3264,27 @@ show('index.html');
     color: var(--ink);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* The AI-completion status chip: present while the feature is enabled, dimmed
+     when it still lacks an endpoint/model; opens Settings to fix either. */
+  .ai-chip {
+    margin-left: auto;
+    flex: none;
+    background: transparent;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--accent-hi);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    padding: 0.05rem 0.35rem;
+    cursor: pointer;
+  }
+  .ai-chip:hover {
+    border-color: var(--accent);
+  }
+  .ai-chip.dim {
+    color: var(--warn);
   }
   .crumb {
     display: flex;

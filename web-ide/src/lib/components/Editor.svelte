@@ -26,7 +26,11 @@
   import { markdownLivePreview } from "$lib/markdown-live.js";
   import type { MarkdownLivePreviewOptions } from "$lib/markdown-live.js";
   import { keybindings } from "$lib/keybindings.svelte.js";
-  import { ideDefinition, foldRanges, type FoldingRange, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
+  import { llm } from "$lib/llm.svelte.js";
+  import { assembleContext } from "$lib/fim-context.js";
+  import { fetchCompletion } from "$lib/fim-provider.js";
+  import { inlineCompletion } from "$lib/inline-completion.js";
+  import { check, ideDefinition, foldRanges, type FoldingRange, ideOutline, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
   import type { Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
@@ -745,6 +749,34 @@
     }
   };
 
+  // AI ghost text (model: ide::GhostText), beside the grammar dropdown: the FIM
+  // context goes to the author's configured provider, and a suggestion that
+  // introduces a parse error is dropped (static warnings tolerated). Off — or
+  // misconfigured — contributes nothing, so the editor behaves exactly as before.
+  const aiGhostText = (): Extension => {
+    if (!llm.ready) return [];
+    return inlineCompletion({
+      fetch: (doc, pos, signal) => {
+        let symbols: string[] = [];
+        try {
+          symbols = ideOutline().map((n) => n.fqn);
+        } catch {
+          // session not mounted yet — the grammar primer alone still steers
+        }
+        return fetchCompletion(llm.snapshot(), assembleContext(doc, pos, symbols), signal);
+      },
+      validate: (doc, pos, text) => {
+        try {
+          const errors = (src: string): number =>
+            check(src).filter((d) => d.severity === "error").length;
+          return errors(doc.slice(0, pos) + text + doc.slice(pos)) <= errors(doc);
+        } catch {
+          return false; // a wasm throw means unverifiable — don't show it
+        }
+      },
+    });
+  };
+
   // The language bundle, swapped per file type: PseudoScript (default), Markdown
   // live-preview (an authored doc), or nothing (plain text). Keeps Markdown free
   // of PseudoScript highlighting/lint while rendering it in place.
@@ -756,6 +788,7 @@
     return [
       pseudoscript(),
       pseudoscriptCompletion(completionsAt),
+      aiGhostText(),
       pdsFoldService,
       lintGutter(),
       pseudoscriptLinter(() => diagnostics),
@@ -777,13 +810,15 @@
     if (editor) forceLinting(editor);
   });
 
-  // Swap the language bundle when the file type flips (file switch) or the
-  // markdown preview options change (a different doc resolves assets/links).
+  // Swap the language bundle when the file type flips (file switch), the
+  // markdown preview options change (a different doc resolves assets/links), or
+  // the AI-completion settings change (ghost text turns on/off live).
   $effect(() => {
     markdown;
     plain;
     toml;
     previewOpts;
+    llm.version;
     editor?.dispatch({ effects: langCompartment.reconfigure(languageBundle()) });
   });
 
