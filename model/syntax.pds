@@ -55,8 +55,11 @@ public data Lexed { tokens: syntax::Token[], trivia: syntax::SpannedTrivia[] }
 /// One message about a span of source. The single diagnostic type every crate
 /// emits, so a driver collects lexer, parser, and checker output into one
 /// ordered list. `code` is an optional stable identifier (e.g. `E0001`) for
-/// tooling; the human-facing text is `message`.
-public data Diagnostic { severity: syntax::Severity, span: syntax::Span, code: string, message: string }
+/// tooling; the human-facing text is `message`. `codeDescription` is an optional
+/// URL the code resolves to — an article explaining the rule — which the LSP
+/// surfaces as the diagnostic's clickable link. Empty when the code carries no
+/// article.
+public data Diagnostic { severity: syntax::Severity, span: syntax::Span, code: string, codeDescription: string, message: string }
 
 /// Diagnostic severity. `Error` invalidates the input; `Warning`/`Info` advise
 /// and never block compilation.

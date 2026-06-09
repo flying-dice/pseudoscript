@@ -144,8 +144,10 @@ public data EdgeKind =
 /// A typed, directed relationship between two graph node FQNs. `to` (and for some
 /// kinds `from`) may name a node not present as a `GraphNode` — a synthesised
 /// trigger initiator, or a target that does not resolve. `label` is the method
-/// name for `Call`, otherwise empty.
-public data Edge { source: string, to: string, kind: model::EdgeKind, label: string }
+/// name for `Call`, otherwise empty. `span` is the source range that produced the
+/// edge — the call site for a `Call` — so an architectural lint can point its
+/// diagnostic at the offending call; the empty span when the edge is synthesised.
+public data Edge { source: string, to: string, kind: model::EdgeKind, label: string, span: syntax::Span }
 
 /// One step in a callable's ordered sequence trace (LANG.md §7, §9.2). Calls in a
 /// chained expression are emitted left-to-right; control flow becomes `Alt`/
@@ -404,13 +406,17 @@ component Checks for model::Model {
   /// parents a container).
   checkItems(ast: syntax::Module): syntax::Diagnostic[];
 
-  /// Runs the per-module checks for every module, then the cross-module pass. The
-  /// returned list is the union of every module's per-module errors and the
-  /// cross-module visibility errors.
+  /// Runs the per-module checks for every module, then the cross-module pass, then
+  /// the architectural lints over the resolved graph. The returned list is the
+  /// union of every module's per-module errors, the cross-module visibility
+  /// errors, and the architectural warnings. The graph is projected once from the
+  /// resolved entries and handed to `Architecture`, which never holds source.
   runWorkspace(entries: model::ModuleEntry[]): syntax::Diagnostic[] {
     perModule = syntax::Diagnostic[] from self.runEach(entries)
     cross = syntax::Diagnostic[] from model::CrossModule.check(entries)
-    return syntax::Diagnostic[] from { perModule, cross }
+    graph = model::Graph from model::Builder.graphOf(entries)
+    arch = syntax::Diagnostic[] from model::Architecture.check(graph)
+    return syntax::Diagnostic[] from { perModule, cross, arch }
   }
 
   /// Runs `run` against each entry and flattens every module's per-module
@@ -433,6 +439,62 @@ public component CrossModule for model::Model {
   /// skipped; a public cross-module target resolves; a private one is reported; a
   /// missing FQN whose module portion names another known module is dangling.
   checkRef(entries: model::ModuleEntry[], fromModule: string, path: string): syntax::Diagnostic[];
+}
+
+/// One architectural-principle lint rule (LANG.md §9 — the C4 facade/boundary
+/// principles). `code` is its stable identifier (`PDS-ARCH-001`); `title` names the
+/// principle; `href` is the article URL that explains it (a host renders it as the
+/// diagnostic's link); `severity` is the force it carries — `Warning`, since a
+/// violation advises rather than invalidates.
+public data ArchRule { code: string, title: string, href: string, severity: syntax::Severity }
+
+/// LANG.md §9 — architectural-principle lints over the resolved graph. Beyond §8.2
+/// visibility (which a `public` component still satisfies), these advise on C4
+/// structure: a cross-module call SHOULD reach a container/system's published face,
+/// not an internal `component` (Facade/Gateway); the module dependency graph SHOULD
+/// stay acyclic; a cross-system call SHOULD couple to the other system's boundary,
+/// not its containers. Each firing is a `Warning` stamped with the rule's `code`
+/// and `codeDescription` (its article URL); the model stays valid.
+component Architecture for model::Model {
+  /// Runs every architectural lint over the graph and unions their warnings: facade
+  /// bypass (PDS-ARCH-001), cyclic dependency (PDS-ARCH-002), and system-boundary
+  /// bypass (PDS-ARCH-003).
+  public check(graph: model::Graph): syntax::Diagnostic[] {
+    backdoor = syntax::Diagnostic[] from self.checkBackdoor(graph)
+    cycles = syntax::Diagnostic[] from self.checkCycles(graph)
+    boundary = syntax::Diagnostic[] from self.checkSystemBoundary(graph)
+    return syntax::Diagnostic[] from { backdoor, cycles, boundary }
+  }
+
+  /// PDS-ARCH-001 — facade bypass (backdooring). For each `Call` edge whose target
+  /// node is a `component` declared in a different module than its source node, emit
+  /// a `Warning` at the call span: the call reaches a container's internal component
+  /// instead of the container's published face. The cross-module guard
+  /// (`source.module != target.module`) is what makes it a backdoor — a same-module
+  /// component call is internal wiring.
+  checkBackdoor(graph: model::Graph): syntax::Diagnostic[];
+
+  /// PDS-ARCH-002 — cyclic dependency (Acyclic Dependencies Principle). Aggregate
+  /// `Call` edges into a module dependency graph (`source.module -> target.module`,
+  /// self-edges dropped) and find every cycle. For each cycle emit one `Warning` at
+  /// a representative call edge: the modules form a dependency cycle and SHOULD be
+  /// broken (extract a shared contract, or invert one dependency).
+  checkCycles(graph: model::Graph): syntax::Diagnostic[];
+
+  /// PDS-ARCH-003 — system-boundary bypass. For each `Call` edge that crosses a
+  /// system boundary (the enclosing `system` of the source differs from that of the
+  /// target) whose target is a `container`, emit a `Warning` at the call span:
+  /// couple to the other system's published face, not its containers. The
+  /// component-target case is already PDS-ARCH-001, so it is excluded here.
+  checkSystemBoundary(graph: model::Graph): syntax::Diagnostic[];
+
+  /// The lint rule for a `code`, carrying its article URL and severity — the
+  /// registry the detectors stamp onto each warning's `code`/`codeDescription`.
+  rule(code: string): model::ArchRule;
+
+  /// The enclosing `system` FQN of a node: walk `parent` up the C4 nesting
+  /// (component -> container -> system). Empty when the node sits under no system.
+  systemOf(graph: model::Graph, fqn: string): string;
 }
 
 /// §6 — flow-sensitive `Result` / `Option` typestate. Each binding carries a
@@ -545,10 +607,19 @@ public component TypeRefs for model::Model {
 /// projection — no I/O — so the emit crate and a future salsa/LSP layer can both
 /// adopt it.
 component Builder for model::Model {
-  /// Builds the resolved graph: collect every node, derive its edges, and trace
-  /// each disclosed callable body into an ordered step list.
+  /// Builds the resolved graph from raw modules: resolve them into a workspace,
+  /// then project. The entry point for callers that hold only source.
   public graph(modules: model::WorkspaceModule[]): model::Graph {
     entries = ModuleEntry[] from model::Workspace.build(modules)
+    return Graph from self.graphOf(entries)
+  }
+
+  /// Projects an already-resolved workspace into the graph: collect every node,
+  /// derive its edges, and trace each disclosed callable body into an ordered step
+  /// list. The shared projection — `graph` resolves the entries first; the
+  /// workspace check (`Checks.runWorkspace`) reuses the entries it already holds,
+  /// so the architectural lints run without re-resolving.
+  public graphOf(entries: model::ModuleEntry[]): model::Graph {
     for (e in entries) {
       self.collectModule(e)
     }

@@ -8,6 +8,7 @@
     start_col: number;
     file?: string;
     code?: string;
+    code_description?: string;
   };
 
   type Props = {
@@ -59,8 +60,21 @@
               {#if d.file}<span class="file">{d.file}</span>{/if}
               <span class="loc">{d.start_line}:{d.start_col}</span>
               <span class="msg">{d.message}</span>
-              {#if d.code}<span class="code">{d.code}</span>{/if}
             </button>
+            {#if d.code}
+              {#if d.code_description}
+                <a
+                  class="code link"
+                  href={d.code_description}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="problem-{i}-code"
+                  title="{d.code} — open the principle article"
+                >{d.code}</a>
+              {:else}
+                <span class="code" data-testid="problem-{i}-code">{d.code}</span>
+              {/if}
+            {/if}
             <button
               type="button"
               class="copy-one"
@@ -179,5 +193,17 @@
   .file { flex: none; font-family: var(--font-mono); font-size: 0.72rem; color: var(--accent); }
   .loc { flex: none; font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-faint); }
   .msg { flex: 1; min-width: 0; }
-  .code { flex: none; font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-faint); }
+  .code {
+    flex: none;
+    display: flex;
+    align-items: center;
+    padding: 0 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    text-decoration: none;
+  }
+  a.code.link { color: var(--accent); cursor: pointer; }
+  a.code.link:hover,
+  a.code.link:focus-visible { text-decoration: underline; }
 </style>

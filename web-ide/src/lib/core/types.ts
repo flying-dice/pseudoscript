@@ -37,6 +37,7 @@ export type Problem = {
   end_line?: number;
   end_col?: number;
   code?: string;
+  code_description?: string;
   file?: string;
 };
 

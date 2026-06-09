@@ -41,4 +41,41 @@ describe("ProblemsPane", () => {
     expect(text).toContain("error orders:3:5 unknown symbol [PDS-RES-001]");
     expect(text).toContain("warning orders:8:1 unused");
   });
+
+  it("renders an architectural code with code_description as a link to the article", () => {
+    const href = "https://github.com/flying-dice/pseudoscript/blob/main/docs/principles/PDS-ARCH-001-backdooring-facade.md";
+    render(ProblemsPane, {
+      props: {
+        diagnostics: [
+          {
+            severity: "warning",
+            message: "cross-module call reaches into internal component",
+            start_line: 4,
+            start_col: 7,
+            file: "gateway",
+            code: "PDS-ARCH-001",
+            code_description: href,
+          },
+        ],
+      },
+    });
+    const link = screen.getByTestId("problem-0-code");
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("href", href);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveTextContent("PDS-ARCH-001");
+  });
+
+  it("renders a code with no code_description as plain text, not a link", () => {
+    render(ProblemsPane, {
+      props: {
+        diagnostics: [
+          { severity: "error", message: "unknown symbol", start_line: 1, start_col: 1, code: "PDS-RES-001" },
+        ],
+      },
+    });
+    const chip = screen.getByTestId("problem-0-code");
+    expect(chip.tagName).toBe("SPAN");
+    expect(chip).toHaveTextContent("PDS-RES-001");
+  });
 });

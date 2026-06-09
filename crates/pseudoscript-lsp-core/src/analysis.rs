@@ -5,8 +5,8 @@
 //! the protocol plumbing; everything testable lives here.
 
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, Hover, HoverContents, InlayHint, InlayHintKind, InlayHintLabel,
-    MarkupContent, MarkupKind, Position, TextEdit,
+    CodeDescription, Diagnostic, DiagnosticSeverity, Hover, HoverContents, InlayHint,
+    InlayHintKind, InlayHintLabel, MarkupContent, MarkupKind, Position, TextEdit, Url,
 };
 use pseudoscript_format::format;
 use pseudoscript_model::{Workspace, check};
@@ -156,6 +156,11 @@ pub fn lsp_diagnostics(src: &str, diags: &[pseudoscript_syntax::Diagnostic]) -> 
             range: span_to_range(src, &index, d.span),
             severity: Some(severity(d.severity)),
             code: d.code.clone().map(lsp_types::NumberOrString::String),
+            code_description: d
+                .code_description
+                .as_deref()
+                .and_then(|url| Url::parse(url).ok())
+                .map(|href| CodeDescription { href }),
             source: Some("pseudoscript".to_owned()),
             message: d.message.clone(),
             ..Diagnostic::default()

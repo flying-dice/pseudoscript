@@ -463,6 +463,15 @@ A `feature` (§5.2) projects a **flow view**: its steps as connected nodes, top 
 
 Each step node shows its keyword (`given`/`when`/`then`/`and`/`but`) and its prose. Consecutive steps are joined by a directed connector.
 
+### 9.6 Architectural lints
+The resolved graph carries advisory C4 structure rules beyond §8.2 visibility. Each violation is a `Warning`: the model stays valid (§5.1). Each warning MUST carry a stable code `PDS-ARCH-NNN` and the URL of the article documenting the rule, so an editor renders the code as a link. A `Warning` MUST NOT fail a check or block generation.
+
+The rules judge **`Call` edges** (cross-boundary body calls, §9.1):
+
+- **PDS-ARCH-001 — facade bypass.** A `Call` whose target is a `component` (§4) declared in a different module than its source SHOULD instead target the component's enclosing `container` face. A `public` component is addressable across modules (§8.2); addressability does not make it the call target.
+- **PDS-ARCH-002 — cyclic dependency.** The module dependency graph — each cross-module `Call` an arc `source.module → target.module` — SHOULD be acyclic. A cycle is reported once, at a representative call edge.
+- **PDS-ARCH-003 — system-boundary bypass.** A `Call` whose source and target lie under different `system` ancestors (§4) and whose target is a `container` SHOULD instead target that system's published face. The `component`-target case is PDS-ARCH-001.
+
 ---
 
 ## 10. Grammar Sketch (EBNF, informal)
