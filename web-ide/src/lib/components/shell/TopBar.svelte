@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
+  import { ArrowLeft, ArrowRight, Search, Settings2 } from "@lucide/svelte";
 
   import MenuBar from "./MenuBar.svelte";
 
@@ -24,6 +24,7 @@
     onimport?: () => void;
     onbuilddocs?: () => void;
     onshortcuts?: () => void;
+    onaisettings?: () => void;
     onview?: (view: "code" | "canvas" | "space") => void;
     ontogglestructure?: () => void;
   };
@@ -37,6 +38,7 @@
     canForward = false,
     onback,
     onforward,
+    onaisettings,
     ...menu
   }: Props = $props();
 
@@ -46,7 +48,7 @@
 <header class="topbar">
   <div class="left">
     <span class="brand">pds</span>
-    <MenuBar {workspaceName} {building} {view} {structureOpen} {canBack} {canForward} {onback} {onforward} {...menu} />
+    <MenuBar {workspaceName} {building} {view} {structureOpen} {canBack} {canForward} {onback} {onforward} {onaisettings} {...menu} />
     {#if workspaceName}
       <div class="nav">
         <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back" data-testid="nav-back">
@@ -65,6 +67,9 @@
         <Search size={18} strokeWidth={1.75} aria-hidden="true" />
       </button>
     {/if}
+    <button class="icon-btn" onclick={() => onaisettings?.()} title="AI Completion settings" aria-label="AI Completion settings" data-testid="settings-btn">
+      <Settings2 size={18} strokeWidth={1.75} aria-hidden="true" />
+    </button>
   </div>
 </header>
 
@@ -84,11 +89,12 @@
     align-items: center;
     gap: 0.4rem;
   }
-  /* Sit the search button over the right rail below it: occupy a rail-width zone
-     ending the same island-gap from the edge as the rail column, icon centred. */
+  /* Sit the buttons over the right rail below it: occupy a rail-width zone
+     ending the same island-gap from the edge as the rail column, the gear
+     (always present) hugging the edge. */
   .right {
     width: var(--right-rail-w);
-    justify-content: center;
+    justify-content: flex-end;
   }
   .nav {
     display: flex;

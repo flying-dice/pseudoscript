@@ -8,14 +8,23 @@ import { keybindings } from "$lib/keybindings.svelte.js";
 import { llm } from "$lib/llm.svelte.js";
 import Settings from "./Settings.svelte";
 
-// Settings drives the keybindings and llm singletons directly — reset between tests.
+// Settings drives the keybindings and llm singletons directly — reset between
+// tests. The AI tab fetches the provider's model list on open; stub fetch so no
+// test touches the network (the rejecting default exercises the fallbacks).
+const fetchMock = vi.fn();
 beforeEach(() => {
   localStorage.clear();
   keybindings.setProfile("default");
   keybindings.resetAll();
   llm.reset();
+  fetchMock.mockReset();
+  fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+  vi.stubGlobal("fetch", fetchMock);
 });
-afterEach(() => localStorage.clear());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
+});
 
 describe("Settings", () => {
   it("renders the shortcuts dialog with command rows", () => {
@@ -84,13 +93,38 @@ describe("Settings", () => {
     expect(screen.queryByTestId("keybind-saveDocument")).not.toBeInTheDocument();
   });
 
-  it("edits the AI completion settings through the store", async () => {
+  it("picks a provider preset and shows only its fields", async () => {
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+
+    // Ollama (the default): no endpoint or key to type.
+    expect(screen.queryByTestId("llm-baseurl")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("llm-apikey")).not.toBeInTheDocument();
+
+    // OpenAI: the key appears, the endpoint stays pinned.
+    await userEvent.click(screen.getByTestId("llm-provider-openai"));
+    expect(llm.provider).toBe("openai");
+    expect(llm.baseUrl).toBe("https://api.openai.com/v1");
+    expect(screen.queryByTestId("llm-baseurl")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByTestId("llm-apikey"), "sk-test");
+    expect(llm.apiKey).toBe("sk-test");
+    expect(screen.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
+  });
+
+  it("falls back to a static OpenAI model list when the live list can't load", async () => {
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    await userEvent.click(screen.getByTestId("llm-provider-openai"));
+    await userEvent.selectOptions(screen.getByTestId("llm-model"), "gpt-4o");
+    expect(llm.model).toBe("gpt-4o");
+  });
+
+  it("edits the raw fields under the Custom preset", async () => {
     render(Settings, { props: { onclose: vi.fn() } });
     await userEvent.click(screen.getByTestId("settings-tab-ai"));
 
     await userEvent.click(screen.getByTestId("llm-enabled"));
     expect(llm.enabled).toBe(true);
 
+    await userEvent.click(screen.getByTestId("llm-provider-custom"));
     const url = screen.getByTestId("llm-baseurl");
     await userEvent.clear(url);
     await userEvent.type(url, "https://api.example.test/v1");
@@ -98,9 +132,66 @@ describe("Settings", () => {
 
     await userEvent.type(screen.getByTestId("llm-apikey"), "sk-test");
     expect(llm.apiKey).toBe("sk-test");
-    expect(screen.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
 
     await userEvent.selectOptions(screen.getByTestId("llm-mode"), "fim");
     expect(llm.mode).toBe("fim");
+  });
+
+  it("Test connection reports a classified failure with its hint", async () => {
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    await userEvent.click(screen.getByTestId("llm-test"));
+    const result = await screen.findByTestId("llm-test-result");
+    expect(result).toHaveTextContent("Could not reach");
+    expect(result).toHaveTextContent("OLLAMA_ORIGINS");
+  });
+
+  it("Test connection reports success with the model count", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          data: [{ id: "qwen2.5-coder:7b" }],
+          choices: [{ message: { content: "ok" } }],
+        }),
+    });
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    await userEvent.click(screen.getByTestId("llm-test"));
+    const result = await screen.findByTestId("llm-test-result");
+    expect(result).toHaveTextContent("Connected — 1 model(s) available.");
+  });
+
+  it("Test connection fills the OpenAI dropdown with chat models only and counts them", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          data: [{ id: "gpt-4o-mini" }, { id: "whisper-1" }, { id: "text-embedding-3-small" }],
+          choices: [{ message: { content: "ok" } }],
+        }),
+    });
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    await userEvent.click(screen.getByTestId("llm-provider-openai"));
+    await userEvent.click(screen.getByTestId("llm-test"));
+    const result = await screen.findByTestId("llm-test-result");
+    // The count is what the dropdown offers, not the raw list of 3.
+    expect(result).toHaveTextContent("Connected — 1 model(s) available.");
+    const options = [...screen.getByTestId<HTMLSelectElement>("llm-model").options].map((o) => o.value);
+    expect(options).toContain("gpt-4o-mini");
+    expect(options).not.toContain("whisper-1");
+    expect(options).not.toContain("text-embedding-3-small");
+  });
+
+  it("a reachable Ollama with no models pulled gets the pull hint, not the unreachable one", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ data: [] }),
+    });
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    expect(
+      await screen.findByText(/reachable but has no models yet/),
+    ).toBeInTheDocument();
   });
 });

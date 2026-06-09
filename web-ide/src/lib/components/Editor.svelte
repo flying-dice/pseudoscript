@@ -28,9 +28,9 @@
   import { keybindings } from "$lib/keybindings.svelte.js";
   import { llm } from "$lib/llm.svelte.js";
   import { assembleContext } from "$lib/fim-context.js";
-  import { fetchCompletion } from "$lib/fim-provider.js";
+  import { fetchCompletion, toProviderError } from "$lib/fim-provider.js";
   import { inlineCompletion } from "$lib/inline-completion.js";
-  import { check, ideDefinition, foldRanges, type FoldingRange, ideOutline, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
+  import { ideDefinition, foldRanges, type FoldingRange, ideOutline, ideReferences, ideCompletion, ideHover, setIdeSource } from "$lib/pds.js";
   import type { CompletionContext } from "@codemirror/autocomplete";
   import type { Occurrence, References } from "$lib/pds.js";
   import { byteToChar, charToByte } from "$lib/offsets.js";
@@ -788,12 +788,19 @@
   };
 
   // AI ghost text (model: ide::GhostText), beside the grammar dropdown: the FIM
-  // context goes to the author's configured provider, and a suggestion that
-  // introduces a parse error is dropped (static warnings tolerated). Off — or
-  // misconfigured — contributes nothing, so the editor behaves exactly as before.
+  // context goes to the author's configured provider and the suggestion renders
+  // as-is — the author judges it, and accepting one with a syntax error lights
+  // the live diagnostics. Off — or misconfigured — contributes nothing, so the
+  // editor behaves exactly as before. A provider failure lands on the llm
+  // store, where the AI status chip and the settings tab surface it; a success
+  // clears it.
   const aiGhostText = (): Extension => {
     if (!llm.ready) return [];
     return inlineCompletion({
+      onError: (err) => llm.reportError(toProviderError(err)),
+      onAnswered: () => llm.clearError(),
+      onDrop: (reason) => llm.noteDrop(reason),
+      onShown: () => llm.clearDrop(),
       fetch: (doc, pos, signal) => {
         let symbols: string[] = [];
         try {
@@ -802,15 +809,6 @@
           // session not mounted yet — the grammar primer alone still steers
         }
         return fetchCompletion(llm.snapshot(), assembleContext(doc, pos, symbols), signal);
-      },
-      validate: (doc, pos, text) => {
-        try {
-          const errors = (src: string): number =>
-            check(src).filter((d) => d.severity === "error").length;
-          return errors(doc.slice(0, pos) + text + doc.slice(pos)) <= errors(doc);
-        } catch {
-          return false; // a wasm throw means unverifiable — don't show it
-        }
       },
     });
   };
