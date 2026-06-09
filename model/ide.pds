@@ -24,8 +24,9 @@
 //! from its path (LANG.md §8.1, ADR-031).
 
 /// A completion candidate offered as the author types: the inserted label, the
-/// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text.
-public data Completion { label: string, kind: number, detail: string }
+/// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text
+/// (absent for candidates with nothing to add).
+public data Completion { label: string, kind: number, detail: Option<string> }
 
 /// The in-browser workspace state the session holds: the open `.pds` modules, the
 /// `pds.toml` manifest text, and the dependency modules resolved from
@@ -45,10 +46,13 @@ public data VendoredInput { slug: string, fqn: string, source: string }
 public data LocalInput { name: string, fqn: string, source: string }
 
 /// One node in the 3D relationship graph the IDE draws: its FQN, C4 level, and
-/// containment parent. The typed boundary form of a `universe::NodeOut`.
-public data UniverseNode { id: string, level: string, parent: string }
+/// containment parent (absent on roots). The typed boundary form of a
+/// `universe::NodeOut`.
+public data UniverseNode { id: string, level: string, parent: Option<string> }
 
 /// One directed relationship in the 3D graph, weighted by traffic (call count).
+/// The wire field is `from`; `from` is a PseudoScript keyword, so the model
+/// names it `source`.
 public data UniverseEdge { source: string, to: string, traffic: number }
 
 /// The 3D-view snapshot the session hands the `ForceGraph`: nodes and directed
@@ -83,10 +87,18 @@ public data RenameSelection { fqn: string, line: number, col: number }
 /// One module rewritten by a rename: its FQN and new source text.
 public data RenamedSource { fqn: string, source: string }
 
+/// One file of the rendered documentation site: its site-relative path and
+/// contents.
+public data RenderedFile { path: string, contents: string }
+
+/// The doc-site build input: the manifest plus each authored page's Markdown,
+/// loaded by the host. Field detail is the wasm boundary's concern.
+public data DocConfig;
+
 /// One row of the workspace outline: a node's FQN, simple name, C4 kind,
-/// containment parent, whether it is a triggered flow entry, its `///` summary,
-/// and its declaration line/column.
-public data OutlineNode { fqn: string, name: string, kind: string, parent: string, triggered: bool, summary: string, line: number, col: number }
+/// containment parent (absent on roots), whether it is a triggered flow entry,
+/// its `///` summary (absent when undocumented), and its declaration line/column.
+public data OutlineNode { fqn: string, name: string, kind: string, parent: Option<string>, triggered: bool, summary: Option<string>, line: number, col: number }
 
 /// The author's AI-completion provider settings, persisted in the browser: the
 /// feature toggle, the OpenAI-compatible endpoint, the bring-your-own API key
@@ -246,11 +258,13 @@ public component Diagrams for ide::IdeSession {
 }
 
 /// The doc-site builder: renders the whole site in-browser through the same
-/// `pseudoscript-doc` crate `pds doc` runs, driving SSR through the host's JS
-/// engine — so the IDE previews the exact site the CLI ships.
+/// `pseudoscript-doc` crate `pds doc` runs, driving SSR through a render
+/// callback the host supplies (the browser's JS engine is the SSR engine) — so
+/// the IDE previews the exact site the CLI ships.
 public component Docs for ide::IdeSession {
-  /// Build the documentation site for the held workspace.
-  render(config: string): doc::Site;
+  /// Build the documentation site for the held workspace: the typed config in,
+  /// every rendered file out. SSR crosses to the host's render callback.
+  render(config: ide::DocConfig): ide::RenderedFile[];
   /// Parse a `pds.toml` into the doc manifest the host reads to load pages.
   manifest(toml: string): string;
   /// The shared client-side bundle every doc page loads once — the same SSR
@@ -392,13 +406,14 @@ component LlmSettingsStore for ide::WebIde {
 
 /// Provider-agnostic completion client: one `complete` contract over
 /// OpenAI-compatible HTTP, so one client covers Codestral, OpenRouter, Together,
-/// Ollama, and vLLM. The in-flight request is aborted on the next keystroke; a
-/// network failure yields no suggestion, never an error the editor sees.
+/// Ollama, and vLLM. Stateless — the caller hands it the settings snapshot and
+/// owns cancellation (`GhostText` aborts the in-flight request on the next
+/// keystroke; the client honours the abort). A network failure yields no
+/// suggestion, never an error the editor sees.
 component FimClient for ide::WebIde {
   /// Route the prompt by the configured wire shape: a native fill-in-the-middle
   /// route when the provider has one, else a FIM-shaped chat request.
-  complete(prompt: ide::FimPrompt): string {
-    settings = ide::LlmSettings from ide::LlmSettingsStore.current()
+  complete(prompt: ide::FimPrompt, settings: ide::LlmSettings): string {
     fim = bool from self.usesNativeFim(settings)
     if (fim) {
       return ide::LlmProvider.fimComplete(prompt, settings.model)
@@ -423,8 +438,9 @@ component GhostText for ide::WebIde {
     if (!enabled) {
       return
     }
+    settings = ide::LlmSettings from ide::LlmSettingsStore.current()
     prompt = ide::FimPrompt from self.assemble(moduleFqn, offset)
-    raw = string from ide::FimClient.complete(prompt)
+    raw = string from ide::FimClient.complete(prompt, settings)
     ok = bool from self.validates(moduleFqn, offset, raw)
     if (!ok) {
       return
@@ -470,16 +486,22 @@ public system LlmProvider {
   chatComplete(prompt: ide::FimPrompt, model: string): string;
 }
 
-/// The diagram canvas: draws the **JSON** `Scene` interactively (Svelte Flow +
-/// Dagre for C4, a depth-collapsible timeline for sequences), and exports the
-/// current view as **PNG** (rasterised in the browser). JSON is the draw format;
-/// PNG is the export format. The editor port's diagram seam binds to this.
+/// The diagram canvas: draws the **JSON** `Scene` interactively (Svelte Flow
+/// pan/zoom over geometry positioned by `emit`'s layout engine for C4, a
+/// depth-collapsible timeline for sequences), and exports the current view as
+/// **PNG or SVG**, both produced in the browser from the drawn diagram. JSON is
+/// the draw format; no diagram image crosses the wasm surface. The editor
+/// port's diagram seam binds to this.
 public component DiagramCanvas for ide::WebIde {
   /// Draw the JSON scene onto the interactive canvas.
   render(scene: emit::Scene): void;
   /// Export the current view as a PNG, rasterised in the browser from the drawn
   /// diagram.
   exportPng(): void;
+  /// Export the current view as an SVG, serialised in the browser from the
+  /// drawn diagram — distinct from the `emit` crate's static SVG, which stays a
+  /// CLI/doc path.
+  exportSvg(): void;
 }
 
 /// Boots the IDE in a browser tab: load the one wasm bundle (IdeSession), bind
@@ -539,14 +561,14 @@ feature DependenciesResolveAsExternals for ide::LanguageSession {
   but "the dependency's own modules are never offered as raw `pds_modules::…` paths"
 }
 
-/// A projected diagram is drawn from the JSON scene; SVG and PNG are not on the
-/// IDE's wasm surface — PNG is rasterised client-side, SVG stays a CLI/doc concern.
+/// A projected diagram is drawn from the JSON scene; no diagram image crosses
+/// the IDE's wasm surface — PNG and SVG exports are produced client-side.
 feature DiagramDrawsFromJsonScene for ide::DiagramCanvas {
   given "a projected view of the held workspace"
   when "the IDE draws or exports a diagram"
   then "the JSON `Scene` from `IdeSession.emitScene` draws the interactive canvas — the same geometry the HTML doc site's client islands draw"
-  and "PNG export is rasterised in the browser from the drawn diagram"
-  but "the static SVG form is a CLI/doc concern of the `emit` crate, not exposed on the IDE wasm"
+  and "PNG and SVG exports are produced in the browser from the drawn diagram"
+  but "no image crosses the IDE wasm — its surface carries only the JSON scene; the `emit` crate's static SVG remains the CLI/doc path"
 }
 
 /// Ghost text comes from the configured provider and is vetted by the parser.
