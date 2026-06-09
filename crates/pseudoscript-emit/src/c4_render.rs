@@ -118,7 +118,9 @@ pub struct C4Layout {
 }
 
 /// The grid the experimental placement used, in absolute canvas coordinates. Cell
-/// `(r, c)` is centred at `origin + (c·cell_w, r·cell_h)`.
+/// `(r, c)` is centred at `origin + (c·cell_w, r·cell_h)`. `pad` is the drag-room
+/// frame wrapping the grid on every side: a pixel maps to its pin cell by recovering
+/// the raw cell then subtracting `pad`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridInfo {
     pub cols: i32,
@@ -126,6 +128,7 @@ pub struct GridInfo {
     pub cell_w: i32,
     pub cell_h: i32,
     pub origin: PointI,
+    pub pad: i32,
 }
 
 /// A node card placed by the layout engine: its content (for the card chrome)
@@ -506,6 +509,7 @@ fn from_dot_layout(
         cell_w: round(g.cell_w),
         cell_h: round(g.cell_h),
         origin: off(g.origin),
+        pad: i32::try_from(g.pad).unwrap_or(0),
     });
 
     C4Layout {

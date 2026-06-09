@@ -1,0 +1,120 @@
+//! project — the native filesystem edge for the toolchain (crate
+//! `pseudoscript-project`).
+//!
+//! Pure analysis lives in `model`, which never touches disk. This crate is where
+//! the native tools (the `pds` binary, the stdio LSP) read a project off disk:
+//! it finds the workspace root (`pds.toml`), walks the tree for `.pds` modules —
+//! skipping `target/` and the vendored `pds_modules/` — and loads each direct
+//! dependency's modules for cross-workspace resolution (LANG.md §8.1, §8.3). The
+//! slug computation and `pds.lock`/`pds.toml` parsing are shared with `model`,
+//! not forked.
+
+/// A filesystem failure surfaced to the caller: the path or manifest that could
+/// not be read, with a human-readable message.
+public data IoError { message: string }
+
+/// `crates/pseudoscript-project`. The disk-facing loader: resolves the workspace
+/// root, reads its `.pds` modules, and materialises dependency modules from the
+/// vendor directory. The only place the native toolchain touches the filesystem
+/// for project loading.
+public container Project for context::Pseudoscript {
+  /// Resolve and read a workspace off disk into its `(fqn, source)` modules.
+  public load(root: string): Result<model::WorkspaceModule[], project::IoError> {
+    return project::Loader.load(root)
+  }
+
+  /// Find the workspace root by walking up to the nearest `pds.toml`.
+  public findRoot(start: string): Result<string, project::IoError> {
+    return project::Loader.findRoot(start)
+  }
+}
+
+/// Resolves and reads a workspace off disk: finds the root by walking up to the
+/// nearest `pds.toml`, then walks the tree for visible `.pds` files and loads each
+/// as a `(fqn, source)` module — mapping its path to a flat module FQN (§8.1) and
+/// skipping `target/` and `pds_modules/`.
+component Loader for project::Project {
+  /// Load every `.pds` module under the workspace root into the `(fqn, source)`
+  /// form the model resolves: find the visible files, then read each one.
+  public load(root: string): Result<model::WorkspaceModule[], project::IoError> {
+    files = Result<string[], IoError> from self.findModules(root)
+    if (files.isErr) {
+      return Err(files.error)
+    }
+    modules = Result<model::WorkspaceModule[], IoError> from self.readEach(root, files.value)
+    if (modules.isErr) {
+      return Err(modules.error)
+    }
+    return Ok(modules.value)
+  }
+
+  /// Walk up from `start` to the nearest directory holding `pds.toml`; errors if
+  /// no manifest is found on the way to the filesystem root.
+  findRoot(start: string): Result<string, project::IoError>;
+
+  /// The visible `.pds` files under the root, skipping `target/` and the vendored
+  /// `pds_modules/`.
+  findModules(root: string): Result<string[], project::IoError>;
+
+  /// Read each file and pair its source with the flat module FQN derived from its
+  /// path (§8.1); errors if a `.pds` file cannot be read.
+  readEach(root: string, files: string[]): Result<model::WorkspaceModule[], project::IoError>;
+
+  /// Whether a directory entry is visible to the walk — not a dotfile, not
+  /// `target/`, not `pds_modules/`.
+  isVisible(entry: string): bool;
+
+  /// Whether a path is a `.pds` source file.
+  isPdsFile(path: string): bool;
+
+  /// Map a path relative to the root to its flat module FQN, normalising each
+  /// segment to an identifier (§8.1).
+  moduleFqn(relative: string): string;
+
+  /// Normalise one path segment to a PseudoScript identifier segment.
+  normalizeSegment(segment: string): string;
+}
+
+/// Resolves a workspace's declared dependencies into modules the checker binds as
+/// externals (§8.3): reads `pds.lock` + `pds_modules/`, materialises each direct
+/// dependency's `.pds` modules under its dependency-name prefix, and resolves a
+/// local path dependency's directory.
+public component Deps for project::Project {
+  /// The dependency modules for the workspace at `root`: read the lock and vendor
+  /// directory and load each direct dependency's modules, prefixed by its
+  /// dependency name (§8.3).
+  public dependencyModules(root: string): Result<model::WorkspaceModule[], project::IoError>;
+
+  /// The manifest path for a dependency materialised at `dir` under sub-path
+  /// `sub` (a git dependency's workspace may be a subdirectory of its repo).
+  workspaceManifest(dir: string, sub: string): string;
+
+  /// Resolve a local path dependency named `name` at `path`, relative to the
+  /// workspace root, to its directory on disk.
+  resolveLocal(root: string, name: string, path: string): Result<string, project::IoError>;
+}
+
+/// The root is the nearest ancestor holding `pds.toml`.
+feature FindWorkspaceRoot for project::Loader {
+  given "a path inside a workspace directory tree"
+  when "the root is resolved"
+  then "the nearest ancestor directory holding a pds.toml is the root"
+  but "a tree with no pds.toml up to the filesystem root fails with an IoError"
+}
+
+/// The walk loads `.pds` modules and skips build and vendor directories.
+feature LoadModulesSkippingBuildAndVendor for project::Loader {
+  given "a workspace whose tree includes target/ and pds_modules/ directories"
+  when "its modules are loaded"
+  then "every visible .pds file becomes a (fqn, source) module"
+  and "each file's path maps to its flat module FQN (§8.1)"
+  but "files under target/ and pds_modules/ are skipped"
+}
+
+/// Dependencies load as prefixed externals for cross-workspace resolution.
+feature DependenciesLoadAsExternals for project::Deps {
+  given "a workspace declaring a git or local dependency, vendored under pds_modules/"
+  when "its dependency modules are read"
+  then "each direct dependency's .pds modules load under the dependency-name prefix (§8.3)"
+  but "the dependency's own pds_modules/ are not re-exported"
+}

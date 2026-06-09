@@ -174,15 +174,15 @@
 
 <Command.Dialog bind:open shouldFilter={false} class="w-[min(56rem,92vw)] sm:max-w-[56rem]">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div onkeydown={onKeydown}>
+  <div onkeydown={onKeydown} data-testid="command-palette">
     <div class="modes" role="tablist" aria-label="Search scope">
       {#each TABS as t (t.id)}
-        <button class="mode" class:on={mode === t.id} role="tab" aria-selected={mode === t.id} onclick={() => selectTab(t.id)}>
+        <button class="mode" class:on={mode === t.id} role="tab" aria-selected={mode === t.id} data-testid="command-mode-{t.id}" onclick={() => selectTab(t.id)}>
           {t.label}
         </button>
       {/each}
     </div>
-    <Command.Input autofocus bind:value={query} bind:ref={inputEl} placeholder={PLACEHOLDER[mode]} />
+    <Command.Input autofocus bind:value={query} bind:ref={inputEl} placeholder={PLACEHOLDER[mode]} data-testid="command-input" />
     <Command.List>
       <Command.Empty>{mode === "text" && q.trim().length < 2 ? "Type at least 2 characters." : "No matches."}</Command.Empty>
 
@@ -210,7 +210,7 @@
         {#if fFiles.length}
           <Command.Group heading={fFiles.length >= CAP ? `Files (${CAP}+)` : "Files"}>
             {#each fFiles as f (f.fqn)}
-              <Command.Item value="file {f.fqn}" onSelect={() => pickFile(f)}>
+              <Command.Item value="file {f.fqn}" data-testid="cmd-file-{f.fqn}" onSelect={() => pickFile(f)}>
                 <span class="leaf">{f.fqn}</span>
               </Command.Item>
             {/each}
@@ -219,7 +219,7 @@
         {#if fSymbols.length}
           <Command.Group heading={fSymbols.length >= CAP ? `Symbols (${CAP}+)` : "Symbols"}>
             {#each fSymbols as s (s.fqn)}
-              <Command.Item value="sym {s.fqn}" onSelect={() => pickSymbol(s.fqn)}>
+              <Command.Item value="sym {s.fqn}" data-testid="cmd-sym-{s.fqn}" onSelect={() => pickSymbol(s.fqn)}>
                 <span class="kind kind-{s.kind}">{s.kind}</span>
                 <span class="leaf">{s.name}</span>
                 <span class="fqn">{s.fqn}</span>
@@ -230,7 +230,7 @@
         {#if fActions.length}
           <Command.Group heading="Actions">
             {#each fActions as a (a.id)}
-              <Command.Item value="action {a.id}" onSelect={() => pickAction(a)}>
+              <Command.Item value="action {a.id}" data-testid="cmd-action-{a.id}" onSelect={() => pickAction(a)}>
                 <span class="leaf">{a.label}</span>
                 {#if a.hint}<span class="fqn">{a.hint}</span>{/if}
               </Command.Item>

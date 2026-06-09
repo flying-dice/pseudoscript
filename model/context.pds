@@ -12,7 +12,7 @@ public person Developer {
   /// #headline
   #[manual]
   public renderDocs(path: string): void {
-    cli::DocCmd.run(path)
+    cli::Cli.runDoc(path)
   }
 
   /// Author a model in the editor, which drives the language server.
@@ -34,8 +34,8 @@ public system Editor {
   /// Track an open document: ensure `pds lsp` is running, then push each change
   /// to the server (which replies with diagnostics).
   public openDocument(doc: model::WorkspaceModule): void {
-    cli::LspHost.run()
-    lsp::Server.onChange(doc)
+    cli::Cli.runLsp()
+    lsp::Lsp.onChange(doc)
   }
 }
 
@@ -47,46 +47,46 @@ public system Editor {
 /// #headline
 feature DocumentAWorkspace for context::Pseudoscript {
   given "a directory holding a pds.toml and one or more .pds modules"
-  and   "the modules form a well-formed C4 model"
-  when  "the developer runs `pds doc` against the directory"
-  then  "every module is loaded into one resolved graph"
-  and   "C4 and sequence diagrams are projected and embedded as inline SVG"
-  and   "a static site is written under the configured output directory"
+  and "the modules form a well-formed C4 model"
+  when "the developer runs `pds doc` against the directory"
+  then "every module is loaded into one resolved graph"
+  and "C4 and sequence diagrams are projected and embedded as inline SVG"
+  and "a static site is written under the configured output directory"
 }
 
 /// Statically validate a model and report what is wrong.
 feature CheckAModel for context::Pseudoscript {
   given "a .pds source file"
-  when  "the developer runs `pds check` on it"
-  then  "the source is parsed with error recovery"
-  and   "resolution, visibility, Result-flow, and return-coverage checks run"
-  and   "every violation is reported as a diagnostic"
-  but   "a well-formed model reports nothing and exits zero"
+  when "the developer runs `pds check` on it"
+  then "the source is parsed with error recovery"
+  and "resolution, visibility, Result-flow, and return-coverage checks run"
+  and "every violation is reported as a diagnostic"
+  but "a well-formed model reports nothing and exits zero"
 }
 
 /// Reformat a model to one canonical form.
 feature FormatAModel for context::Pseudoscript {
   given "a .pds source file with non-canonical spacing"
-  when  "the developer runs `pds fmt`"
-  then  "the source is parsed and pretty-printed to canonical PseudoScript"
-  and   "comments and blank-line runs are preserved"
-  but   "unparseable source is rejected without rewriting the file"
+  when "the developer runs `pds fmt`"
+  then "the source is parsed and pretty-printed to canonical PseudoScript"
+  and "comments and blank-line runs are preserved"
+  but "unparseable source is rejected without rewriting the file"
 }
 
 /// Author a model in an editor with live diagnostics.
 feature EditModelInIde for context::Pseudoscript {
   given "an editor that speaks the Language Server Protocol"
-  and   "`pds lsp` running as a child process over stdio"
-  when  "the author changes a document"
-  then  "the server re-checks the document from its current text"
-  and   "diagnostics are published back to the editor"
+  and "`pds lsp` running as a child process over stdio"
+  when "the author changes a document"
+  then "the server re-checks the document from its current text"
+  and "diagnostics are published back to the editor"
 }
 
 /// Preview docs that rebuild as the model changes.
 feature ServeLiveDocs for context::Pseudoscript {
   given "a generated documentation site"
-  when  "the developer runs `pds doc --serve --watch`"
-  then  "the site is hosted over HTTP on localhost"
-  and   "a change to any .pds or pds.toml rebuilds the site"
-  and   "the browser live-reloads to the new version"
+  when "the developer runs `pds doc --serve --watch`"
+  then "the site is hosted over HTTP on localhost"
+  and "a change to any .pds or pds.toml rebuilds the site"
+  and "the browser live-reloads to the new version"
 }

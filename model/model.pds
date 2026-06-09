@@ -39,14 +39,7 @@ public data MemberKind =
 /// definition span, one-line signature detail (`run(name: string): uuid`), value
 /// type (a field's type or a callable's return type), and `///` summary (empty
 /// for a field). Powers member completion and go-to-definition.
-public data Member {
-  name: string,
-  kind: model::MemberKind,
-  span: syntax::Span,
-  detail: string,
-  ty: string,
-  doc: string
-}
+public data Member { name: string, kind: model::MemberKind, span: syntax::Span, detail: string, ty: string, doc: string }
 
 /// A file-local `alias` binding: the `::`-joined target node FQN it expands to,
 /// and the span of the alias name's declaration (LANG.md §8.3).
@@ -55,13 +48,7 @@ public data Alias { target: string, span: syntax::Span }
 /// One declared, addressable node in a module namespace: the bare name, its FQN
 /// (`module::Ledger`), its declaration kind, whether it is `public` (§8.2), and
 /// the span of its name.
-public data Symbol {
-  name: string,
-  fqn: string,
-  kind: model::SymbolKind,
-  isPublic: bool,
-  span: syntax::Span
-}
+public data Symbol { name: string, fqn: string, kind: model::SymbolKind, isPublic: bool, span: syntax::Span }
 
 /// The outcome of resolving a cross-module reference (LANG.md §8.2): the FQN
 /// names a public symbol, a private one reached from another module, or nothing.
@@ -108,24 +95,42 @@ public data Trigger =
 
 /// A node's documentation, lifted from its `///` block (LANG.md §2.1): the
 /// summary (compact-diagram text), the extended description (tooltip text), and
-/// its tags (`#name`, including the `#`), in source order.
+/// its tags (`
+/// `, including the `#`), in source order.
+/// #name
 public data NodeDoc { summary: string, extended: string, tags: string[] }
+
+/// One parameter of a callable signature: its name and rendered type.
+public data SigParam { name: string, ty: string }
+
+/// A callable node's signature (§5.1): its ordered parameters and rendered return
+/// type. Carried on a callable `GraphNode` so the sequence and symbol views can
+/// show the call shape without re-reading source.
+public data Signature { params: model::SigParam[], ret: string }
+
+/// One field of a `data` record or union-variant record: its name and rendered
+/// type.
+public data DataField { name: string, ty: string }
+
+/// One variant of a `data` union (§3.5): its name and, for a record variant, its
+/// fields.
+public data DataVariant { name: string, fields: model::DataField[] }
+
+/// The disclosed shape of a `data` node (§3.4, §3.5): a record of fields, a
+/// discriminated union of variants, or an undisclosed black box. Carried on a
+/// `data` `GraphNode` so the entity (ER) view draws the rows without re-reading
+/// source.
+public data DataShape =
+  | Record { fields: model::DataField[] }
+  | Union { variants: model::DataVariant[] }
+  | BlackBox
 
 /// One node in the resolved graph — a structural declaration, a `data` type, or a
 /// callable. Carries its FQN, simple name, kind, enclosing-node FQN (`for` parent,
 /// owning node, or empty at top level), declaring module, visibility, name span,
-/// any trigger macros (callables only), and lifted `///` documentation.
-public data GraphNode {
-  fqn: string,
-  name: string,
-  kind: model::NodeKind,
-  parent: string,
-  module: string,
-  visibility: model::Visibility,
-  span: syntax::Span,
-  triggers: model::Trigger[],
-  doc: model::NodeDoc
-}
+/// any trigger macros (callables only), the call signature (callables only), the
+/// disclosed shape (`data` only), and lifted `///` documentation.
+public data GraphNode { fqn: string, name: string, kind: model::NodeKind, parent: string, module: string, visibility: model::Visibility, span: syntax::Span, triggers: model::Trigger[], signature: model::Signature, shape: model::DataShape, doc: model::NodeDoc }
 
 /// What relationship a graph edge expresses (LANG.md §9.1): a `for` parent link,
 /// a body call (label = method), a synthesised trigger initiator edge, or a
@@ -139,13 +144,10 @@ public data EdgeKind =
 /// A typed, directed relationship between two graph node FQNs. `to` (and for some
 /// kinds `from`) may name a node not present as a `GraphNode` — a synthesised
 /// trigger initiator, or a target that does not resolve. `label` is the method
-/// name for `Call`, otherwise empty.
-public data Edge {
-  source: string,
-  to: string,
-  kind: model::EdgeKind,
-  label: string
-}
+/// name for `Call`, otherwise empty. `span` is the source range that produced the
+/// edge — the call site for a `Call` — so an architectural lint can point its
+/// diagnostic at the offending call; the empty span when the edge is synthesised.
+public data Edge { source: string, to: string, kind: model::EdgeKind, label: string, span: syntax::Span }
 
 /// One step in a callable's ordered sequence trace (LANG.md §7, §9.2). Calls in a
 /// chained expression are emitted left-to-right; control flow becomes `Alt`/
@@ -163,29 +165,77 @@ public data ScenarioStep { keyword: string, text: string }
 
 /// A `feature` BDD scenario attached to its target node (LANG.md §5.2, §9.3):
 /// its name, the canonicalised target FQN (as written if it does not resolve),
-/// lifted `///` documentation, and the ordered given/when/then steps. Steps are
-/// prose, not resolved, so a scenario adds no edges; it renders as a card on its
-/// target node's doc page.
-public data Scenario {
-  name: string,
-  targetFqn: string,
-  doc: model::NodeDoc,
-  steps: model::ScenarioStep[]
-}
+/// the declaring module's FQN, the span of the feature name (a host's
+/// go-to-definition target), lifted `///` documentation, and the ordered
+/// given/when/then steps. Steps are prose, not resolved, so a scenario adds no
+/// edges; it renders as a card on its target node's doc page.
+public data Scenario { name: string, targetFqn: string, module: string, span: syntax::Span, doc: model::NodeDoc, steps: model::ScenarioStep[] }
 
 /// The resolved architecture graph: every node and typed edge across all C4
 /// levels, plus feature scenarios. The single source every view projects from —
 /// enough to extract any view without re-reading source. Per-callable sequence
 /// traces (`Step[]`) are held alongside, keyed by the owning callable's FQN.
-public data Graph {
-  nodes: model::GraphNode[],
-  edges: model::Edge[],
-  scenarios: model::Scenario[]
-}
+public data Graph { nodes: model::GraphNode[], edges: model::Edge[], scenarios: model::Scenario[] }
+
+/// A `[dependencies]` entry as written in `pds.toml` (§8.3): a git URL with at
+/// most one of tag/rev/branch and an in-repo sub-path, or a local sibling path.
+/// Empty strings stand for the absent options.
+public data DepSpec { git: string, tag: string, rev: string, branch: string, path: string }
+
+/// A resolved revision selector — at most one of these (§8.3); `Default` is the
+/// remote's default-branch HEAD.
+public data Rev =
+  | Tag { name: string }
+  | Branch { name: string }
+  | Commit { hash: string }
+  | Default
+
+/// The resolved source of a dependency (ADR-026): a fetched git repository at a
+/// revision and in-repo sub-path, or a local sibling workspace read from disk.
+public data Source =
+  | Git { url: string, selector: model::Rev, sub: string }
+  | Local { path: string }
+
+/// A content-addressable package identity: its source, resolved revision, and
+/// in-repo path. Drives the `pds_modules/` slug a git package materialises into.
+public data PackageId { source: string, rev: string, path: string }
+
+/// One dependency module's in-memory form: its FQN *within* the dependency
+/// workspace (path relative to that workspace root) and its source. The resolver
+/// prefixes it with the dependency name.
+public data DepFile { fqn: string, source: string }
+
+/// A parsed `pds.lock` (§8.4): the pinned dependency graph. A black box here — its
+/// shape is the lockfile's concern, not the model's.
+public data Lock;
 
 /// `crates/pseudoscript-model`. AST to one resolved graph; static checks
-/// (resolution, visibility, Result flow, return coverage). WASM-safe.
-public container Model for context::Pseudoscript;
+/// (resolution, visibility, Result flow, return coverage); the §8.3 dependency
+/// resolver; and the LSP analysis primitives (completion, folding, semantic
+/// tokens, inference). WASM-safe.
+public container Model for context::Pseudoscript {
+  /// Build the resolved architecture graph from a workspace.
+  public graph(modules: model::WorkspaceModule[]): model::Graph {
+    return model::Builder.graph(modules)
+  }
+
+  /// Parse and statically analyze one module's source.
+  public check(text: string): syntax::Diagnostic[] {
+    return model::Checks.check(text)
+  }
+
+  /// Check a multi-module workspace with its §8.3 dependency modules bound as
+  /// externals, so a cross-dependency reference resolves.
+  public checkWorkspace(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): syntax::Diagnostic[] {
+    return model::Checks.checkWorkspace(modules, externals)
+  }
+
+  /// Per-file workspace diagnostics keyed by module FQN, resolved against the
+  /// §8.3 dependency externals.
+  public checkWorkspaceModules(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleDiagnostics[] {
+    return model::Checks.checkWorkspaceModules(modules, externals)
+  }
+}
 
 /// Resolves a module's declarations into a symbol table (LANG.md §8). FQNs are
 /// file-derived: a single `.pds` file is one module, named by its `//!` path.
@@ -193,13 +243,13 @@ public container Model for context::Pseudoscript;
 /// feature names live in a separate namespace the `Checks` enforce — plus member
 /// and alias indexes. The LSP reuses the table for hover and go-to-definition.
 public component Resolver for model::Model {
-  /// Builds the per-module symbol table, deriving the module FQN from its `//!`
-  /// inner doc. Walks each item: a decl collects a symbol (and its members, and
+  /// Builds the per-module symbol table for an anonymous module — no caller FQN,
+  /// so the table carries an empty module path (`check`/`eval`, an editor
+  /// snippet). Walks each item: a decl collects a symbol (and its members, and
   /// hoisted inline union variants); an alias records a binding; a feature adds
   /// nothing to this table — its name lives in a separate namespace.
   public build(ast: syntax::Module): model::SymbolTable {
-    path = string from self.modulePath(ast)
-    return self.buildWithPath(ast, path)
+    return self.buildWithPath(ast, "")
   }
 
   /// Builds the table with a caller-supplied module FQN — the path the workspace
@@ -216,10 +266,6 @@ public component Resolver for model::Model {
   /// Whether `path` names this module exactly — a namespace, not a node (§8.3).
   public isModulePath(model: model::SymbolTable, path: string): bool;
 
-  /// Derives the module FQN from the first `//!` inner-doc line: its first
-  /// whitespace-delimited token (`//! banking::core — notes` → `banking::core`).
-  modulePath(ast: syntax::Module): string;
-
   /// Computes a symbol's FQN: `module::name`, or the bare name for an anonymous
   /// module. The shared rule every node-symbol insertion follows (§8.1).
   qualify(modulePath: string, name: string): string;
@@ -229,27 +275,51 @@ public component Resolver for model::Model {
 /// workspace from `(fqn, parsed module)` pairs; owns the per-module models and a
 /// global FQN-to-`Symbol` index for cross-module resolution.
 public component Workspace for model::Model {
-  /// Builds the workspace, resolving each module with its caller-supplied FQN so
+  /// Builds the single-workspace table with no dependency externals — the
+  /// graph-projection path. Resolves each module with its caller-supplied FQN so
   /// the global index keys on the correct cross-module names.
   public build(modules: model::WorkspaceModule[]): model::ModuleEntry[] {
-    for (m in modules) {
-      parsed = Parsed from syntax::Parser.parse(m.text)
-      model::Resolver.buildWithPath(parsed.ast, m.fqn)
-    }
-    return self.collect(modules)
+    return self.buildWithExternals(modules, self.noExternals())
   }
 
-  /// Resolves each module into a `ModuleEntry` and indexes its symbols by FQN.
-  collect(modules: model::WorkspaceModule[]): model::ModuleEntry[];
+  /// Builds the table with the workspace's §8.3 dependency modules bound as
+  /// `externals`, so a `dep::module::Node` reference resolves across workspaces.
+  /// External symbols — public *and* private — are indexed too, so a reference to
+  /// a private external reports `Private`, not a dangling FQN (§8.3). The checks
+  /// path the CLI, the LSP store, and the IDE all route through.
+  public buildWithExternals(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleEntry[] {
+    local = ModuleEntry[] from self.resolveEach(modules)
+    external = ModuleEntry[] from self.resolveEach(externals)
+    return self.index(local, external)
+  }
+
+  /// Parse and resolve each module into a `ModuleEntry` — its FQN, its AST, and
+  /// its symbol table built with that FQN.
+  resolveEach(modules: model::WorkspaceModule[]): model::ModuleEntry[];
+
+  /// Index every module's symbols by FQN — the local entries plus the externals —
+  /// into the global cross-module resolution table, retaining each entry.
+  index(local: model::ModuleEntry[], external: model::ModuleEntry[]): model::ModuleEntry[];
+
+  /// The empty external set — the single-workspace `build` binds no dependencies.
+  noExternals(): model::WorkspaceModule[];
 
   /// Looks up a symbol by its full FQN, regardless of visibility.
   public symbol(fqn: string): model::Symbol;
+
+  /// Looks up a symbol by its full FQN, yielding none when no symbol is indexed
+  /// under it — the §8.2 existence check that precedes visibility.
+  lookup(fqn: string): Option<model::Symbol>;
 
   /// Resolves a fully-qualified reference made from `fromModule`, applying the
   /// §8.2 visibility rule: a same-module target resolves regardless of
   /// visibility; a cross-module target resolves only if it is `public`.
   public resolveQualified(fromModule: string, fqn: string): model::Resolution {
-    sym = Symbol from self.symbol(fqn)
+    found = Option<model::Symbol> from self.lookup(fqn)
+    if (found.isNone) {
+      return model::Resolution::Missing
+    }
+    sym = Symbol from found.value
     if (self.sameModule(fromModule, fqn)) {
       return Public from { sym }
     }
@@ -264,15 +334,15 @@ public component Workspace for model::Model {
   sameModule(fromModule: string, fqn: string): bool;
 }
 
-/// Static analysis (LANG.md §3.5, §4, §5.1, §6, §8, §2.4): builds the symbol
-/// tables, then runs the well-formedness checks. Every entry returns a
-/// `syntax::Diagnostic[]`; well-formed input yields an empty one. Checks are
-/// conservative — each rule fires only when the violation is certain.
-public component Checks for model::Model {
+/// Static analysis (LANG.md §2.2, §2.3, §2.4, §3.3, §3.4, §3.5, §4, §5.1, §5.2, §6,
+/// §7, §8): builds the symbol tables, then runs the well-formedness checks. Every
+/// entry returns a `syntax::Diagnostic[]`; well-formed input yields an empty one.
+/// Checks are conservative — each rule fires only when the violation is certain.
+component Checks for model::Model {
   /// Parse and statically analyze one module's source: parse errors followed by
   /// the static-analysis errors. The CLI's `pds check` driver.
   public check(text: string): syntax::Diagnostic[] {
-    parsed = Parsed from syntax::Parser.parse(text)
+    parsed = Parsed from syntax::Syntax.parse(text)
     static = syntax::Diagnostic[] from self.analyze(parsed.ast)
     return syntax::Diagnostic[] from { parsed.diagnostics, static }
   }
@@ -285,42 +355,83 @@ public component Checks for model::Model {
     return self.run(ast, model)
   }
 
-  /// Check a multi-module workspace (§8.2): each module's parse and per-module
-  /// static errors, then the cross-module visibility pass. Parses each module
-  /// before resolving the workspace.
-  public checkWorkspace(modules: model::WorkspaceModule[]): syntax::Diagnostic[] {
-    entries = ModuleEntry[] from model::Workspace.build(modules)
-    return self.runWorkspace(entries)
+  /// Check a multi-module workspace with its §8.3 dependency modules bound as
+  /// `externals` (§8.2): each module's parse and per-module static errors, then
+  /// the cross-module visibility pass — resolved with the externals bound so a
+  /// `dep::module::Node` reference resolves rather than falsely diagnosing. The
+  /// parse errors come first because the `ModuleEntry` the workspace pass walks
+  /// keeps only the recovered AST and drops each module's parse diagnostics.
+  public checkWorkspace(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): syntax::Diagnostic[] {
+    parse = syntax::Diagnostic[] from self.parseErrors(modules)
+    entries = ModuleEntry[] from model::Workspace.buildWithExternals(modules, externals)
+    workspace = syntax::Diagnostic[] from self.runWorkspace(entries)
+    return syntax::Diagnostic[] from { parse, workspace }
   }
 
+  /// Collects every local module's parse diagnostics, in module order: parse each
+  /// module's source through `syntax::Syntax.parse` and flatten the per-module
+  /// diagnostic lists. The externals are not parsed for diagnostics — a
+  /// dependency's own parse errors are not the consumer's (§8.3).
+  parseErrors(modules: model::WorkspaceModule[]): syntax::Diagnostic[];
+
   /// The per-file counterpart of `checkWorkspace`: each module's diagnostics keyed
-  /// by FQN. A cross-module visibility error lands in the module that makes the
-  /// offending reference, where its span points.
-  public checkWorkspaceModules(modules: model::WorkspaceModule[]): model::ModuleDiagnostics[];
+  /// by FQN, resolved against the §8.3 `externals`. A cross-module visibility
+  /// error lands in the module that makes the offending reference, where its span
+  /// points.
+  public checkWorkspaceModules(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleDiagnostics[];
 
   /// Runs every per-module check against a parsed module and its resolved model:
-  /// variant collisions, feature collisions, then each item's checks.
+  /// variant collisions (§3.5), feature collisions (§5.2), reserved-word
+  /// identifiers (§2.3), type-reference resolution (§3.3), then each item's
+  /// per-declaration and per-callable checks.
   run(ast: syntax::Module, model: model::SymbolTable): syntax::Diagnostic[] {
     variants = syntax::Diagnostic[] from model::VariantCollision.check(ast)
     features = syntax::Diagnostic[] from model::FeatureCheck.check(ast, model)
-    return syntax::Diagnostic[] from { variants, features }
+    reserved = syntax::Diagnostic[] from model::ReservedNames.check(ast)
+    typeRefs = syntax::Diagnostic[] from model::TypeRefs.check(ast, model)
+    items = syntax::Diagnostic[] from self.checkItems(ast)
+    return syntax::Diagnostic[] from { variants, features, reserved, typeRefs, items }
   }
 
-  /// Runs the per-module checks for every module, then the cross-module pass.
+  /// Runs the per-item checks over every declaration. On each callable body:
+  /// macro targeting (§2.4), single-assignment rebinds (§7.1), return coverage
+  /// (ADR-016), `Result`/`Option` accessor narrowing (§6), return-type and `from`
+  /// source/target matching (§5.1, §7.2 — ADR-035), `for` iterates an array
+  /// (§7.3 — ADR-014), `self.` calls and bare references resolve (§5.1, §8 —
+  /// ADR-004), `.field` reads name a declared field (§2.2, §3.4), call arity and
+  /// argument types match (§5.1 — ADR-022), `.method(args)` calls name a callable
+  /// of the receiver's type (§6 — ADR-022), and `if`/`while` conditions are `bool`
+  /// (§7 — ADR-023). Plus, on each structural declaration, the macro-target check
+  /// and the parent-kind check (§4 — a container parents a system, a component
+  /// parents a container).
+  checkItems(ast: syntax::Module): syntax::Diagnostic[];
+
+  /// Runs the per-module checks for every module, then the cross-module pass, then
+  /// the architectural lints over the resolved graph. The returned list is the
+  /// union of every module's per-module errors, the cross-module visibility
+  /// errors, and the architectural warnings. The graph is projected once from the
+  /// resolved entries and handed to `Architecture`, which never holds source.
   runWorkspace(entries: model::ModuleEntry[]): syntax::Diagnostic[] {
-    for (e in entries) {
-      self.run(e.ast, e.model)
-    }
-    return model::CrossModule.check(entries)
+    perModule = syntax::Diagnostic[] from self.runEach(entries)
+    cross = syntax::Diagnostic[] from model::CrossModule.check(entries)
+    graph = model::Graph from model::Builder.graphOf(entries)
+    arch = syntax::Diagnostic[] from model::Architecture.check(graph)
+    return syntax::Diagnostic[] from { perModule, cross, arch }
   }
+
+  /// Runs `run` against each entry and flattens every module's per-module
+  /// diagnostics into one list, in module order.
+  runEach(entries: model::ModuleEntry[]): syntax::Diagnostic[];
 }
 
 /// §8.2 — cross-module visibility resolution. Walks each module's qualified
-/// references — `for` parents, `alias` targets, feature targets, and body call
-/// targets — and against the global FQN index enforces: a reference from module A
-/// to a node in module B resolves only if that node is `public`. A private target
-/// or a dangling cross-module FQN is a diagnostic. Same-module references are the
-/// single-module checks' business and are skipped here.
+/// references — `for` parents, type annotations (field, parameter, return, and
+/// generic-argument types), feature targets, body call targets, value-position
+/// union-variant references, and the member named after a call target's FQN — and
+/// against the global FQN index enforces: a reference from module A to a node in
+/// module B resolves only if that node is `public`. A private target or a dangling
+/// cross-module FQN is a diagnostic. Same-module references are the single-module
+/// checks' business and are skipped here.
 public component CrossModule for model::Model {
   public check(entries: model::ModuleEntry[]): syntax::Diagnostic[];
 
@@ -330,23 +441,82 @@ public component CrossModule for model::Model {
   checkRef(entries: model::ModuleEntry[], fromModule: string, path: string): syntax::Diagnostic[];
 }
 
-/// §6 — flow-sensitive `Result` typestate. Each `Result` binding carries a state
-/// (`Unknown`/`Ok`/`Err`), narrowed on entering the branches of `if (r.isErr)` /
-/// `if (r.isOk)`. Reading `.value` while known-`Err`, or `.error` while
-/// known-`Ok`, is a model error. The env is cloned per branch so narrowing does
-/// not leak; an `if` whose guarded arm diverges narrows the fall-through to the
-/// inverse state.
+/// One architectural-principle lint rule (LANG.md §9 — the C4 facade/boundary
+/// principles). `code` is its stable identifier (`PDS-ARCH-001`); `title` names the
+/// principle; `href` is the article URL that explains it (a host renders it as the
+/// diagnostic's link); `severity` is the force it carries — `Warning`, since a
+/// violation advises rather than invalidates.
+public data ArchRule { code: string, title: string, href: string, severity: syntax::Severity }
+
+/// LANG.md §9 — architectural-principle lints over the resolved graph. Beyond §8.2
+/// visibility (which a `public` component still satisfies), these advise on C4
+/// structure: a cross-module call SHOULD reach a container/system's published face,
+/// not an internal `component` (Facade/Gateway); the module dependency graph SHOULD
+/// stay acyclic; a cross-system call SHOULD couple to the other system's boundary,
+/// not its containers. Each firing is a `Warning` stamped with the rule's `code`
+/// and `codeDescription` (its article URL); the model stays valid.
+component Architecture for model::Model {
+  /// Runs every architectural lint over the graph and unions their warnings: facade
+  /// bypass (PDS-ARCH-001), cyclic dependency (PDS-ARCH-002), and system-boundary
+  /// bypass (PDS-ARCH-003).
+  public check(graph: model::Graph): syntax::Diagnostic[] {
+    backdoor = syntax::Diagnostic[] from self.checkBackdoor(graph)
+    cycles = syntax::Diagnostic[] from self.checkCycles(graph)
+    boundary = syntax::Diagnostic[] from self.checkSystemBoundary(graph)
+    return syntax::Diagnostic[] from { backdoor, cycles, boundary }
+  }
+
+  /// PDS-ARCH-001 — facade bypass (backdooring). For each `Call` edge whose target
+  /// node is a `component` declared in a different module than its source node, emit
+  /// a `Warning` at the call span: the call reaches a container's internal component
+  /// instead of the container's published face. The cross-module guard
+  /// (`source.module != target.module`) is what makes it a backdoor — a same-module
+  /// component call is internal wiring.
+  checkBackdoor(graph: model::Graph): syntax::Diagnostic[];
+
+  /// PDS-ARCH-002 — cyclic dependency (Acyclic Dependencies Principle). Aggregate
+  /// `Call` edges into a module dependency graph (`source.module -> target.module`,
+  /// self-edges dropped) and find every cycle. For each cycle emit one `Warning` at
+  /// a representative call edge: the modules form a dependency cycle and SHOULD be
+  /// broken (extract a shared contract, or invert one dependency).
+  checkCycles(graph: model::Graph): syntax::Diagnostic[];
+
+  /// PDS-ARCH-003 — system-boundary bypass. For each `Call` edge that crosses a
+  /// system boundary (the enclosing `system` of the source differs from that of the
+  /// target) whose target is a `container`, emit a `Warning` at the call span:
+  /// couple to the other system's published face, not its containers. The
+  /// component-target case is already PDS-ARCH-001, so it is excluded here.
+  checkSystemBoundary(graph: model::Graph): syntax::Diagnostic[];
+
+  /// The lint rule for a `code`, carrying its article URL and severity — the
+  /// registry the detectors stamp onto each warning's `code`/`codeDescription`.
+  rule(code: string): model::ArchRule;
+
+  /// The enclosing `system` FQN of a node: walk `parent` up the C4 nesting
+  /// (component -> container -> system). Empty when the node sits under no system.
+  systemOf(graph: model::Graph, fqn: string): string;
+}
+
+/// §6 — flow-sensitive `Result` / `Option` typestate. Each binding carries a
+/// state (`Unknown`, `Ok`/`Err` for a `Result`, `Some`/`None` for an `Option`),
+/// narrowed on entering the branches of `if (r.isErr)` / `if (r.isOk)` /
+/// `if (o.isNone)` / `if (o.isSome)`. Reading `.value` while known-`Err` or
+/// known-`None`, or `.error` while known-`Ok`, is a model error. The env is
+/// cloned per branch so narrowing does not leak; an `if` whose guarded arm
+/// diverges narrows the fall-through to the inverse state (`Ok`<->`Err`,
+/// `Some`<->`None`).
 public component ResultFlow for model::Model {
   /// Checks one callable body for wrong-branch accessor reads, threading the
   /// per-point typestate environment through its statements.
   public check(body: syntax::Module): syntax::Diagnostic[];
 
-  /// If `cond` is a bare `r.isErr` / `r.isOk` guard, the binding name and the
-  /// branch it narrows to inside the then-block. Anything else narrows nothing.
+  /// If `cond` is a bare `r.isErr` / `r.isOk` / `o.isNone` / `o.isSome` guard,
+  /// the binding name and the branch it narrows to inside the then-block. Anything
+  /// else narrows nothing.
   resultGuard(cond: syntax::Token[]): string;
 
   /// Reports a wrong-branch read when a chain is exactly `r.value` over a
-  /// known-`Err` binding, or `r.error` over a known-`Ok` binding.
+  /// known-`Err` or known-`None` binding, or `r.error` over a known-`Ok` binding.
   checkAccessor(name: string, accessor: string, state: string): syntax::Diagnostic[];
 }
 
@@ -379,6 +549,19 @@ public component MacroTargeting for model::Model {
   public checkOnCallable(callable: syntax::Module): syntax::Diagnostic[];
 }
 
+/// §4 / ADR-010 — C4 parent-kind well-formedness. A `for` parent links a node to
+/// its enclosing level, and the levels MUST nest: a `container` parents a
+/// `system`, a `component` parents a `container`. A parent of the wrong kind is a
+/// diagnostic (`container `X` parent `Y` is not a system`). A bare parent that
+/// names no same-module node is unresolved (§8.1); a qualified parent this
+/// single-module model cannot see is left to cross-module resolution.
+public component ParentKind for model::Model {
+  /// Checks one structural declaration's `for` parent against the kind its level
+  /// requires. `System` and `Person` declarations have no required parent kind,
+  /// so they pass without a parent lookup.
+  public check(decl: syntax::Module): syntax::Diagnostic[];
+}
+
 /// §3.5 / ADR-006 — union variant collision. A top-level `data Name` followed by
 /// an inline variant `| Name { ... }` hoisting the same name is a collision. Bare
 /// variants reference existing data and never collide.
@@ -399,16 +582,44 @@ public component FeatureCheck for model::Model {
   public checkRebinds(body: syntax::Module): syntax::Diagnostic[];
 }
 
+/// §2.3 / ADR-012 — reserved-word identifiers. A declared identifier MUST NOT be a
+/// reserved word: a keyword, a primitive type name, or `Result`/`Option`. Covers
+/// every name a module declares — `data`, node, callable, field, parameter,
+/// variant, and feature names — so `data string` or a parameter named `Result` is
+/// a diagnostic.
+public component ReservedNames for model::Model {
+  public check(ast: syntax::Module): syntax::Diagnostic[];
+}
+
+/// §3.3 / §8.1 — type-reference resolution. Every named type in a declaration — a
+/// field, parameter, or return type, and each generic argument — MUST resolve. A
+/// bare name that resolves to nothing is reported as unresolved; a name that
+/// resolves to a declared type or node MUST be written by its full FQN
+/// (`module::Name`), so an unqualified declared-type annotation is rejected.
+/// Built-in types (the primitives, `Result`, `Option`) stay bare.
+public component TypeRefs for model::Model {
+  public check(ast: syntax::Module, model: model::SymbolTable): syntax::Diagnostic[];
+}
+
 /// Projects the parsed, resolved workspace into the architecture graph: structural
 /// nodes plus edges from `for` parents, body calls, triggers, and `from`
 /// provenance, with a sequence trace recorded per disclosed body. A pure
 /// projection — no I/O — so the emit crate and a future salsa/LSP layer can both
 /// adopt it.
-public component Builder for model::Model {
-  /// Builds the resolved graph: collect every node, derive its edges, and trace
-  /// each disclosed callable body into an ordered step list.
+component Builder for model::Model {
+  /// Builds the resolved graph from raw modules: resolve them into a workspace,
+  /// then project. The entry point for callers that hold only source.
   public graph(modules: model::WorkspaceModule[]): model::Graph {
     entries = ModuleEntry[] from model::Workspace.build(modules)
+    return Graph from self.graphOf(entries)
+  }
+
+  /// Projects an already-resolved workspace into the graph: collect every node,
+  /// derive its edges, and trace each disclosed callable body into an ordered step
+  /// list. The shared projection — `graph` resolves the entries first; the
+  /// workspace check (`Checks.runWorkspace`) reuses the entries it already holds,
+  /// so the architectural lints run without re-resolving.
+  public graphOf(entries: model::ModuleEntry[]): model::Graph {
     for (e in entries) {
       self.collectModule(e)
     }
@@ -427,9 +638,9 @@ public component Builder for model::Model {
   traceBlock(body: syntax::Module, ownerFqn: string, module: string): model::Step[];
 
   /// Canonicalises a node reference written in `module` to a full FQN: try the
-  /// path as-written, then `module::path`, then the leaf against this module. An
-  /// unresolvable reference is returned as written, so the emit crate sees what
-  /// the model named.
+  /// path as-written (an alias-expanded or cross-module FQN already resolves), then
+  /// `module::path` for a bare local name. An unresolvable reference is returned as
+  /// written, so the emit crate sees what the model named (§8.1).
   canonicalize(reference: string, module: string): string;
 
   /// The synthesised initiator node FQN a trigger contributes an edge from
@@ -437,114 +648,182 @@ public component Builder for model::Model {
   initiator(trigger: model::Trigger): string;
 }
 
+/// §8.3 — the dependency resolver. Parses a manifest's `[dependencies]` and a
+/// `pds.lock`, then maps each direct dependency to its dependency-name-prefixed
+/// modules — the externals the checker binds for cross-workspace resolution. The
+/// single source of the slug→name→`dep::module` mapping, shared by the native
+/// loader (`project`) and the WASM bridge (`ide`). Pure: fetching and disk are
+/// the caller's job.
+public component Deps for model::Model {
+  /// Parse a manifest's `[dependencies]` table into one spec per dependency name.
+  parseDependencies(manifestToml: string): model::DepSpec[];
+
+  /// Parse a `pds.lock` into the pinned dependency graph.
+  parseLock(lockToml: string): model::Lock;
+
+  /// Map direct dependencies to their prefixed `WorkspaceModule`s (§8.3): select
+  /// the vendored git files whose slug matches a lock edge and the local-source
+  /// files, then prefix each with its dependency name.
+  resolveDependencyModules(lockToml: string, vendored: model::DepFile[], local: model::DepFile[]): model::WorkspaceModule[];
+}
+
+/// Context-aware completion (the model-native producer `lsp_core` maps to LSP
+/// items): candidates at a caret offset resolved across the workspace and its
+/// externals — members after `.`, a module's public symbols after `::`, the
+/// built-in macros after `#[`, types in type position, else keywords and symbols.
+public component Completion for model::Model {
+  completion(entries: model::ModuleEntry[], fqn: string, offset: number): model::Member[];
+}
+
+/// The foldable regions of a module: every multi-line disclosed declaration and
+/// statement block, and doc-comment runs.
+public component Folding for model::Model {
+  foldingRanges(ast: syntax::Module): syntax::Span[];
+}
+
+/// AST-aware semantic colouring: each identifier classified by its declared role
+/// (node→namespace, `data`→class, callable→method, parameter, call segment), the
+/// spans `lsp_core` delta-encodes for the editor.
+public component Semantic for model::Model {
+  semanticTokens(ast: syntax::Module): syntax::Span[];
+}
+
+/// Local-binding type inference, for inlay hints and hover. Assignments are
+/// untyped (`x = expr`); this infers each binding's type from its right-hand side
+/// — a call's return type, a field access, a `from` expression, or a literal.
+/// Best-effort: an un-typeable expression yields nothing rather than a guess.
+public component Inference for model::Model {
+  /// The inferred type of an expression, rendered as a shape hint, or empty.
+  exprType(expr: syntax::Expr): string;
+}
+
 /// Well-formed input yields no diagnostics: a check returns data, never throws.
 feature DiagnosticsAreData for model::Checks {
   given "a well-formed module"
-  when  "it is checked"
-  then  "the returned diagnostic list is empty"
-  but   "the check never throws or aborts"
+  when "it is checked"
+  then "the returned diagnostic list is empty"
+  but "the check never throws or aborts"
 }
 
 /// Cross-module references obey visibility (§8.2).
 feature EnforceVisibility for model::CrossModule {
   given "a workspace whose modules reference each other by FQN"
-  when  "the workspace is checked"
-  then  "a cross-module reference to a public node resolves"
-  but   "a reference to a private node, or a dangling FQN, is rejected"
+  when "the workspace is checked"
+  then "a cross-module reference to a public node resolves"
+  but "a reference to a private node, or a dangling FQN, is rejected"
 }
 
 /// A same-module reference resolves regardless of visibility (§8.2).
 feature SameModuleAlwaysResolves for model::Workspace {
   given "a reference whose target is declared in the same module"
-  when  "the reference is resolved"
-  then  "it resolves whether the target is public or private"
+  when "the reference is resolved"
+  then "it resolves whether the target is public or private"
 }
 
 /// A cross-module visibility error is attributed to the referrer (§8.2).
 feature ErrorAttributedToReferrer for model::Checks {
   given "module B referencing a private node in module A"
-  when  "the workspace is checked per module"
-  then  "the diagnostic lands in module B, where the reference is written"
-  but   "module A, the declarer, stays clean"
+  when "the workspace is checked per module"
+  then "the diagnostic lands in module B, where the reference is written"
+  but "module A, the declarer, stays clean"
 }
 
-/// Result typestate narrows accessor reads to the right branch (§6).
+/// Result and Option typestate narrows accessor reads to the right branch (§6).
 feature ResultTypestateNarrows for model::ResultFlow {
   given "a binding `r` of type Result inside `if (r.isErr)`"
-  when  "the body is checked"
-  then  "reading `r.value` on the Err branch is rejected"
-  and   "reading `r.error` on the Ok branch is rejected"
-  but   "the matching accessor on each branch is accepted"
+  and "a binding `o` of type Option inside `if (o.isNone)`"
+  when "the body is checked"
+  then "reading `r.value` on the Err branch is rejected"
+  and "reading `r.error` on the Ok branch is rejected"
+  and "reading `o.value` on the None branch is rejected"
+  but "the matching accessor on each branch is accepted"
 }
 
 /// A diverging guarded arm narrows the fall-through to the inverse state (§6).
 feature DivergingArmNarrowsContinuation for model::ResultFlow {
   given "`if (r.isErr) { return Err(r.error) }` with no else"
-  when  "the statements after the `if` are checked"
-  then  "`r` is treated as Ok in the fall-through"
-  and   "a later `r.value` read is accepted"
+  when "the statements after the `if` are checked"
+  then "`r` is treated as Ok in the fall-through"
+  and "a later `r.value` read is accepted"
 }
 
 /// A disclosed non-void callable must return on every path (ADR-016).
 feature ReturnsOnAllPaths for model::ReturnCoverage {
   given "a disclosed callable with a non-void return type"
-  when  "its body is checked"
-  then  "a body returning on every path is accepted"
-  but   "a path that falls through without returning is rejected"
+  when "its body is checked"
+  then "a body returning on every path is accepted"
+  but "a path that falls through without returning is rejected"
 }
 
 /// Bindings are single-assignment, with no shadowing (§7.1, ADR-002).
 feature SingleAssignmentNoShadowing for model::FeatureCheck {
   given "a callable body that binds a name already in scope"
-  when  "the body is checked"
-  then  "the re-binding is rejected"
-  and   "a binding introduced in a nested block still shadows nothing"
+  when "the body is checked"
+  then "the re-binding is rejected"
+  and "a binding introduced in a nested block still shadows nothing"
 }
 
 /// A built-in macro on a structural declaration is a wrong-target error (§2.4).
 feature MacroWrongTarget for model::MacroTargeting {
   given "a `#[http(...)]` macro written on a container declaration"
-  when  "the declaration is checked"
-  then  "the macro is rejected as targeting the wrong kind"
-  but   "the same macro on a callable is accepted"
+  when "the declaration is checked"
+  then "the macro is rejected as targeting the wrong kind"
+  but "the same macro on a callable is accepted"
 }
 
 /// An onevent handler's parameter type must match the triggered event (§2.4).
 feature OnEventParameterMatches for model::MacroTargeting {
   given "a callable tagged `#[onevent(OrderPlaced)]`"
-  when  "its single parameter type is checked"
-  then  "a parameter of type OrderPlaced is accepted"
-  but   "a mismatched parameter type is rejected"
+  when "its single parameter type is checked"
+  then "a parameter of type OrderPlaced is accepted"
+  but "a mismatched parameter type is rejected"
+}
+
+/// C4 levels must nest: a container parents a system, a component a container (§4).
+feature ParentKindMustNest for model::ParentKind {
+  given "a container whose `for` parent names a component, not a system"
+  when "the declaration is checked"
+  then "the container is rejected because its parent is the wrong kind"
+  but "a container parenting a system, and a component parenting a container, are accepted"
 }
 
 /// An inline union variant colliding with a prior data name is rejected (§3.5).
 feature VariantNameCollision for model::VariantCollision {
   given "a top-level `data Name` and an inline variant `| Name { ... }`"
-  when  "the module is checked"
-  then  "the colliding inline variant is rejected"
-  but   "a bare `| Name` referencing the existing data is accepted"
+  when "the module is checked"
+  then "the colliding inline variant is rejected"
+  but "a bare `| Name` referencing the existing data is accepted"
 }
 
 /// A feature's target must be a node, and feature names are unique (§5.2, §8.1).
 feature FeatureTargetIsANode for model::FeatureCheck {
   given "a feature whose `for` target names a `data` type"
-  when  "the module is checked"
-  then  "the feature is rejected because its target is not a node"
-  and   "a second feature reusing an existing feature name is a collision"
+  when "the module is checked"
+  then "the feature is rejected because its target is not a node"
+  and "a second feature reusing an existing feature name is a collision"
 }
 
 /// References resolve regardless of declaration order (§8.1).
 feature ForwardReferencesResolve for model::Resolver {
   given "a node referenced before its declaration appears in the module"
-  when  "the symbol table is built"
-  then  "the reference resolves to the later declaration"
+  when "the symbol table is built"
+  then "the reference resolves to the later declaration"
 }
 
 /// One resolved graph feeds every view (§9).
 feature ResolveToOneGraph for model::Builder {
   given "a parsed, resolved workspace"
-  when  "the graph is built"
-  then  "every structural node and callable becomes a graph node"
-  and   "for-parent, call, trigger, and provenance edges are recorded"
-  and   "each disclosed body carries an ordered sequence trace"
+  when "the graph is built"
+  then "every structural node and callable becomes a graph node"
+  and "for-parent, call, trigger, and provenance edges are recorded"
+  and "each disclosed body carries an ordered sequence trace"
+}
+
+/// Dependencies resolve to prefixed externals, by one shared rule (§8.3).
+feature DependenciesResolveToExternals for model::Deps {
+  given "a manifest declaring git and local dependencies, with a pds.lock"
+  when "the dependency modules are resolved"
+  then "each direct dependency's modules load under its dependency-name prefix"
+  and "a vendored git file is selected by matching its slug to a lock edge"
+  but "the same rule serves both the native loader and the WASM bridge, so they never drift"
 }

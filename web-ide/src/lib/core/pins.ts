@@ -9,22 +9,26 @@
 export type Pin = { fqn: string; row: number; col: number };
 
 /** The grid geometry the engine emits (canvas pixels): cell `(r,c)` is centred at
- *  `origin + (c·cell_w, r·cell_h)`. */
+ *  `origin + (c·cell_w, r·cell_h)`. `pad` is the drag-room frame wrapping the grid on
+ *  every side — the inner region starts `pad` cells in, so a pin cell is raw − `pad`. */
 export type GridGeom = {
   cols: number;
   rows: number;
   cell_w: number;
   cell_h: number;
   origin: { x: number; y: number };
+  pad: number;
 };
 
-/** The cell a pixel point `(x, y)` falls in, clamped into the grid — the inverse
- *  of the cell-centre formula, shared by drag-snap and freeze. */
+/** The pin cell a pixel point `(x, y)` falls in: the raw cell (inverse of the
+ *  cell-centre formula) minus the frame `pad`, clamped so it stays inside the frame on
+ *  every side. The engine wraps the same `pad` frame back on, so a dropped pixel
+ *  round-trips to the exact cell the node is placed on. */
 export function cellAt(g: GridGeom, x: number, y: number): { row: number; col: number } {
   const clamp = (v: number, hi: number): number => Math.max(0, Math.min(hi, v));
   return {
-    col: clamp(Math.round((x - g.origin.x) / g.cell_w), g.cols - 1),
-    row: clamp(Math.round((y - g.origin.y) / g.cell_h), g.rows - 1),
+    col: clamp(Math.round((x - g.origin.x) / g.cell_w) - g.pad, g.cols - 1 - 2 * g.pad),
+    row: clamp(Math.round((y - g.origin.y) / g.cell_h) - g.pad, g.rows - 1 - 2 * g.pad),
   };
 }
 
@@ -64,12 +68,6 @@ export function setPin(doc: LayoutDoc, key: string, pin: Pin): LayoutDoc {
     next = next.filter((p) => p.fqn !== occupant.fqn);
   }
   return { ...doc, views: { ...doc.views, [key]: [...next, pin] } };
-}
-
-/** Replace a view's pins wholesale (used to freeze the current arrangement when
- *  the grid is unlocked). Returns a new document. */
-export function setPins(doc: LayoutDoc, key: string, list: Pin[]): LayoutDoc {
-  return { ...doc, views: { ...doc.views, [key]: [...list] } };
 }
 
 /** Remove the pin for `fqn` in `view` (un-pin). Returns a new document. */

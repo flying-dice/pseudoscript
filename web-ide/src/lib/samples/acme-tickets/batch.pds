@@ -20,9 +20,9 @@ public component Drainer for batch::Batch {
   /// Every minute, admit the next attendees for each on-sale event.
   #[schedule = "* * * * *"]
   public drain(): void {
-    onsale = Event[] from catalog::Events.onSale()
+    onsale = Event[] from catalog::Catalog.onSaleEvents()
     for (event in onsale) {
-      waitingroom::Gatekeeper.admitNext(event.id)
+      waitingroom::WaitingRoom.admitNext(event.id)
     }
   }
 }
@@ -34,9 +34,9 @@ public component Curator for batch::Batch {
   /// Every five minutes, settle each on-sale event's lifecycle.
   #[schedule = "*/5 * * * *"]
   public tidy(): void {
-    onsale = Event[] from catalog::Events.onSale()
+    onsale = Event[] from catalog::Catalog.onSaleEvents()
     for (event in onsale) {
-      catalog::Events.settle(event.id)
+      catalog::Catalog.settle(event.id)
     }
   }
 }
@@ -48,11 +48,11 @@ public component HoldReaper for batch::Batch {
   /// event's backlog cannot starve another's reaping.
   #[schedule = "* * * * *"]
   public reap(): void {
-    onsale = Event[] from catalog::Events.onSale()
+    onsale = Event[] from catalog::Catalog.onSaleEvents()
     for (event in onsale) {
-      stale = Hold[] from inventory::Holds.staleFor(event)
+      stale = Hold[] from inventory::Inventory.staleFor(event)
       for (hold in stale) {
-        inventory::Holds.expire(hold.id)
+        inventory::Inventory.expire(hold.id)
       }
     }
   }
@@ -65,9 +65,9 @@ public component SagaSweeper for batch::Batch {
   /// Every two minutes, resume orders stuck mid-saga past their threshold.
   #[schedule = "*/2 * * * *"]
   public sweep(): void {
-    stuck = Order[] from orders::OrderService.stuck()
+    stuck = Order[] from orders::Orders.stuck()
     for (order in stuck) {
-      orders::OrderService.resume(order.id)
+      orders::Orders.resume(order.id)
     }
   }
 }
@@ -80,9 +80,9 @@ public component Reconciler for batch::Batch {
   /// still converges the ledger.
   #[schedule = "*/5 * * * *"]
   public reconcile(): void {
-    pending = Order[] from orders::OrderService.unsettled()
+    pending = Order[] from orders::Orders.unsettled()
     for (order in pending) {
-      payments::PaymentService.reconcile(order.id)
+      payments::Payments.reconcile(order.id)
     }
   }
 }

@@ -16,24 +16,24 @@ public data DeliveryStatus =
   | Exhausted
 
 /// A delivery attempt record for one event to one merchant.
-public data Delivery {
-  event: string,
-  merchant: shared::MerchantId,
-  payload: string,
-  attempts: number,
-  status: webhooks::DeliveryStatus
-}
+public data Delivery { event: string, merchant: shared::MerchantId, payload: string, attempts: number, status: webhooks::DeliveryStatus }
 
 /// Why a delivery-store predicate did not hold.
 public data DeliveryError =
   | NotDuplicate
 
-/// `webhooks` — outbound event delivery.
-public container Webhooks for context::AcmePay;
+/// `webhooks` — outbound event delivery. Published face: the retry sweep other
+/// contexts drive lands here and routes inward to `Dispatcher`.
+public container Webhooks for context::AcmePay {
+  /// Retry deliveries whose backoff has elapsed (driven by the scheduled sweep).
+  public redeliver(): void {
+    webhooks::Dispatcher.redeliver()
+  }
+}
 
 /// Subscribes to domain events, signs them, and delivers them to merchant
 /// endpoints with at-least-once retry semantics.
-public component Dispatcher for webhooks::Webhooks {
+component Dispatcher for webhooks::Webhooks {
   /// Deliver `payment_intent.succeeded`.
   #[onevent(intents::PaymentSucceeded)]
   public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
@@ -138,14 +138,14 @@ component DeliveryStore for webhooks::Webhooks {
 /// A failing endpoint is retried, not dropped.
 feature FailedDeliveryRetries for webhooks::Dispatcher {
   given "a merchant endpoint that returns an error"
-  when  "an event is delivered to it"
-  then  "the delivery is scheduled for retry with backoff"
-  and   "it is retried until it succeeds or the attempt cap is reached"
+  when "an event is delivered to it"
+  then "the delivery is scheduled for retry with backoff"
+  and "it is retried until it succeeds or the attempt cap is reached"
 }
 
 /// A re-raised event is delivered at most once per attempt window.
 feature DeliveryIsDeduplicated for webhooks::Dispatcher {
   given "a domain event whose id was already recorded for delivery"
-  when  "the event is raised again"
-  then  "no second delivery record is created"
+  when "the event is raised again"
+  then "no second delivery record is created"
 }

@@ -67,7 +67,7 @@
 <svelte:window onkeydowncapture={onKeydown} />
 
 <div class="scrim" role="presentation" onclick={onclose}></div>
-<div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+<div class="panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" data-testid="settings-dialog">
   <header>
     <h2>Keyboard shortcuts</h2>
     <button class="x" aria-label="Close" onclick={onclose}>✕</button>
@@ -97,21 +97,22 @@
               <span class="label">{cmd.label}</span>
               <div class="binding">
                 {#if recording === cmd.id}
-                  <button class="chord recording" onclick={stopRecording}>Press keys… (Esc)</button>
+                  <button class="chord recording" data-testid="keybind-{cmd.id}" onclick={stopRecording}>Press keys… (Esc)</button>
                 {:else}
-                  <button class="chord" class:custom={cmd.custom} onclick={() => startRecording(cmd.id)}>
+                  <button class="chord" class:custom={cmd.custom} data-testid="keybind-{cmd.id}" onclick={() => startRecording(cmd.id)}>
                     {formatChord(cmd.chord)}
                   </button>
                 {/if}
                 <button
                   class="reset"
                   title="Reset to default"
+                  data-testid="keybind-reset-{cmd.id}"
                   disabled={!cmd.custom}
                   onclick={() => keybindings.reset(cmd.id)}>↺</button
                 >
               </div>
               {#if recording === cmd.id && notice}
-                <p class="notice">{notice}</p>
+                <p class="notice" data-testid="keybind-conflict">{notice}</p>
               {/if}
             </li>
           {/each}
@@ -122,7 +123,7 @@
 
   <footer>
     <span class="hint">Click a shortcut, then press the new key combination.</span>
-    <button class="reset-all" onclick={() => keybindings.resetAll()}>Reset all</button>
+    <button class="reset-all" data-testid="settings-reset-all" onclick={() => keybindings.resetAll()}>Reset all</button>
   </footer>
 </div>
 

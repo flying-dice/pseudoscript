@@ -47,10 +47,51 @@ public data EventListing { event: shared::EventId, name: string, venue: catalog:
 
 /// `catalog` — events and tiers; the source of truth for the offer.
 /// #critical
-public container Catalog for context::AcmeTickets;
+public container Catalog for context::AcmeTickets {
+  /// Create a new event in `Draft`.
+  public create(draft: catalog::NewEvent): catalog::Event {
+    return catalog::Events.create(draft)
+  }
+  /// Put a draft event on sale.
+  public putOnSale(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
+    return catalog::Events.putOnSale(id)
+  }
+  /// Cancel an event and raise `EventCancelled`.
+  public cancel(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
+    return catalog::Events.cancel(id)
+  }
+  /// Advance an event's lifecycle if warranted.
+  public settle(id: shared::EventId): void {
+    catalog::Events.settle(id)
+  }
+  /// `Err(NotSellable)` unless the event is `OnSale`.
+  public onSaleNow(id: shared::EventId): Result<void, catalog::NotSellable> {
+    return catalog::Events.onSaleNow(id)
+  }
+  /// Every event currently on sale (authoritative).
+  public onSaleEvents(): catalog::Event[] {
+    return catalog::Events.onSale()
+  }
+  /// One event's storefront projection, or `None`.
+  public listing(event: shared::EventId): Option<catalog::EventListing> {
+    return catalog::Listings.listing(event)
+  }
+  /// Every on-sale event's projection.
+  public onSaleListings(): catalog::EventListing[] {
+    return catalog::Listings.onSale()
+  }
+  /// Add a tier to an event.
+  public add(tier: catalog::NewTier): catalog::Tier {
+    return catalog::Tiers.add(tier)
+  }
+  /// The base price of a tier (before surge), or `TierNotFound`.
+  public priceOf(id: shared::TierId): Result<shared::Money, catalog::TierNotFound> {
+    return catalog::Tiers.priceOf(id)
+  }
+}
 
 /// Event lifecycle and authoritative reads.
-public component Events for catalog::Catalog {
+component Events for catalog::Catalog {
   /// Create a new event in `Draft`.
   public create(draft: catalog::NewEvent): catalog::Event {
     id = shared::EventId from catalog::EventStore.nextId()
@@ -121,7 +162,7 @@ public component Events for catalog::Catalog {
 /// record store is never the hot read on a surge on-sale. Maintained off `Events`
 /// writes; safe to read stale; versioned for caching — the same treatment as
 /// `inventory::Capacity` and `pricing::Demand`.
-public component Listings for catalog::Catalog {
+component Listings for catalog::Catalog {
   /// One event's storefront projection, or `None` if absent.
   listing(event: shared::EventId): Option<catalog::EventListing>;
   /// Every on-sale event's projection.
@@ -129,7 +170,7 @@ public component Listings for catalog::Catalog {
 }
 
 /// Tier configuration and base-price reads.
-public component Tiers for catalog::Catalog {
+component Tiers for catalog::Catalog {
   /// Add a tier to an event.
   public add(tier: catalog::NewTier): catalog::Tier {
     id = shared::TierId from catalog::TierStore.nextId()

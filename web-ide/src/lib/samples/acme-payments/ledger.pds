@@ -22,14 +22,7 @@ public data EntryType =
 /// the net effect (credit positive, debit negative); `source` is the id of the
 /// object that caused it (charge, refund, dispute, payout), which makes appends
 /// idempotent. `availableOn` is when a pending credit becomes available.
-public data BalanceTransaction {
-  id: shared::BalanceTxnId,
-  merchant: shared::MerchantId,
-  type: ledger::EntryType,
-  amount: shared::Money,
-  source: string,
-  availableOn: datetime
-}
+public data BalanceTransaction { id: shared::BalanceTxnId, merchant: shared::MerchantId, type: ledger::EntryType, amount: shared::Money, source: string, availableOn: datetime }
 
 /// A merchant's balance, derived from the log: `available` is the sum of entries
 /// whose `availableOn` has passed, `pending` the rest.
@@ -42,13 +35,30 @@ public data LedgerError =
 
 /// `ledger` — the immutable balance log and its derivations.
 /// #headline
-public container Ledger for context::AcmePay;
+public container Ledger for context::AcmePay {
+  /// The merchant's balance, derived by folding the log.
+  public balance(merchant: shared::MerchantId): ledger::Balance {
+    return ledger::BalanceService.balance(merchant)
+  }
+  /// Draw available funds for a payout, atomically check-and-append.
+  public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<ledger::BalanceTransaction, ledger::LedgerError> {
+    return ledger::BalanceService.withdraw(merchant, payout, amount)
+  }
+  /// Return drawn funds to available when a payout fails.
+  public restore(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): void {
+    ledger::BalanceService.restore(merchant, payout, amount)
+  }
+  /// Assert the double-entry invariant across the log.
+  public clear(): Result<void, ledger::LedgerError> {
+    return ledger::Clearing.clear()
+  }
+}
 
 /// Appends balance transactions in response to money-movement events and derives
 /// the balance from the log. Every append is idempotent on the entry's
 /// `(type, source)`, so an at-least-once event delivered twice posts once.
 /// #headline
-public component Balance for ledger::Ledger {
+component BalanceService for ledger::Ledger {
   /// A captured payment credits the merchant's pending balance, net of the
   /// platform fee, available after the settlement window (`availableOn`). The
   /// credit sits in pending until then and becomes available by the passage of
@@ -119,7 +129,7 @@ public component Balance for ledger::Ledger {
 
 /// Verifies the double-entry invariant across the log. Run periodically by the
 /// scheduled clearing job.
-public component Clearing for ledger::Ledger {
+component Clearing for ledger::Ledger {
   /// Assert that the log balances — every credit nets against a debit, payout, or
   /// reversal, so internal accounts return to zero at steady state. A nonzero
   /// account surfaces a missing or incorrect entry (`Unbalanced`) for
@@ -148,25 +158,25 @@ component EntryLog for ledger::Ledger {
 }
 
 /// A duplicated payment-succeeded event posts to the balance only once.
-feature CreditIsIdempotent for ledger::Balance {
+feature CreditIsIdempotent for ledger::BalanceService {
   given "a payment-succeeded event already appended to the log"
-  when  "the event is delivered again"
-  then  "no second entry is appended"
-  and   "the derived balance is unchanged"
+  when "the event is delivered again"
+  then "no second entry is appended"
+  and "the derived balance is unchanged"
 }
 
 /// Captured funds are pending until the settlement window passes.
-feature FundsArePendingUntilSettled for ledger::Balance {
+feature FundsArePendingUntilSettled for ledger::BalanceService {
   given "a payment captured today with a two-day settlement window"
-  when  "the balance is derived before the window elapses"
-  then  "the funds count as pending, not available"
-  and   "they become available once the window passes, with no further event"
+  when "the balance is derived before the window elapses"
+  then "the funds count as pending, not available"
+  and "they become available once the window passes, with no further event"
 }
 
 /// A payout can never draw more than the available balance.
-feature PayoutCannotOverdraw for ledger::Balance {
+feature PayoutCannotOverdraw for ledger::BalanceService {
   given "a payout draw larger than the available balance"
-  when  "the withdrawal is attempted"
-  then  "it is refused as insufficient funds"
-  and   "no debit is appended"
+  when "the withdrawal is attempted"
+  then "it is refused as insufficient funds"
+  and "no debit is appended"
 }

@@ -10,6 +10,7 @@
   // / go-to-definition / find-usages).
   import { Background, Controls, MarkerType, MiniMap, SvelteFlow, ViewportPortal } from "@xyflow/svelte";
   import type { Edge, Node } from "@xyflow/svelte";
+  import { Lock, LockOpen, RotateCcw } from "@lucide/svelte";
   import BoundaryNode from "./BoundaryNode.svelte";
   import C4Node from "./C4Node.svelte";
   import CanvasMenu from "./CanvasMenu.svelte";
@@ -42,8 +43,8 @@
   type BoundaryFrame = { fqn: string; title: string; kind: string; rect: Rect };
   // The grid geometry, present only for an experimental-grid layout; lets a drop
   // pixel map back to a cell (drag-to-pin). Cell (r,c) centres at
-  // `origin + (c·cell_w, r·cell_h)`.
-  type GridInfo = { cols: number; rows: number; cell_w: number; cell_h: number; origin: Pt };
+  // `origin + (c·cell_w, r·cell_h)`; `pad` is the drag-room frame cellAt subtracts.
+  type GridInfo = { cols: number; rows: number; cell_w: number; cell_h: number; origin: Pt; pad: number };
   type Layout = {
     width: number;
     height: number;
@@ -62,6 +63,10 @@
     fqn: string;
     boundary?: boolean;
     onclose?: () => void;
+    // Grid mode: pinned marker, unlocked flag, and clear-this-pin callback.
+    pinned?: boolean;
+    unlocked?: boolean;
+    onunpin?: () => void;
   };
   // An entry-point flow offered in a node's context menu.
   type Flow = { fqn: string; name: string; triggered?: boolean };
@@ -81,6 +86,11 @@
     unlocked?: boolean;
     onpin?: ((fqn: string, row: number, col: number) => void) | null;
     onunlock?: ((next: boolean) => void) | null;
+    // The FQNs pinned in this view (marks their cards), the clear-one callback, and
+    // the reset-this-diagram callback.
+    pinnedFqns?: Set<string> | null;
+    onunpin?: ((fqn: string) => void) | null;
+    onresetgrid?: (() => void) | null;
     onuniverse?: ((fqn: string) => void) | null;
   };
 
@@ -97,6 +107,9 @@
     unlocked = false,
     onpin = null,
     onunlock = null,
+    pinnedFqns = null,
+    onunpin = null,
+    onresetgrid = null,
     onuniverse = null,
   }: Props = $props();
 
@@ -104,6 +117,8 @@
   // then); leaving grid mode or switching to a non-grid view hides it.
   const gridEditable = $derived(!!layout?.grid && !!onpin && !!onunlock);
   const dragging = $derived(gridEditable && unlocked);
+  // Whether this view has any manual placements (gates the Reset control).
+  const hasPins = $derived((pinnedFqns?.size ?? 0) > 0);
 
   // The grid lines to draw while editing, in flow coordinates. Cell (r,c) centres
   // at `origin + (c·cell_w, r·cell_h)`, so boundaries sit half a cell out.
@@ -199,18 +214,29 @@
       zIndex: 0,
     }));
 
-    const cards: Node[] = l.nodes.map((n) => ({
-      id: n.fqn,
-      type: "card",
-      position: { x: n.rect.x, y: n.rect.y },
-      width: n.rect.w,
-      height: n.rect.h,
-      data: { label: n.label, kind: n.kind, summary: n.summary ?? "", fqn: n.fqn } as NodeData,
-      class: `c4-node ${n.kind}`,
-      draggable: dragging,
-      connectable: false,
-      zIndex: 1,
-    }));
+    const cards: Node[] = l.nodes.map((n) => {
+      const pinned = !!pinnedFqns?.has(n.fqn);
+      return {
+        id: n.fqn,
+        type: "card",
+        position: { x: n.rect.x, y: n.rect.y },
+        width: n.rect.w,
+        height: n.rect.h,
+        data: {
+          label: n.label,
+          kind: n.kind,
+          summary: n.summary ?? "",
+          fqn: n.fqn,
+          pinned,
+          unlocked: dragging,
+          onunpin: pinned ? () => onunpin?.(n.fqn) : undefined,
+        } as NodeData,
+        class: `c4-node ${n.kind}`,
+        draggable: dragging,
+        connectable: false,
+        zIndex: 1,
+      };
+    });
 
     const edges: Edge[] = l.edges.map((e, i) => ({
       id: `e${i}`,
@@ -335,11 +361,26 @@
       <button
         class="export-trigger"
         class:active={unlocked}
+        data-testid="grid-lock"
         onclick={() => onunlock?.(!unlocked)}
         title={unlocked ? "Lock the grid (stop dragging)" : "Unlock the grid to drag nodes between cells"}
       >
-        {unlocked ? "🔓 Unlocked" : "🔒 Locked"}
+        {#if unlocked}
+          <LockOpen size={13} strokeWidth={2} aria-hidden="true" /> Unlocked
+        {:else}
+          <Lock size={13} strokeWidth={2} aria-hidden="true" /> Locked
+        {/if}
       </button>
+      {#if hasPins && onresetgrid}
+        <button
+          class="export-trigger"
+          data-testid="grid-reset"
+          onclick={() => onresetgrid?.()}
+          title="Reset this diagram's manual placements (back to auto-layout)"
+        >
+          <RotateCcw size={13} strokeWidth={2} aria-hidden="true" /> Reset
+        </button>
+      {/if}
     {/if}
     {#if tweaks && onlayoutchange}
       <LayoutControl {tweaks} onchange={onlayoutchange} />

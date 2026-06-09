@@ -40,7 +40,7 @@ Four comment forms; two are documentation.
 Every cross-reference is a **fully-qualified name (FQN)**, derived from the file system (§8).
 
 - Identifiers: letter or `_`, then letters, digits, `_`. Case-sensitive (`Banking` ≠ `banking`); PascalCase nodes and lowercase locals are convention, not enforced.
-- `::` walks the module/node path: `banking::core::Ledger`.
+- `::` separates an FQN's segments — the module path, then the node or type name (§8.1): `banking::core::Ledger` is the node `Ledger` in module `banking::core`.
 - `.` invokes a method on, or reads a field of, a resolved node/value: `Repository.store(x)`, `r.value`. The member MUST exist on the receiver's type where it resolves (ADR-022). Chains freely: `Repo.fetch(id).value.owner` (§7).
 
 ### 2.3 Keywords
@@ -462,6 +462,15 @@ A field (or variant) whose rendered type resolves to another `data` type in the 
 A `feature` (§5.2) projects a **flow view**: its steps as connected nodes, top to bottom, in source order. The view names the target node the feature describes.
 
 Each step node shows its keyword (`given`/`when`/`then`/`and`/`but`) and its prose. Consecutive steps are joined by a directed connector.
+
+### 9.6 Architectural lints
+The resolved graph carries advisory C4 structure rules beyond §8.2 visibility. Each violation is a `Warning`: the model stays valid (§5.1). Each warning MUST carry a stable code `PDS-ARCH-NNN` and the URL of the article documenting the rule, so an editor renders the code as a link. A `Warning` MUST NOT fail a check or block generation.
+
+The rules judge **`Call` edges** (cross-boundary body calls, §9.1):
+
+- **PDS-ARCH-001 — facade bypass.** A `Call` whose target is a `component` (§4) declared in a different module than its source SHOULD instead target the component's enclosing `container` face. A `public` component is addressable across modules (§8.2); addressability does not make it the call target.
+- **PDS-ARCH-002 — cyclic dependency.** The module dependency graph — each cross-module `Call` an arc `source.module → target.module` — SHOULD be acyclic. A cycle is reported once, at a representative call edge.
+- **PDS-ARCH-003 — system-boundary bypass.** A `Call` whose source and target lie under different `system` ancestors (§4) and whose target is a `container` SHOULD instead target that system's published face. The `component`-target case is PDS-ARCH-001.
 
 ---
 

@@ -13,8 +13,10 @@ use pseudoscript_syntax::ast::{
 use pseudoscript_syntax::{Diagnostic, Span, TokenKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::graph::Graph;
 use crate::model::{MemberKind, Model, ModuleEntry, SymbolKind, Workspace};
 
+mod architecture;
 mod cross_module;
 mod result_flow;
 
@@ -35,22 +37,36 @@ pub(crate) fn run(module: &Module, model: &Model) -> Vec<Diagnostic> {
 }
 
 /// Runs the per-module static checks for every module in a workspace, then the
-/// cross-module visibility pass (`LANG.md` §8.2).
+/// cross-module visibility pass (`LANG.md` §8.2), then the architectural lints
+/// over the resolved graph (`LANG.md` §9).
 pub(crate) fn run_workspace(workspace: &Workspace) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for entry in workspace.modules() {
         diagnostics.extend(run(&entry.ast, &entry.model));
     }
     diagnostics.extend(cross_module::check(workspace));
+    diagnostics.extend(architecture::check(&Graph::build(workspace)));
     diagnostics
 }
 
-/// The static diagnostics for one workspace module: its per-module checks plus
-/// the cross-module references that originate in it. Every span lies in
+/// The static diagnostics for one workspace module: its per-module checks, the
+/// cross-module references that originate in it, and the architectural warnings
+/// whose offending call originates in it (`LANG.md` §9). Every span lies in
 /// `entry`'s source. Parse diagnostics are the caller's to prepend.
 pub(crate) fn run_module(workspace: &Workspace, entry: &ModuleEntry) -> Vec<Diagnostic> {
     let mut diagnostics = run(&entry.ast, &entry.model);
     diagnostics.extend(cross_module::check_one(workspace, entry));
+    // The architectural lints need the whole-workspace graph. Building it per
+    // module mirrors `cross_module::check_one`, which likewise re-walks the
+    // workspace per file. `Graph::build` is an O(nodes + edges) projection of
+    // already-resolved entries (no parse, no resolution) — sub-millisecond for a
+    // workspace of dozens of modules, run on the editor's debounced check. If a
+    // workspace ever grows large enough to feel it, cache the projection on the
+    // `Workspace` rather than rebuilding here.
+    diagnostics.extend(architecture::check_for_module(
+        &Graph::build(workspace),
+        &entry.fqn,
+    ));
     diagnostics
 }
 

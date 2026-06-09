@@ -1,0 +1,44 @@
+import { fireEvent, render, screen } from "@testing-library/svelte";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+
+import "@testing-library/jest-dom/vitest";
+
+import NewProjectDialog from "./NewProjectDialog.svelte";
+
+const templates = [
+  { id: "empty", name: "Empty", description: "A one-module starter.", moduleCount: 1 },
+  { id: "banking", name: "Banking", description: "Worked example.", moduleCount: 7 },
+];
+
+describe("NewProjectDialog", () => {
+  it("disables every template until a name and folder are set", () => {
+    render(NewProjectDialog, { props: { templates } });
+    expect(screen.getByTestId("new-project-name")).toBeInTheDocument();
+    expect(screen.getByTestId("template-empty")).toBeDisabled();
+    expect(screen.getByTestId("template-banking")).toBeDisabled();
+  });
+
+  it("enables templates once name + folder are set and scaffolds the chosen one", async () => {
+    const folder = { name: "workspace" } as FileSystemDirectoryHandle;
+    const onchoosefolder = vi.fn(async () => folder);
+    const onpick = vi.fn();
+    render(NewProjectDialog, { props: { templates, onchoosefolder, onpick } });
+
+    await fireEvent.input(screen.getByTestId("new-project-name"), { target: { value: "  payments  " } });
+    await userEvent.click(screen.getByTestId("choose-folder"));
+    expect(onchoosefolder).toHaveBeenCalled();
+
+    const card = screen.getByTestId("template-empty");
+    expect(card).toBeEnabled();
+    await userEvent.click(card);
+    expect(onpick).toHaveBeenCalledWith("payments", "empty", folder);
+  });
+
+  it("closes via the close button", async () => {
+    const onclose = vi.fn();
+    render(NewProjectDialog, { props: { templates, onclose } });
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onclose).toHaveBeenCalled();
+  });
+});

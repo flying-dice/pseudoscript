@@ -12,10 +12,7 @@ public data ReviewVerdict =
   | Reject
 
 /// A ruling on one flagged payment.
-public data ReviewDecision {
-  intent: shared::PaymentIntentId,
-  verdict: backoffice::ReviewVerdict
-}
+public data ReviewDecision { intent: shared::PaymentIntentId, verdict: backoffice::ReviewVerdict }
 
 /// Why a console action was refused.
 public data ConsoleError =
@@ -24,43 +21,52 @@ public data ConsoleError =
   | Rejected { reason: string }
 
 /// `backoffice` — internal staff tooling over the merchant API.
-public container Backoffice for context::AcmePay;
+public container Backoffice for context::AcmePay {
+  /// Refund a captured payment on the merchant's behalf, with the `Refunds` scope.
+  public refund(key: identity::RestrictedKey, req: refunds::RefundRequest): Result<refunds::Refund, backoffice::ConsoleError> {
+    return backoffice::Console.refund(key, req)
+  }
+  /// Rule on a payment the fraud engine flagged: approve clears it, reject refunds it.
+  public resolveReview(key: identity::RestrictedKey, decision: backoffice::ReviewDecision): Result<void, backoffice::ConsoleError> {
+    return backoffice::Console.resolveReview(key, decision)
+  }
+}
 
 /// Analyst and support actions, each scope-checked and merchant-scoped.
-public component Console for backoffice::Backoffice {
+component Console for backoffice::Backoffice {
   /// Rule on a payment the fraud engine flagged. Approve clears the flag and
   /// leaves the captured payment in place; reject refunds it in full. Requires a
   /// key with the `Reviews` scope, and the payment must belong to that merchant.
   public resolveReview(key: identity::RestrictedKey, decision: backoffice::ReviewDecision): Result<void, backoffice::ConsoleError> {
-    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateRestricted(key, identity::Scope::Reviews)
+    merchant = Result<Merchant, ApiKeyError> from identity::Identity.authenticateRestricted(key, identity::Scope::Reviews)
     if (merchant.isErr) {
       return Err(backoffice::ConsoleError::Unauthorized)
     }
-    owned = Result<PaymentIntent, IntentError> from intents::PaymentIntents.getFor(merchant.value.id, decision.intent)
+    owned = Result<PaymentIntent, IntentError> from intents::Intents.getFor(merchant.value.id, decision.intent)
     if (owned.isErr) {
       return Err(backoffice::ConsoleError::NotFound)
     }
     keep = Result<void, ConsoleError> from self.approves(decision.verdict)
     if (keep.isOk) {
-      risk::ReviewQueue.clear(decision.intent)
+      risk::Risk.clear(decision.intent)
       return Ok
     }
-    refunded = Result<Refund, RefundError> from refunds::RefundService.create(merchant.value.id, RefundRequest from { decision.intent, owned.value.amount })
+    refunded = Result<Refund, RefundError> from refunds::Refunds.create(merchant.value.id, RefundRequest from { decision.intent, owned.value.amount })
     if (refunded.isErr) {
       return Err(self.refundRejected(refunded.error))
     }
-    risk::ReviewQueue.clear(decision.intent)
+    risk::Risk.clear(decision.intent)
     return Ok
   }
 
   /// Refund a captured payment on the merchant's behalf. Requires the `Refunds`
   /// scope.
   public refund(key: identity::RestrictedKey, req: refunds::RefundRequest): Result<refunds::Refund, backoffice::ConsoleError> {
-    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateRestricted(key, identity::Scope::Refunds)
+    merchant = Result<Merchant, ApiKeyError> from identity::Identity.authenticateRestricted(key, identity::Scope::Refunds)
     if (merchant.isErr) {
       return Err(backoffice::ConsoleError::Unauthorized)
     }
-    done = Result<Refund, RefundError> from refunds::RefundService.create(merchant.value.id, req)
+    done = Result<Refund, RefundError> from refunds::Refunds.create(merchant.value.id, req)
     if (done.isErr) {
       return Err(self.refundRejected(done.error))
     }
@@ -69,11 +75,11 @@ public component Console for backoffice::Backoffice {
 
   /// List payments awaiting a review decision. Requires the `Reviews` scope.
   public reviewQueue(key: identity::RestrictedKey): Result<shared::PaymentIntentId[], backoffice::ConsoleError> {
-    merchant = Result<Merchant, ApiKeyError> from identity::Keys.authenticateRestricted(key, identity::Scope::Reviews)
+    merchant = Result<Merchant, ApiKeyError> from identity::Identity.authenticateRestricted(key, identity::Scope::Reviews)
     if (merchant.isErr) {
       return Err(backoffice::ConsoleError::Unauthorized)
     }
-    return Ok(risk::ReviewQueue.pending())
+    return Ok(risk::Risk.pending())
   }
 
   /// `Ok` only if the verdict approves (keeps) the payment.
@@ -85,15 +91,15 @@ public component Console for backoffice::Backoffice {
 /// An analyst cannot resolve a review for another merchant's payment.
 feature ReviewIsMerchantScoped for backoffice::Console {
   given "a restricted key for one merchant with the reviews scope"
-  when  "a review is resolved for an intent owned by a different merchant"
-  then  "the action is refused as not found"
-  and   "the other merchant's payment is untouched"
+  when "a review is resolved for an intent owned by a different merchant"
+  then "the action is refused as not found"
+  and "the other merchant's payment is untouched"
 }
 
 /// Rejecting a flagged payment refunds it.
 feature RejectedReviewRefunds for backoffice::Console {
   given "a captured payment flagged for review"
-  when  "an analyst rejects it"
-  then  "the payment is refunded in full"
-  and   "it is removed from the review queue"
+  when "an analyst rejects it"
+  then "the payment is refunded in full"
+  and "it is removed from the review queue"
 }

@@ -69,6 +69,7 @@
       class:focal={e.focal}
       role="button"
       tabindex="-1"
+      data-testid="entity-{e.fqn}"
       onclick={() => data.onpick?.(e.fqn)}
       onkeydown={(ev) => ev.key === "Enter" && data.onpick?.(e.fqn)}
     >

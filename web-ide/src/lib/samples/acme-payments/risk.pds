@@ -7,12 +7,7 @@
 //! signal weighting itself is a black box.
 
 /// The signals a screening decision is made from.
-public data RiskInput {
-  merchant: shared::MerchantId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  method: shared::PaymentMethodId
-}
+public data RiskInput { merchant: shared::MerchantId, intent: shared::PaymentIntentId, amount: shared::Money, method: shared::PaymentMethodId }
 
 /// What screening decided.
 public data RiskOutcome =
@@ -25,10 +20,35 @@ public data RiskError =
   | Blocked { reason: string }
 
 /// `risk` — fraud scoring and the manual-review queue.
-public container Risk for context::AcmePay;
+public container Risk for context::AcmePay {
+  /// Screen a confirmation into an allow/review/block outcome.
+  public screen(input: risk::RiskInput): risk::RiskOutcome {
+    return risk::Engine.screen(input)
+  }
+  /// `Ok` only if the outcome blocks the payment outright.
+  public isBlocked(outcome: risk::RiskOutcome): Result<void, risk::RiskError> {
+    return risk::Engine.isBlocked(outcome)
+  }
+  /// `Ok` only if the outcome holds the payment for manual review.
+  public isReview(outcome: risk::RiskOutcome): Result<void, risk::RiskError> {
+    return risk::Engine.isReview(outcome)
+  }
+  /// Flag a (proceeding) payment for human review.
+  public flag(intent: shared::PaymentIntentId, reason: string): void {
+    risk::ReviewQueue.flag(intent, reason)
+  }
+  /// Remove a payment from the queue once it has been ruled on.
+  public clear(intent: shared::PaymentIntentId): void {
+    risk::ReviewQueue.clear(intent)
+  }
+  /// Payments awaiting an analyst's decision.
+  public pending(): shared::PaymentIntentId[] {
+    return risk::ReviewQueue.pending()
+  }
+}
 
 /// Scores a confirmation and turns the score into an allow/review/block outcome.
-public component Engine for risk::Risk {
+component Engine for risk::Risk {
   /// Screen a confirmation. The score-to-outcome thresholds are the disclosed
   /// rule; the weighting of signals into a score is the black box behind it.
   public screen(input: risk::RiskInput): risk::RiskOutcome {
@@ -42,7 +62,7 @@ public component Engine for risk::Risk {
 }
 
 /// Holds captured payments that screening flagged, until an analyst rules on them.
-public component ReviewQueue for risk::Risk {
+component ReviewQueue for risk::Risk {
   /// Flag a (proceeding) payment for human review.
   public flag(intent: shared::PaymentIntentId, reason: string): void {
     risk::ReviewStore.add(intent, reason)
@@ -74,7 +94,7 @@ component ReviewStore for risk::Risk {
 /// A payment the engine blocks never reaches the network.
 feature BlockStopsBeforeMoneyMoves for risk::Engine {
   given "a confirmation the fraud engine scores as block"
-  when  "the payment is confirmed"
-  then  "it is rejected on risk grounds"
-  but   "the card network is never called"
+  when "the payment is confirmed"
+  then "it is rejected on risk grounds"
+  but "the card network is never called"
 }

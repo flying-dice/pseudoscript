@@ -560,6 +560,17 @@ fn cmd_check(path: &Path) -> ExitCode {
             ExitCode::SUCCESS
         };
     }
+    // A file inside a workspace carries a module FQN — its path under `pds.toml` (§8.1) —
+    // so check it in that context: the same strict, FQN-resolving check `pds check <dir>`
+    // and `pds doc` run. Only a rootless file (no enclosing `pds.toml`) is checked as an
+    // anonymous single module, which is lenient about full qualification (ADR-029).
+    if let Ok(root) = workspace::find_root(path) {
+        return if check_one_workspace(&root) {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
     let src = match read(path) {
         Ok(src) => src,
         Err(code) => return code,

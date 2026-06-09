@@ -55,6 +55,67 @@ disclose it as a branch. *How the JWT is parsed* is plumbing → omit it.
 
 ---
 
+## Publish the contract on the system, not the container
+
+A system's published API is a `public` callable **on the `system` node**. The container or component
+that implements it stays module-private; the system delegates inward to it. Cross-system calls then
+land on `system::Operation` — never on an internal container or component.
+
+**Wrong** — the contract sits on the container, so the container is the only public thing and
+consumers must name the implementation:
+
+```pds
+public system Banking;                          // black box, no contract
+
+public container Mainframe for banking::core::Banking {
+  #[http("POST /accounts")]
+  public OpenAccount(req: banking::core::OpenRequest)
+    : Result<banking::core::BankingInfo, banking::core::OpenError>;
+}
+// consumer must write:  banking::core::Mainframe.OpenAccount(req)   <- binds to the impl
+```
+
+**Right** — the contract sits on the system; the system delegates inward; `Mainframe` is private:
+
+```pds
+public system Banking {
+  /// Published face: open a retail account.
+  #[http("POST /accounts")]
+  public OpenAccount(req: banking::core::OpenRequest)
+    : Result<banking::core::BankingInfo, banking::core::OpenError> {
+    r = Result<banking::core::BankingInfo, banking::core::OpenError>
+          from banking::core::Mainframe.openAccount(req)   // delegate inward
+    if (r.isErr) { return Err(r.error) }
+    return Ok(r.value)
+  }
+}
+
+container Mainframe for banking::core::Banking {            // NO `public`
+  openAccount(req: banking::core::OpenRequest)
+    : Result<banking::core::BankingInfo, banking::core::OpenError> { ... }
+}
+// consumer writes:  banking::core::Banking.OpenAccount(req)   <- lands on the box
+```
+
+Why it's enforced, not stylistic:
+
+- **`public` is the boundary.** Leave the implementing container private and a consuming workspace
+  *cannot* name it — the only legal target is the system. Privacy and the convention reinforce each
+  other.
+- **The trigger marks the entry point.** A trigger macro (`#[http]`, `#[onevent]`, …) belongs on the
+  published face, because ingress arrives there and then routes inward.
+- **Swap test.** Replace `Mainframe` with a Java `Mainframe2` behind the same system callable → zero
+  consumer edits. If renaming an internal container forces edits in another workspace, the contract
+  was on the wrong node.
+- **One reason to change each.** The system owns the promise and the inward routing; the container
+  owns the implementation. Two reasons to change → two nodes.
+
+**Gate — only at a real seam.** A system with no cross-boundary API needs no facade; don't wrap a
+purely-internal container in a delegating callable just to satisfy the rule. The trigger is a
+`public` callable consumed from another module or workspace. No external consumer → no facade.
+
+---
+
 ## Concern → construct map
 
 Read it top-to-bottom when mapping an existing app; read it right-to-left when reconstituting code
@@ -172,7 +233,7 @@ The model keeps the rules and provenance; the controller, ORM, payment SDK, and 
 to signatures and a trigger macro:
 
 ```pds
-//! shop::orders — order placement.
+//! shop — order placement.
 
 public person Buyer;
 
@@ -185,24 +246,24 @@ public data OrderPlaced { orderId: uuid }
 
 public system Shop;
 
-public container Checkout for Shop {
+public container Checkout for shop::Shop {
 
   /// Reserve stock, price it, charge, persist, announce.
   #[http("POST /orders")]
-  public PlaceOrder(cmd: PlaceOrder): Result<Order, OrderError> {
-    reserved = Result<void, OutOfStock> from Inventory::Reservations.reserve(cmd.sku, cmd.qty)
+  public PlaceOrder(cmd: shop::PlaceOrder): Result<shop::Order, shop::OrderError> {
+    reserved = Result<void, shop::OutOfStock> from shop::Reservations.reserve(cmd.sku, cmd.qty)
     if (reserved.isErr) {
       return Err(reserved.error)
     }
     quote = number from self.Quote(cmd.sku, cmd.qty)
-    order = Order from { cmd, quote }
-    paid = Result<void, Declined> from Payments.charge(order)
+    order = shop::Order from { cmd, quote }
+    paid = Result<void, shop::Declined> from shop::Payments.charge(order)
     if (paid.isErr) {
       return Err(paid.error)
     }
-    OrderStore::Orders.save(order)
-    evt = OrderPlaced from { order }
-    Bus.publish(evt)
+    shop::Orders.save(order)
+    evt = shop::OrderPlaced from { order }
+    shop::Bus.publish(evt)
     return Ok(order)
   }
 
@@ -212,29 +273,29 @@ public container Checkout for Shop {
 
 /// Stock ledger.
 /// #critical
-public container Inventory for Shop;
-component Reservations for Inventory {
-  reserve(sku: string, qty: number): Result<void, OutOfStock>;
+public container Inventory for shop::Shop;
+component Reservations for shop::Inventory {
+  reserve(sku: string, qty: number): Result<void, shop::OutOfStock>;
 }
 
 /// Order records.
-public container OrderStore for Shop;
-component Orders for OrderStore {
-  save(order: Order): void;
+public container OrderStore for shop::Shop;
+component Orders for shop::OrderStore {
+  save(order: shop::Order): void;
 }
 
 /// Third-party payment processor.
 public system Payments {
-  charge(order: Order): Result<void, Declined>;
+  charge(order: shop::Order): Result<void, shop::Declined>;
 }
 
 /// Domain event bus.
 public system Bus {
-  publish(event: OrderPlaced): void;
+  publish(event: shop::OrderPlaced): void;
 }
 
 /// A buyer places an order that is in stock and paid.
-feature PlaceOrder for Checkout {
+feature PlaceOrder for shop::Checkout {
   given "the SKU is in stock"
   and   "the card is valid"
   when  "the buyer places the order"
@@ -259,6 +320,9 @@ Before declaring a model done, confirm:
   hides in an adapter or controller.
 - [ ] **Clean black boxes** — repos, gateways, buses, external systems are signature-only; no
   persistence or wire detail leaked into a disclosed body.
+- [ ] **Contracts on the box** — a system's cross-boundary API is a `public` callable on the `system`
+  node that delegates inward; the implementing container/component stays private, so no consumer
+  names an internal node.
 - [ ] **Errors are values** — fallible operations return `Result`; every `Err` arm is handled with an
   explicit `if (…isErr)`.
 - [ ] **Provenance shown** — assembled values use `from { … }`; no value appears from nowhere.

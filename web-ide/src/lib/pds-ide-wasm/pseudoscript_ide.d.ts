@@ -94,12 +94,25 @@ export interface Diagnostic {
     severity: string;
     message: string;
     code: string | undefined;
+    /**
+     * The article URL the `code` resolves to (the editor\'s clickable link).
+     */
+    code_description: string | undefined;
     start: number;
     end: number;
     start_line: number;
     start_col: number;
     end_line: number;
     end_col: number;
+}
+
+/**
+ * One directed relationship in the 3D graph, weighted by traffic (call count).
+ */
+export interface UniverseEdge {
+    from: string;
+    to: string;
+    traffic: number;
 }
 
 /**
@@ -151,6 +164,15 @@ export interface ModuleResult {
 export interface RenamedSource {
     fqn: string;
     source: string;
+}
+
+/**
+ * One node in the 3D relationship graph: its FQN, C4 level, and containment parent.
+ */
+export interface UniverseNode {
+    id: string;
+    level: string;
+    parent: string | undefined;
 }
 
 /**
@@ -279,6 +301,14 @@ export interface References {
     fqn: string;
     title: string;
     occurrences: Occurrence[];
+}
+
+/**
+ * The whole workspace as a software graph for the 3D relationship view.
+ */
+export interface UniverseSnapshot {
+    nodes: UniverseNode[];
+    edges: UniverseEdge[];
 }
 
 
@@ -434,10 +464,10 @@ export class IdeSession {
     /**
      * The whole workspace as a software graph for the 3D relationship view: nodes
      * (systems, containers, components, people) with containment, and directed
-     * relationships weighted by traffic and coloured by the destination's
-     * macro-derived archetype. The renderer lays it out (d3-force-3d) client-side.
+     * relationships weighted by traffic. The renderer lays it out (d3-force-3d)
+     * client-side.
      */
-    universe(): string;
+    universe(): UniverseSnapshot;
 }
 
 /**
@@ -471,7 +501,7 @@ export interface InitOutput {
     readonly idesession_semantic_tokens: (a: number, b: number, c: number) => any;
     readonly idesession_set_source: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly idesession_symbol_scene: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly idesession_universe: (a: number) => [number, number, number, number];
+    readonly idesession_universe: (a: number) => any;
     readonly version: () => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

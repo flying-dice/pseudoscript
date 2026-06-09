@@ -11,20 +11,14 @@ use std::collections::HashMap;
 
 use petgraph::graph::{Graph, NodeIndex};
 use pseudoscript_model::{
-    EdgeKind, Graph as Model, NodeKind, Trigger, WorkspaceModule, graph as build_model,
+    EdgeKind, Graph as Model, NodeKind, WorkspaceModule, graph as build_model,
 };
 
-use crate::personality::{Planet, Signals, classify};
-
-/// Per-module recency in `[0, 1]` (1 = just modified), keyed by module FQN — the
-/// host supplies it (file mtimes / git) to drive thriving-vs-decaying vitality.
-pub type Freshness = HashMap<String, f32>;
-
-/// An index into the universe graph (petgraph's node index).
+/// An index into the graph (petgraph's node index).
 pub type NodeIx = NodeIndex<u32>;
 
-/// The C4 abstraction level a placed node sits at. Systems, containers, components,
-/// and the people (actors) who use them enter the universe; data and callables do not
+/// The C4 abstraction level a node sits at. Systems, containers, components, and the
+/// people (actors) who use them enter the graph; data and callables do not
 /// (relationships through them are lifted to the nearest of these).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum C4Level {
@@ -35,28 +29,25 @@ pub enum C4Level {
 }
 
 /// A node in the software graph: a system, container, component, or person, with its
-/// place in the containment tree and its macro-derived personality. Positions are not
-/// here — the renderer lays the graph out client-side.
+/// place in the containment tree. Positions are not here — the renderer lays the
+/// graph out client-side.
 #[derive(Debug, Clone)]
-pub struct LayoutNode {
+pub struct GraphNode {
     /// Stable model FQN.
     pub id: String,
     pub level: C4Level,
     /// Enclosing node in the containment tree (`None` for a top-level system).
     pub parent: Option<NodeIx>,
     pub children: Vec<NodeIx>,
-    /// The node's character — archetype, vitality, mass, heat (see [`Planet`]).
-    pub planet: Planet,
 }
 
-impl LayoutNode {
+impl GraphNode {
     fn new(id: String, level: C4Level) -> Self {
         Self {
             id,
             level,
             parent: None,
             children: Vec::new(),
-            planet: Planet::default(),
         }
     }
 }
@@ -65,44 +56,30 @@ impl LayoutNode {
 /// on each node, directed relationship edges (weighted by traffic) between them, and
 /// the top-level systems.
 pub struct Universe {
-    /// Nodes are [`LayoutNode`]; each edge weight is its **traffic** — the number
+    /// Nodes are [`GraphNode`]; each edge weight is its **traffic** — the number
     /// of underlying calls between the two nodes.
-    pub graph: Graph<LayoutNode, u32>,
+    pub graph: Graph<GraphNode, u32>,
     /// Top-level systems (containment roots), in model declaration order.
     pub roots: Vec<NodeIx>,
 }
 
-/// Build the universe from module sources — the same `(fqn, source)` input the IDE
-/// feeds [`pseudoscript_model::graph`]. No freshness, so vitality is activity-only.
+/// Build the graph from module sources — the same `(fqn, source)` input the IDE feeds
+/// [`pseudoscript_model::graph`].
 #[must_use]
 pub fn build(modules: &[WorkspaceModule]) -> Universe {
-    from_model_with(&build_model(modules), None)
+    from_model(&build_model(modules))
 }
 
-/// As [`build`], with per-module `freshness` driving thriving-vs-decaying vitality.
-#[must_use]
-pub fn build_with(modules: &[WorkspaceModule], freshness: &Freshness) -> Universe {
-    from_model_with(&build_model(modules), Some(freshness))
-}
-
-/// Adapt an already-resolved model into the universe graph (activity-only vitality).
+/// Adapt an already-resolved model into the software graph.
 #[must_use]
 pub fn from_model(model: &Model) -> Universe {
-    from_model_with(model, None)
-}
+    let mut graph: Graph<GraphNode, u32> = Graph::new();
 
-/// Adapt a resolved model into the universe graph, computing each node's
-/// personality from the language's macros, its tags, traffic, and (optionally)
-/// recency.
-#[must_use]
-pub fn from_model_with(model: &Model, freshness: Option<&Freshness>) -> Universe {
-    let mut graph: Graph<LayoutNode, u32> = Graph::new();
-
-    // 1. Each structural model node becomes a universe node; remember its index.
+    // 1. Each structural model node becomes a graph node; remember its index.
     let mut ix: HashMap<&str, NodeIx> = HashMap::new();
     for node in model.nodes() {
         if let Some(level) = level_of(node.kind) {
-            let nx = graph.add_node(LayoutNode::new(node.fqn.clone(), level));
+            let nx = graph.add_node(GraphNode::new(node.fqn.clone(), level));
             ix.insert(node.fqn.as_str(), nx);
         }
     }
@@ -149,71 +126,11 @@ pub fn from_model_with(model: &Model, freshness: Option<&Freshness>) -> Universe
         graph.add_edge(a, b, weight);
     }
 
-    // 4. Personality: aggregate each node's signals, then classify it into a planet.
-    let signals = collect_signals(model, &ix, &graph, freshness);
-    for node in model.nodes() {
-        if let Some(&nx) = ix.get(node.fqn.as_str()) {
-            graph[nx].planet = classify(node.kind, &signals[nx.index()]);
-        }
-    }
-
     Universe { graph, roots }
 }
 
-/// Gather, per universe node, what classifies its personality: its own tags and
-/// children, the trigger macros of every callable it contains (lifted up), the
-/// traffic on its edges, and its module's freshness.
-fn collect_signals(
-    model: &Model,
-    ix: &HashMap<&str, NodeIx>,
-    graph: &Graph<LayoutNode, u32>,
-    freshness: Option<&Freshness>,
-) -> Vec<Signals> {
-    let mut signals: Vec<Signals> = (0..graph.node_count())
-        .map(|_| Signals::default())
-        .collect();
-
-    for node in model.nodes() {
-        match node.kind {
-            // A structural node contributes its own tags, children, and freshness.
-            NodeKind::System | NodeKind::Container | NodeKind::Component => {
-                if let Some(&nx) = ix.get(node.fqn.as_str()) {
-                    let s = &mut signals[nx.index()];
-                    s.tags.clone_from(&node.doc.tags);
-                    s.children = u32::try_from(graph[nx].children.len()).unwrap_or(u32::MAX);
-                    s.freshness = freshness.and_then(|f| f.get(&node.module).copied());
-                }
-            }
-            // A callable's triggers belong to the structural node enclosing it.
-            NodeKind::Callable if !node.triggers.is_empty() => {
-                if let Some(anc) = lift(model, &node.fqn, ix) {
-                    let s = &mut signals[anc.index()];
-                    for trigger in &node.triggers {
-                        match trigger {
-                            Trigger::Schedule => s.scheduled += 1,
-                            Trigger::OnEvent { .. } => s.events += 1,
-                            Trigger::Http => s.http += 1,
-                            Trigger::Manual => s.manual += 1,
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    for e in graph.edge_indices() {
-        if let Some((a, b)) = graph.edge_endpoints(e) {
-            let w = graph[e];
-            signals[a.index()].traffic += w;
-            signals[b.index()].traffic += w;
-        }
-    }
-    signals
-}
-
-/// The structural level of a model kind, or `None` for the kinds the universe does
-/// not place (person, data, callable).
+/// The structural level of a model kind, or `None` for the kinds the graph does not
+/// place (data, callable).
 fn level_of(kind: NodeKind) -> Option<C4Level> {
     match kind {
         NodeKind::System => Some(C4Level::System),
@@ -224,8 +141,8 @@ fn level_of(kind: NodeKind) -> Option<C4Level> {
     }
 }
 
-/// Walk a model FQN up its `parent` chain to the nearest structural node present
-/// in the universe; `None` if the chain reaches the top without one.
+/// Walk a model FQN up its `parent` chain to the nearest structural node present in
+/// the graph; `None` if the chain reaches the top without one.
 fn lift(model: &Model, fqn: &str, ix: &HashMap<&str, NodeIx>) -> Option<NodeIx> {
     let mut cur = fqn;
     loop {
@@ -239,7 +156,6 @@ fn lift(model: &Model, fqn: &str, ix: &HashMap<&str, NodeIx>) -> Option<NodeIx> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::personality::Archetype;
 
     fn module(src: &str) -> Vec<WorkspaceModule> {
         vec![WorkspaceModule::new("m", src)]
@@ -289,51 +205,25 @@ container Svc for m::Sys {
     }
 
     #[test]
-    fn personality_flows_from_macros_tags_and_traffic() {
-        // A hand-driven container calls a hub; one container is a headline; one is
-        // never touched. The macros/tags/connectivity become planet personalities.
+    fn calls_tally_directed_traffic_and_self_calls_are_dropped() {
+        // App calls Svc twice and itself once; the self-call is not an edge, and the
+        // two App→Svc calls collapse to one directed edge of weight 2.
         let src = "\
 system Sys;
-container Hands for m::Sys {
-  #[manual]
-  Do() { m::Hub.Take() }
+container App for m::Sys {
+  Do() {
+    m::Svc.Handle()
+    m::Svc.Handle()
+    self.Again()
+  }
+  Again();
 }
-container Hub for m::Sys { Take(); }
-/// #headline
-container Crown for m::Sys { Shine(); }
-container Lonely for m::Sys { Idle(); }
+container Svc for m::Sys {
+  Handle();
+}
 ";
         let u = build(&module(src));
-        let planet = |name: &str| {
-            let nx = u
-                .graph
-                .node_indices()
-                .find(|&nx| u.graph[nx].id.ends_with(name))
-                .unwrap_or_else(|| panic!("missing {name}"));
-            u.graph[nx].planet.clone()
-        };
-
-        assert_eq!(planet("Sys").archetype, Archetype::Star);
-        assert_eq!(
-            planet("Hands").archetype,
-            Archetype::Forge,
-            "#[manual] lifts to a Forge"
-        );
-        assert_eq!(
-            planet("Crown").archetype,
-            Archetype::Beacon,
-            "#headline → Beacon"
-        );
-        // Hub receives traffic but runs no macros — an ordinary, living World.
-        assert_eq!(planet("Hub").archetype, Archetype::World);
-        assert!(planet("Hub").vitality > 0.0);
-        // Lonely is idle and unreachable — a decaying Tomb.
-        let lonely = planet("Lonely");
-        assert_eq!(lonely.archetype, Archetype::Tomb);
-        assert!(lonely.vitality < 0.2, "a tomb decays: {}", lonely.vitality);
-
-        // The Hands → Hub call is the only relationship; weight 1 (one call).
-        assert_eq!(u.graph.edge_count(), 1);
-        assert_eq!(u.graph.edge_weights().copied().max(), Some(1));
+        assert_eq!(u.graph.edge_count(), 1, "one App→Svc edge, no self-edge");
+        assert_eq!(u.graph.edge_weights().copied().max(), Some(2), "two calls");
     }
 }

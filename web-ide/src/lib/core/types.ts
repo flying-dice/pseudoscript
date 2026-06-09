@@ -37,6 +37,7 @@ export type Problem = {
   end_line?: number;
   end_col?: number;
   code?: string;
+  code_description?: string;
   file?: string;
 };
 
@@ -87,7 +88,7 @@ export type Loc = {
   col: number;
   label?: string;
   fqn?: string;
-  view?: "code" | "canvas";
+  view?: "code" | "canvas" | "space";
 };
 
 // The editor's imperative API, handed back via `onready`. Impure (DOM/CodeMirror) —

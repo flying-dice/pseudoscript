@@ -31,6 +31,7 @@ import type {
   RenameSelection,
   RenderedFile,
   SemanticTokens,
+  UniverseSnapshot,
   VendoredInput,
   DocManifest as WasmDocManifest,
 } from "./pds-ide-wasm/pseudoscript_ide.js";
@@ -53,6 +54,7 @@ export type {
   RenameSelection,
   RenderedFile,
   SemanticTokens,
+  UniverseSnapshot,
 };
 // Names the existing call sites use; aliased onto the generated types.
 export type CompletionItem = Completion;
@@ -164,18 +166,10 @@ export function ideEmitScene(view: string, target = ""): Scene {
   return callWasm("emitScene", () => JSON.parse(ide().emit_scene(view, target)) as Scene);
 }
 
-/** The workspace as a software graph for the 3D relationship view: nodes (systems,
- *  containers, components, people) with containment, and directed relationships
- *  weighted by traffic and coloured by the destination's macro-derived archetype.
- *  The renderer (`ForceGraph`) lays it out with d3-force-3d client-side. */
-export type UniverseSnapshot = {
-  nodes: { id: string; level: string; parent: string | null }[];
-  edges: { from: string; to: string; traffic: number; kind: string }[];
-};
-
-/** Build the software graph for the held workspace. */
+/** Build the software graph for the held workspace — the typed `UniverseSnapshot`
+ *  DTO (Rust is the source of truth; the renderer lays it out with d3-force-3d). */
 export function ideUniverse(): UniverseSnapshot {
-  return callWasm("universe", () => JSON.parse(ide().universe()) as UniverseSnapshot);
+  return callWasm("universe", () => ide().universe());
 }
 
 /** Project the fitting diagram for the symbol `fqn` to its scene. A throw here

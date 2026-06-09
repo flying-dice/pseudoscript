@@ -217,3 +217,9 @@ Read in full for the one-producer rationale, the determinable-source rule (call-
 A node reference is its flat FQN `module::Name` (ADR-030), but a leaf-fallback let the C4-ancestry form (`Syntax::Parser`, `module::System::Container::Component`) resolve by its last segment — non-uniformly, so a cross-module drill passed the checker yet built an edge to a non-existent node and broke the C4 diagram while goto and the sequence view appeared to work. Now only the exact flat FQN resolves; the leaf-fallback is removed from the graph builder and the cursor resolver, and the checker reports the drill and suggests the flat FQN. Single-file/anonymous mode (ADR-029) stays lenient; the worked model and samples are migrated.
 
 Read in full for the non-uniform-fallback root cause and the rejected keep-the-convenience alternative.
+
+## [037 — Architectural-principle lints are graph warnings with codes and article links](037-architectural-lints.md)
+
+Three C4 structure rules run over the resolved graph beyond §8.2 visibility, each a `Warning` carrying a `PDS-ARCH-NNN` code and the URL of its `docs/principles/` article (threaded as `code_description` so editors render the code as a link): PDS-ARCH-001 facade bypass (a cross-module `Call` into a `component`), PDS-ARCH-002 cyclic dependency (a cycle in the module call graph), PDS-ARCH-003 system-boundary bypass (a cross-`system` `Call` into a `container`). `Diagnostic` gains `code_description`, `Edge` gains the call-site `span`. Warnings never fail a check; the flagship samples ship with their real PDS-ARCH-002 cycles.
+
+Read in full for the warning-not-error rationale and the rejected errors-and-fourth-rule alternatives.

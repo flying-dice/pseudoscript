@@ -1,0 +1,226 @@
+//! dot — a pure-Rust, wasm-safe port of the Graphviz `dot` layered layout engine
+//! (crate `pseudoscript-dot`).
+//!
+//! A faithful port of `dot`'s four-pass pipeline (Gansner, Koutsofios, North, Vo,
+//! *"A Technique for Drawing Directed Graphs"*, IEEE TSE 1993): rank → order →
+//! position → splines. Clusters (`dot`'s `subgraph cluster_*`) are laid out on
+//! contiguous ranks inside a bounding box. The engine is generic — a client
+//! builds a `Graph` and reads back a `Layout`; C4 diagrams are the first client
+//! (via `emit`). Deterministic and panic-free: an empty graph yields an empty
+//! layout. Fidelity is checked against the real `dot` binary as a test oracle.
+
+/// The rank direction: top-to-bottom (the C4 default) or left-to-right.
+data RankDir =
+  | TopBottom
+  | LeftRight
+
+/// An input node: its id and its rendered size (the placer reserves this box).
+data Node { id: string, width: number, height: number }
+
+/// An input edge from `tail` to `head`, with its minimum rank span, its layout
+/// weight (higher pulls the endpoints into vertical alignment harder), and an
+/// optional label size that widens the rank gap to fit.
+data Edge { tail: string, head: string, minlen: number, weight: number, label: dot::Size }
+
+/// A width/height extent.
+data Size { w: number, h: number }
+
+/// A cluster (a `subgraph cluster_*`): its id, optional parent cluster, member
+/// node ids, the margin kept outside its members, and the header band reserved on
+/// the title side.
+data Cluster { id: string, parent: string, members: string[], margin: number, header: number }
+
+/// The input graph the engine lays out: nodes, edges, clusters, the rank and node
+/// separations, the rank direction, and any same-rank constraints.
+public data Graph { nodes: dot::Node[], edges: dot::Edge[], clusters: dot::Cluster[], ranksep: number, nodesep: number, rankdir: dot::RankDir, sameRank: string[] }
+
+/// A point in layout coordinates.
+data Pt { x: number, y: number }
+
+/// An axis-aligned box: top-left corner and extent.
+data Box2 { x: number, y: number, w: number, h: number }
+
+/// A placed node: its id, centre point, and reserved size.
+data NodePos { id: string, center: dot::Pt, width: number, height: number }
+
+/// A routed edge: the Bézier `spline` and its `polyline` approximation between
+/// `tail` and `head`, plus where its label sits.
+data EdgeRoute { tail: string, head: string, spline: dot::Pt[], polyline: dot::Pt[], labelPos: dot::Pt }
+
+/// A laid-out cluster: its id and bounding box.
+data ClusterBox { id: string, bbox: dot::Box2 }
+
+/// Grid metadata carried back when the experimental grid placer ran: the grid
+/// dimensions, the cell pitch (centre-to-centre), the pixel centre of cell (0,0),
+/// and the width of the drag-room frame wrapping the grid — the geometry the IDE
+/// reads to map a drag onto a grid cell, recovering the raw cell from `origin`
+/// then subtracting `pad`.
+data GridMeta { cols: number, rows: number, cellW: number, cellH: number, origin: dot::Pt, pad: number }
+
+/// The layout result: the overall bounding box, the placed nodes, the routed
+/// edges, the cluster boxes, and — when the grid placer ran — its grid metadata.
+public data Layout { bbox: dot::Box2, nodes: dot::NodePos[], edges: dot::EdgeRoute[], clusters: dot::ClusterBox[], grid: dot::GridMeta }
+
+/// How the experimental grid placer searches for a placement: pick automatically
+/// by size, always the bounded heuristic, or brute-force exhaustive (tiny graphs
+/// only).
+data SearchMode =
+  | Auto
+  | Heuristic
+  | Exhaustive
+
+/// Tunable weights for the experimental grid placer: how strongly it penalises
+/// crossings, distance, and against-flow edges, the cell spacing, and how hard it
+/// searches.
+public data GridParams { crossingCost: number, distanceCost: number, flowCost: number, spacing: number, search: dot::SearchMode }
+
+/// A pin fixing a node to a grid cell: the node's index into `graph.nodes` (the
+/// caller resolves the FQN) at a row and column. The IDE's drag-to-pin.
+public data Pin { node: number, row: number, col: number }
+
+/// `crates/pseudoscript-dot`. Runs the four-pass layered pipeline over a `Graph`
+/// to produce a `Layout`; also offers the experimental grid placer. The layout
+/// authority `emit` drives for C4 diagrams.
+public container Dot for context::Pseudoscript {
+  /// Lay a graph out into a layout (the plain layered pipeline).
+  public layout(graph: dot::Graph): dot::Layout {
+    return dot::Engine.layout(graph)
+  }
+
+  /// Lay a graph out, then refine it with the long-edge optimiser — what `emit`
+  /// runs when the "minimize long edges" tweak is on.
+  public layoutShortened(graph: dot::Graph): dot::Layout {
+    return dot::Optimize.run(graph)
+  }
+
+  /// Lay a graph out on a grid under the given weights and pinned cells — the
+  /// experimental placer `emit` runs under grid placement.
+  public gridLayout(graph: dot::Graph, params: dot::GridParams, pins: dot::Pin[]): dot::Layout {
+    return dot::Grid.gridLayout(graph, params, pins)
+  }
+}
+
+/// The layered engine: runs the faithful four-pass `dot` pipeline — rank, order,
+/// position, splines — then frames the clusters and shifts the whole layout to
+/// the origin. Deterministic and panic-free.
+component Engine for dot::Dot {
+  /// Lay a graph out: rank the nodes, order within ranks to cut crossings, assign
+  /// x-coordinates, route the edges, then frame the clusters and normalise to the
+  /// origin. An empty graph yields an empty layout.
+  public layout(graph: dot::Graph): dot::Layout {
+    ranking = string from dot::Rank.assignRanks(graph)
+    ordered = string from dot::Order.order(graph, ranking)
+    placed = NodePos[] from dot::Position.assignCoords(graph, ordered)
+    routed = EdgeRoute[] from dot::Splines.route(graph, ordered, placed)
+    framed = ClusterBox[] from dot::Clusters.boxes(graph, placed)
+    return self.finish(placed, routed, framed)
+  }
+
+  /// Translate the assembled layout so its minimum corner is the origin and
+  /// report the tight bounding box over every node, edge point, and cluster box.
+  finish(nodes: dot::NodePos[], edges: dot::EdgeRoute[], clusters: dot::ClusterBox[]): dot::Layout;
+}
+
+/// Pass 1 — rank assignment: give each node an integer rank by network simplex,
+/// banding each cluster onto contiguous ranks and honouring same-rank constraints.
+public component Rank for dot::Dot {
+  /// Assign each node a rank.
+  assignRanks(graph: dot::Graph): string;
+}
+
+/// Pass 2 — ordering: order nodes within each rank to minimise edge crossings,
+/// inserting virtual nodes for long edges so they route through thin lanes.
+public component Order for dot::Dot {
+  /// Order nodes within ranks, returning the per-rank order and edge chains.
+  order(graph: dot::Graph, ranking: string): string;
+}
+
+/// Pass 3 — positioning: assign x-coordinates by network simplex on an auxiliary
+/// graph (aligning nodes and straightening long edges), and y-coordinates per
+/// rank stacked with `ranksep` plus any label and cluster-header room.
+public component Position for dot::Dot {
+  /// Assign each ordered node its centre point.
+  assignCoords(graph: dot::Graph, ordered: string): dot::NodePos[];
+}
+
+/// Pass 4 — splines: route each edge as a piecewise Bézier through its
+/// virtual-node corridor, clipped to the endpoint borders, with a label point at
+/// the polyline midpoint.
+public component Splines for dot::Dot {
+  /// Route every edge into a spline and polyline.
+  route(graph: dot::Graph, ordered: string, placed: dot::NodePos[]): dot::EdgeRoute[];
+}
+
+/// Cluster framing: compute each cluster's bounding box bottom-up so a nested
+/// cluster's box encloses its children (grown by their margins) and its direct
+/// members, with header room on the title side — `dot`'s recursive `rec_bb`.
+public component Clusters for dot::Dot {
+  /// The bounding box of each cluster, nested like `dot`.
+  boxes(graph: dot::Graph, placed: dot::NodePos[]): dot::ClusterBox[];
+}
+
+/// The experimental grid placer: an alternative to the layered pipeline that
+/// snaps nodes to a grid, honouring drag-to-pin cells and searching for a
+/// placement that minimises crossings, distance, and against-flow edges.
+public component Grid for dot::Dot {
+  /// Lay a graph out on a grid under the given weights and pinned cells.
+  gridLayout(graph: dot::Graph, params: dot::GridParams, pins: dot::Pin[]): dot::Layout;
+}
+
+/// The long-edge optimiser: a bounded, deterministic post-layout refinement.
+/// Lay the graph out, greedily search for same-rank moves that reduce the sum of
+/// squared edge lengths (never merging across a cluster boundary), and re-lay-out
+/// with the improving moves applied — `dot`'s composable `Pass` over a base layout.
+public component Optimize for dot::Dot {
+  /// Lay out, shorten the long edges, and return the refined layout.
+  run(graph: dot::Graph): dot::Layout;
+}
+
+/// The test oracle: lays the same graph out with the real `dot` binary and
+/// compares, so the port stays faithful rather than approximate. Skipped when
+/// `dot` is not installed.
+component Oracle for dot::Dot {
+  /// Run the reference `dot` over a graph and read back its placement to compare.
+  run(graph: dot::Graph): dot::Layout;
+}
+
+/// The pipeline is a faithful four-pass port, run in order.
+feature FaithfulFourPassPipeline for dot::Engine {
+  given "an input graph of sized nodes, edges, and clusters"
+  when "the graph is laid out"
+  then "ranks are assigned, nodes ordered within ranks, x-coordinates placed, and edges routed as splines"
+  and "the passes run in dot's order: rank, then order, then position, then splines"
+}
+
+/// Layout is deterministic and never panics.
+feature DeterministicAndPanicFree for dot::Engine {
+  given "the same input graph laid out twice"
+  when "the layouts are compared"
+  then "the placements are identical"
+  and "an empty graph yields an empty layout"
+  but "no input — however extreme its rank spans — panics or hangs"
+}
+
+/// Clusters nest like `dot`: an outer box strictly contains its inner boxes.
+feature ClustersNestLikeDot for dot::Clusters {
+  given "a graph with a cluster nested inside another cluster"
+  when "the cluster boxes are computed"
+  then "the outer box encloses the inner box grown by its margin"
+  and "each box frames its members and leaves true externals outside"
+}
+
+/// Fidelity is checked against the real `dot` binary.
+feature OracleCheckedAgainstDot for dot::Oracle {
+  given "the reference dot binary is installed"
+  when "a graph is laid out by both this engine and dot"
+  then "the cluster nesting and placements match dot's"
+  but "the oracle comparison is skipped when dot is not installed"
+}
+
+/// The grid placer honours pinned cells while it searches.
+feature GridPlacerHonoursPins for dot::Grid {
+  given "a graph and a set of drag-to-pin cells"
+  when "the experimental grid placer runs"
+  then "each pinned node stays in its cell"
+  and "the remaining nodes are placed to minimise crossings, distance, and against-flow edges"
+}

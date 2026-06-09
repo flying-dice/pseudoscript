@@ -9,7 +9,7 @@
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
-  import { viewKey, getPins, serializeLayoutDoc, cellAt, type GridGeom } from "$lib/core/pins.js";
+  import { viewKey, getPins, serializeLayoutDoc } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
   import type { Depth, SceneItem } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
@@ -19,10 +19,15 @@
   import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
   import type { MountableWorkspace } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
+  import { flowColor } from "$lib/flow-color.js";
+  import { simpleName } from "$lib/graph-route.js";
   import * as nav from "$lib/core/navigation.js";
   import * as ops from "$lib/core/workspace-ops.js";
   import { keyOf, computeDirty, seedBaseline as advanceBaseline, classifyReload } from "$lib/core/dirty.js";
   import * as share from "$lib/core/share.js";
+  import { pushState, replaceState } from "$app/navigation";
+
+  import { router, parseHash, serializeRoute, type Route, type RouteBase } from "$lib/router.svelte.js";
   import * as docs from "$lib/core/docs.js";
   import * as model from "$lib/core/model.js";
   import { projectCanvas, canvasHint as canvasHintOf } from "$lib/core/canvas.js";
@@ -46,6 +51,7 @@
   import BottomDock from "$lib/components/shell/BottomDock.svelte";
   import Splitter from "$lib/components/shell/Splitter.svelte";
   import StatusBar from "$lib/components/shell/StatusBar.svelte";
+  import PerfMeter from "$lib/components/shell/PerfMeter.svelte";
   import CommandPalette from "$lib/components/shell/CommandPalette.svelte";
   import TabBar from "$lib/components/shell/TabBar.svelte";
   import DiagramPane from "$lib/components/DiagramPane.svelte";
@@ -115,6 +121,15 @@
     navigation.recordIfMoved(nav.originLoc(openFile.fqn, loc.line, loc.col));
   }
 
+  // Record the *current view's* scope as a Back origin, so a reveal/goto returns to
+  // where it was launched from — the editor caret in code, the diagram scope in the
+  // canvas, or the focused flow/node in the universe (not always the editor).
+  function recordViewOrigin() {
+    if (view === "space") recordSpaceScope(spaceTargetFqn);
+    else if (view === "canvas") recordCanvasScope(selected?.fqn ?? null);
+    else recordOrigin();
+  }
+
   // Record a canvas scope (a drilled node, or `null` for the whole-model
   // overview) as a history entry, so Back returns to the previous diagram.
   function recordCanvasScope(fqn: string | null) {
@@ -129,12 +144,32 @@
     });
   }
 
+  // Record a universe scope (a focused node, or an opened flow keyed by its entry
+  // callable) as a history entry, so Back/Forward step through the 3D view alongside
+  // code and canvas. A flow's entry callable is not a placed node — label it by leaf.
+  function recordSpaceScope(fqn: string | null) {
+    const hit = fqn ? nodeIndex.get(fqn) : null;
+    recordLocation({
+      view: "space",
+      fqn: fqn ?? undefined,
+      fileFqn: hit?.fileFqn ?? "",
+      line: hit?.node.line ?? 0,
+      col: hit?.node.col ?? 0,
+      label: fqn ? (hit ? nodeTitle(fqn) : simpleName(fqn)) : "Universe",
+    });
+  }
+
   // Apply a location without recording it (back/forward, history-list click).
   // A canvas entry replays the diagram scope and stays on the canvas (no editor
   // jump); a code entry opens its file, re-scopes, and jumps the editor.
   // Sets state directly (never via selectNode/resetScope), so replay does not
   // re-enter the recording paths.
   function applyLocation(loc: Loc) {
+    if (loc.view === "space") {
+      applySpaceTarget(loc.fqn ?? null);
+      if (loc.fqn) selectNode(loc.fqn, { goto: false, origin: false, record: false });
+      return;
+    }
     if (loc.view === "canvas") {
       selection.selected = loc.fqn
         ? { fqn: loc.fqn, line: loc.line, col: loc.col, fileFqn: loc.fileFqn }
@@ -374,9 +409,13 @@
   // overview. Derived from `selected` (not the scene) to avoid a layout cycle —
   // each diagram has a unique target FQN, so this keys the `.layout` document.
   const currentViewKey = $derived(viewKey(selected ? "view" : "context", selected?.fqn ?? null));
-  // The global layout tweaks plus this view's pins (reactive on the pin store, so a
-  // drag re-derives the canvas → re-layout with the node fixed).
-  const canvasTweaks = $derived({ ...ui.layoutTweaks, gridPins: getPins(pinStore.doc, currentViewKey) });
+  // This view's manual placements — the single source every pin consumer reads
+  // (reactive on the pin store, so a drag re-derives the canvas → re-layout with the
+  // node fixed). The engine takes the list as `gridPins`; the canvas marks cards from
+  // {@link pinnedFqns}.
+  const currentPins = $derived(getPins(pinStore.doc, currentViewKey));
+  // The global layout tweaks plus this view's pins.
+  const canvasTweaks = $derived({ ...ui.layoutTweaks, gridPins: currentPins });
   const canvas = $derived(
     ready && workspace
       ? projectCanvas({
@@ -397,6 +436,21 @@
     void persistPins();
   }
 
+  // The FQNs pinned in the current view — marks their cards and gates the Reset.
+  const pinnedFqns = $derived(new Set(currentPins.map((p) => p.fqn)));
+
+  // Clear one node's placement (the inline ✕ on a pinned card), then persist.
+  function unpinNode(fqn: string): void {
+    pinStore.unpin(currentViewKey, fqn);
+    void persistPins();
+  }
+
+  // Reset this diagram's manual placements back to the auto-layout, then persist.
+  function resetCurrentView(): void {
+    pinStore.clear(currentViewKey);
+    void persistPins();
+  }
+
   // The 3D relationship graph view (activity-bar "3D graph"). Rebuilt from the held
   // workspace whenever that view is entered, the workspace switches, or the model is
   // edited — `allModules` is the per-edit / per-workspace signal. `spaceRev` bumps on
@@ -410,6 +464,14 @@
   // The flow's ordered call hops (caller→callee node ids + the call label), so the 3D
   // traffic follows the sequence and can name the current step; null = no flow.
   let spaceFlow = $state<{ from: string; to: string; label: string }[] | null>(null);
+  // The selected flow's colour (hash of its fqn → palette), so each flow reads distinct.
+  let spaceFlowColor = $state<string | null>(null);
+  // The selected flow's name (its entry point's leaf), shown in the 3D timeline header.
+  let spaceFlowName = $state<string | null>(null);
+  // The fqn the 3D view is currently targeting (a flow's entry callable or a node),
+  // so a reveal/goto launched from the universe can record it as the Back origin.
+  let spaceTargetFqn = $state<string | null>(null);
+
   $effect(() => {
     void allModules; // track edits + workspace switches
     if (view !== "space" || !ready || !workspace) return;
@@ -432,17 +494,31 @@
   // anything else flies to the node. Also records the shared selection so it persists
   // when you switch to the canvas or code views.
   function openUniverse(fqn: string | null): void {
-    const flow = fqn ? flowOf(fqn) : null;
-    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFocus = null; }
-    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; }
-    selection.view = "space";
-    if (fqn) selectNode(fqn, { goto: false, origin: false });
+    applySpaceTarget(fqn);
+    if (fqn) selectNode(fqn, { goto: false, origin: false, record: false });
+    recordSpaceScope(fqn);
   }
-  // Clear the 3D graph's selection (highlight + flow), back to the resting view.
+  // Set the 3D view's target — light a flow's chain (an entry-point fqn) or fly to a
+  // node — and switch to the view. State only: no history, no shared selection (the
+  // callers own those, so back/forward replay can reuse this without re-recording).
+  function applySpaceTarget(fqn: string | null): void {
+    const flow = fqn ? flowOf(fqn) : null;
+    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowColor(fqn!); spaceFlowName = simpleName(fqn!); spaceFocus = null; }
+    else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; spaceFlowName = null; }
+    spaceTargetFqn = fqn;
+    selection.view = "space";
+  }
+  // Clear the 3D graph's selection (highlight + flow) back to the resting view, and
+  // the global node selection with it — deselecting in the universe is a deselect
+  // everywhere (the structure panel, breadcrumb, canvas scope), not just here.
   function resetSpace(): void {
     spaceFocus = null;
     spacePath = null;
     spaceFlow = null;
+    spaceFlowColor = null;
+    spaceFlowName = null;
+    spaceTargetFqn = null;
+    selection.selected = null;
   }
   // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
   // to 3D-graph node ids, or null if it isn't a flow. The sequence and the universe use
@@ -461,14 +537,13 @@
       return null; // not a projectable flow
     }
     if (!Array.isArray(scene.participants) || scene.participants.length <= 1) return null;
-    const simple = (id: string) => id.split("::").at(-1) ?? id;
     const byName = new Map<string, string[]>();
     for (const n of snap.nodes) {
-      const s = simple(n.id);
+      const s = simpleName(n.id);
       (byName.get(s) ?? byName.set(s, []).get(s)!).push(n.id);
     }
     const mapId = (f: string) => {
-      const m = byName.get(simple(f));
+      const m = byName.get(simpleName(f));
       return m && m.length === 1 ? m[0] : null; // unambiguous only
     };
     const participants = [...new Set(scene.participants.map((p) => mapId(p.fqn)).filter((x): x is string => !!x))];
@@ -487,27 +562,29 @@
     return { participants, hops };
   }
 
-  // Entering edit mode freezes the current arrangement: every node is pinned at the
-  // cell it currently occupies, so dragging one box leaves the rest exactly where
-  // they are (no auto-reshuffle). Locking again keeps the manual arrangement.
-  function toggleUnlock(next: boolean): void {
-    if (next && !pinStore.unlocked) freezeCurrentView();
-    pinStore.unlocked = next;
-  }
+  // Every flow in the model, for the 3D view's resting filaments: each entry point's
+  // whole call chain, coloured by its start. Entry points are the callables that begin
+  // a flow — a person's actions, plus anything explicitly triggered (scheduled / http /
+  // event). Each becomes one or more stacked filaments via its hops.
+  const spaceFlows = $derived.by(() => {
+    if (selection.view !== "space" || !spaceSnapshot) return [];
+    const personFqns = new Set(nodes.filter((n) => n.kind === "person").map((n) => n.fqn));
+    const out: { fqn: string; color: string; hops: { from: string; to: string; label: string }[] }[] = [];
+    for (const n of nodes) {
+      if (n.kind !== "callable") continue;
+      const isEntry = n.triggered || (n.parent != null && personFqns.has(n.parent));
+      if (!isEntry) continue;
+      const flow = flowOf(n.fqn);
+      if (flow && flow.hops.length) out.push({ fqn: n.fqn, color: flowColor(n.fqn), hops: flow.hops });
+    }
+    return out;
+  });
 
-  function freezeCurrentView(): void {
-    const l = canvas.layout as {
-      nodes?: { fqn: string; rect: { x: number; y: number; w: number; h: number } }[];
-      grid?: GridGeom;
-    } | null;
-    const g = l?.grid;
-    if (!g || !Array.isArray(l?.nodes)) return; // not a grid layout — nothing to freeze
-    const list = l.nodes.map((n) => ({
-      fqn: n.fqn,
-      ...cellAt(g, n.rect.x + n.rect.w / 2, n.rect.y + n.rect.h / 2),
-    }));
-    pinStore.freeze(currentViewKey, list);
-    void persistPins();
+  // Unlocking only arms drag-to-pin; it pins nothing. A dragged card pins just itself
+  // (the engine fixes pinned nodes and re-flows the rest), so only nodes you place
+  // stay put. Locking keeps those manual placements.
+  function toggleUnlock(next: boolean): void {
+    pinStore.unlocked = next;
   }
 
   // Load the workspace's manual placements from `pds.layout`. Folder-backed only;
@@ -582,7 +659,7 @@
   // to the declaration; a canvas drill leaves the view alone. A member/field fqn
   // (`Owner::name`) isn't itself a node — fall back to its owner so GOTO on a
   // field opens its declaring type instead of no-opping (PDS-GOTO-002).
-  function selectNode(fqn: string, { goto = false, origin = true }: { goto?: boolean; origin?: boolean } = {}) {
+  function selectNode(fqn: string, { goto = false, origin = true, record = true }: { goto?: boolean; origin?: boolean; record?: boolean } = {}) {
     // Resolve the fqn to a structural node. A member/field fqn (`Owner::name`)
     // isn't itself a node — fall back to its owner so go-to-definition on a field
     // opens its declaring type instead of no-opping (PDS-GOTO-002).
@@ -606,10 +683,10 @@
       return;
     }
     const fileFqn = file.fqn;
-    // Record the pre-jump caret before the file/scope changes, so Back returns.
-    // `origin: false` suppresses it when the caller already recorded the origin
-    // (a canvas→code "go to definition" records the canvas scope as the origin).
-    if (goto && view !== "canvas" && origin) recordOrigin();
+    // Record the launching view's scope before the file/scope changes, so Back
+    // returns there (the editor caret in code, the universe's flow/node in space).
+    // `origin: false` suppresses it when the caller already recorded the origin.
+    if (goto && view !== "canvas" && origin) recordViewOrigin();
     if (openFile?.fqn !== fileFqn) wsStore.openFile = file;
     selection.selected = { fqn: targetFqn, line: hit.node.line, col: hit.node.col, fileFqn };
     // A nav click jumps the editor to the declaration — but only when the canvas
@@ -617,11 +694,12 @@
     if (goto && view !== "canvas") {
       selection.view = "code";
       selection.pendingGoto = { line: hit.node.line, col: hit.node.col, fileFqn };
-      recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
-    } else {
-      // A canvas drill (or a goto re-scope while the canvas shows): record the
-      // new scope so Back returns to the previous diagram.
-      recordCanvasScope(targetFqn);
+      if (record) recordLocation({ fileFqn, line: hit.node.line, col: hit.node.col, fqn: targetFqn, label: nodeTitle(targetFqn) });
+    } else if (record) {
+      // A canvas drill or a universe selection: record the new scope in the active
+      // view so Back returns to the previous diagram / flow.
+      if (view === "space") recordSpaceScope(targetFqn);
+      else recordCanvasScope(targetFqn);
     }
   }
 
@@ -657,14 +735,24 @@
   // The structural ancestor chain (root system → … → the node) for the breadcrumb.
   const ancestry = (fqn: string) => model.ancestry(index, fqn);
 
-  // The editor's hover popover: reveal the symbol's diagram on the canvas.
-  // Record the code spot first so Back from the canvas returns to it; selectNode
-  // then records the revealed canvas scope.
+  // Reveal a symbol's diagram on the canvas (editor hover popover, or the structure
+  // panel's right-click). Record where you launched it from — code, canvas, or the
+  // universe — so Back returns there; then switch to the canvas so selectNode records
+  // the revealed scope as a canvas entry.
   function revealSymbol(fqn: string) {
     if (!nodeIndex.has(fqn)) return;
-    recordOrigin();
-    selectNode(fqn);
+    recordViewOrigin();
     selection.view = "canvas";
+    selectNode(fqn, { origin: false });
+  }
+
+  // Show a symbol in the 3D universe (the structure panel's right-click). Record the
+  // launch view so Back returns there; openUniverse flies to the node (or lights the
+  // chain for a flow), switches to the space view, and records the new space scope.
+  function showInUniverse(fqn: string) {
+    if (!nodeIndex.has(fqn)) return;
+    recordViewOrigin();
+    openUniverse(fqn);
   }
 
   // Apply a queued editor jump once the code view is mounted on the right file.
@@ -687,10 +775,18 @@
     // write a project, so the render shows an unsupported notice and the launcher
     // never opens.
     if (!fsSupported) return;
-    // A `#w=` share link restores its workspace and skips the project panel;
-    // otherwise open the panel on start (never autoload a model).
-    const restored = await restoreFromHash();
+    // The URL hash restores its workspace + location and skips the project panel;
+    // otherwise open the panel on start (never autoload a model). Route history
+    // writes through SvelteKit's shallow-routing API — raw history.replaceState
+    // conflicts with its client router (re-runs effects → update-depth loop).
+    router.configureWriter((url, replace) => (replace ? replaceState(url, {}) : pushState(url, {})));
+    router.start();
+    const restored = await restoreSession();
     ui.projectOpen = !restored;
+    // Enable the live URL sync only after the restore (and its queued caret jump)
+    // has settled, so the first sync doesn't overwrite the restored location.
+    await tick();
+    urlReady = true;
   }
   onMount(boot);
 
@@ -1676,6 +1772,10 @@
     }
     // No autosave: edits stay in the in-memory buffer (and show as dirty on the
     // tab) until an explicit save — Cmd/Ctrl-S or File ▸ Save / Save all.
+    // Keep the URL in step: refresh the embedded base (in-memory only) and the
+    // caret, both debounced so a fast typist isn't re-encoding on every keystroke.
+    recomputeWPayload();
+    scheduleCaretSync();
   }
 
   // Live parse check for the inline error cue; doesn't touch the doc nav.
@@ -1990,6 +2090,7 @@
       saveStore.persisted = {};
       saveStore.saveState = "idle";
       clearTimeout(saveStateTimer);
+      router.clear(); // back to the bare launcher URL
       ui.projectOpen = true;
     };
     if (dirtyCount > 0) {
@@ -2165,10 +2266,11 @@ show('index.html');
 
   // Mount a decoded workspace (from a share link or imported file) in-memory,
   // session-only until "Save to folder" — exactly the sample-load path.
-  function mountDecoded({ workspace: ws, landing }: MountInput) {
+  async function mountDecoded({ workspace: ws, landing }: MountInput) {
     wsStore.moduleSources = share.mountedSources(ws.files as { fqn?: string; source?: string }[]);
     saveStore.persisted = {}; // imported/shared: no on-disk baseline, session-only
-    mountWorkspace(ws, landing);
+    await mountWorkspace(ws, landing);
+    recomputeWPayload(); // session-only: embed the workspace in the URL so refresh restores it
   }
 
   const busyShare = $derived(shareStore.busy);
@@ -2185,16 +2287,22 @@ show('index.html');
         await onexport();
         return;
       }
-      const payload = bytesToBase64Url(bytes);
-      const url = `${location.origin}${location.pathname}#w=${payload}`;
-      // `window.` qualified: the component's nav `history` $state array shadows
-      // the global `history`.
-      window.history.replaceState(null, "", `#w=${payload}`);
+      // A share link always embeds the workspace (the recipient has no disk) and
+      // carries the current location so they land where you are. Built via the
+      // router serializer; not written to our own address bar (which keeps its
+      // folder-reference URL) unless the clipboard write fails.
+      const hash = serializeRoute({
+        base: { kind: "w", value: bytesToBase64Url(bytes) },
+        ...currentLocationFields(),
+      });
+      const url = `${location.origin}${location.pathname}${hash}`;
       try {
         await navigator.clipboard.writeText(url);
         notify("success", "Share link copied to clipboard");
       } catch {
         notify("info", "Share link is in the address bar");
+        // `window.` qualified: the component's nav `history` $state shadows the global.
+        window.history.replaceState(null, "", url);
       }
     } catch (e) {
       notify("error", "Could not create share link", String((e as Error)?.message ?? e));
@@ -2239,22 +2347,148 @@ show('index.html');
     input.click();
   }
 
-  // Restore a workspace from a `#w=<payload>` share link on first load. Cleared
-  // from the URL after mounting so a refresh doesn't re-trigger it.
-  async function restoreFromHash() {
-    const payload = share.parseHashPayload(location.hash);
-    if (!payload) return false;
+  // ── Hash router: the live session in the URL ─────────────────────────────
+  // The URL hash holds the workspace base (a folder reference, or an embedded
+  // in-memory workspace) plus the current location, so a refresh restores where
+  // you were. `router` (router.svelte.ts) owns reading/writing `location.hash`.
+
+  // Gate the live URL sync until the initial restore has settled, so the boot
+  // sync doesn't clobber the restored caret before `pendingGoto` applies.
+  let urlReady = $state(false);
+  // The embedded base64 payload for an in-memory workspace, refreshed (debounced)
+  // off edits so a refresh restores unsaved work. Empty for folder workspaces
+  // (their content lives on disk) and when the workspace exceeds MAX_HASH_BYTES.
+  let wPayload = $state("");
+  let wPayloadTimer: ReturnType<typeof setTimeout> | undefined;
+  let caretSyncTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Re-encode the in-memory workspace into the URL base (debounced). A folder
+  // workspace is a no-op — its base is a stable folder reference.
+  function recomputeWPayload() {
+    clearTimeout(wPayloadTimer);
+    wPayloadTimer = setTimeout(async () => {
+      if (!workspace || workspace.root) return;
+      try {
+        const bytes = await encodeWorkspace(snapshotWorkspace());
+        wPayload = bytes.length > MAX_HASH_BYTES ? "" : bytesToBase64Url(bytes);
+      } catch {
+        wPayload = "";
+      }
+    }, 600);
+  }
+
+  // The current route base: a `f.<folder name>` reference for a disk-backed
+  // project, or a `w.<payload>` embed for an in-memory session.
+  function currentBase(): RouteBase {
+    if (!workspace) return { kind: null, value: "" };
+    if (workspace.root) return { kind: "f", value: workspace.name };
+    return wPayload ? { kind: "w", value: wPayload } : { kind: null, value: "" };
+  }
+
+  // The current location fields (view / file / node / depth) shared by the live
+  // URL sync and the share link, so both encode the same place. In space view the
+  // 3D target is authoritative (a flow's entry callable isn't a placed node);
+  // elsewhere the shared node selection is. Depth only applies to the canvas.
+  function currentLocationFields(): Pick<Route, "view" | "file" | "node" | "depth"> {
+    return {
+      view,
+      file: openFile?.fqn || undefined,
+      node: view === "space" ? (spaceTargetFqn ?? undefined) : (selected?.fqn || undefined),
+      depth: view === "canvas" ? seqDepth : undefined,
+    };
+  }
+
+  // Mirror the live session into the hash. Reads the caret straight off the
+  // editor (no cursor event to react to). No-op until the workspace base is ready.
+  function syncUrl() {
+    if (!urlReady) return;
+    const base = currentBase();
+    if (base.kind === null) return; // nothing addressable yet (no ws / payload pending)
+    const loc = view === "code" ? editorApi?.location?.() : null;
+    router.navigate({ base, ...currentLocationFields(), line: loc?.line, col: loc?.col });
+  }
+
+  // Capture the caret (and a freshly-embedded base) shortly after an edit.
+  function scheduleCaretSync() {
+    clearTimeout(caretSyncTimer);
+    caretSyncTimer = setTimeout(syncUrl, 400);
+  }
+
+  // Reactive: re-sync on a view / file / selection / depth / payload change. The
+  // dependency reads are explicit (the `void`s); the write itself runs untracked
+  // so `router.navigate` reading its own `route` $state can't retrigger this effect.
+  $effect(() => {
+    void workspace;
+    void view;
+    void openFile;
+    void selected;
+    void spaceTargetFqn;
+    void seqDepth;
+    void wPayload;
+    void urlReady;
+    untrack(() => syncUrl());
+  });
+
+  // Apply the URL's location (view / file / node / caret / depth) over a freshly
+  // mounted workspace, reusing the same store writes as `applyLocation`. Runs
+  // after the mount settles, so it wins over the workspace's doc-landing default.
+  function applySession(r: Route) {
+    const ws = wsStore.workspace;
+    if (!ws) return;
+    if (r.file) {
+      const file = ws.files.find((f) => f.fqn === r.file);
+      if (file) selectFile(file);
+    }
+    if (r.depth) selection.seqDepth = r.depth as Depth;
+    // Space view: drive the 3D target through applySpaceTarget so the graph flies
+    // to the node / lights the flow on mount (mirrors applyLocation's space branch);
+    // setting selection.selected alone leaves spaceFocus null and the camera resting.
+    if (r.view === "space") {
+      applySpaceTarget(r.node ?? null);
+      if (r.node) selectNode(r.node, { goto: false, origin: false, record: false });
+      return;
+    }
+    if (r.node) {
+      const hit = nodeIndex.get(r.node);
+      selection.selected = {
+        fqn: r.node,
+        line: hit?.node.line ?? r.line ?? 0,
+        col: hit?.node.col ?? r.col ?? 0,
+        fileFqn: hit?.fileFqn ?? r.file ?? "",
+      };
+    }
+    selection.view = r.view; // after selectFile, which may force "code"
+    if (r.view === "code" && r.line && r.file) {
+      selection.pendingGoto = { line: r.line, col: r.col ?? 0, fileFqn: r.file };
+    }
+  }
+
+  // Restore the session from the URL hash on first load: mount the workspace by
+  // base kind, then apply the location. Returns false (→ launcher) when nothing
+  // could be mounted (bare hash, missing folder handle, denied permission).
+  async function restoreSession(): Promise<boolean> {
+    let r = parseHash(location.hash);
+    if (r.base.kind === null) {
+      // Legacy `#w=<payload>` share links still boot.
+      const legacy = share.parseHashPayload(location.hash);
+      if (!legacy) return false;
+      r = { ...r, base: { kind: "w", value: legacy } };
+    }
     try {
-      const bytes = base64UrlToBytes(payload) as Uint8Array<ArrayBuffer>;
-      mountDecoded(await decodeWorkspace(bytes));
-      window.history.replaceState(null, "", location.pathname + location.search);
-      notify("success", "Restored shared workspace");
-      return true;
+      if (r.base.kind === "w") {
+        const bytes = base64UrlToBytes(r.base.value) as Uint8Array<ArrayBuffer>;
+        await mountDecoded(await decodeWorkspace(bytes));
+      } else {
+        const handle = await reopenFolder("folder:" + r.base.value);
+        if (!handle) return false; // no stored handle / denied — fall back to launcher
+        await adoptWorkspace(await readWorkspace(handle));
+      }
     } catch (e) {
-      notify("error", "Could not open shared link", String((e as Error)?.message ?? e));
-      window.history.replaceState(null, "", location.pathname + location.search);
+      notify("error", "Could not restore from the URL", String((e as Error)?.message ?? e));
       return false;
     }
+    applySession(r);
+    return true;
   }
 
 </script>
@@ -2651,14 +2885,14 @@ show('index.html');
             {/if}
           </div>
           {#if view === "canvas"}
-            <div class="layer canvas-layer">
-              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} onuniverse={openUniverse} />
+            <div class="layer canvas-layer" data-testid="canvas-view">
+              <DiagramPane scene={canvas.scene} layout={canvas.layout} error={canvas.error} hint={canvasHint} onpick={pickNode} onup={navigateUp} flows={flowsByNode} depth={seqDepth} ondepth={(d: Depth) => (selection.seqDepth = d)} onusages={showCanvasUsages} onsource={openNodeInEditor} typeFqn={typeFqnByName as never} tweaks={canvasTweaks} onlayoutchange={(t) => ui.setLayoutTweaks(t)} unlocked={pinStore.unlocked} onpin={pinNode} onunlock={toggleUnlock} pinnedFqns={pinnedFqns} onunpin={unpinNode} onresetgrid={resetCurrentView} onuniverse={openUniverse} />
             </div>
           {:else if view === "space"}
-            <div class="layer space-layer">
+            <div class="layer space-layer" data-testid="space-view">
               {#if spaceSnapshot}
                 {#key spaceKey}
-                  <ForceGraph snapshot={spaceSnapshot} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} ondeselect={resetSpace} />
+                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} flowName={spaceFlowName} ondeselect={resetSpace} onpick={openUniverse} />
                 {/key}
               {:else}
                 <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>
@@ -2682,7 +2916,9 @@ show('index.html');
           symbols={symbols as never}
           selectedFqn={selected?.fqn ?? null}
           onpicknode={(fqn) => (view === "space" ? openUniverse(fqn) : selectNode(fqn, { goto: true }))}
+          ongotodef={(fqn) => selectNode(fqn, { goto: true })}
           onreveal={revealSymbol}
+          onshowuniverse={showInUniverse}
         />
       {/if}
 
@@ -2717,6 +2953,7 @@ show('index.html');
 
   <StatusBar>
     {#if ready && workspace}{@render breadcrumb()}{/if}
+    <PerfMeter />
   </StatusBar>
 </div>
 

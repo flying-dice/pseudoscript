@@ -18,10 +18,19 @@ public data TokenizeError =
 
 /// `vault` — tokenisation and the network-instrument map.
 /// #critical
-public container Vault for context::AcmePay;
+public container Vault for context::AcmePay {
+  /// Tokenise a card and store only the token plus a safe display form.
+  public tokenize(merchant: shared::MerchantId, card: vault::CardEntry): Result<vault::PaymentMethod, vault::TokenizeError> {
+    return vault::Tokenizer.tokenize(merchant, card)
+  }
+  /// The network instrument for a stored payment method, if it exists.
+  public instrumentFor(merchant: shared::MerchantId, method: shared::PaymentMethodId): Option<context::NetworkInstrument> {
+    return vault::Instruments.instrumentFor(merchant, method)
+  }
+}
 
 /// Exchanges raw card data for a stored token.
-public component Tokenizer for vault::Vault {
+component Tokenizer for vault::Vault {
   /// Tokenise a card: validate it, exchange it with the network for an
   /// instrument token, store only the token plus a safe display form.
   public tokenize(merchant: shared::MerchantId, card: vault::CardEntry): Result<vault::PaymentMethod, vault::TokenizeError> {
@@ -50,7 +59,7 @@ public component Tokenizer for vault::Vault {
 /// Resolves a stored payment method to the network instrument that charges it.
 /// The only path from a `PaymentMethodId` back to something the network can
 /// charge — and it never yields a PAN.
-public component Instruments for vault::Vault {
+component Instruments for vault::Vault {
   /// The network instrument for a stored payment method, if it exists and
   /// belongs to the merchant.
   public instrumentFor(merchant: shared::MerchantId, method: shared::PaymentMethodId): Option<context::NetworkInstrument> {
@@ -69,7 +78,7 @@ component TokenStore for vault::Vault {
 /// A tokenised card never exposes its number again.
 feature TokenisationHidesThePan for vault::Tokenizer {
   given "a card tokenised into a payment method"
-  when  "the payment method is later used to charge"
-  then  "only the network instrument token is read"
-  but   "the card number is never stored or returned"
+  when "the payment method is later used to charge"
+  then "only the network instrument token is read"
+  but "the card number is never stored or returned"
 }

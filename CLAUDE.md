@@ -19,6 +19,30 @@ The language is defined across four artifacts that must stay consistent with eac
 
 When changing a language rule, the change usually touches several of these at once: the `LANG.md` clause, a `decisions/` entry if a fork was resolved, and a `CONFORMANCE/` case that exercises it. The ADRs each list the `LANG.md` sections they affect.
 
+### Where `.pds` examples live — keep every one valid under the current rules
+
+A rule change (FQN form, visibility, syntax) must leave every worked example compiling and exemplary. The example surfaces, beyond the four artifacts above:
+
+- **`.claude/skills/pseudocode/SKILL.md`** — the authoring/mapping skill, with a worked model. The IDE's "Download skill" button serves it from **`web-ide/static/pseudocode-skill.zip`**, rebuilt by `npm run bundle:skill` (in `web-ide`); the zip also vendors `references/LANG.md`. Re-bundle and commit the zip whenever the skill or `LANG.md` changes.
+- **`web-ide/src/lib/workspace.ts`** — `starterModule` / `emptySeed`, the `.pds` a brand-new empty project scaffolds. It is the first model every user sees, so it MUST compile clean.
+- **`model/`** and **`web-ide/src/lib/samples/<name>/`** — buildable example workspaces (each has a `pds.toml`).
+- The worked example in **`LANG.md`** and the snippets in **`PATTERNS.md`**.
+
+Validate an example as a **workspace**: `pds doc <dir>` resolves each file to its module FQN and applies the full-qualification checks (a reference is its flat FQN `module::Name`, §8.1). The doc site is written to `<dir>/target/doc`.
+
+## Model-driven engineering — model first, then impl (mandatory)
+
+The self-model `model/` is the **spec for the toolchain implementation**: changing the behaviour or architecture of any crate MUST start in the model, then the code is aligned to it — never the reverse. (This is distinct from `LANG.md`/`CONFORMANCE/` leading the *language* definition; MDE governs the `crates/` implementation against its self-model.)
+
+The order for any behavioural change:
+
+1. **Amend the model.** Edit `model/<module>.pds` so the disclosed callable bodies state the new business logic — every guard, every `Err`/`Missing`/variant arm, the order of operations, the dependency calls, the `from` provenance. Keep it C4-level: disclose decisions and data-flow, black-box plumbing.
+2. **`pds doc model` clean.** The self-model MUST resolve with zero diagnostics before any code changes.
+3. **Align the implementation.** Translate the disclosed bodies into the crate(s) — preserve every error arm and the order of operations; the disclosed body is normative. Re-add black boxes as adapters and omitted plumbing as glue, but invent no business logic the model doesn't show.
+4. **Keep the guard green.** `crates/pseudoscript/tests/model_conformance.rs` enforces model↔code correspondence: no cross-module call may land on a `component` (publish the contract on the container/system face — see `.claude/skills/pseudocode/SKILL.md`), each crate exposes the public face the model names, and engines the model keeps private stay encapsulated. `cargo test -p pseudoscript --test model_conformance` MUST pass.
+
+A behavioural code change that is not first reflected in `model/` is a defect: the model is the source, the code is its faithful realisation.
+
 ## Conformance case conventions
 
 - Filenames start with the `LANG.md` section they exercise, then a slug: `static/6-result-wrong-accessor.pds`. `2-4` means §2.4.
@@ -46,3 +70,9 @@ Language intelligence has a single source of truth: **`crates/pseudoscript-lsp-c
 - **`crates/pseudoscript-ide`** — the browser IDE's single wasm. It is the whole web-IDE application: a stateful `IdeSession` (`src/lib.rs`) that holds the workspace and exposes **one typed surface** covering every capability the IDE drives — language intelligence (routed through `lsp-core`), diagrams (`pseudoscript-emit`), the doc site (`pseudoscript-doc`), formatting, and dependency resolution. The toolchain crates are consumed as ordinary Rust rlibs, not a second wasm. The boundary is typed with **`tsify`**: the Rust DTOs are the source of truth, wasm-bindgen emits the real `.d.ts`, and values cross as objects — no hand-written TS, no `JSON.parse`. The one exception is the render IR `Scene`, an opaque JSON string the canvas reads structurally. The web IDE (`web-ide/src/lib/pds.ts`) is the only client and drives `IdeSession` directly, so the wasm toolchain is exercised as a real client and cannot drift.
 
 To change a language feature, edit it once in `lsp-core` (or its `model` primitive). After the wasm surface changes, rebuild: `npm run build:wasm` in `web-ide`, then commit the regenerated `pds-ide-wasm/` artifacts. Highlight **colours** and pure editor UX stay client-side.
+
+## Playwright
+
+Always write playwright tests for web-ide and web-landing projects.
+Playwright tests must use data-testid attributes for element selection. No brittle CSS selectors.
+Do not guess how to navigate using playwright explore the site and use the data to build the tests.

@@ -49,10 +49,10 @@
     <MenuBar {workspaceName} {building} {view} {structureOpen} {canBack} {canForward} {onback} {onforward} {...menu} />
     {#if workspaceName}
       <div class="nav">
-        <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back">
+        <button class="icon-btn" onclick={onback} disabled={!canBack} title="Back (previous location)" aria-label="Back" data-testid="nav-back">
           <ArrowLeft size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
-        <button class="icon-btn" onclick={onforward} disabled={!canForward} title="Forward (next location)" aria-label="Forward">
+        <button class="icon-btn" onclick={onforward} disabled={!canForward} title="Forward (next location)" aria-label="Forward" data-testid="nav-forward">
           <ArrowRight size={18} strokeWidth={1.75} aria-hidden="true" />
         </button>
       </div>

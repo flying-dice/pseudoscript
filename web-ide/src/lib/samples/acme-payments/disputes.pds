@@ -13,25 +13,10 @@ public data DisputeStatus =
   | Lost
 
 /// A dispute (chargeback) raised against a captured payment.
-public data Dispute {
-  id: shared::DisputeId,
-  merchant: shared::MerchantId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  ref: context::DisputeRef,
-  status: disputes::DisputeStatus
-}
+public data Dispute { id: shared::DisputeId, merchant: shared::MerchantId, intent: shared::PaymentIntentId, amount: shared::Money, ref: context::DisputeRef, status: disputes::DisputeStatus }
 
 /// A dispute-opened callback from the network's webhook.
-public data DisputeEvent {
-  eventId: string,
-  dispute: shared::DisputeId,
-  merchant: shared::MerchantId,
-  intent: shared::PaymentIntentId,
-  amount: shared::Money,
-  ref: context::DisputeRef,
-  signature: string
-}
+public data DisputeEvent { eventId: string, dispute: shared::DisputeId, merchant: shared::MerchantId, intent: shared::PaymentIntentId, amount: shared::Money, ref: context::DisputeRef, signature: string }
 
 /// How the network ruled on a contested dispute.
 public data DisputeRuling =
@@ -39,19 +24,11 @@ public data DisputeRuling =
   | MerchantLost
 
 /// A dispute-resolution callback from the network's webhook.
-public data ResolutionEvent {
-  eventId: string,
-  dispute: shared::DisputeId,
-  ruling: disputes::DisputeRuling,
-  signature: string
-}
+public data ResolutionEvent { eventId: string, dispute: shared::DisputeId, ruling: disputes::DisputeRuling, signature: string }
 
 /// A merchant's evidence contesting a dispute. The merchant is taken from the
 /// authenticated API key at the edge, never from the body.
-public data EvidenceSubmission {
-  dispute: shared::DisputeId,
-  evidence: string
-}
+public data EvidenceSubmission { dispute: shared::DisputeId, evidence: string }
 
 /// Acknowledgement returned to the network for a processed callback.
 public data Acknowledged { eventId: string }
@@ -72,11 +49,24 @@ public data DisputeOpened { dispute: shared::DisputeId, merchant: shared::Mercha
 public data DisputeWon { dispute: shared::DisputeId, merchant: shared::MerchantId, amount: shared::Money }
 
 /// `disputes` — chargeback handling.
-public container Disputes for context::AcmePay;
+public container Disputes for context::AcmePay {
+  /// The merchant contests a dispute with evidence; moves it to review.
+  public submitEvidence(merchant: shared::MerchantId, req: disputes::EvidenceSubmission): Result<disputes::Dispute, disputes::DisputeError> {
+    return disputes::DisputeService.submitEvidence(merchant, req)
+  }
+  /// Disputes past their response deadline still awaiting evidence.
+  public unanswered(): disputes::Dispute[] {
+    return disputes::DisputeService.unanswered()
+  }
+  /// Forfeit a dispute the merchant never answered: mark it `Lost`.
+  public forfeit(dispute: shared::DisputeId): void {
+    disputes::DisputeService.forfeit(dispute)
+  }
+}
 
 /// Owns the dispute lifecycle: open (from the network), contest (from the
 /// merchant), and resolve (from the network).
-public component DisputeService for disputes::Disputes {
+component DisputeService for disputes::Disputes {
   /// The network opens a dispute. Signature-verified and de-duplicated before the
   /// dispute is recorded and `DisputeOpened` raised, so a replayed callback is
   /// acknowledged but holds funds only once.
@@ -230,14 +220,14 @@ component Events for disputes::Disputes {
 /// An opened dispute holds the funds before the merchant can spend them.
 feature DisputeHoldsFundsImmediately for disputes::DisputeService {
   given "a captured payment whose balance is available"
-  when  "the network opens a dispute for it"
-  then  "the disputed amount and the dispute fee are debited from available"
-  and   "the merchant is alerted to respond"
+  when "the network opens a dispute for it"
+  then "the disputed amount and the dispute fee are debited from available"
+  and "the merchant is alerted to respond"
 }
 
 /// A won dispute returns the held funds.
 feature WonDisputeReturnsFunds for disputes::DisputeService {
   given "a dispute whose funds were held at open"
-  when  "the network rules in the merchant's favour"
-  then  "the disputed amount is returned to available"
+  when "the network rules in the merchant's favour"
+  then "the disputed amount is returned to available"
 }

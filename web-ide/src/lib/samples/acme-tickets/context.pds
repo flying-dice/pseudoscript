@@ -11,19 +11,19 @@ public person Attendee {
   /// Join the virtual waiting room for an on-sale event.
   #[manual]
   public queue(event: shared::EventId, token: identity::SessionToken): void {
-    gateway::QueueApi.join(event, token)
+    gateway::Gateway.join(event, token)
   }
 
   /// Hold seats once admitted from the waiting room.
   #[manual]
   public hold(req: orders::ReserveRequest): void {
-    gateway::ReservationApi.reserve(req)
+    gateway::Gateway.reserve(req)
   }
 
   /// Pay for held seats.
   #[manual]
   public checkout(req: orders::CheckoutRequest): void {
-    gateway::CheckoutApi.checkout(req)
+    gateway::Gateway.checkout(req)
   }
 }
 
@@ -33,25 +33,25 @@ public person Organizer {
   /// Create and configure a new event.
   #[manual]
   public createEvent(token: identity::SessionToken, draft: catalog::NewEvent): void {
-    backoffice::Console.createEvent(token, draft)
+    backoffice::Backoffice.createEvent(token, draft)
   }
 
   /// Add a price tier to an event.
   #[manual]
   public addTier(token: identity::SessionToken, tier: catalog::NewTier): void {
-    backoffice::Console.addTier(token, tier)
+    backoffice::Backoffice.addTier(token, tier)
   }
 
   /// Put an event on sale.
   #[manual]
   public putOnSale(token: identity::SessionToken, event: shared::EventId): void {
-    backoffice::Console.putOnSale(token, event)
+    backoffice::Backoffice.putOnSale(token, event)
   }
 
   /// Cancel an event (refunds all holders).
   #[manual]
   public cancelEvent(token: identity::SessionToken, event: shared::EventId): void {
-    backoffice::Console.cancelEvent(token, event)
+    backoffice::Backoffice.cancelEvent(token, event)
   }
 }
 
@@ -60,7 +60,7 @@ public person GateStaff {
   /// Scan a ticket barcode to admit its holder.
   #[manual]
   public scan(barcode: string): void {
-    tickets::Redemption.redeem(barcode)
+    tickets::Tickets.redeem(barcode)
   }
 }
 
@@ -69,13 +69,13 @@ public person SupportAgent {
   /// Refund a customer's order.
   #[manual]
   public refund(token: identity::SessionToken, order: shared::OrderId): void {
-    backoffice::Console.refundOrder(token, order)
+    backoffice::Backoffice.refundOrder(token, order)
   }
 
   /// Review orders stranded by failed ticket issuance.
   #[manual]
   public reviewStranded(token: identity::SessionToken): void {
-    backoffice::Console.reviewStranded(token)
+    backoffice::Backoffice.reviewStranded(token)
   }
 }
 

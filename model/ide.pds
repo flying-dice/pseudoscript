@@ -2,10 +2,11 @@
 //!
 //! The IDE is **one** Rust crate compiled to **one** WebAssembly artifact —
 //! `IdeSession` (`crates/pseudoscript-ide`). It holds the workspace and answers
-//! every query the editor drives: language intelligence, diagram projection, and
-//! the doc site. It consumes the toolchain (`lsp`, `model`, `emit`, `doc`) as
-//! ordinary Rust libraries — not a second wasm — so there is one surface in the
-//! browser and no risk of a bridge drifting from the app that uses it.
+//! every query the editor drives: language intelligence, diagram projection, the
+//! 3D universe, and the doc site. It consumes the toolchain (`lsp_core`, `model`,
+//! `emit`, `doc`, `universe`) as ordinary Rust libraries — not a second wasm — so
+//! there is one surface in the browser and no risk of a bridge drifting from the
+//! app that uses it.
 //!
 //! The boundary is **typed**: each method takes and returns Rust DTOs that
 //! `tsify` projects to TypeScript interfaces, so values cross as objects, not
@@ -14,11 +15,13 @@
 //! structurally.
 //!
 //! Layers, top to bottom:
-//!   WebIde (JS adapters)  →  IdeSession (the one Rust wasm)  →  lsp / model / emit / doc
+//! WebIde (JS adapters)  →  IdeSession (the one Rust wasm)  →  lsp_core / model / emit / doc / universe
 //!
 //! The arrows that matter: the session *uses* the toolchain libraries for all
 //! language and projection logic and *calls out* through two ports — the file
-//! system and the editor surface. JS exists ONLY at those ports.
+//! system and the editor surface. JS exists at those two ports, plus the one
+//! workspace rule the host runs before mounting: deriving each module's flat FQN
+//! from its path (LANG.md §8.1, ADR-031).
 
 /// A completion candidate offered as the author types: the inserted label, the
 /// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text.
@@ -29,20 +32,71 @@ public data Completion { label: string, kind: number, detail: string }
 /// `pds_modules/` as externals (LANG.md §8.3). Held in memory — a decoded
 /// sample/share link or a local directory loaded through the file-system port.
 /// Edits never leave the tab.
-public data BrowserWorkspace {
-  modules: model::WorkspaceModule[],
-  manifest: string,
-  externals: model::WorkspaceModule[]
-}
+public data BrowserWorkspace { modules: model::WorkspaceModule[], manifest: string, externals: model::WorkspaceModule[] }
+
+/// One vendored git-dependency file the host reads for `dependencyModules`: its
+/// `pds_modules/` slug, its FQN within the dependency workspace (the host's
+/// path→FQN derivation, LANG.md §8.1), and its source.
+public data VendoredInput { slug: string, fqn: string, source: string }
+
+/// One local-source dependency file the host reads for `dependencyModules`: the
+/// dependency name (ADR-026), its FQN within the dependency workspace, and its
+/// source.
+public data LocalInput { name: string, fqn: string, source: string }
+
+/// One node in the 3D relationship graph the IDE draws: its FQN, C4 level, and
+/// containment parent. The typed boundary form of a `universe::NodeOut`.
+public data UniverseNode { id: string, level: string, parent: string }
+
+/// One directed relationship in the 3D graph, weighted by traffic (call count).
+public data UniverseEdge { source: string, to: string, traffic: number }
+
+/// The 3D-view snapshot the session hands the `ForceGraph`: nodes and directed
+/// weighted edges, no positions (the renderer lays them out). The typed boundary
+/// form of a `universe::Snapshot`.
+public data UniverseSnapshot { nodes: ide::UniverseNode[], edges: ide::UniverseEdge[] }
+
+/// The IDE's per-diagram C4 layout toggles, crossing to JS as a typed object: run
+/// the long-edge optimiser, the reading `orientation` (`"tb"`/`"lr"`), a `spacing`
+/// preset (`"compact"`/`"comfortable"`/`"roomy"`), and the experimental grid dials
+/// and pins. Translated to `emit::C4Tweaks` inside the session.
+public data LayoutTweaks { minimizeLongEdges: bool, orientation: string, spacing: string, experimentalGrid: bool, gridCrossingCost: number, gridDistanceCost: number, gridFlowCost: number, gridSearch: string, gridPins: ide::GridPin[] }
+
+/// A node the user has dragged onto a grid cell, identified by FQN. Carried inside
+/// `LayoutTweaks`; honoured only under experimental grid placement.
+public data GridPin { fqn: string, row: number, col: number }
+
+/// The find-references result for the symbol under the caret: the symbol's FQN, a
+/// human title, and every occurrence across the workspace.
+public data References { fqn: string, title: string, occurrences: ide::Occurrence[] }
+
+/// One occurrence of a symbol: the module it lies in, its line/column span, the
+/// source line text with the match offsets within it, and whether it is the
+/// declaration site.
+public data Occurrence { fqn: string, line: number, col: number, endLine: number, endCol: number, text: string, matchStart: number, matchEnd: number, decl: bool }
+
+/// One occurrence the user chose to rename, keyed by the module FQN and the
+/// 1-based line/column an `ide::Occurrence` reported. The rename rewrites only
+/// the selected occurrences, not every match.
+public data RenameSelection { fqn: string, line: number, col: number }
+
+/// One module rewritten by a rename: its FQN and new source text.
+public data RenamedSource { fqn: string, source: string }
+
+/// One row of the workspace outline: a node's FQN, simple name, C4 kind,
+/// containment parent, whether it is a triggered flow entry, its `///` summary,
+/// and its declaration line/column.
+public data OutlineNode { fqn: string, name: string, kind: string, parent: string, triggered: bool, summary: string, line: number, col: number }
 
 // === Layer 1 — the IDE session: the one typed wasm ========================
 
 /// `crates/pseudoscript-ide` — the IDE application, Rust compiled to a single
 /// wasm. It owns the workspace state and is the whole browser API: the file
 /// system pushes modules in (`mount`/`setSource`), the editor pulls answers out.
-/// It delegates language intelligence to `lsp::Analysis` and `model::Checks`,
-/// diagrams to `emit::Projector`, and the doc site to `doc::SiteBuilder` — each a
-/// Rust library linked in, never a separate wasm. It never touches the DOM,
+/// It delegates language intelligence to `lsp_core` and `model::Checks`, diagrams
+/// to `emit::Projector`, the 3D universe to `universe::Adapter`, and the doc site
+/// to `doc::SiteBuilder` — each a Rust library linked in, never a separate wasm.
+/// It never touches the DOM,
 /// CodeMirror, or the File System Access API: it reaches the outside world only
 /// through its two ports. Everything here is Rust.
 public container IdeSession for context::Pseudoscript {
@@ -75,42 +129,80 @@ public component Workspace for ide::IdeSession {
   dependencies(): model::WorkspaceModule[] {
     return ide::FsPort.readDependencies()
   }
-  /// Apply an edit to one module's buffer and persist it through the FS port.
+  /// Apply an edit to one module's buffer — re-parse it into the in-memory
+  /// session; the change is not persisted. There is no autosave: edits stay in
+  /// the buffer until an explicit save writes them through the FS port.
   edit(fqn: string, text: string): void {
-    ide::FsPort.writeModule(fqn, text)
+    ide::IdeSession.setSource(fqn, text)
   }
   /// Resolve a workspace's vendored git dependencies (§8.3) into dependency-name
   /// -prefixed modules — the externals `mount` takes — reusing the same
   /// resolution the native loader uses (`model::Deps`).
-  dependencyModules(lockToml: string, vendored: string, local: string): model::WorkspaceModule[];
+  dependencyModules(lockToml: string, vendored: ide::VendoredInput[], local: ide::LocalInput[]): model::WorkspaceModule[];
 }
 
-/// The language session: diagnostics, completion, hover, go-to, references, and
-/// rename over the held workspace, every answer delegated to the pure toolchain
-/// logic (`model::Checks` for diagnostics, `lsp::Analysis` for cursor features)
-/// with the dependency externals bound. The typed DTOs and the LSP vocabulary
-/// stay inside this boundary; the editor port carries plain results out.
+/// The language session: diagnostics, completion, hover, go-to, references,
+/// rename, outline, folding, and semantic tokens over the held workspace, every
+/// answer delegated to the pure toolchain logic (`model::Checks` for diagnostics,
+/// `lsp_core` for cursor features) with the dependency externals bound. The typed
+/// DTOs and the LSP vocabulary stay inside this boundary; the editor port carries
+/// plain results out.
 public component LanguageSession for ide::IdeSession {
   /// Re-check the whole project against its externals and push each module's
   /// problems to the editor.
   public refresh(modules: model::WorkspaceModule[], external: model::WorkspaceModule[]): void {
-    diags = model::ModuleDiagnostics[] from model::Checks.checkWorkspaceModules(modules)
+    diags = model::ModuleDiagnostics[] from self.checkAgainstExternals(modules, external)
     ide::EditorPort.showDiagnostics(diags)
   }
+  /// Check every module with the dependency modules bound as externals (§8.3), so
+  /// a `dep::module::Node` reference resolves — the externals-aware counterpart of
+  /// `model::Model.checkWorkspaceModules`.
+  checkAgainstExternals(modules: model::WorkspaceModule[], external: model::WorkspaceModule[]): model::ModuleDiagnostics[];
   /// Parse and statically check one buffer — the editor's per-keystroke linter.
   check(source: string): syntax::Diagnostic[] {
-    return model::Checks.check(source)
+    return model::Model.check(source)
   }
   /// Completions at a byte offset, resolved across the workspace and its
   /// externals, for the editor's completion source.
   complete(moduleFqn: string, offset: number): ide::Completion[];
-  /// Markdown hover for the symbol under the caret, pushed to the editor tooltip.
+  /// Markdown hover for the symbol under the caret: compute it through the
+  /// `lsp_core` toolchain over the held workspace, then push the Markdown to the
+  /// editor tooltip. Absent when the cursor rests on no resolvable symbol, in
+  /// which case no tooltip is shown.
   hover(moduleFqn: string, offset: number): void {
-    markdown = string from ide::EditorPort.hoverText(moduleFqn, offset)
+    result = Option<lsp_core::Hover> from self.hoverAt(moduleFqn, offset)
+    if (result.isNone) {
+      return
+    }
+    markdown = string from result.value.contents
     ide::EditorPort.showHover(markdown)
   }
-  /// Go-to-definition: the FQN the identifier under the caret points at.
-  definition(moduleFqn: string, offset: number): string;
+  /// Resolve the hover for the symbol at `offset`, the fallible `lsp_core` lookup
+  /// over the held workspace — absent when the caret resolves to no symbol.
+  hoverAt(moduleFqn: string, offset: number): Option<lsp_core::Hover>;
+  /// The checked workspace the session holds — the `lsp_core` cursor handlers'
+  /// resolution input, with the dependency externals bound (§8.3).
+  heldWorkspace(): model::Workspace;
+  /// The held source buffer of one module, the text the cursor offset indexes into.
+  heldSource(moduleFqn: string): string;
+  /// Map a byte offset to the `lsp_core` caret position the handlers take (the
+  /// boundary's offset→UTF-16-position conversion).
+  caretPosition(src: string, offset: number): lsp_core::Position;
+  /// Go-to-definition: the FQN the identifier under the caret points at, or absent
+  /// when the cursor rests on no resolvable symbol.
+  definition(moduleFqn: string, offset: number): Option<string>;
+  /// Every occurrence of the symbol under the caret across the workspace, for the
+  /// editor's reference highlighting, or absent when the cursor rests on no
+  /// resolvable symbol.
+  references(moduleFqn: string, offset: number): Option<ide::References>;
+  /// Rename the symbol under the caret, rewriting only the user-chosen
+  /// `selected` occurrences and returning each rewritten module's new source.
+  renameApply(moduleFqn: string, offset: number, newName: string, selected: ide::RenameSelection[]): ide::RenamedSource[];
+  /// The workspace symbol outline — the structure tree the editor's outline panel
+  /// draws.
+  outline(): ide::OutlineNode[];
+  /// The foldable regions of one buffer (node bodies, doc blocks).
+  foldingRanges(source: string): lsp_core::Range[];
   /// Delta-encoded semantic tokens for AST-aware highlighting (one buffer).
   semanticTokens(source: string): string;
   /// Canonical formatting, the same transform as `pds fmt` (one buffer).
@@ -131,8 +223,14 @@ public component Diagrams for ide::IdeSession {
   /// Project a view to the layout-ready JSON `Scene` — the notation-neutral
   /// geometry the interactive canvas and the HTML doc islands both draw from.
   project(view: emit::View, target: string): emit::Scene;
-  /// Position a scene into absolute coordinates with the layout engine.
-  layout(scene: emit::Scene): emit::Scene;
+  /// Project the fitting view for a single symbol (a system/container's C4
+  /// sub-view, a callable's sequence, a data type's entity view) — the IDE's
+  /// "show this symbol" action.
+  symbolScene(fqn: string): emit::Scene;
+  /// Re-position an already-projected C4 scene under the UI's layout tweaks (which
+  /// carry the drag-to-pin cells). Drives `emit`'s tweak-aware C4 placement and
+  /// hands back the re-laid scene.
+  layoutScene(scene: emit::Scene, tweaks: ide::LayoutTweaks): emit::Scene;
 }
 
 /// The doc-site builder: renders the whole site in-browser through the same
@@ -143,6 +241,27 @@ public component Docs for ide::IdeSession {
   render(config: string): doc::Site;
   /// Parse a `pds.toml` into the doc manifest the host reads to load pages.
   manifest(toml: string): string;
+  /// The shared client-side bundle every doc page loads once — the same SSR
+  /// bundle `pds doc` ships, so the IDE preview matches the CLI exactly.
+  ssrBundle(): string;
+}
+
+/// The 3D universe: builds the software graph from the held workspace and flattens
+/// it to a snapshot the `ForceGraph` renders. Delegates to the `universe` crate;
+/// the wasm surface carries only the flat snapshot — positions are the renderer's.
+public component Universe for ide::IdeSession {
+  /// The 3D-view snapshot of the held workspace: structural nodes with
+  /// containment and directed traffic-weighted relationships, no positions.
+  universe(): ide::UniverseSnapshot {
+    graph = universe::SoftwareGraph from universe::Universe.build(self.heldModules())
+    return self.toSnapshot(universe::Universe.snapshot(graph))
+  }
+
+  /// The held workspace's own modules, the universe input.
+  heldModules(): model::WorkspaceModule[];
+
+  /// Carry a `universe::Snapshot` across the typed boundary as the IDE's snapshot.
+  toSnapshot(snapshot: universe::Snapshot): ide::UniverseSnapshot;
 }
 
 /// **Outbound file-system port.** The Rust seam the session calls for all disk
@@ -172,8 +291,6 @@ public component EditorPort for ide::IdeSession {
   showDiagnostics(diags: model::ModuleDiagnostics[]): void {
     ide::CodeMirrorAdapter.markProblems(diags)
   }
-  /// The Markdown hover text for the symbol at a byte offset (via the session).
-  hoverText(moduleFqn: string, offset: number): string;
   /// Show a Markdown hover tooltip at the cursor.
   showHover(markdown: string): void {
     ide::CodeMirrorAdapter.showTooltip(markdown)
@@ -198,16 +315,32 @@ public container WebIde for context::Pseudoscript {
 }
 
 /// Implements `ide::FsPort` over the browser File System Access API: directory
-/// picker, recursive walk for `.pds` modules, `pds.lock` + `pds_modules/` reads
-/// for dependency externals, and per-file read/write through handles. The only
-/// place FS-Access specifics live.
+/// picker, recursive walk for `.pds` modules, deriving each module's flat FQN
+/// from its path (LANG.md §8.1, ADR-031), `pds.lock` + `pds_modules/` reads for
+/// dependency externals, and per-file read/write through handles. The only place
+/// FS-Access specifics live.
 public component FsAccessAdapter for ide::WebIde {
   /// Walk the picked directory for the project's own modules.
   readModules(): model::WorkspaceModule[];
-  /// Read `pds.lock` and `pds_modules/`, then resolve externals via the session.
+  /// Read `pds.lock` and the dependency files under `pds_modules/` (deriving each
+  /// module's FQN from its path, LANG.md §8.1), then resolve externals via the
+  /// session.
   readDependencies(): model::WorkspaceModule[] {
-    return ide::Workspace.dependencyModules("", "", "")
+    lock = string from self.readLock()
+    vendored = ide::VendoredInput[] from self.readVendored()
+    local = ide::LocalInput[] from self.noLocalSources()
+    return ide::Workspace.dependencyModules(lock, vendored, local)
   }
+  /// The consumer's `pds.lock` text, blank when absent.
+  readLock(): string;
+  /// The vendored git-dependency files walked from `pds_modules/`, each tagged
+  /// with its slug, derived FQN, and source.
+  readVendored(): ide::VendoredInput[];
+  /// Always empty: local-source dependencies (ADR-026) resolve a sibling path
+  /// outside the picked directory, which the File System Access API cannot read,
+  /// so the browser resolves only vendored git dependencies and passes no
+  /// local-source inputs to `dependencyModules`.
+  noLocalSources(): ide::LocalInput[];
   /// Write one module's text back through its file handle.
   writeModule(fqn: string, text: string): void;
 }
@@ -260,45 +393,63 @@ public component Bootstrap for ide::WebIde {
 /// in as libraries, not consumed as a second wasm.
 feature OneTypedWasm for ide::IdeSession {
   given "the IDE application compiled to WebAssembly as `pseudoscript-ide`"
-  when  "it needs language intelligence, a diagram, or the doc site"
-  then  "it calls the `lsp`, `model`, `emit`, and `doc` crates as linked Rust libraries"
-  and   "exposes one typed surface to JavaScript — DTOs `tsify` projects to TS, not JSON strings"
-  but   "there is no second wasm, so no bridge can drift from the app that uses it"
+  when "it needs language intelligence, a diagram, the 3D universe, or the doc site"
+  then "it calls the `lsp_core`, `model`, `emit`, `universe`, and `doc` crates as linked Rust libraries"
+  and "exposes one typed surface to JavaScript — DTOs `tsify` projects to TS, not JSON strings"
+  but "there is no second wasm, so no bridge can drift from the app that uses it"
 }
 
-/// JavaScript exists only at the two ports; everything else is Rust.
+/// The 3D universe is built in Rust and crosses as a flat snapshot.
+feature UniverseDrawsFromSnapshot for ide::Universe {
+  given "the held workspace"
+  when "the IDE opens the 3D relationship view"
+  then "the universe crate builds the software graph and flattens it to a snapshot"
+  and "the snapshot crosses the typed boundary as nodes and directed weighted edges"
+  but "no positions cross — the browser's force layout places the nodes"
+}
+
+/// The C4 canvas drives `emit`'s layout under the UI's tweaks and pins.
+feature LayoutTweaksDriveTheCanvas for ide::Diagrams {
+  given "a C4 view open on the canvas and the UI's layout toggles"
+  when "the view is laid out"
+  then "the session passes the tweaks and any drag-to-pin cells to emit's C4 placement"
+  and "the canvas redraws from the re-positioned scene"
+}
+
+/// JavaScript exists only at the two ports plus the host's path→FQN derivation;
+/// all language and projection logic is Rust.
 feature JsOnlyAtPorts for ide::WebIde {
   given "the IDE session, the language queries, and diagram projection all in Rust"
-  when  "the application reaches the file system or the editor surface"
-  then  "it crosses a port whose adapter — `FsAccessAdapter`, `CodeMirrorAdapter` —"
-  and   "is the only JavaScript: File System Access and CodeMirror specifics live there"
-  but   "no language or workspace logic lives in JavaScript"
+  when "the application reaches the file system or the editor surface"
+  then "it crosses a port whose adapter — `FsAccessAdapter`, `CodeMirrorAdapter` —"
+  and "is the only JavaScript: File System Access and CodeMirror specifics live there"
+  but "the FS adapter also derives each module's flat FQN from its path (LANG.md §8.1, ADR-031) — the one workspace rule the host runs before pushing modules to the Rust core"
 }
 
 /// A cross-workspace reference resolves because dependencies load as externals.
 feature DependenciesResolveAsExternals for ide::LanguageSession {
   given "a workspace that declares a git dependency, vendored under `pds_modules/`"
-  when  "the file-system port reads `pds.lock` + `pds_modules/` and the session resolves them"
-  then  "every language query binds the dependency modules as externals (§8.3)"
-  and   "a `dep::module::Node` reference resolves — checked, hovered, and completed"
-  but   "the dependency's own modules are never offered as raw `pds_modules::…` paths"
+  when "the file-system port reads `pds.lock` + `pds_modules/` and the session resolves them"
+  then "every language query binds the dependency modules as externals (§8.3)"
+  and "a `dep::module::Node` reference resolves — checked, hovered, and completed"
+  but "the dependency's own modules are never offered as raw `pds_modules::…` paths"
 }
 
 /// A projected diagram is drawn from the JSON scene; SVG and PNG are not on the
 /// IDE's wasm surface — PNG is rasterised client-side, SVG stays a CLI/doc concern.
 feature DiagramDrawsFromJsonScene for ide::DiagramCanvas {
   given "a projected view of the held workspace"
-  when  "the IDE draws or exports a diagram"
-  then  "the JSON `Scene` from `IdeSession.emitScene` draws the interactive canvas — the same geometry the HTML doc site's client islands draw"
-  and   "PNG export is rasterised in the browser from the drawn diagram"
-  but   "the static SVG form is a CLI/doc concern of the `emit` crate, not exposed on the IDE wasm"
+  when "the IDE draws or exports a diagram"
+  then "the JSON `Scene` from `IdeSession.emitScene` draws the interactive canvas — the same geometry the HTML doc site's client islands draw"
+  and "PNG export is rasterised in the browser from the drawn diagram"
+  but "the static SVG form is a CLI/doc concern of the `emit` crate, not exposed on the IDE wasm"
 }
 
 /// Editing a model in the browser checks and redraws it live, with no backend.
 feature EditInBrowser for ide::WebIde {
   given "a `.pds` module open in the browser IDE"
-  when  "the author edits it through the CodeMirror adapter"
-  then  "the edit drives the Rust session, which re-checks against the externals"
-  and   "diagnostics and the projected C4 or sequence diagram update live"
-  but   "nothing is sent to a server"
+  when "the author edits it through the CodeMirror adapter"
+  then "the edit drives the Rust session, which re-checks against the externals"
+  and "diagnostics and the projected C4 or sequence diagram update live"
+  but "nothing is sent to a server"
 }

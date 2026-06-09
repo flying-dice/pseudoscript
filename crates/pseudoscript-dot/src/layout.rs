@@ -86,6 +86,10 @@ pub struct GridMeta {
     /// Pixel centre of cell `(row 0, col 0)`; cell `(r, c)` centres at
     /// `origin + (c·cell_w, r·cell_h)`.
     pub origin: Pt,
+    /// Cells of drag-room frame wrapping the grid on every side. Cell (0,0) is the
+    /// frame's top-left; the inner (search) region starts `pad` cells in. A pixel maps
+    /// to a pin cell by recovering the raw cell from `origin` then subtracting `pad`.
+    pub pad: usize,
 }
 
 /// The full positioned layout.

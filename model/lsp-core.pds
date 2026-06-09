@@ -1,0 +1,228 @@
+//! lsp_core — the transport-neutral language API (crate `pseudoscript-lsp-core`).
+//!
+//! Pure `text + position -> lsp value` handlers: diagnostics, hover, definition,
+//! references, rename, completion, semantic tokens, folding, and symbols. No
+//! transport, no async runtime, no `tower-lsp` — wasm-safe, so both edges share
+//! one implementation: `lsp` wraps it in a stdio server and `ide` serialises the
+//! same results to JSON. Resolution is delegated to `model`; this crate maps the
+//! resolved answers into LSP shapes and converts byte spans to UTF-16 positions.
+
+/// A zero-based caret position: line and UTF-16 character offset within the line.
+public data Position { line: number, character: number }
+
+/// A half-open text range between two positions.
+public data Range { start: lsp_core::Position, end: lsp_core::Position }
+
+/// A text edit: replace `range` with `newText`. Formatting and rename return
+/// these.
+public data TextEdit { range: lsp_core::Range, newText: string }
+
+/// Markdown hover content the editor renders in a tooltip.
+public data Hover { contents: string }
+
+/// One diagnostic mapped to LSP shape: its range, severity, message, optional
+/// code, and the code's article URL (`codeDescription`, the editor's clickable
+/// link — empty when the code carries no article). Converted from the
+/// parser/checker's byte-span diagnostics; the code and its URL pass through
+/// unchanged.
+public data Diagnostic { range: lsp_core::Range, severity: number, message: string, code: string, codeDescription: string }
+
+/// One completion candidate: the inserted label, the integer LSP
+/// `CompletionItemKind`, and detail text.
+public data CompletionItem { label: string, kind: number, detail: string }
+
+/// A go-to-definition target: the FQN of the module the definition lives in and
+/// the byte span of the definition within that module's source. The consuming
+/// edge maps `fqn` to a file URI and converts `span` to an editor range against
+/// *that* file's text — `lsp_core` returns the byte span, not a `Range`, because
+/// it does not hold the target module's source to convert against.
+public data DefTarget { fqn: string, span: syntax::Span }
+
+/// `crates/pseudoscript-lsp-core`. The single home for language intelligence as
+/// transport-neutral handlers — the same logic the stdio server and the browser
+/// wasm both call.
+public container LspCore for context::Pseudoscript {
+  /// Go-to-definition for the symbol under the caret.
+  public definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget {
+    return lsp_core::Analysis.definition(ws, fromFqn, src, position)
+  }
+
+  /// The canonical format edit for a buffer.
+  public formatEdit(src: string): lsp_core::TextEdit {
+    return lsp_core::Analysis.formatEdit(src)
+  }
+
+  /// Markdown hover for the symbol under the caret.
+  public hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Hover {
+    return lsp_core::Analysis.hover(ws, fromFqn, src, position)
+  }
+}
+
+/// Document-level analysis: parse-and-check diagnostics, Markdown hover for the
+/// symbol under the caret (falling back to an inferred type), go-to-definition,
+/// inlay hints, and the canonical format edit. Resolution is delegated to
+/// `model`; this maps the result into LSP shapes.
+component Analysis for lsp_core::LspCore {
+  /// Parse and statically check one buffer, mapped to LSP diagnostics.
+  diagnostics(src: string): lsp_core::Diagnostic[] {
+    return lsp_core::Analysis.lspDiagnostics(src, model::Model.check(src))
+  }
+
+  /// Convert the checker's byte-span diagnostics into LSP diagnostics with UTF-16
+  /// ranges.
+  lspDiagnostics(src: string, diags: syntax::Diagnostic[]): lsp_core::Diagnostic[];
+
+  /// Markdown hover for the symbol under the caret: its doc summary, or its
+  /// inferred type when undocumented; nothing when the caret resolves to no
+  /// symbol.
+  hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Hover;
+
+  /// The FQN and location the identifier under the caret points at.
+  definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget;
+
+  /// Inlay hints (inferred binding types) across one buffer.
+  inlayHints(ws: model::Workspace, fromFqn: string, src: string): string[];
+
+  /// Whether the symbol under the caret can be renamed, and its range.
+  renameable(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Range;
+
+  /// The canonical formatting edit for a buffer, or nothing when it is already
+  /// canonical or fails to parse.
+  formatEdit(src: string): lsp_core::TextEdit;
+}
+
+/// Completion: the candidates offered at a byte offset, resolved across the
+/// workspace and its externals. A `.`/`::` boundary drives member and path
+/// completion.
+public component Complete for lsp_core::LspCore {
+  /// Completion items at a caret position within one module.
+  completion(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::CompletionItem[];
+}
+
+/// Position conversion: the single home for mapping between byte offsets and
+/// UTF-16 line/character positions, so every handler agrees on coordinates.
+public component Convert for lsp_core::LspCore {
+  /// The UTF-16 position of a byte offset.
+  offsetToPosition(src: string, offset: number): lsp_core::Position;
+
+  /// The range of a byte span.
+  spanToRange(src: string, start: number, end: number): lsp_core::Range;
+
+  /// The range covering the whole document.
+  fullRange(src: string): lsp_core::Range;
+
+  /// The byte offset of a UTF-16 position.
+  positionToOffset(src: string, position: lsp_core::Position): number;
+}
+
+/// References and rename: every occurrence of the symbol under the caret across
+/// the workspace, the document highlights for it, and the workspace-wide rename
+/// edits.
+public component Refs for lsp_core::LspCore {
+  /// Every occurrence of the symbol under the caret, across the workspace.
+  references(ws: model::Workspace, fromFqn: string, src: string, offset: number): lsp_core::Range[];
+
+  /// The edits that rename the symbol under the caret to a new name, across every
+  /// module that references it.
+  rename(ws: model::Workspace, fromFqn: string, src: string, offset: number, newName: string): lsp_core::TextEdit[];
+
+  /// The same-symbol highlights within one document.
+  highlights(ws: model::Workspace, fromFqn: string, src: string, offset: number): lsp_core::Range[];
+}
+
+/// Semantic tokens: AST-aware highlighting that colours each token by its
+/// declared role, plus the legend the editor binds.
+public component Semantic for lsp_core::LspCore {
+  /// The token-type legend the editor maps to colours.
+  legend(): string;
+
+  /// Delta-encoded semantic tokens for one buffer.
+  semanticTokens(src: string): string;
+}
+
+/// Document and workspace structure: the outline symbols, the foldable ranges,
+/// and the workspace-wide symbol query.
+public component Symbols for lsp_core::LspCore {
+  /// The outline (document symbols) for one buffer.
+  documentSymbols(src: string): string;
+
+  /// The foldable ranges (node bodies, doc blocks) for one buffer.
+  foldingRanges(src: string): string;
+
+  /// The workspace-wide symbols matching a query.
+  workspaceSymbols(ws: model::Workspace, query: string): string;
+}
+
+/// One implementation answers from current text, transport-free.
+feature TransportNeutralHandlers for lsp_core::LspCore {
+  given "a buffer's current text and a caret position"
+  when "a language query runs"
+  then "the answer is computed as a pure text-plus-position function"
+  but "no transport, async runtime, or tower-lsp is involved — both edges share it"
+}
+
+/// Resolution is delegated to the model, not re-implemented.
+feature ResolutionDelegatedToModel for lsp_core::Analysis {
+  given "a cursor feature — hover, definition, references, completion"
+  when "the symbol under the caret must be resolved"
+  then "resolution runs through model's resolver against the workspace and externals"
+  and "this crate only maps the resolved answer into the LSP shape"
+}
+
+/// Spans map to UTF-16 positions consistently across every handler.
+feature SpansMapToUtf16Positions for lsp_core::Convert {
+  given "a byte span in a document"
+  when "it is converted for the editor"
+  then "it maps to a UTF-16 line/character range"
+  and "every handler shares this one conversion, so coordinates always agree"
+}
+
+/// Hover shows the `///` summary of the symbol under the caret.
+feature HoverShowsDocSummary for lsp_core::Analysis {
+  given "the caret resting on a declared node, data type, or member"
+  when "hover runs"
+  then "the symbol's kind and FQN, or its member signature, is shown"
+  and "its `///` summary is appended under the title"
+}
+
+/// An unresolved caret on a local binding falls back to its inferred type.
+feature HoverFallsBackToInferredType for lsp_core::Analysis {
+  given "the caret resting on a local binding rather than a declaration"
+  when "hover finds no declared symbol there"
+  then "the binding's inferred type is shown as `name: Type`"
+  but "an expression that cannot be typed yields no hover"
+}
+
+/// Resolution survives a partial parse by working at the token level.
+feature ResolutionSurvivesPartialParse for lsp_core::Analysis {
+  given "a document that does not fully parse"
+  when "the caret rests on an identifier in a well-formed region"
+  then "resolution still tokenizes and resolves that identifier"
+  but "a caret on whitespace, punctuation, or an unknown name yields nothing"
+}
+
+/// Whole-document format produces an edit, or nothing on a parse error.
+feature FormatOrLeaveUntouched for lsp_core::Analysis {
+  given "a document buffer"
+  when "a format edit is requested"
+  then "a parseable document yields one whole-document edit to canonical form"
+  but "an unparseable document yields no edit"
+}
+
+/// Semantic tokens colour identifiers by their declared role.
+feature ColourByDeclaredRole for lsp_core::Semantic {
+  given "a parsed module"
+  when "full semantic tokens are requested"
+  then "each identifier is coloured by its role — node, data, callable, parameter"
+  and "keywords, docs, and literals are coloured too"
+  but "overlapping, multi-line, or zero-width spans are dropped before encoding"
+}
+
+/// Rename rewrites every occurrence of one definition across the workspace.
+feature RenameAcrossWorkspace for lsp_core::Refs {
+  given "the caret on a renameable symbol"
+  when "rename runs"
+  then "every identifier resolving to the same definition is collected"
+  and "each occurrence is rewritten across all files that reference it"
+  but "a `::` module qualifier is never treated as an occurrence"
+}

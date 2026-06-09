@@ -262,6 +262,10 @@ pub struct Edge {
     pub kind: EdgeKind,
     /// Edge label: the method name for `Call`, otherwise empty.
     pub label: String,
+    /// Source range that produced the edge — the call site for a `Call`, so an
+    /// architectural lint can point its diagnostic at the offending call. The
+    /// empty span (`0..0`) for a synthesised edge (trigger, provenance, `for`).
+    pub span: Span,
 }
 
 /// One step in a callable's ordered sequence trace (`LANG.md` §7, §9.2).
@@ -598,6 +602,7 @@ impl Builder<'_> {
                 from: trigger.initiator(),
                 to: fqn.clone(),
                 kind: EdgeKind::Trigger,
+                span: Span::new(0, 0),
                 label: String::new(),
             });
         }
@@ -718,6 +723,7 @@ impl Builder<'_> {
                             to: composed.clone(),
                             kind: EdgeKind::Provenance,
                             label: String::new(),
+                            span: Span::new(0, 0),
                         });
                     }
                 }
@@ -784,6 +790,7 @@ impl Builder<'_> {
                         to: target_fqn.clone(),
                         kind: EdgeKind::Call,
                         label: method,
+                        span: seg.span,
                     });
                 }
             }
@@ -807,6 +814,7 @@ impl Builder<'_> {
                 to: parent.clone(),
                 kind: EdgeKind::ForParent,
                 label: String::new(),
+                span: Span::new(0, 0),
             });
         }
         // Last declaration wins on FQN collision, matching the symbol table.

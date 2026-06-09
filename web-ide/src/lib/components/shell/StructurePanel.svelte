@@ -9,10 +9,12 @@
     symbols?: SymbolNode[];
     selectedFqn?: string | null;
     onpicknode?: (fqn: string) => void;
+    ongotodef?: (fqn: string) => void;
     onreveal?: (fqn: string) => void;
+    onshowuniverse?: (fqn: string) => void;
   };
 
-  let { symbols = [], selectedFqn = null, onpicknode, onreveal }: Props = $props();
+  let { symbols = [], selectedFqn = null, onpicknode, ongotodef, onreveal, onshowuniverse }: Props = $props();
 
   let query = $state("");
 
@@ -36,21 +38,21 @@
   });
 </script>
 
-<aside class="structure island">
+<aside class="structure island" data-testid="structure-panel">
   <div class="search">
     <Search size={13} strokeWidth={2} aria-hidden="true" />
-    <input type="text" placeholder="Filter symbols…" bind:value={query} aria-label="Filter symbols" spellcheck="false" autocomplete="off" />
+    <input type="text" placeholder="Filter symbols…" bind:value={query} aria-label="Filter symbols" spellcheck="false" autocomplete="off" data-testid="structure-filter" />
     {#if query}
-      <button class="clear" onclick={() => (query = "")} aria-label="Clear filter" title="Clear">
+      <button class="clear" onclick={() => (query = "")} aria-label="Clear filter" title="Clear" data-testid="structure-filter-clear">
         <X size={12} strokeWidth={2.25} aria-hidden="true" />
       </button>
     {/if}
   </div>
   <div class="panel-body">
     {#if filtered.length === 0 && query}
-      <div class="empty">No symbol matches “{query}”.</div>
+      <div class="empty" data-testid="structure-no-match">No symbol matches “{query}”.</div>
     {:else}
-      <SymbolTree symbols={filtered as never} {selectedFqn} {onpicknode} {onreveal} />
+      <SymbolTree symbols={filtered as never} {selectedFqn} {onpicknode} {ongotodef} {onreveal} {onshowuniverse} />
     {/if}
   </div>
 </aside>

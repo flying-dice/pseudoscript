@@ -14,14 +14,7 @@ public data PayoutStatus =
   | Failed { reason: string }
 
 /// A payout record: one draw of a merchant's available balance to their bank.
-public data Payout {
-  id: shared::PayoutId,
-  merchant: shared::MerchantId,
-  amount: shared::Money,
-  destination: context::BankAccountRef,
-  status: payouts::PayoutStatus,
-  transfer: Option<context::BankTransferRef>
-}
+public data Payout { id: shared::PayoutId, merchant: shared::MerchantId, amount: shared::Money, destination: context::BankAccountRef, status: payouts::PayoutStatus, transfer: Option<context::BankTransferRef> }
 
 /// A key that makes a banking-partner call safe to retry exactly once.
 public data PayoutKey { value: string }
@@ -40,10 +33,27 @@ public data PayoutPaid { payout: shared::PayoutId, merchant: shared::MerchantId,
 public data PayoutFailed { payout: shared::PayoutId, merchant: shared::MerchantId, amount: shared::Money }
 
 /// `payouts` — the payout engine.
-public container Payouts for context::AcmePay;
+public container Payouts for context::AcmePay {
+  /// Payouts in transit awaiting settlement (drives the reconciler).
+  public inFlightPayouts(): shared::PayoutId[] {
+    return payouts::PayoutService.inFlightPayouts()
+  }
+  /// Merchants whose available balance is due for payout.
+  public payableMerchants(): shared::MerchantId[] {
+    return payouts::PayoutService.payableMerchants()
+  }
+  /// Settle an in-transit payout against the banking partner.
+  public reconcile(id: shared::PayoutId): void {
+    payouts::PayoutService.reconcile(id)
+  }
+  /// Pay out a merchant's available balance; idempotent and atomic.
+  public schedule(merchant: shared::MerchantId): Result<payouts::Payout, payouts::PayoutError> {
+    return payouts::PayoutService.schedule(merchant)
+  }
+}
 
 /// Orchestrates the draw → send → settle payout saga and owns payout records.
-public component PayoutService for payouts::Payouts {
+component PayoutService for payouts::Payouts {
   /// Pay out a merchant's available balance. Idempotent: a merchant with a payout
   /// already in flight returns it rather than drawing twice. The ledger draw is
   /// atomic, and a partner rejection restores the funds before failing.
@@ -52,13 +62,13 @@ public component PayoutService for payouts::Payouts {
     if (existing.isSome) {
       return Ok(existing.value)
     }
-    balance = Balance from ledger::Balance.balance(merchant)
+    balance = Balance from ledger::Ledger.balance(merchant)
     due = Result<shared::Money, PayoutError> from self.payable(balance)
     if (due.isErr) {
       return Err(due.error)
     }
     id = shared::PayoutId from payouts::PayoutStore.nextId()
-    drawn = Result<BalanceTransaction, LedgerError> from ledger::Balance.withdraw(merchant, id, due.value)
+    drawn = Result<BalanceTransaction, LedgerError> from ledger::Ledger.withdraw(merchant, id, due.value)
     if (drawn.isErr) {
       return Err(payouts::PayoutError::InsufficientFunds)
     }
@@ -125,7 +135,7 @@ public component PayoutService for payouts::Payouts {
   refund(payout: payouts::Payout): void {
     fresh = Result<void, PayoutError> from self.notYetFailed(payout)
     if (fresh.isOk) {
-      ledger::Balance.restore(payout.merchant, payout.id, payout.amount)
+      ledger::Ledger.restore(payout.merchant, payout.id, payout.amount)
       payouts::PayoutStore.save(self.markFailed(payout))
       payouts::Events.failed(PayoutFailed from { payout.id, payout.merchant, payout.amount })
     }
@@ -178,15 +188,15 @@ component Events for payouts::Payouts {
 /// A rejected payout returns the funds to the merchant's balance.
 feature RejectedPayoutRestoresFunds for payouts::PayoutService {
   given "a payout drawn from the available balance"
-  when  "the banking partner rejects or returns the transfer"
-  then  "the drawn funds are restored to the balance"
-  and   "the payout is recorded as failed"
+  when "the banking partner rejects or returns the transfer"
+  then "the drawn funds are restored to the balance"
+  and "the payout is recorded as failed"
 }
 
 /// A merchant is never paid out twice for the same balance.
 feature PayoutIsIdempotent for payouts::PayoutService {
   given "a merchant with a payout already in flight"
-  when  "the scheduler runs again"
-  then  "the in-flight payout is returned"
-  but   "the balance is not drawn a second time"
+  when "the scheduler runs again"
+  then "the in-flight payout is returned"
+  but "the balance is not drawn a second time"
 }
