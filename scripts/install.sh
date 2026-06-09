@@ -138,8 +138,13 @@ print_path_hint() {
     esac
 }
 
+# Temp dir is script-global, not `local` to main: the EXIT trap below runs after
+# main returns, where a function-local would be out of scope and `set -u` would
+# abort the trap (unbound variable) — leaking the dir and exiting non-zero.
+tmp_dir=""
+
 main() {
-    local target version artifact_name download_url tmp_dir
+    local target version artifact_name download_url
 
     echo "Installing pds..."
 
@@ -154,7 +159,7 @@ main() {
     download_url="https://github.com/$REPO/releases/download/${version}/${artifact_name}.tar.gz"
 
     tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "$tmp_dir"' EXIT
+    trap 'rm -rf "${tmp_dir:-}"' EXIT
 
     echo "  Downloading $download_url ..."
     download_file "$download_url" "$tmp_dir/archive.tar.gz" \
