@@ -24,8 +24,9 @@
 //! from its path (LANG.md §8.1, ADR-031).
 
 /// A completion candidate offered as the author types: the inserted label, the
-/// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text.
-public data Completion { label: string, kind: number, detail: string }
+/// integer LSP `CompletionItemKind` the editor maps to an icon, and detail text
+/// (absent for candidates with nothing to add).
+public data Completion { label: string, kind: number, detail: Option<string> }
 
 /// The in-browser workspace state the session holds: the open `.pds` modules, the
 /// `pds.toml` manifest text, and the dependency modules resolved from
@@ -45,10 +46,13 @@ public data VendoredInput { slug: string, fqn: string, source: string }
 public data LocalInput { name: string, fqn: string, source: string }
 
 /// One node in the 3D relationship graph the IDE draws: its FQN, C4 level, and
-/// containment parent. The typed boundary form of a `universe::NodeOut`.
-public data UniverseNode { id: string, level: string, parent: string }
+/// containment parent (absent on roots). The typed boundary form of a
+/// `universe::NodeOut`.
+public data UniverseNode { id: string, level: string, parent: Option<string> }
 
 /// One directed relationship in the 3D graph, weighted by traffic (call count).
+/// The wire field is `from`; `from` is a PseudoScript keyword, so the model
+/// names it `source`.
 public data UniverseEdge { source: string, to: string, traffic: number }
 
 /// The 3D-view snapshot the session hands the `ForceGraph`: nodes and directed
@@ -83,10 +87,30 @@ public data RenameSelection { fqn: string, line: number, col: number }
 /// One module rewritten by a rename: its FQN and new source text.
 public data RenamedSource { fqn: string, source: string }
 
+/// One file of the rendered documentation site: its site-relative path and
+/// contents.
+public data RenderedFile { path: string, contents: string }
+
+/// The doc-site build input: the manifest plus each authored page's Markdown,
+/// loaded by the host. Field detail is the wasm boundary's concern.
+public data DocConfig;
+
 /// One row of the workspace outline: a node's FQN, simple name, C4 kind,
-/// containment parent, whether it is a triggered flow entry, its `///` summary,
-/// and its declaration line/column.
-public data OutlineNode { fqn: string, name: string, kind: string, parent: string, triggered: bool, summary: string, line: number, col: number }
+/// containment parent (absent on roots), whether it is a triggered flow entry,
+/// its `///` summary (absent when undocumented), and its declaration line/column.
+public data OutlineNode { fqn: string, name: string, kind: string, parent: Option<string>, triggered: bool, summary: Option<string>, line: number, col: number }
+
+/// The author's AI-completion provider settings, persisted in the browser: the
+/// feature toggle, the OpenAI-compatible endpoint, the bring-your-own API key
+/// (stored in localStorage, sent only to the configured endpoint), the model id,
+/// and the wire shape (`"fim"` for a native fill-in-the-middle route, `"chat"`
+/// for the chat-completions fallback).
+public data LlmSettings { enabled: bool, baseUrl: string, apiKey: string, model: string, mode: string }
+
+/// The assembled fill-in-the-middle request: the windowed buffer text before and
+/// after the caret, and the cached grammar primer that steers a general model to
+/// emit valid PseudoScript.
+public data FimPrompt { prefix: string, suffix: string, primer: string }
 
 // === Layer 1 — the IDE session: the one typed wasm ========================
 
@@ -234,11 +258,13 @@ public component Diagrams for ide::IdeSession {
 }
 
 /// The doc-site builder: renders the whole site in-browser through the same
-/// `pseudoscript-doc` crate `pds doc` runs, driving SSR through the host's JS
-/// engine — so the IDE previews the exact site the CLI ships.
+/// `pseudoscript-doc` crate `pds doc` runs, driving SSR through a render
+/// callback the host supplies (the browser's JS engine is the SSR engine) — so
+/// the IDE previews the exact site the CLI ships.
 public component Docs for ide::IdeSession {
-  /// Build the documentation site for the held workspace.
-  render(config: string): doc::Site;
+  /// Build the documentation site for the held workspace: the typed config in,
+  /// every rendered file out. SSR crosses to the host's render callback.
+  render(config: ide::DocConfig): ide::RenderedFile[];
   /// Parse a `pds.toml` into the doc manifest the host reads to load pages.
   manifest(toml: string): string;
   /// The shared client-side bundle every doc page loads once — the same SSR
@@ -366,16 +392,116 @@ public component CodeMirrorAdapter for ide::WebIde {
   showTooltip(markdown: string): void;
 }
 
-/// The diagram canvas: draws the **JSON** `Scene` interactively (Svelte Flow +
-/// Dagre for C4, a depth-collapsible timeline for sequences), and exports the
-/// current view as **PNG** (rasterised in the browser). JSON is the draw format;
-/// PNG is the export format. The editor port's diagram seam binds to this.
+/// The author's AI-completion settings, persisted to browser localStorage and
+/// edited through the Settings dialog's "AI Completion" tab. Bring-your-own key:
+/// it never leaves the tab except on requests to the configured endpoint.
+component LlmSettingsStore for ide::WebIde {
+  /// The persisted settings (defaults when nothing is stored).
+  current(): ide::LlmSettings;
+  /// Whether ghost-text completion is switched on and configured.
+  isEnabled(): bool;
+  /// Persist an edit from the settings tab.
+  save(settings: ide::LlmSettings): void;
+}
+
+/// Provider-agnostic completion client: one `complete` contract over
+/// OpenAI-compatible HTTP, so one client covers Codestral, OpenRouter, Together,
+/// Ollama, and vLLM. Stateless — the caller hands it the settings snapshot and
+/// owns cancellation (`GhostText` aborts the in-flight request on the next
+/// keystroke; the client honours the abort). A network failure yields no
+/// suggestion, never an error the editor sees.
+component FimClient for ide::WebIde {
+  /// Route the prompt by the configured wire shape: a native fill-in-the-middle
+  /// route when the provider has one, else a FIM-shaped chat request.
+  complete(prompt: ide::FimPrompt, settings: ide::LlmSettings): string {
+    fim = bool from self.usesNativeFim(settings)
+    if (fim) {
+      return ide::LlmProvider.fimComplete(prompt, settings.model)
+    }
+    return ide::LlmProvider.chatComplete(prompt, settings.model)
+  }
+  /// Whether the configured mode selects the native FIM route.
+  usesNativeFim(settings: ide::LlmSettings): bool;
+}
+
+/// Inline ghost-text completion over CodeMirror 6, beside the grammar dropdown:
+/// structural candidates stay local and deterministic in `CodeMirrorAdapter`;
+/// the remote model supplies only multi-token greyed text. CodeMirror has no
+/// native inline-suggestion UI, so this is a custom view plugin rendering a
+/// widget decoration at the caret — Tab accepts, Esc dismisses, any edit clears.
+component GhostText for ide::WebIde {
+  /// On an idle pause in typing: assemble the context, ask the provider, and
+  /// show the suggestion — dropped when it breaks the parse, so the ghost text
+  /// never proposes invalid PseudoScript.
+  suggest(moduleFqn: string, offset: number): void {
+    enabled = bool from ide::LlmSettingsStore.isEnabled()
+    if (!enabled) {
+      return
+    }
+    settings = ide::LlmSettings from ide::LlmSettingsStore.current()
+    prompt = ide::FimPrompt from self.assemble(moduleFqn, offset)
+    raw = string from ide::FimClient.complete(prompt, settings)
+    ok = bool from self.validates(moduleFqn, offset, raw)
+    if (!ok) {
+      return
+    }
+    self.show(raw)
+  }
+  /// The provider context: the windowed buffer around the caret plus the cached
+  /// grammar primer.
+  assemble(moduleFqn: string, offset: number): ide::FimPrompt {
+    window = string from self.windowAround(moduleFqn, offset)
+    symbols = ide::OutlineNode[] from ide::LanguageSession.outline()
+    primer = string from self.grammarPrimer()
+    return ide::FimPrompt from { window, symbols, primer }
+  }
+  /// The capped prefix/suffix slice of the buffer around the caret.
+  windowAround(moduleFqn: string, offset: number): string;
+  /// The cached compact grammar summary (LANG.md §10) plus a worked
+  /// micro-example — what steers a general model to emit valid `.pds`.
+  grammarPrimer(): string;
+  /// Splice the suggestion at the caret and re-check the buffer through the
+  /// session: a suggestion that introduces a syntax error is rejected; static
+  /// warnings are tolerated.
+  validates(moduleFqn: string, offset: number, raw: string): bool {
+    spliced = string from self.splice(moduleFqn, offset, raw)
+    diags = syntax::Diagnostic[] from ide::LanguageSession.check(spliced)
+    return self.noNewSyntaxErrors(moduleFqn, diags)
+  }
+  /// The buffer with the suggestion inserted at the caret.
+  splice(moduleFqn: string, offset: number, raw: string): string;
+  /// Whether the spliced buffer parses no worse than the buffer did before.
+  noNewSyntaxErrors(moduleFqn: string, diags: syntax::Diagnostic[]): bool;
+  /// Render the greyed inline text at the caret.
+  show(raw: string): void;
+}
+
+/// The author's configured OpenAI-compatible completion provider — hosted
+/// (Codestral, OpenRouter, Together) or local (Ollama, vLLM). External: the IDE
+/// only speaks its HTTP API.
+public system LlmProvider {
+  /// Native fill-in-the-middle completion (`/v1/fim/completions`).
+  fimComplete(prompt: ide::FimPrompt, model: string): string;
+  /// Chat-completions fallback (`/v1/chat/completions`) with a FIM-shaped prompt.
+  chatComplete(prompt: ide::FimPrompt, model: string): string;
+}
+
+/// The diagram canvas: draws the **JSON** `Scene` interactively (Svelte Flow
+/// pan/zoom over geometry positioned by `emit`'s layout engine for C4, a
+/// depth-collapsible timeline for sequences), and exports the current view as
+/// **PNG or SVG**, both produced in the browser from the drawn diagram. JSON is
+/// the draw format; no diagram image crosses the wasm surface. The editor
+/// port's diagram seam binds to this.
 public component DiagramCanvas for ide::WebIde {
   /// Draw the JSON scene onto the interactive canvas.
   render(scene: emit::Scene): void;
   /// Export the current view as a PNG, rasterised in the browser from the drawn
   /// diagram.
   exportPng(): void;
+  /// Export the current view as an SVG, serialised in the browser from the
+  /// drawn diagram — distinct from the `emit` crate's static SVG, which stays a
+  /// CLI/doc path.
+  exportSvg(): void;
 }
 
 /// Boots the IDE in a browser tab: load the one wasm bundle (IdeSession), bind
@@ -435,14 +561,32 @@ feature DependenciesResolveAsExternals for ide::LanguageSession {
   but "the dependency's own modules are never offered as raw `pds_modules::…` paths"
 }
 
-/// A projected diagram is drawn from the JSON scene; SVG and PNG are not on the
-/// IDE's wasm surface — PNG is rasterised client-side, SVG stays a CLI/doc concern.
+/// A projected diagram is drawn from the JSON scene; no diagram image crosses
+/// the IDE's wasm surface — PNG and SVG exports are produced client-side.
 feature DiagramDrawsFromJsonScene for ide::DiagramCanvas {
   given "a projected view of the held workspace"
   when "the IDE draws or exports a diagram"
   then "the JSON `Scene` from `IdeSession.emitScene` draws the interactive canvas — the same geometry the HTML doc site's client islands draw"
-  and "PNG export is rasterised in the browser from the drawn diagram"
-  but "the static SVG form is a CLI/doc concern of the `emit` crate, not exposed on the IDE wasm"
+  and "PNG and SVG exports are produced in the browser from the drawn diagram"
+  but "no image crosses the IDE wasm — its surface carries only the JSON scene; the `emit` crate's static SVG remains the CLI/doc path"
+}
+
+/// Ghost text comes from the configured provider and is vetted by the parser.
+feature GhostTextSuggests for ide::GhostText {
+  given "AI completion enabled with a configured OpenAI-compatible provider"
+  when "the author pauses typing"
+  then "the windowed prefix/suffix and the grammar primer go to the provider"
+  and "the suggestion renders as greyed inline text — Tab accepts, Esc dismisses"
+  but "a suggestion that breaks the parse is dropped, and a provider failure never blocks typing"
+}
+
+/// The remote model augments, never replaces, the local grammar completer.
+feature StructuralCompletionStaysLocal for ide::GhostText {
+  given "the grammar dropdown completer answering from the wasm session"
+  when "AI completion is enabled beside it"
+  then "structural candidates stay local and deterministic"
+  and "the remote model supplies only multi-token inline suggestions"
+  but "with AI completion off or unconfigured, the editor behaves exactly as before"
 }
 
 /// Editing a model in the browser checks and redraws it live, with no backend.
