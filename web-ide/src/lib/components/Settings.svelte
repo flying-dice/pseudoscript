@@ -5,13 +5,17 @@
 
   type Props = {
     onclose: () => void;
+    /** The page to open on — lets a caller land on the tab it advertised. */
+    initialTab?: "keyboard" | "ai";
   };
 
-  let { onclose }: Props = $props();
+  let { onclose, initialTab = "keyboard" }: Props = $props();
 
-  // The open settings page. Keyboard first — it predates the AI tab and the
-  // shell's "keyboard shortcuts" actions land here.
-  let tab = $state<"keyboard" | "ai">("keyboard");
+  // The open settings page. Keyboard by default — it predates the AI tab and
+  // the shell's "keyboard shortcuts" actions land here. The prop is a seed read
+  // once at mount (the dialog is recreated per open), not a live binding.
+  // svelte-ignore state_referenced_locally
+  let tab = $state<"keyboard" | "ai">(initialTab);
 
   // A command row enriched with its effective chord and customised flag.
   type Row = Command & { chord: string; custom: boolean };

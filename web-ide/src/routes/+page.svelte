@@ -305,6 +305,9 @@
   // Whether the keyboard-shortcuts settings modal is open (toolbar gear or the
   // bound shortcut). Shell-owned so it's reachable with or without a file open.
   const settingsOpen = $derived(ui.settingsOpen);
+  // The tab Settings opens on. "keyboard" for the general openers; the AI status
+  // chip seeds "ai" so its "click to configure" lands on the page it advertised.
+  let settingsTab = $state<"keyboard" | "ai">("keyboard");
   const recents = $derived(ui.recents);
   // Only persisted projects (folders) are recents; in-memory samples re-open
   // from the catalogue, so they're never recorded — and legacy sample entries
@@ -2624,7 +2627,7 @@ show('index.html');
 {/if}
 
 {#if settingsOpen}
-  <Settings onclose={() => (ui.settingsOpen = false)} />
+  <Settings initialTab={settingsTab} onclose={() => ((ui.settingsOpen = false), (settingsTab = "keyboard"))} />
 {/if}
 
 <!-- Canvas usages: a click-away list of references; picking one jumps to it. -->
@@ -2962,7 +2965,7 @@ show('index.html');
         title={llm.ready
           ? `AI completion on — ${llm.model}`
           : "AI completion enabled but missing an endpoint or model — click to configure"}
-        onclick={() => (ui.settingsOpen = true)}>AI</button
+        onclick={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}>AI</button
       >
     {/if}
     <PerfMeter />

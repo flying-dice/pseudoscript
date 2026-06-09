@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { autocompletion, completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 
 import {
@@ -160,6 +161,28 @@ describe("accept / dismiss", () => {
     const v = await withGhost(" = 1");
     type(v, "y");
     expect(currentGhost(v.state)).toBeNull();
+  });
+
+  it("defers Tab to the dropdown while its popup is open", async () => {
+    view = new EditorView({
+      doc: "",
+      extensions: [
+        inlineCompletion({ fetch: () => Promise.resolve(" = 1") }),
+        autocompletion({ override: [(ctx) => ({ from: ctx.pos, options: [{ label: "xenon" }] })] }),
+      ],
+      parent: document.body,
+    });
+    view.dispatch({ changes: { from: 0, insert: "x" }, selection: { anchor: 1 }, userEvent: "input.type" });
+    await settle();
+    expect(currentGhost(view.state)).toBe(" = 1");
+
+    startCompletion(view);
+    await settle(100);
+    expect(completionStatus(view.state)).toBe("active");
+
+    expect(acceptGhostText(view)).toBe(false); // falls through to the dropdown's Tab
+    expect(view.state.doc.toString()).toBe("x");
+    expect(currentGhost(view.state)).toBe(" = 1");
   });
 
   it("accepting does not immediately refetch", async () => {

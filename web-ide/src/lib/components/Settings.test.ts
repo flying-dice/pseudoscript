@@ -78,6 +78,12 @@ describe("Settings", () => {
     expect(screen.getByTestId("keybind-saveDocument")).toBeInTheDocument();
   });
 
+  it("opens directly on the AI tab when the caller seeds initialTab", () => {
+    render(Settings, { props: { onclose: vi.fn(), initialTab: "ai" } });
+    expect(screen.getByTestId("llm-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("keybind-saveDocument")).not.toBeInTheDocument();
+  });
+
   it("edits the AI completion settings through the store", async () => {
     render(Settings, { props: { onclose: vi.fn() } });
     await userEvent.click(screen.getByTestId("settings-tab-ai"));

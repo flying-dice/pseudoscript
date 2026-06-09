@@ -61,64 +61,56 @@ test("AI Completion settings tab configures the store and shows the status chip"
   await expect(page.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
   await page.getByTestId("settings-dialog").getByRole("button", { name: "Close" }).click();
 
-  // The status-bar chip appears live and reopens settings on click.
+  // The status-bar chip appears live and reopens settings on the AI tab —
+  // its "click to configure" lands on the page it advertises.
   const chip = page.getByTestId("llm-status");
   await expect(chip).toBeVisible();
   await chip.click();
   await expect(page.getByTestId("settings-dialog")).toBeVisible();
+  await expect(page.getByTestId("llm-panel")).toBeVisible();
 });
 
 test("ghost text appears after an idle pause and Tab accepts it", async ({ page }) => {
   await stubPicker(page);
   await seedLlm(page);
-  await mockProvider(page, "uake;");
+  await mockProvider(page, " }");
   await createProject(page, "acme-tickets", "orders");
 
   const content = page.getByTestId("editor").locator(".cm-content");
   await content.click();
   await page.keyboard.press("Control+End");
-  await page.keyboard.type("\npublic system Zzq");
+  // Ending on "{" deterministically closes the grammar dropdown (no identifier
+  // prefix under the caret), so Tab/Escape reach the ghost. The key interplay
+  // with an open popup is unit-covered (inline-completion.test.ts).
+  await page.keyboard.type("\npublic system Zzq {");
 
   // Debounced fetch → parse-validated suggestion → greyed widget at the caret.
-  // The grammar dropdown opens beside it (the engine indexes the just-typed
-  // declaration); both visible at once is the Copilot-style steady state.
   const ghost = page.getByTestId("ghost-text");
   await expect(ghost).toBeVisible({ timeout: 15_000 });
-  await expect(ghost).toHaveText("uake;");
-
-  // With the popup open the dropdown owns Tab/Escape — first Escape closes it
-  // and leaves the ghost standing.
-  await expect(page.locator(".cm-tooltip-autocomplete")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(ghost).toContainText("}");
   await expect(page.locator(".cm-tooltip-autocomplete")).toHaveCount(0);
-  await expect(ghost).toBeVisible();
 
   await page.keyboard.press("Tab");
   await expect(page.getByTestId("ghost-text")).toHaveCount(0);
-  await expect(content).toContainText("public system Zzquake;");
+  await expect(content).toContainText("public system Zzq { }");
 });
 
 test("Escape dismisses the suggestion without inserting", async ({ page }) => {
   await stubPicker(page);
   await seedLlm(page);
-  await mockProvider(page, "uake;");
+  await mockProvider(page, " }");
   await createProject(page, "acme-tickets", "orders");
 
   const content = page.getByTestId("editor").locator(".cm-content");
   await content.click();
   await page.keyboard.press("Control+End");
-  await page.keyboard.type("\npublic system Zzq");
+  await page.keyboard.type("\npublic system Zzq {");
   await expect(page.getByTestId("ghost-text")).toBeVisible({ timeout: 15_000 });
-
-  // First Escape closes the dropdown popup; the second reaches the ghost.
-  await expect(page.locator(".cm-tooltip-autocomplete")).toBeVisible();
-  await page.keyboard.press("Escape");
   await expect(page.locator(".cm-tooltip-autocomplete")).toHaveCount(0);
-  await expect(page.getByTestId("ghost-text")).toBeVisible();
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("ghost-text")).toHaveCount(0);
-  await expect(content).not.toContainText("Zzquake;");
+  await expect(content).not.toContainText("public system Zzq { }");
 });
 
 test("a failing provider never blocks typing and a broken suggestion never shows", async ({
