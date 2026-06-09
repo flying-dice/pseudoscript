@@ -1037,58 +1037,111 @@ impl Parser {
         )
     }
 
-    /// Disambiguates a `<` after a path in value position: `true` when it opens
-    /// generic type-args of a `from` target (`Path<…> from` or `Path<…>[] from`),
-    /// `false` when it is the less-than operator (§7.5). Scans the balanced
-    /// `<`/`>` and checks whether `from` follows the close; a non-type token
-    /// inside the angles means it is a comparison, not generics.
-    fn generic_from_ahead(&self) -> bool {
-        debug_assert!(self.at(TokenKind::LAngle));
-        let mut i = self.pos + 1;
-        let mut depth = 1u32;
-        while let Some(tok) = self.tokens.get(i) {
-            match tok.kind {
-                TokenKind::LAngle => depth += 1,
-                TokenKind::RAngle => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let after = self.tokens.get(i + 1).map(|t| t.kind);
-                        if after == Some(TokenKind::KwFrom) {
-                            return true;
-                        }
-                        // A generic array target: `<…>[] from`.
-                        return after == Some(TokenKind::LBracket)
-                            && self.tokens.get(i + 2).map(|t| t.kind) == Some(TokenKind::RBracket)
-                            && self.tokens.get(i + 3).map(|t| t.kind) == Some(TokenKind::KwFrom);
-                    }
-                }
-                // Tokens that can appear inside a type argument list.
-                TokenKind::Ident
-                | TokenKind::ColonColon
-                | TokenKind::Comma
-                | TokenKind::LBracket
-                | TokenKind::RBracket => {}
-                // Anything else (an operator, paren, literal, …) means the `<`
-                // was the less-than operator over a value.
-                _ => return false,
-            }
-            i += 1;
+    /// Whether the cursor begins a `FromExpr` head (§10): a type path, optional
+    /// `<…>` generics and `[]` suffix, then `from`. Lookahead only — it consumes
+    /// nothing. Distinguishes `T from …` and `Result<A,B> from …` from a value
+    /// path that merely starts the same way (a comparison `a < b`, a bare ref). A
+    /// non-type token inside the angles, or no trailing `from`, means it is not a
+    /// `from` head.
+    fn at_from_head(&self) -> bool {
+        if !self.at(TokenKind::Ident) {
+            return false;
         }
-        false
+        // Skip the `::`-path: Ident { "::" Ident }.
+        let mut i = self.pos + 1;
+        while self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::ColonColon) {
+            if self.tokens.get(i + 1).map(|t| t.kind) != Some(TokenKind::Ident) {
+                return false;
+            }
+            i += 2;
+        }
+        // Optional `<…>` generics: scan to the balanced close.
+        if self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::LAngle) {
+            let mut depth = 1u32;
+            i += 1;
+            loop {
+                match self.tokens.get(i).map(|t| t.kind) {
+                    Some(TokenKind::LAngle) => depth += 1,
+                    Some(TokenKind::RAngle) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    // Tokens that may appear inside a type-argument list.
+                    Some(
+                        TokenKind::Ident
+                        | TokenKind::ColonColon
+                        | TokenKind::Comma
+                        | TokenKind::LBracket
+                        | TokenKind::RBracket,
+                    ) => {}
+                    // Anything else (operator, literal, …) ⇒ not generics.
+                    _ => return false,
+                }
+                i += 1;
+            }
+        }
+        // Optional `[]` array suffix.
+        if self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::LBracket)
+            && self.tokens.get(i + 1).map(|t| t.kind) == Some(TokenKind::RBracket)
+        {
+            i += 2;
+        }
+        self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::KwFrom)
     }
 
     fn parse_expr(&mut self) -> Expr {
-        // `Marker` is an expression head (§10, ADR-038): it does not combine with
-        // binary operators. A `from` head likewise stays out of the cascade — it
-        // begins with a type path in the value tier and swallows its own source.
+        // §10 `Expr = Marker | FromExpr | OrExpr`: `Marker` and a `from` head do
+        // not combine with binary operators (§7.5). Both are detected before the
+        // precedence cascade so neither can become a binary operand.
         if matches!(
             self.peek_kind(),
             Some(TokenKind::KwOk | TokenKind::KwErr | TokenKind::KwSome | TokenKind::KwNone)
         ) {
             let marker = self.parse_marker();
-            return self.parse_postfix(marker);
+            let expr = self.parse_postfix(marker);
+            self.reject_operator_after_head();
+            return expr;
+        }
+        if self.at_from_head() {
+            let ty = self.parse_type();
+            let from = self.parse_from(ty);
+            let expr = self.parse_postfix(from);
+            self.reject_operator_after_head();
+            return expr;
         }
         self.parse_or()
+    }
+
+    /// §7.5: a `Marker` or `from` head does not combine with a binary operator.
+    /// If one follows the head, report it (the operator is left unconsumed for
+    /// the enclosing context to resync on).
+    fn reject_operator_after_head(&mut self) {
+        if matches!(
+            self.peek_kind(),
+            Some(
+                TokenKind::PipePipe
+                    | TokenKind::AmpAmp
+                    | TokenKind::EqEq
+                    | TokenKind::BangEq
+                    | TokenKind::LAngle
+                    | TokenKind::RAngle
+                    | TokenKind::LAngleEq
+                    | TokenKind::RAngleEq
+                    | TokenKind::Plus
+                    | TokenKind::Minus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Percent
+            )
+        ) {
+            self.error(
+                self.cur_span(),
+                "a `from` or marker expression is not an operand of a binary operator (§7.5)",
+            );
+        }
     }
 
     /// Builds one left-associative binary level: `next { op next }` (§7.5).
@@ -1221,42 +1274,11 @@ impl Parser {
                 }
             }
             Some(TokenKind::Ident) => {
+                // A `from` head (`Type from …`) is detected and parsed by
+                // `parse_expr` before the cascade (§10), so a path here is a
+                // plain value reference; a following `<` is the less-than
+                // operator (§7.5), left for the precedence cascade.
                 let path = self.parse_path();
-                // A type-led expression is a `from` (§7.2, ADR-035). `<..>`
-                // generics, or a `[]` directly before `from`, commit to a `from`
-                // target; a bare `from` uses the path as the target type. A `<`
-                // is generic type-args only when a balanced `>` is followed by
-                // `from` — otherwise it is the less-than operator (§7.5), left
-                // for the precedence cascade.
-                if self.at(TokenKind::LAngle) && self.generic_from_ahead() {
-                    let ty = self.finish_type(path);
-                    return self.parse_from(ty);
-                }
-                // Only consume the `[]` when a `from` follows it, so a stray `[]`
-                // is left to error.
-                if self.at(TokenKind::LBracket)
-                    && self.peek2_kind() == Some(TokenKind::RBracket)
-                    && self.tokens.get(self.pos + 2).map(|t| t.kind) == Some(TokenKind::KwFrom)
-                {
-                    self.bump(); // `[`
-                    let rb = self.bump().expect("peeked `]`"); // `]`
-                    let ty = Type {
-                        span: path.span.to(rb.span),
-                        name: path,
-                        generics: Vec::new(),
-                        is_array: true,
-                    };
-                    return self.parse_from(ty);
-                }
-                if self.at(TokenKind::KwFrom) {
-                    let ty = Type {
-                        span: path.span,
-                        generics: Vec::new(),
-                        is_array: false,
-                        name: path,
-                    };
-                    return self.parse_from(ty);
-                }
                 Expr {
                     span: path.span,
                     kind: ExprKind::Ref(Ref::Path(path)),

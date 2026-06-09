@@ -87,6 +87,7 @@ impl Checker<'_> {
         self.collect_unions(module);
         self.check_variant_collisions(module);
         self.check_feature_collisions(module);
+        self.check_constant_collisions(module);
         self.check_reserved_names(module);
         self.check_type_refs(module);
         for item in &module.items {
@@ -208,6 +209,28 @@ impl Checker<'_> {
         }
         let leaf = path_leaf(&ret.name);
         leaf == name || self.unions.get(leaf).is_some_and(|vs| vs.contains(name))
+    }
+
+    // --- §3.6 / ADR-039 value namespace ---------------------------------------
+
+    /// §8.1 / ADR-039: constant names occupy the module's value namespace; two
+    /// constants MUST NOT share a name.
+    fn check_constant_collisions(&mut self, module: &Module) {
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
+        for item in &module.items {
+            if let Item::Decl(decl) = item
+                && let DeclKind::Constant(constant) = &decl.kind
+                && !seen.insert(&constant.name.name)
+            {
+                self.error(
+                    constant.name.span,
+                    format!(
+                        "constant `{name}` collides with constant `{name}`",
+                        name = constant.name.name
+                    ),
+                );
+            }
+        }
     }
 
     // --- §5.2 features ---------------------------------------------------------

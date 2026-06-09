@@ -1,0 +1,13 @@
+// LANG.md §10 / §7.5 (ADR-038): `Expr = Marker | FromExpr | OrExpr`. A `from`
+// expression is a head and MUST NOT be an operand of a binary operator (the same
+// holds for an `Ok`/`Err`/`Some`/`None` marker); combining one is rejected.
+
+//! example
+
+public data D { n: number }
+
+public system S;
+
+public container C for S {
+  f(): bool { return D from { n } == n }
+}
