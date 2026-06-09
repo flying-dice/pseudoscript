@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Command } from "$lib/keybindings.svelte.js";
   import { COMMANDS, PROFILES, chordFromEvent, formatChord, keybindings } from "$lib/keybindings.svelte.js";
-  import { llm } from "$lib/llm.svelte.js";
+  import type { LlmProvider } from "$lib/llm.svelte.js";
+  import { OPENAI_MODELS, llm, usableModels } from "$lib/llm.svelte.js";
+  import { listModels, testConnection, toProviderError } from "$lib/fim-provider.js";
 
   type Props = {
     onclose: () => void;
@@ -43,6 +45,92 @@
     }
     return [...by.entries()].map(([name, items]) => ({ name, items }));
   });
+
+  // --- AI Completion tab state ---------------------------------------------
+
+  const PROVIDERS: { id: LlmProvider; label: string; blurb: string }[] = [
+    { id: "ollama", label: "Ollama (local)", blurb: "Runs on this machine — free, no key, code never leaves it." },
+    { id: "openai", label: "OpenAI", blurb: "Hosted — bring your own API key." },
+    { id: "custom", label: "Custom", blurb: "Any OpenAI-compatible endpoint." },
+  ];
+
+  // The provider's live model list (Ollama: what the host has pulled; OpenAI:
+  // what the key can use). null = not loaded (fall back to a text input /
+  // static list); refreshed whenever the provider or its credentials change.
+  let liveModels = $state<string[] | null>(null);
+  let modelsBusy = $state(false);
+  // Last provider a list was fetched for — plain (non-reactive) on purpose, so
+  // a failed fetch doesn't re-trigger the loading effect in a loop.
+  let modelsFetchedFor: string | null = null;
+
+  // The connection test's outcome, shown inline under the button.
+  let testBusy = $state(false);
+  let testResult = $state<{ ok: boolean; message: string; hint?: string } | null>(null);
+
+  // Adopt a fetched list only when it's still for the active provider (a slow
+  // response must not land in another preset's dropdown) and only the usable
+  // slice of it — an empty slice falls back to the text input / static list.
+  function adoptModels(forProvider: LlmProvider, ids: string[] | null): void {
+    if (llm.provider !== forProvider) return;
+    const usable = ids === null ? null : usableModels(forProvider, ids);
+    liveModels = usable?.length ? usable : null;
+  }
+
+  async function refreshModels(): Promise<void> {
+    const forProvider = llm.provider;
+    modelsBusy = true;
+    modelsFetchedFor = forProvider;
+    try {
+      adoptModels(forProvider, await listModels(llm.snapshot(), AbortSignal.timeout(5000)));
+    } catch {
+      adoptModels(forProvider, null);
+    } finally {
+      modelsBusy = false;
+    }
+  }
+
+  function pickProvider(id: LlmProvider): void {
+    llm.applyPreset(id);
+    testResult = null;
+    liveModels = null;
+    modelsFetchedFor = null;
+    if (id !== "custom") void refreshModels();
+  }
+
+  async function runTest(): Promise<void> {
+    const forProvider = llm.provider;
+    testBusy = true;
+    testResult = null;
+    try {
+      const models = await testConnection(llm.snapshot(), new AbortController().signal);
+      testResult = { ok: true, message: `Connected — ${models.length} model(s) available.` };
+      llm.clearError();
+      adoptModels(forProvider, models);
+    } catch (e) {
+      const err = toProviderError(e);
+      testResult = { ok: false, message: err.message, hint: err.hint };
+    } finally {
+      testBusy = false;
+    }
+  }
+
+  // The dropdown's choices: the live list when it loaded, else OpenAI's static
+  // fallback. The configured model is always offered so the selection sticks.
+  const modelChoices = $derived.by(() => {
+    const base = liveModels ?? (llm.provider === "openai" ? OPENAI_MODELS : null);
+    if (!base) return null;
+    return base.includes(llm.model) || llm.model.trim() === "" ? base : [llm.model, ...base];
+  });
+
+  // Load the model list when the tab opens on a preset provider — once per
+  // provider pick; "Test connection" is the explicit retry.
+  $effect(() => {
+    if (tab === "ai" && llm.provider !== "custom" && modelsFetchedFor !== llm.provider) {
+      void refreshModels();
+    }
+  });
+
+  // --------------------------------------------------------------------------
 
   function startRecording(id: string): void {
     recording = id;
@@ -111,60 +199,148 @@
         <span>Enable inline AI completion</span>
       </label>
       <p class="blurb">
-        Ghost-text suggestions from any OpenAI-compatible endpoint — a local Ollama, or a hosted
-        provider with your own key. Grammar autocomplete stays local either way.
+        Ghost-text suggestions while you type. Pick where they come from — grammar autocomplete
+        stays local either way.
       </p>
 
-      <div class="field">
-        <label for="llm-baseurl">Endpoint base URL</label>
-        <input
-          id="llm-baseurl"
-          type="url"
-          data-testid="llm-baseurl"
-          placeholder="http://localhost:11434/v1"
-          value={llm.baseUrl}
-          oninput={(e) => llm.set({ baseUrl: e.currentTarget.value })}
-        />
+      {#if llm.lastError}
+        <div class="ai-error" data-testid="llm-last-error">
+          <p class="ai-error-msg">{llm.lastError.message}</p>
+          <p class="ai-error-hint">{llm.lastError.hint}</p>
+        </div>
+      {/if}
+
+      <div class="providers" role="radiogroup" aria-label="Completion provider">
+        {#each PROVIDERS as p (p.id)}
+          <button
+            class="provider"
+            class:active={llm.provider === p.id}
+            role="radio"
+            aria-checked={llm.provider === p.id}
+            data-testid="llm-provider-{p.id}"
+            onclick={() => pickProvider(p.id)}
+          >
+            <span class="p-label">{p.label}</span>
+            <span class="p-blurb">{p.blurb}</span>
+          </button>
+        {/each}
       </div>
-      <div class="field">
-        <label for="llm-apikey">API key</label>
-        <input
-          id="llm-apikey"
-          type="password"
-          autocomplete="off"
-          data-testid="llm-apikey"
-          placeholder="empty for a local model"
-          value={llm.apiKey}
-          oninput={(e) => llm.set({ apiKey: e.currentTarget.value })}
-        />
-        <p class="hint-line">Stored in this browser only; sent only to the endpoint above.</p>
+
+      {#snippet apiKeyField(placeholder: string, hint: string)}
+        <div class="field">
+          <label for="llm-apikey">API key</label>
+          <input
+            id="llm-apikey"
+            type="password"
+            autocomplete="off"
+            data-testid="llm-apikey"
+            {placeholder}
+            value={llm.apiKey}
+            oninput={(e) => llm.set({ apiKey: e.currentTarget.value })}
+            onchange={() => {
+              // A committed key unlocks the preset's live model list.
+              if (llm.provider !== "custom") void refreshModels();
+            }}
+          />
+          <p class="hint-line">{hint}</p>
+        </div>
+      {/snippet}
+
+      {#if llm.provider === "openai"}
+        {@render apiKeyField("sk-…", "Stored in this browser only; sent only to OpenAI.")}
+      {/if}
+
+      {#if llm.provider === "custom"}
+        <div class="field">
+          <label for="llm-baseurl">Endpoint base URL</label>
+          <input
+            id="llm-baseurl"
+            type="url"
+            data-testid="llm-baseurl"
+            placeholder="http://localhost:11434/v1"
+            value={llm.baseUrl}
+            oninput={(e) => llm.set({ baseUrl: e.currentTarget.value })}
+          />
+        </div>
+        {@render apiKeyField(
+          "empty for a local model",
+          "Stored in this browser only; sent only to the endpoint above.",
+        )}
+        <div class="field">
+          <label for="llm-model">Model</label>
+          <input
+            id="llm-model"
+            type="text"
+            data-testid="llm-model"
+            placeholder="qwen2.5-coder:7b"
+            value={llm.model}
+            oninput={(e) => llm.set({ model: e.currentTarget.value })}
+          />
+        </div>
+        <div class="field">
+          <label for="llm-mode">Request style</label>
+          <select
+            id="llm-mode"
+            data-testid="llm-mode"
+            value={llm.mode}
+            onchange={(e) => llm.set({ mode: e.currentTarget.value === "fim" ? "fim" : "chat" })}
+          >
+            <option value="chat">Chat (works everywhere)</option>
+            <option value="fim">Native fill-in-the-middle</option>
+          </select>
+          <p class="hint-line">
+            Chat suits Ollama / OpenRouter / vLLM; native FIM suits Codestral and DeepSeek.
+          </p>
+        </div>
+      {:else}
+        <div class="field">
+          <label for="llm-model">Model</label>
+          {#if modelChoices}
+            <select
+              id="llm-model"
+              data-testid="llm-model"
+              value={llm.model}
+              onchange={(e) => llm.set({ model: e.currentTarget.value })}
+            >
+              {#each modelChoices as m (m)}
+                <option value={m}>{m}</option>
+              {/each}
+            </select>
+          {:else}
+            <input
+              id="llm-model"
+              type="text"
+              data-testid="llm-model"
+              placeholder={llm.provider === "ollama" ? "qwen2.5-coder:7b" : "gpt-4o-mini"}
+              value={llm.model}
+              oninput={(e) => llm.set({ model: e.currentTarget.value })}
+            />
+          {/if}
+          <p class="hint-line">
+            {#if modelsBusy}
+              Loading the model list…
+            {:else if llm.provider === "ollama"}
+              {liveModels
+                ? "Models installed on your local Ollama."
+                : "Couldn't reach your local Ollama for its model list — type a model you've pulled (e.g. `ollama pull qwen2.5-coder:7b`)."}
+            {:else}
+              {liveModels ? "Models your API key can use." : "Common choices — the live list loads once the key works."}
+            {/if}
+          </p>
+        </div>
+      {/if}
+
+      <div class="test-row">
+        <button class="test" data-testid="llm-test" disabled={testBusy} onclick={() => void runTest()}>
+          {testBusy ? "Testing…" : "Test connection"}
+        </button>
       </div>
-      <div class="field">
-        <label for="llm-model">Model</label>
-        <input
-          id="llm-model"
-          type="text"
-          data-testid="llm-model"
-          placeholder="qwen2.5-coder:7b"
-          value={llm.model}
-          oninput={(e) => llm.set({ model: e.currentTarget.value })}
-        />
-      </div>
-      <div class="field">
-        <label for="llm-mode">Request style</label>
-        <select
-          id="llm-mode"
-          data-testid="llm-mode"
-          value={llm.mode}
-          onchange={(e) => llm.set({ mode: e.currentTarget.value === "fim" ? "fim" : "chat" })}
-        >
-          <option value="chat">Chat (works everywhere)</option>
-          <option value="fim">Native fill-in-the-middle</option>
-        </select>
-        <p class="hint-line">
-          Chat suits Ollama / OpenRouter / vLLM; native FIM suits Codestral and DeepSeek.
-        </p>
-      </div>
+      {#if testResult}
+        <div class="test-result" class:ok={testResult.ok} class:fail={!testResult.ok} data-testid="llm-test-result">
+          <p class="test-msg">{testResult.ok ? "✓" : "✕"} {testResult.message}</p>
+          {#if testResult.hint}<p class="test-hint">{testResult.hint}</p>{/if}
+        </div>
+      {/if}
     </div>
   {:else}
   <div class="profile-bar">
@@ -351,6 +527,105 @@
     margin: 0;
     font-size: 0.66rem;
     color: var(--ink-faint);
+  }
+  .providers {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+  }
+  .provider {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    text-align: left;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.55rem;
+    cursor: pointer;
+  }
+  .provider:hover {
+    border-color: var(--accent);
+  }
+  .provider.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .p-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+  }
+  .provider.active .p-label {
+    color: var(--accent-hi);
+  }
+  .p-blurb {
+    font-size: 0.62rem;
+    line-height: 1.35;
+    color: var(--ink-faint);
+  }
+  .ai-error {
+    border: 1px solid color-mix(in srgb, var(--err) 45%, var(--line-strong));
+    border-left: 3px solid var(--err);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--err) 7%, var(--surface-2));
+    padding: 0.5rem 0.6rem;
+  }
+  .ai-error-msg {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--ink);
+  }
+  .ai-error-hint,
+  .test-hint {
+    margin: 0.25rem 0 0;
+    font-size: 0.66rem;
+    line-height: 1.4;
+    color: var(--ink-soft);
+    word-break: break-word;
+  }
+  .test-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .test {
+    background: transparent;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    color: var(--ink-soft);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+  }
+  .test:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--ink);
+  }
+  .test:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .test-result {
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line-strong);
+  }
+  .test-result.ok {
+    border-color: color-mix(in srgb, var(--ok) 45%, var(--line-strong));
+    background: color-mix(in srgb, var(--ok) 7%, var(--surface-2));
+  }
+  .test-result.fail {
+    border-color: color-mix(in srgb, var(--err) 45%, var(--line-strong));
+    background: color-mix(in srgb, var(--err) 7%, var(--surface-2));
+  }
+  .test-msg {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--ink);
   }
   .profile-bar {
     display: flex;

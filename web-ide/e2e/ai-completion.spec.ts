@@ -14,51 +14,90 @@ const PROVIDER = "https://llm.e2e.test/v1";
 async function seedLlm(page: Page, overrides: Record<string, unknown> = {}): Promise<void> {
   await page.addInitScript(
     (settings) => localStorage.setItem("pds.llm", JSON.stringify(settings)),
-    { enabled: true, baseUrl: PROVIDER, apiKey: "", model: "test-model", mode: "chat", ...overrides },
+    {
+      enabled: true,
+      provider: "custom",
+      baseUrl: PROVIDER,
+      apiKey: "",
+      model: "test-model",
+      mode: "chat",
+      ...overrides,
+    },
   );
 }
 
-// Fulfil the provider route (and its CORS preflight) with a canned insertion.
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Allow-Methods": "*",
+};
+
+// Fulfil the provider's completion route (and its CORS preflight) with a canned
+// insertion.
 async function mockProvider(page: Page, completion: string, status = 200): Promise<void> {
   await page.route(`${PROVIDER}/chat/completions`, async (route) => {
-    const cors = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "*",
-      "Access-Control-Allow-Methods": "*",
-    };
     if (route.request().method() === "OPTIONS") {
-      await route.fulfill({ status: 204, headers: cors });
+      await route.fulfill({ status: 204, headers: CORS });
       return;
     }
     await route.fulfill({
       status,
-      headers: { ...cors, "Content-Type": "application/json" },
+      headers: { ...CORS, "Content-Type": "application/json" },
       body: JSON.stringify({ choices: [{ message: { content: completion } }] }),
     });
   });
 }
 
-test("AI Completion settings tab configures the store and shows the status chip", async ({
-  page,
-}) => {
+// Move the caret to the end of the document. Control+End is the binding on
+// Linux/Windows but a no-op in Chromium on macOS (where it is Cmd+ArrowDown);
+// press both — each is inert on the other platform — so the splice point the
+// parse-gate assertions depend on is deterministic everywhere.
+async function gotoDocEnd(page: Page): Promise<void> {
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Meta+ArrowDown");
+}
+
+// Fulfil the provider's model-list route (what "Test connection" hits first).
+async function mockModels(page: Page, ids: string[], status = 200): Promise<void> {
+  await page.route(`${PROVIDER}/models`, async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: CORS });
+      return;
+    }
+    await route.fulfill({
+      status,
+      headers: { ...CORS, "Content-Type": "application/json" },
+      body: JSON.stringify({ data: ids.map((id) => ({ id })) }),
+    });
+  });
+}
+
+test("guided setup: provider presets, custom fields, and the status chip", async ({ page }) => {
   await stubPicker(page);
   await createProject(page, "acme-tickets", "orders");
 
   // No chip while the feature is off.
   await expect(page.getByTestId("llm-status")).toHaveCount(0);
 
-  await page.keyboard.press("Control+k");
-  await page.getByTestId("command-input").fill("shortcuts");
-  await page.getByTestId("cmd-action-settings").click();
+  // The header gear opens Settings directly on the AI tab (#43).
+  await page.getByTestId("settings-btn").click();
   await expect(page.getByTestId("settings-dialog")).toBeVisible();
+  await expect(page.getByTestId("llm-panel")).toBeVisible();
 
-  await page.getByTestId("settings-tab-ai").click();
+  // Presets expose only what they need: Ollama (default) has no URL or key;
+  // OpenAI adds the masked key field and pins its endpoint.
+  await expect(page.getByTestId("llm-baseurl")).toHaveCount(0);
+  await expect(page.getByTestId("llm-apikey")).toHaveCount(0);
+  await page.getByTestId("llm-provider-openai").click();
+  await expect(page.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
+  await expect(page.getByTestId("llm-baseurl")).toHaveCount(0);
+
+  // Custom is the raw-fields escape hatch.
+  await page.getByTestId("llm-provider-custom").click();
   await page.getByTestId("llm-enabled").check();
   await page.getByTestId("llm-baseurl").fill(PROVIDER);
   await page.getByTestId("llm-model").fill("test-model");
   await page.getByTestId("llm-mode").selectOption("chat");
-  // The key field is masked.
-  await expect(page.getByTestId("llm-apikey")).toHaveAttribute("type", "password");
   await page.getByTestId("settings-dialog").getByRole("button", { name: "Close" }).click();
 
   // The status-bar chip appears live and reopens settings on the AI tab —
@@ -70,6 +109,38 @@ test("AI Completion settings tab configures the store and shows the status chip"
   await expect(page.getByTestId("llm-panel")).toBeVisible();
 });
 
+test("Help → AI Completion… opens Settings on the AI tab (#43)", async ({ page }) => {
+  await stubPicker(page);
+  await createProject(page, "acme-tickets", "orders");
+
+  await page.getByRole("button", { name: "Help" }).click();
+  await page.getByRole("menuitem", { name: "AI Completion…" }).click();
+  await expect(page.getByTestId("settings-dialog")).toBeVisible();
+  await expect(page.getByTestId("llm-panel")).toBeVisible();
+});
+
+test("Test connection reports success, and a classified failure with its hint", async ({
+  page,
+}) => {
+  await stubPicker(page);
+  await seedLlm(page);
+  await mockModels(page, ["test-model"]);
+  await mockProvider(page, "ok");
+  await createProject(page, "acme-tickets", "orders");
+
+  await page.getByTestId("settings-btn").click();
+  await page.getByTestId("llm-test").click();
+  await expect(page.getByTestId("llm-test-result")).toContainText("Connected — 1 model(s)");
+
+  // Re-route to an auth failure: the result flips to the classified error.
+  await page.unroute(`${PROVIDER}/models`);
+  await mockModels(page, [], 401);
+  await page.getByTestId("llm-test").click();
+  const result = page.getByTestId("llm-test-result");
+  await expect(result).toContainText("rejected the API key");
+  await expect(result).toContainText("API key");
+});
+
 test("ghost text appears after an idle pause and Tab accepts it", async ({ page }) => {
   await stubPicker(page);
   await seedLlm(page);
@@ -78,7 +149,7 @@ test("ghost text appears after an idle pause and Tab accepts it", async ({ page 
 
   const content = page.getByTestId("editor").locator(".cm-content");
   await content.click();
-  await page.keyboard.press("Control+End");
+  await gotoDocEnd(page);
   // Ending on "{" deterministically closes the grammar dropdown (no identifier
   // prefix under the caret), so Tab/Escape reach the ghost. The key interplay
   // with an open popup is unit-covered (inline-completion.test.ts).
@@ -103,7 +174,7 @@ test("Escape dismisses the suggestion without inserting", async ({ page }) => {
 
   const content = page.getByTestId("editor").locator(".cm-content");
   await content.click();
-  await page.keyboard.press("Control+End");
+  await gotoDocEnd(page);
   await page.keyboard.type("\npublic system Zzq {");
   await expect(page.getByTestId("ghost-text")).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(".cm-tooltip-autocomplete")).toHaveCount(0);
@@ -113,7 +184,7 @@ test("Escape dismisses the suggestion without inserting", async ({ page }) => {
   await expect(content).not.toContainText("public system Zzq { }");
 });
 
-test("a failing provider never blocks typing and a broken suggestion never shows", async ({
+test("a failing provider surfaces on the chip and a toast, and never blocks typing", async ({
   page,
 }) => {
   await stubPicker(page);
@@ -123,21 +194,37 @@ test("a failing provider never blocks typing and a broken suggestion never shows
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(String(e)));
 
-  // 500s from the provider: swallowed, typing unaffected.
+  // 500s from the provider: no ghost, but the failure is visible — the chip
+  // flips to its error state and one toast points at it.
   await mockProvider(page, "", 500);
   const content = page.getByTestId("editor").locator(".cm-content");
   await content.click();
-  await page.keyboard.press("Control+End");
+  await gotoDocEnd(page);
   await page.keyboard.type("\npublic system Pay");
-  await page.waitForTimeout(1200); // past debounce + response
+  await expect(page.getByTestId("toast-error")).toContainText("AI completion failed", {
+    timeout: 15_000,
+  });
+  await expect(page.getByTestId("llm-status")).toHaveAttribute("title", /AI completion failing/);
   await expect(page.getByTestId("ghost-text")).toHaveCount(0);
 
-  // A syntactically-broken suggestion is dropped by the wasm parse gate.
+  // Repeated failures of the same kind stay quiet — still exactly one toast.
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("y");
+  await page.waitForTimeout(1200); // past debounce + response
+  await expect(page.getByTestId("toast-error")).toHaveCount(1);
+
+  // A syntactically-broken suggestion is dropped by the wasm parse gate. The
+  // round-trip clears the chip's error state, and the chip says the answer was
+  // dropped instead of staying silent.
   await page.unroute(`${PROVIDER}/chat/completions`);
   await mockProvider(page, "%% not pseudoscript {{");
   await page.keyboard.type("m");
   await page.waitForTimeout(1200);
   await expect(page.getByTestId("ghost-text")).toHaveCount(0);
+  await expect(page.getByTestId("llm-status")).toHaveAttribute(
+    "title",
+    /wasn't valid PseudoScript/,
+  );
 
   await page.keyboard.type("ents;");
   await expect(content).toContainText("public system Payments;");

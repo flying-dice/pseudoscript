@@ -101,11 +101,20 @@ public data DocConfig;
 public data OutlineNode { fqn: string, name: string, kind: string, parent: Option<string>, triggered: bool, summary: Option<string>, line: number, col: number }
 
 /// The author's AI-completion provider settings, persisted in the browser: the
-/// feature toggle, the OpenAI-compatible endpoint, the bring-your-own API key
-/// (stored in localStorage, sent only to the configured endpoint), the model id,
-/// and the wire shape (`"fim"` for a native fill-in-the-middle route, `"chat"`
-/// for the chat-completions fallback).
-public data LlmSettings { enabled: bool, baseUrl: string, apiKey: string, model: string, mode: string }
+/// feature toggle, the chosen preset (`"ollama"`, `"openai"`, or `"custom"` —
+/// the presets pin the endpoint and wire shape so setup is pick-and-go), the
+/// OpenAI-compatible endpoint, the bring-your-own API key (stored in
+/// localStorage, sent only to the configured endpoint), the model id, and the
+/// wire shape (`"fim"` for a native fill-in-the-middle route, `"chat"` for the
+/// chat-completions fallback).
+public data LlmSettings { enabled: bool, provider: string, baseUrl: string, apiKey: string, model: string, mode: string }
+
+/// A classified completion-provider failure: `kind` is `"network"` (endpoint
+/// unreachable or CORS-blocked), `"auth"` (401/403), `"notFound"` (404 route or
+/// model), `"timeout"`, or `"http"` (any other non-OK status); `message` states
+/// what failed and `hint` names the fix for the configured provider (e.g. the
+/// `OLLAMA_ORIGINS` command for a CORS-blocked local Ollama).
+public data ProviderError { kind: string, message: string, hint: string }
 
 /// The assembled fill-in-the-middle request: the windowed buffer text before and
 /// after the caret, and the cached grammar primer that steers a general model to
@@ -395,25 +404,53 @@ public component CodeMirrorAdapter for ide::WebIde {
 /// The author's AI-completion settings, persisted to browser localStorage and
 /// edited through the Settings dialog's "AI Completion" tab. Bring-your-own key:
 /// it never leaves the tab except on requests to the configured endpoint.
+/// Setup is preset-first: picking a provider applies its pinned endpoint and
+/// wire shape, so only the Custom preset exposes the raw fields. The store also
+/// carries the session's last completion failure (never persisted) so the
+/// status chip and the settings tab can show why ghost text is bailing.
 component LlmSettingsStore for ide::WebIde {
   /// The persisted settings (defaults when nothing is stored).
   current(): ide::LlmSettings;
-  /// Whether ghost-text completion is switched on and configured.
+  /// Whether ghost-text completion is switched on and configured — the OpenAI
+  /// preset additionally requires a non-empty API key.
   isEnabled(): bool;
   /// Persist an edit from the settings tab.
   save(settings: ide::LlmSettings): void;
+  /// Apply a provider preset: its pinned endpoint, wire shape, and default
+  /// model become the active settings in one edit.
+  applyPreset(provider: string): void {
+    preset = ide::LlmSettings from self.presetFor(provider)
+    self.save(preset)
+  }
+  /// The pinned settings for a preset id: `ollama` → the local daemon over
+  /// chat with no key; `openai` → the hosted endpoint over chat, key required;
+  /// `custom` → the current fields untouched.
+  presetFor(provider: string): ide::LlmSettings;
+  /// Record the latest classified completion failure for the status surfaces.
+  reportFailure(err: ide::ProviderError): void;
+  /// Clear the failure once a request succeeds.
+  clearFailure(): void;
+  /// The session's last completion failure, if any.
+  lastFailure(): Option<ide::ProviderError>;
+  /// Record that the provider answered but the suggestion was dropped — blank,
+  /// or rejected by the parse gate. The chip says so instead of staying silent.
+  noteDrop(reason: string): void;
+  /// Clear the drop note once a suggestion renders.
+  clearDrop(): void;
+  /// The most recent drop reason, if the last answer never rendered.
+  lastDropReason(): Option<string>;
 }
 
 /// Provider-agnostic completion client: one `complete` contract over
 /// OpenAI-compatible HTTP, so one client covers Codestral, OpenRouter, Together,
 /// Ollama, and vLLM. Stateless — the caller hands it the settings snapshot and
 /// owns cancellation (`GhostText` aborts the in-flight request on the next
-/// keystroke; the client honours the abort). A network failure yields no
-/// suggestion, never an error the editor sees.
+/// keystroke; the client honours the abort). Every failure comes back as a
+/// classified `ProviderError`, so the caller can surface why a request bailed.
 component FimClient for ide::WebIde {
   /// Route the prompt by the configured wire shape: a native fill-in-the-middle
   /// route when the provider has one, else a FIM-shaped chat request.
-  complete(prompt: ide::FimPrompt, settings: ide::LlmSettings): string {
+  complete(prompt: ide::FimPrompt, settings: ide::LlmSettings): Result<string, ide::ProviderError> {
     fim = bool from self.usesNativeFim(settings)
     if (fim) {
       return ide::LlmProvider.fimComplete(prompt, settings.model)
@@ -422,6 +459,28 @@ component FimClient for ide::WebIde {
   }
   /// Whether the configured mode selects the native FIM route.
   usesNativeFim(settings: ide::LlmSettings): bool;
+  /// The provider's live model ids (`GET /models`) — what populates the
+  /// settings tab's model dropdown for the Ollama and OpenAI presets.
+  listModels(settings: ide::LlmSettings): Result<string[], ide::ProviderError> {
+    return ide::LlmProvider.listModels()
+  }
+  /// Round-trip probe for the settings tab's "Test connection": list the
+  /// models, then ask for a one-token completion — the first failure comes
+  /// back classified, with its fix hint, instead of a silent bail.
+  testConnection(settings: ide::LlmSettings): Result<string[], ide::ProviderError> {
+    models = Result<string[], ide::ProviderError> from self.listModels(settings)
+    if (models.isErr) {
+      return Err(models.error)
+    }
+    probe = ide::FimPrompt from self.probePrompt()
+    answer = Result<string, ide::ProviderError> from self.complete(probe, settings)
+    if (answer.isErr) {
+      return Err(answer.error)
+    }
+    return Ok(models.value)
+  }
+  /// The minimal one-token prompt the connection test sends.
+  probePrompt(): ide::FimPrompt;
 }
 
 /// Inline ghost-text completion over CodeMirror 6, beside the grammar dropdown:
@@ -432,7 +491,10 @@ component FimClient for ide::WebIde {
 component GhostText for ide::WebIde {
   /// On an idle pause in typing: assemble the context, ask the provider, and
   /// show the suggestion — dropped when it breaks the parse, so the ghost text
-  /// never proposes invalid PseudoScript.
+  /// never proposes invalid PseudoScript. Every non-rendering outcome is
+  /// reported to the settings store — a provider failure as the classified
+  /// error, a parse-gate drop as a drop note — so the status chip explains the
+  /// silence; none of it ever blocks typing.
   suggest(moduleFqn: string, offset: number): void {
     enabled = bool from ide::LlmSettingsStore.isEnabled()
     if (!enabled) {
@@ -440,12 +502,24 @@ component GhostText for ide::WebIde {
     }
     settings = ide::LlmSettings from ide::LlmSettingsStore.current()
     prompt = ide::FimPrompt from self.assemble(moduleFqn, offset)
-    raw = string from ide::FimClient.complete(prompt, settings)
-    ok = bool from self.validates(moduleFqn, offset, raw)
-    if (!ok) {
+    raw = Result<string, ide::ProviderError> from ide::FimClient.complete(prompt, settings)
+    if (raw.isErr) {
+      ide::LlmSettingsStore.reportFailure(raw.error)
       return
     }
-    self.show(raw)
+    ide::LlmSettingsStore.clearFailure()
+    blank = bool from self.isBlank(raw.value)
+    if (blank) {
+      ide::LlmSettingsStore.noteDrop("empty")
+      return
+    }
+    ok = bool from self.validates(moduleFqn, offset, raw.value)
+    if (!ok) {
+      ide::LlmSettingsStore.noteDrop("invalid")
+      return
+    }
+    ide::LlmSettingsStore.clearDrop()
+    self.show(raw.value)
   }
   /// The provider context: the windowed buffer around the caret plus the cached
   /// grammar primer.
@@ -470,6 +544,8 @@ component GhostText for ide::WebIde {
   }
   /// The buffer with the suggestion inserted at the caret.
   splice(moduleFqn: string, offset: number, raw: string): string;
+  /// Whether the answer carries nothing to insert (whitespace only).
+  isBlank(raw: string): bool;
   /// Whether the spliced buffer parses no worse than the buffer did before.
   noNewSyntaxErrors(moduleFqn: string, diags: syntax::Diagnostic[]): bool;
   /// Render the greyed inline text at the caret.
@@ -477,13 +553,17 @@ component GhostText for ide::WebIde {
 }
 
 /// The author's configured OpenAI-compatible completion provider — hosted
-/// (Codestral, OpenRouter, Together) or local (Ollama, vLLM). External: the IDE
-/// only speaks its HTTP API.
+/// (OpenAI, Codestral, OpenRouter, Together) or local (Ollama, vLLM). External:
+/// the IDE only speaks its HTTP API; transport and HTTP failures surface as
+/// classified `ProviderError`s.
 public system LlmProvider {
   /// Native fill-in-the-middle completion (`/v1/fim/completions`).
-  fimComplete(prompt: ide::FimPrompt, model: string): string;
+  fimComplete(prompt: ide::FimPrompt, model: string): Result<string, ide::ProviderError>;
   /// Chat-completions fallback (`/v1/chat/completions`) with a FIM-shaped prompt.
-  chatComplete(prompt: ide::FimPrompt, model: string): string;
+  chatComplete(prompt: ide::FimPrompt, model: string): Result<string, ide::ProviderError>;
+  /// The available model ids (`/v1/models`) — a local Ollama answers with the
+  /// models the host has pulled.
+  listModels(): Result<string[], ide::ProviderError>;
 }
 
 /// The diagram canvas: draws the **JSON** `Scene` interactively (Svelte Flow
@@ -577,7 +657,18 @@ feature GhostTextSuggests for ide::GhostText {
   when "the author pauses typing"
   then "the windowed prefix/suffix and the grammar primer go to the provider"
   and "the suggestion renders as greyed inline text — Tab accepts, Esc dismisses"
-  but "a suggestion that breaks the parse is dropped, and a provider failure never blocks typing"
+  but "a suggestion that breaks the parse is dropped, and a provider failure surfaces on the AI status chip with the reason — it never blocks typing"
+}
+
+/// Setup is preset-first; the connection test explains a failure instead of
+/// leaving the author guessing.
+feature GuidedProviderSetup for ide::LlmSettingsStore {
+  given "the Settings dialog's AI Completion tab"
+  when "the author picks the Ollama or OpenAI preset"
+  then "the endpoint and wire shape are pinned by the preset — no raw URL to type"
+  and "the model dropdown fills from the provider's live model list"
+  and "Test connection round-trips the provider and reports success or the classified failure with its fix hint"
+  but "the Custom preset still exposes every field for any OpenAI-compatible endpoint"
 }
 
 /// The remote model augments, never replaces, the local grammar completer.

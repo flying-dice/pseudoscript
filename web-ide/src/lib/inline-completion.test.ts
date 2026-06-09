@@ -104,10 +104,55 @@ describe("trigger", () => {
     expect(currentGhost(view.state)).toBeNull();
   });
 
-  it("swallows a rejecting source", async () => {
-    editor({ fetch: vi.fn().mockRejectedValue(new Error("offline")) });
+  it("reports a rejecting source through onError without showing a ghost", async () => {
+    const onError = vi.fn();
+    const boom = new Error("offline");
+    editor({ fetch: vi.fn().mockRejectedValue(boom), onError });
     type(view, "a");
     await settle();
+    expect(currentGhost(view.state)).toBeNull();
+    expect(onError).toHaveBeenCalledWith(boom);
+  });
+
+  it("does not report its own abort as an error", async () => {
+    const onError = vi.fn();
+    const fetch = vi
+      .fn()
+      .mockImplementation(
+        (_d: string, _p: number, s: AbortSignal) =>
+          new Promise<string>((_res, rej) => s.addEventListener("abort", () => rej(new Error("aborted")))),
+      );
+    editor({ fetch, onError });
+    type(view, "a");
+    await settle();
+    type(view, "b"); // aborts the in-flight request
+    await settle();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("calls onAnswered and onShown when a fetch answers and renders", async () => {
+    const onAnswered = vi.fn();
+    const onShown = vi.fn();
+    editor({ fetch: vi.fn().mockResolvedValue("system Banking;"), onAnswered, onShown });
+    type(view, "a");
+    await settle();
+    expect(onAnswered).toHaveBeenCalledOnce();
+    expect(onShown).toHaveBeenCalledOnce();
+    expect(currentGhost(view.state)).toBe("system Banking;");
+  });
+
+  it("reports a blank answer and a validator rejection through onDrop", async () => {
+    const onDrop = vi.fn();
+    editor({ fetch: vi.fn().mockResolvedValue("   \n"), onDrop });
+    type(view, "a");
+    await settle();
+    expect(onDrop).toHaveBeenCalledWith("empty");
+
+    onDrop.mockClear();
+    editor({ fetch: vi.fn().mockResolvedValue("bad()"), validate: () => false, onDrop });
+    type(view, "a");
+    await settle();
+    expect(onDrop).toHaveBeenCalledWith("invalid");
     expect(currentGhost(view.state)).toBeNull();
   });
 

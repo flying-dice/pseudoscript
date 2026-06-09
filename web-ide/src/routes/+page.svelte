@@ -1687,6 +1687,21 @@
   const notify = (kind: NoteKind, title: string, body = "") => notifications.notify(kind, title, body);
   const dismissNote = (id: string | number) => notifications.dismiss(id);
 
+  // One toast per AI-completion failure kind: the chip carries the ongoing
+  // state, so repeated failures of the same kind stay quiet until the kind
+  // changes (a success clears `lastError` and re-arms the toast).
+  let toastedAiKind: string | null = null;
+  $effect(() => {
+    const err = llm.lastError;
+    if (!err) {
+      toastedAiKind = null;
+      return;
+    }
+    if (err.kind === toastedAiKind) return;
+    toastedAiKind = err.kind;
+    notify("error", "AI completion failed", `${err.message}. Click the AI chip to fix it.`);
+  });
+
   // LSP symbol rename. The editor's right-click hands us the byte offset of the
   // symbol; we resolve every occurrence (find-references) and open the preview
   // dialog. Applying rewrites the chosen modules' buffers (dirty until saved).
@@ -2746,6 +2761,7 @@ show('index.html');
     {onimport}
     {onbuilddocs}
     onshortcuts={() => (ui.settingsOpen = true)}
+    onaisettings={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}
     onview={(v) => (selection.view = v)}
     ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)}
   />
@@ -2960,11 +2976,18 @@ show('index.html');
     {#if llm.enabled}
       <button
         class="ai-chip"
-        class:dim={!llm.ready}
+        class:dim={!llm.ready || llm.lastDropReason !== null}
+        class:err={llm.lastError !== null}
         data-testid="llm-status"
-        title={llm.ready
-          ? `AI completion on — ${llm.model}`
-          : "AI completion enabled but missing an endpoint or model — click to configure"}
+        title={llm.lastError
+          ? `AI completion failing — ${llm.lastError.message}. Click to fix.`
+          : llm.lastDropReason
+            ? llm.lastDropReason === "invalid"
+              ? `AI suggestion arrived but wasn't valid PseudoScript, so it was dropped — a stronger model than ${llm.model} helps.`
+              : "AI completion answered with nothing to insert."
+            : llm.ready
+              ? `AI completion on — ${llm.model}`
+              : "AI completion enabled but not fully configured — click to set it up"}
         onclick={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}>AI</button
       >
     {/if}
@@ -3285,6 +3308,10 @@ show('index.html');
   }
   .ai-chip.dim {
     color: var(--warn);
+  }
+  .ai-chip.err {
+    color: var(--err);
+    border-color: var(--err);
   }
   .crumb {
     display: flex;

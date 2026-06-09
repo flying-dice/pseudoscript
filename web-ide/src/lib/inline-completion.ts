@@ -4,7 +4,8 @@
 // host's async source, a widget decoration renders it as greyed text at the
 // caret, Tab accepts and Escape dismisses. Any edit or caret move clears it, and
 // the in-flight request is aborted on the next keystroke; a source failure is
-// swallowed — ghost text must never block typing.
+// reported to the host through `onError` (aborts stay silent) — ghost text must
+// never block typing.
 
 import { completionStatus } from "@codemirror/autocomplete";
 import { Prec, StateEffect, StateField } from "@codemirror/state";
@@ -20,6 +21,15 @@ export interface InlineCompletionSource {
   validate?: (doc: string, pos: number, text: string) => boolean;
   /** Idle time after the last keystroke before fetching (default 400ms). */
   debounceMs?: number;
+  /** A fetch failure (never an abort) — the host surfaces the reason. */
+  onError?: (err: unknown) => void;
+  /** The provider answered (the suggestion may still be dropped before it
+   * renders) — the host clears any surfaced fetch failure. */
+  onAnswered?: () => void;
+  /** An answer that never rendered: blank, or rejected by the validator. */
+  onDrop?: (reason: "empty" | "invalid") => void;
+  /** A suggestion rendered — the host clears any surfaced drop note. */
+  onShown?: () => void;
 }
 
 type Ghost = { pos: number; text: string };
@@ -131,16 +141,27 @@ function ghostTextTrigger(source: InlineCompletionSource): Extension {
         let text: string;
         try {
           text = (await source.fetch(doc, pos, ctl.signal)).replace(/\n+$/, "");
-        } catch {
-          return; // abort / network / provider error — never blocks typing
+        } catch (err) {
+          // Never blocks typing; a real failure (not our own abort) is the
+          // host's to surface.
+          if (!ctl.signal.aborted) source.onError?.(err);
+          return;
         }
         if (ctl.signal.aborted) return;
+        source.onAnswered?.();
         // Stale answer: the buffer or caret moved while the request flew.
         const now = this.view.state;
         if (now.selection.main.head !== pos || now.doc.toString() !== doc) return;
-        if (!text.trim()) return;
-        if (source.validate && !source.validate(doc, pos, text)) return;
+        if (!text.trim()) {
+          source.onDrop?.("empty");
+          return;
+        }
+        if (source.validate && !source.validate(doc, pos, text)) {
+          source.onDrop?.("invalid");
+          return;
+        }
         this.view.dispatch({ effects: setGhost.of({ pos, text }) });
+        source.onShown?.();
       }
 
       destroy(): void {

@@ -26,6 +26,7 @@
     onimport?: () => void;
     onbuilddocs?: () => void;
     onshortcuts?: () => void;
+    onaisettings?: () => void;
     onback?: () => void;
     onforward?: () => void;
     onview?: (view: "code" | "canvas" | "space") => void;
@@ -51,6 +52,7 @@
     onimport,
     onbuilddocs,
     onshortcuts,
+    onaisettings,
     onback,
     onforward,
     onview,
@@ -157,6 +159,7 @@
     </DropdownMenu.Trigger>
     <DropdownMenu.Content class="menu-content" align="start" sideOffset={4}>
       <DropdownMenu.Item onSelect={() => onshortcuts?.()}>Keyboard shortcuts…</DropdownMenu.Item>
+      <DropdownMenu.Item onSelect={() => onaisettings?.()}>AI Completion…</DropdownMenu.Item>
       <DropdownMenu.Item>
         {#snippet child({ props })}
           <a
