@@ -12,8 +12,13 @@ git_tag_enable = false
 git_release_enable = false
 
 # The binary crate (`pseudoscript` → `pds`): the only tagged/released package.
+# The release is created NOT marked latest (`git_release_latest = false`); the
+# release-assets workflow flips it to latest only after the installer + upgrade
+# smoke test passes on all three OSes, so a broken release never becomes the one
+# `/releases/latest`, scripts/install.*, and `pds upgrade` resolve.
 [[package]]
 name = "pseudoscript"
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
+git_release_latest = false
