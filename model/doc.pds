@@ -94,18 +94,21 @@ public data RelGroup { title: string, items: doc::RelItem[] }
 /// arrow, the endpoint FQN, its resolved href (absent → plain text), and any label.
 public data RelItem { edgeKind: string, arrow: bool, fqn: string, href: string, label: string }
 
-/// One BDD scenario card: name, `///` docs, tags, and the ordered steps.
-public data ScenarioCard { name: string, summary: string, extended: string, tags: string[], steps: doc::Step[] }
+/// One BDD scenario card: name, `///` docs, tags, the ordered steps, and the
+/// feature's flow figure (LANG.md §9.5).
+public data ScenarioCard { name: string, summary: string, extended: string, tags: string[], steps: doc::Step[], flow: doc::Diagram }
 
 /// One scenario step: its keyword (given/when/then/and/but) and prose.
 public data Step { keyword: string, text: string }
 
 /// A diagram figure. A C4 or Sequence figure carries the laid-out `emit::Scene`
-/// geometry (not pre-rendered SVG) for a client island to draw; `Empty` marks a
-/// view that failed to project.
+/// geometry (not pre-rendered SVG) for a client island to draw; an `Svg` figure
+/// carries a data entity or feature flow view (LANG.md §9.4, §9.5) pre-rendered
+/// to themed SVG; `Empty` marks a view that failed to project.
 public data Diagram =
   | C4 { caption: string, scene: emit::Scene }
   | Sequence { caption: string, scene: emit::Scene }
+  | Svg { caption: string, svg: string }
   | Empty { caption: string, eyebrow: string }
 
 /// The server-render result for one page: the `<svelte:head>` contents and the
@@ -122,8 +125,9 @@ public data RenderError =
 
 /// `crates/pseudoscript-doc`. Turns a resolved graph into a Svelte-rendered,
 /// cargo-doc-style site: each node's `///` docs and relationships on its page, C4
-/// and sequence diagrams as interactive client islands. Pure: returns in-memory
-/// files, the CLI writes.
+/// and sequence diagrams as interactive client islands, data entity and feature
+/// flow figures as pre-rendered SVG. Pure: returns in-memory files, the CLI
+/// writes.
 /// #headline
 public container Doc for context::Pseudoscript {
   /// Render the documentation site for `graph` under `config`.
@@ -338,38 +342,41 @@ component Relationships for doc::Doc {
 }
 
 /// Renders the BDD scenario cards on a node's page: each `feature` targeting the node
-/// becomes its given/when/then steps as a card (LANG.md §5.2, §9.3). Empty when the
-/// node has no features.
+/// becomes its given/when/then steps and its flow figure as a card (LANG.md §5.2,
+/// §9.3, §9.5). Empty when the node has no features.
 component Scenarios for doc::Doc {
   /// The scenario cards for `node`: one per feature targeting it, with name, `///`
-  /// docs, tags, and ordered steps. Empty when the node has no scenarios.
+  /// docs, tags, ordered steps, and its flow figure. Empty when the node has no
+  /// scenarios.
   cards(graph: model::Graph, node: model::GraphNode): doc::ScenarioCard[] {
     scenarios = model::Scenario[] from self.scenariosOf(graph, node)
-    return self.toCards(scenarios)
+    flows = doc::Diagram[] from doc::Diagrams.flows(graph, scenarios)
+    return self.toCards(scenarios, flows)
   }
 
   /// The scenarios in the graph whose target FQN is this node.
   scenariosOf(graph: model::Graph, node: model::GraphNode): model::Scenario[];
 
-  /// Map each scenario to a card (name, docs, tags, given/when/then steps).
-  toCards(scenarios: model::Scenario[]): doc::ScenarioCard[];
+  /// Map each scenario to a card (name, docs, tags, given/when/then steps, and its
+  /// flow figure, paired by position).
+  toCards(scenarios: model::Scenario[], flows: doc::Diagram[]): doc::ScenarioCard[];
 }
 
 /// The bridge into `emit`: project a view into a `Scene` and carry its geometry as
 /// page data. A view that fails to project degrades to an `Empty` placeholder rather
 /// than aborting the build — the cargo-doc stance that a partial model still
 /// documents. The client islands lay out the geometry: C4 as a flow graph, sequences
-/// as an animated timeline.
+/// as an animated timeline; a data or feature scene ships pre-rendered as themed SVG.
 component Diagrams for doc::Doc {
   /// The diagrams embedded on a node: a container diagram on a `system`, a component
-  /// diagram on a `container`, plus a sequence diagram per triggered callable it
-  /// owns. Other kinds embed nothing.
+  /// diagram on a `container`, an entity diagram on a `data` (LANG.md §9.4), plus a
+  /// sequence diagram per triggered callable it owns. Other kinds embed nothing.
   forNode(graph: model::Graph, node: model::GraphNode): doc::Diagram[] {
     return self.collect(self.boundary(graph, node), self.sequences(graph, node))
   }
 
   /// The boundary diagram for a node: a container view for a `system`, a component
-  /// view for a `container`, none for any other kind.
+  /// view for a `container`, an entity view for a `data`, none for any other kind.
   boundary(graph: model::Graph, node: model::GraphNode): doc::Diagram[] {
     if (self.isSystem(node)) {
       return self.one(self.figure(graph, self.containerView(node.fqn), "Containers", "Container diagram"))
@@ -377,8 +384,14 @@ component Diagrams for doc::Doc {
     if (self.isContainer(node)) {
       return self.one(self.figure(graph, self.componentView(node.fqn), "Components", "Component diagram"))
     }
+    if (self.isData(node)) {
+      return self.one(self.figure(graph, self.dataView(node.fqn), "Entities", "Entity diagram"))
+    }
     return self.none()
   }
+
+  /// One flow figure per scenario: its feature view (LANG.md §9.5), in source order.
+  flows(graph: model::Graph, scenarios: model::Scenario[]): doc::Diagram[];
 
   /// The context diagram for the index page (persons and systems).
   context(graph: model::Graph): doc::Diagram {
@@ -399,8 +412,8 @@ component Diagrams for doc::Doc {
   /// Wrap a laid-out scene in its matching figure, total over the four `Scene`
   /// variants: a sequence scene is pre-positioned by the `layout` sequence engine so
   /// the diagram island's props ship ready-to-draw geometry; a C4 scene becomes a
-  /// `C4` diagram; the doc site never requests a data or feature view, so either
-  /// degrades to an `Empty` placeholder.
+  /// `C4` diagram; a data or feature scene is pre-rendered to SVG in the site's
+  /// configured theme and ships as an `Svg` figure.
   embed(scene: emit::Scene, caption: string): doc::Diagram {
     if (scene.isSequenceScene) {
       placed = layout::SequenceLayout from layout::Layout.layout(self.asSequenceDiagram(scene))
@@ -409,12 +422,15 @@ component Diagrams for doc::Doc {
     if (scene.isC4Scene) {
       return self.c4Figure(scene, caption)
     }
-    eyebrow = "diagram"
-    return Empty from { caption, eyebrow }
+    return self.svgFigure(scene, caption)
   }
 
   /// Translate a sequence scene into the `layout` engine's structural diagram.
   asSequenceDiagram(scene: emit::Scene): layout::Diagram;
+
+  /// Render a data or feature scene to SVG in the site's configured theme, through
+  /// the emit face, and wrap it in an `Svg` figure.
+  svgFigure(scene: emit::Scene, caption: string): doc::Diagram;
 
   /// Build a `Sequence` figure carrying the pre-positioned geometry.
   sequenceFigure(scene: emit::Scene, caption: string, placed: layout::SequenceLayout): doc::Diagram;
@@ -435,11 +451,17 @@ component Diagrams for doc::Doc {
   /// The component boundary view for the host container.
   componentView(host: string): emit::View;
 
+  /// The entity view for the `data` node (LANG.md §9.4).
+  dataView(dataFqn: string): emit::View;
+
   /// Whether a node is a `system` (gets a container diagram).
   isSystem(node: model::GraphNode): bool;
 
   /// Whether a node is a `container` (gets a component diagram).
   isContainer(node: model::GraphNode): bool;
+
+  /// Whether a node is a `data` type (gets an entity diagram).
+  isData(node: model::GraphNode): bool;
 
   /// Concatenate the boundary diagrams and the sequence diagrams in order.
   collect(boundary: doc::Diagram[], sequences: doc::Diagram[]): doc::Diagram[];

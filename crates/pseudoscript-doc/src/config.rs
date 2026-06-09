@@ -24,6 +24,14 @@ impl Theme {
             Theme::Dark => "dark",
         }
     }
+
+    /// The emit-crate theme that renders this site theme's diagrams.
+    pub(crate) fn emit(self) -> pseudoscript_emit::Theme {
+        match self {
+            Theme::Light => pseudoscript_emit::Theme::Light,
+            Theme::Dark => pseudoscript_emit::Theme::Dark,
+        }
+    }
 }
 
 /// Site presentation config, filled by the CLI from `[doc]` in `pds.toml`.

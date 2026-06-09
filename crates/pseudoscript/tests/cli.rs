@@ -175,6 +175,18 @@ fn run_svg_unknown(world: &mut CliWorld) {
     run(world, &["svg", "--symbol", "nope::Nope"]);
 }
 
+#[when(regex = r#"^I run pds svg for the "(.+)" view of "(.+)"$"#)]
+// cucumber parses each regex capture into an owned `String`; `&str` won't compile here.
+#[allow(clippy::needless_pass_by_value)]
+fn run_svg_view(world: &mut CliWorld, view: String, target: String) {
+    run(world, &["svg", "--view", &view, "--target", &target]);
+}
+
+#[when("I run pds svg for an unknown view")]
+fn run_svg_unknown_view(world: &mut CliWorld) {
+    run(world, &["svg", "--view", "lineage"]);
+}
+
 // --- then -------------------------------------------------------------------
 
 #[then("the exit code is zero")]

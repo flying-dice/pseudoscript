@@ -216,6 +216,8 @@ pub(crate) struct ScenarioCard {
     pub tags: Vec<String>,
     /// The ordered given/when/then steps.
     pub steps: Vec<Step>,
+    /// The feature's flow diagram (`LANG.md` §9.5).
+    pub flow: Diagram,
 }
 
 /// One scenario step.
@@ -228,8 +230,9 @@ pub(crate) struct Step {
     pub text: String,
 }
 
-/// A diagram figure. C4 and sequence carry the emit scene geometry; `empty`
-/// marks a view that failed to project.
+/// A diagram figure. C4 and sequence carry the emit scene geometry for a client
+/// island to draw; `svg` carries a pre-rendered document; `empty` marks a view
+/// that failed to project.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "diagram", rename_all = "camelCase")]
 pub(crate) enum Diagram {
@@ -250,6 +253,14 @@ pub(crate) enum Diagram {
         /// from `pseudoscript-layout` — the same geometry the web IDE renders,
         /// so the figure needs no client-side layout engine.
         layout: Layout,
+    },
+    /// A data entity or feature flow view (`LANG.md` §9.4, §9.5), pre-rendered
+    /// to SVG in the site's configured theme — no client island needed.
+    Svg {
+        /// The figure caption.
+        caption: String,
+        /// The self-contained SVG document.
+        svg: String,
     },
     /// A view that could not be projected (e.g. an empty boundary).
     Empty {

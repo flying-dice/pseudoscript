@@ -732,6 +732,18 @@ code,
   overflow: hidden;
   background: var(--surface);
 }
+/* a pre-rendered SVG figure sizes to its content instead of the island canvas */
+.diagram-svg {
+  height: auto;
+  overflow: auto;
+  padding: 1rem;
+}
+.diagram-svg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
 .no-diagram {
   margin: 1.9rem 0 0;
   padding: 1.4rem 1.5rem;

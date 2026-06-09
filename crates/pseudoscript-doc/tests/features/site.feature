@@ -32,6 +32,16 @@ Feature: Svelte documentation site generation
     And the file "module/banking.core.html" contains "AppendPosting"
     And the file "module/banking.core.html" contains "the ledger records it"
 
+  Scenario: a data section embeds its entity diagram
+    When I render the site titled "Banking Architecture"
+    Then the section "banking::core::Posting" on "module/banking.core.html" embeds a "svg" diagram
+    And the file "module/banking.core.html" contains "Entity diagram"
+
+  Scenario: a feature scenario card embeds its flow diagram
+    When I render the site titled "Banking Architecture"
+    Then the file "module/banking.core.html" contains "Flow — AppendPosting"
+    And the section "banking::core::Ledger" on "module/banking.core.html" embeds a "svg" diagram
+
   Scenario: a triggered callable embeds a sequence diagram on its owner section
     When I render the site titled "Banking Architecture"
     Then the file "module/banking.core.html" contains "Sequence "
