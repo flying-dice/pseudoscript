@@ -164,11 +164,10 @@ impl<'src> Lexer<'src> {
             Some(b'/') => self.lex_line_or_doc(),
             Some(b'*') => self.lex_block_comment(),
             _ => {
+                // A lone `/` is the division operator (§7.5).
                 let start = self.pos;
                 self.pos += 1;
-                // A lone `/` is not in the grammar; surface it as punctuation
-                // for the parser to reject rather than failing here.
-                self.push(TokenKind::Question, start, self.pos);
+                self.push(TokenKind::Slash, start, self.pos);
             }
         }
     }
@@ -368,15 +367,26 @@ impl<'src> Lexer<'src> {
     fn lex_punct(&mut self) {
         let start = self.pos;
         let b = self.bytes[self.pos];
+        let next = self.bytes.get(self.pos + 1).copied();
+        // Two-character operators are matched before their single-char prefixes
+        // (§7.5): `==` before `=`, `<=`/`>=` before `<`/`>`, `!=` before `!`,
+        // `&&`, `||` before `|`.
+        if let Some(two) = match (b, next) {
+            (b':', Some(b':')) => Some(TokenKind::ColonColon),
+            (b'=', Some(b'=')) => Some(TokenKind::EqEq),
+            (b'!', Some(b'=')) => Some(TokenKind::BangEq),
+            (b'<', Some(b'=')) => Some(TokenKind::LAngleEq),
+            (b'>', Some(b'=')) => Some(TokenKind::RAngleEq),
+            (b'&', Some(b'&')) => Some(TokenKind::AmpAmp),
+            (b'|', Some(b'|')) => Some(TokenKind::PipePipe),
+            _ => None,
+        } {
+            self.pos += 2;
+            self.push(two, start, self.pos);
+            return;
+        }
         let kind = match b {
-            b':' => {
-                if self.bytes.get(self.pos + 1) == Some(&b':') {
-                    self.pos += 2;
-                    self.push(TokenKind::ColonColon, start, self.pos);
-                    return;
-                }
-                TokenKind::Colon
-            }
+            b':' => TokenKind::Colon,
             b'.' => TokenKind::Dot,
             b';' => TokenKind::Semi,
             b',' => TokenKind::Comma,
@@ -392,6 +402,10 @@ impl<'src> Lexer<'src> {
             b'<' => TokenKind::LAngle,
             b'>' => TokenKind::RAngle,
             b'!' => TokenKind::Bang,
+            b'+' => TokenKind::Plus,
+            b'-' => TokenKind::Minus,
+            b'*' => TokenKind::Star,
+            b'%' => TokenKind::Percent,
             _ => {
                 // Unknown byte: skip it (and any trailing bytes of a UTF-8 char)
                 // so the lexer never stalls. The parser reports the gap.

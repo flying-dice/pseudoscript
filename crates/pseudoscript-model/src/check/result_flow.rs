@@ -203,6 +203,10 @@ fn check_expr(expr: &Expr, env: &Bindings, out: &mut Vec<Diagnostic>) {
             }
         }
         ExprKind::Unary { expr, .. } | ExprKind::Paren(expr) => check_expr(expr, env, out),
+        ExprKind::Binary { left, right, .. } => {
+            check_expr(left, env, out);
+            check_expr(right, env, out);
+        }
         ExprKind::Ref(_) | ExprKind::Literal(_) => {}
     }
 }

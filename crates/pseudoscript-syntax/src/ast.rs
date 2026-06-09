@@ -158,6 +158,8 @@ pub enum DeclKind {
     Component(Node),
     /// `data Name` — record, union, or black box (§3.4, §3.5).
     Data(Data),
+    /// `constant NAME = Literal` — a top-level primitive constant (§3.6, ADR-039).
+    Constant(Constant),
 }
 
 /// The keyword class of a structural node.
@@ -209,6 +211,18 @@ impl BodyMember {
             BodyMember::Decl(d) => d.span,
         }
     }
+}
+
+/// A `constant NAME = Literal` declaration (§3.6, ADR-039). `public` lives on the
+/// enclosing [`Decl`], mirroring [`Data`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Constant {
+    /// The constant's name.
+    pub name: Ident,
+    /// The declared primitive literal value.
+    pub value: Literal,
+    /// Source span of the declaration.
+    pub span: Span,
 }
 
 /// A `data` declaration: a record body, a union, or a black box (§3.4, §3.5).
@@ -397,10 +411,101 @@ pub enum ExprKind {
     Ref(Ref),
     /// A string / number / bool literal (ADR-013).
     Literal(Literal),
-    /// `! Expr` (§10).
-    Unary { op_span: Span, expr: Box<Expr> },
+    /// A unary operator applied to an operand: `! Expr` or `- Expr` (§7.5).
+    Unary {
+        /// Which unary operator.
+        op: UnaryOp,
+        /// Source span of the operator token.
+        op_span: Span,
+        /// The operand.
+        expr: Box<Expr>,
+    },
+    /// A binary operator over two operands: `left op right` (§7.5).
+    Binary {
+        /// The left operand.
+        left: Box<Expr>,
+        /// Which binary operator.
+        op: BinOp,
+        /// Source span of the operator token(s).
+        op_span: Span,
+        /// The right operand.
+        right: Box<Expr>,
+    },
     /// A `( Expr )` group.
     Paren(Box<Expr>),
+}
+
+/// A unary operator (§7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `!` — boolean negation.
+    Not,
+    /// `-` — numeric negation.
+    Neg,
+}
+
+impl UnaryOp {
+    /// The operator's source spelling.
+    #[must_use]
+    pub fn spelling(self) -> &'static str {
+        match self {
+            UnaryOp::Not => "!",
+            UnaryOp::Neg => "-",
+        }
+    }
+}
+
+/// A binary operator (§7.5), grouped by the type rule it obeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    /// `+`
+    Add,
+    /// `-`
+    Sub,
+    /// `*`
+    Mul,
+    /// `/`
+    Div,
+    /// `%`
+    Rem,
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `>`
+    Gt,
+    /// `<=`
+    Le,
+    /// `>=`
+    Ge,
+    /// `&&`
+    And,
+    /// `||`
+    Or,
+}
+
+impl BinOp {
+    /// The operator's source spelling.
+    #[must_use]
+    pub fn spelling(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Rem => "%",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        }
+    }
 }
 
 /// The source of a `from` expression (§7.2, ADR-035).

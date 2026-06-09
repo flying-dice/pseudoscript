@@ -1,0 +1,10 @@
+// LANG.md §7.5 (ADR-038): arithmetic over `number` operands is well-formed and
+// yields a `number`. A clean model produces no diagnostics.
+
+//! example
+
+public system S;
+
+public container C for S {
+  blend(a: number, b: number): number { return a * 2 + b / 2 }
+}

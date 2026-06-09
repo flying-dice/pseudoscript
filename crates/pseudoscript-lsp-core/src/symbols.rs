@@ -86,6 +86,16 @@ fn decl_symbol(decl: &ast::Decl, src: &str, index: &LineIndex) -> DocumentSymbol
                 index,
             )
         }
+        // §3.6: a constant is a value name with no children.
+        ast::DeclKind::Constant(constant) => symbol(
+            &constant.name.name,
+            SymbolKind::CONSTANT,
+            decl.span,
+            constant.name.span,
+            Vec::new(),
+            src,
+            index,
+        ),
     }
 }
 

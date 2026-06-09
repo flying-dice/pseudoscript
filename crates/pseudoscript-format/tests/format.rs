@@ -35,6 +35,9 @@ data OrderEvent =
 
 public system Shop;
 
+/// The order total above which shipping is free.
+public constant FREE_SHIP_THRESHOLD = 50
+
 public container Web for Shop {
   /// Handles checkout.
   #[http("POST /checkout")]
@@ -47,6 +50,11 @@ public container Web for Shop {
     }
     r = Result<Receipt, OrderError> from self.finalize(cart)
     return Ok(r.value)
+  }
+
+  /// A static business rule: free shipping over the threshold (§7.5, §3.6).
+  qualifiesForFreeShipping(total: number): bool {
+    return total >= shop::FREE_SHIP_THRESHOLD && !(total < 0)
   }
 
   finalize(cart: Sku[]): Result<Receipt, OrderError>;

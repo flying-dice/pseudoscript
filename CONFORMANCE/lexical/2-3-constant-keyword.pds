@@ -1,0 +1,5 @@
+// §2.3 / §3.6 — `constant` is a keyword (KW_CONSTANT); an identifier that merely
+//        contains it (`constants`) stays one greedy IDENT.
+
+constant PI = 3.14
+constants = PI

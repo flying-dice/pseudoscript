@@ -286,6 +286,7 @@ fn doc_summary(module: &ast::Module, name: &str) -> Option<String> {
             | ast::DeclKind::Container(n)
             | ast::DeclKind::Component(n) => &n.name.name,
             ast::DeclKind::Data(d) => &d.name.name,
+            ast::DeclKind::Constant(c) => &c.name.name,
         };
         if decl_name == name && !decl.doc.summary.is_empty() {
             return Some(decl.doc.summary.join(" "));

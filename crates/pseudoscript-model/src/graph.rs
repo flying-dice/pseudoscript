@@ -526,6 +526,8 @@ impl Builder<'_> {
                     }
                 }
             }
+            // A constant is not a C4 construct (ADR-039) — no node, no edge.
+            DeclKind::Constant(_) => {}
         }
     }
 
@@ -735,6 +737,10 @@ impl Builder<'_> {
             }
             ExprKind::Unary { expr, .. } | ExprKind::Paren(expr) => {
                 self.trace_expr(expr, owner_fqn, module, entry, out);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.trace_expr(left, owner_fqn, module, entry, out);
+                self.trace_expr(right, owner_fqn, module, entry, out);
             }
             ExprKind::Ref(_) | ExprKind::Literal(_) => {}
         }
@@ -1045,11 +1051,29 @@ fn expr_label(expr: &Expr) -> String {
         }
         ExprKind::Ref(Ref::SelfNode(_)) => "self".to_owned(),
         ExprKind::Ref(Ref::Path(path)) => path_str(path),
-        ExprKind::Unary { expr, .. } => format!("!{}", expr_label(expr)),
-        ExprKind::Paren(expr) => expr_label(expr),
-        ExprKind::Literal(_) => "literal".to_owned(),
+        ExprKind::Unary { op, expr, .. } => format!("{}{}", op.spelling(), expr_label(expr)),
+        // §7.5: a binary condition renders through the same labeller, so an
+        // `alt`/`loop` frame shows e.g. `x > module::LIMIT`.
+        ExprKind::Binary {
+            left, op, right, ..
+        } => format!(
+            "{} {} {}",
+            expr_label(left),
+            op.spelling(),
+            expr_label(right)
+        ),
+        ExprKind::Paren(expr) => format!("({})", expr_label(expr)),
+        ExprKind::Literal(lit) => literal_label(lit),
         ExprKind::Marker { kind, .. } => kind.keyword().to_owned(),
         ExprKind::From { ty, .. } => format!("{} from", path_str(&ty.name)),
+    }
+}
+
+/// The source-shaped text of a literal for a frame label (§9.2).
+fn literal_label(lit: &Literal) -> String {
+    match lit {
+        Literal::Number { raw, .. } | Literal::String { raw, .. } => raw.clone(),
+        Literal::Bool { value, .. } => value.to_string(),
     }
 }
 

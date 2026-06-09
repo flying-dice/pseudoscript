@@ -11,11 +11,11 @@ The implementation half records the pattern **in use**, the prior art it draws o
 
 ## Modeling idioms (writing `.pds`)
 
-The model expresses **architecture and flow**, not computation. Reach for these when authoring a model.
+The model expresses **architecture and flow**; a body may also state a static business rule over primitives and constants (LANG.md §7.5), type-checked but never run. Reach for these when authoring a model.
 
 ### Express meaning, not the implementation
 
-A `data` field is a shape hint, not a faithful port of the host type: a count is `number` whether the code uses `u32` or `usize`. Model a genuinely optional value with `Option<T>` (LANG.md §6) and a fallible one with `Result<T, E>`; reach for the type that conveys intent, not the host language's exact one. Bodies describe *flow and provenance* (LANG.md §1, §7), never field-level arithmetic.
+A `data` field is a shape hint, not a faithful port of the host type: a count is `number` whether the code uses `u32` or `usize`. Model a genuinely optional value with `Option<T>` (LANG.md §6) and a fallible one with `Result<T, E>`; reach for the type that conveys intent, not the host language's exact one. Bodies describe *flow and provenance* (LANG.md §1, §7); a static business rule over primitives and constants is also welcome (§7.5), but a body is never executed, so don't lean on it for computation a reader would expect to be live.
 
 ### Produce values with `from`
 
@@ -27,6 +27,18 @@ scene = Scene from emit::Projector.project(graph, view)   // carry the type onto
 ```
 
 `Ok`/`Err`/`Some`/`None` construct the built-in generics (LANG.md §6): `Ok(v)`/`Some(v)` wrap a `T`, `Err(e)` wraps the error, `None` is empty. A bare `data`-record or node reference is not a value — `from` produces it.
+
+### State a business rule with a constant threshold
+
+```pds
+public constant WITHDRAWAL_LIMIT = 10000
+
+WithinLimit(amount: number): bool {
+  return amount > 0 && amount <= banking::core::WITHDRAWAL_LIMIT
+}
+```
+
+A `constant` (LANG.md §3.6) names the value the business gives a threshold; operators (LANG.md §7.5) state the rule over primitives and constants. Both are type-checked, never evaluated — the rule documents intent and renders in the condition label, it does not run. Reference a constant by its FQN, like any cross-module name (§8.1).
 
 ### Model fallibility by the operation's nature
 
@@ -250,8 +262,8 @@ Protocol, not language logic — reuses `Syntax` + `Model` + `Format`. Maps to `
 
 ## Alignment with LANG.md open questions
 
-- **Expression operators (§12 #3).** `==`/`&&` are not in the grammar yet; the recursive-descent expression parser is the place to add them via a precedence table when they land.
-- **`View` dispatch without `match` (§12 #4).** The language can't `match` on a `View` variant, but a caller **constructs** a `View` with `from` (LANG.md §7.2) and passes it to `emit::Projector.project`, which dispatches internally. The dispatch is real; it just isn't surfaced in a disclosed body — the projection callable is a black box over the graph.
+- **Expression operators (resolved, ADR-038).** Arithmetic, comparison, equality, and boolean operators are in the grammar via a precedence cascade (LANG.md §7.5); they are type-checked, never evaluated. See "State a business rule with a constant threshold" above.
+- **`View` dispatch without `match` (§12 #3).** The language can't `match` on a `View` variant, but a caller **constructs** a `View` with `from` (LANG.md §7.2) and passes it to `emit::Projector.project`, which dispatches internally. The dispatch is real; it just isn't surfaced in a disclosed body — the projection callable is a black box over the graph.
 
 ---
 

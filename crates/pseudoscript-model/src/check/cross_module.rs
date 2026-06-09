@@ -71,6 +71,8 @@ impl Ctx<'_> {
             }
             DeclKind::Person(node) | DeclKind::System(node) => self.check_node_body(node),
             DeclKind::Data(data) => self.check_data_types(&data.body),
+            // A constant's value is a literal; it carries no type reference.
+            DeclKind::Constant(_) => {}
         }
     }
 
@@ -190,6 +192,10 @@ impl Ctx<'_> {
                 }
             }
             ExprKind::Unary { expr, .. } | ExprKind::Paren(expr) => self.check_expr(expr),
+            ExprKind::Binary { left, right, .. } => {
+                self.check_expr(left);
+                self.check_expr(right);
+            }
             ExprKind::Ref(Ref::Path(path)) => self.check_value_ref(path),
             ExprKind::Ref(Ref::SelfNode(_)) | ExprKind::Literal(_) => {}
         }
@@ -220,6 +226,9 @@ impl Ctx<'_> {
             Resolution::Public(symbol) => {
                 let leaf = symbol.name.as_str();
                 let message = match symbol.kind {
+                    // §3.6: a constant FQN is a value, usable wherever its
+                    // primitive type is expected.
+                    SymbolKind::Constant => return,
                     SymbolKind::Data => format!("`{leaf}` is not a value: compose it with `from`"),
                     _ => format!("`{leaf}` is a node, not a value"),
                 };

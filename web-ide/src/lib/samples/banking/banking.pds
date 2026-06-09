@@ -94,6 +94,9 @@ component StatementComponent for banking::Backend {
   }
 }
 
+/// The longest a session token stays valid, in minutes.
+public constant MAX_SESSION_MINUTES = 30
+
 /// Provides functionality related to signing in, changing passwords, etc.
 /// Spring Bean.
 component SecurityComponent for banking::Backend {
@@ -105,6 +108,14 @@ component SecurityComponent for banking::Backend {
   /// Validate an authentication token against the database.
   ValidateToken() {
     banking::Database.ReadUser()
+  }
+
+  /// Re-read the user only while the session is still within its window
+  /// (`MAX_SESSION_MINUTES`) — a static business rule, never executed.
+  RefreshToken(elapsed: number) {
+    if (elapsed >= 0 && elapsed <= banking::MAX_SESSION_MINUTES) {
+      banking::Database.ReadUser()
+    }
   }
 
   /// Change a password, then e-mail the customer a confirmation.

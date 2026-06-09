@@ -1,0 +1,6 @@
+// LANG.md §3.6 (ADR-039): a constant's value MUST be a primitive literal. A
+// reference (`Y`) is not a literal, so the declaration is rejected.
+
+//! example
+
+constant X = Y

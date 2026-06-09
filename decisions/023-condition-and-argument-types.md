@@ -21,4 +21,4 @@ Both reuse the conservative `infer` (concrete only for literals/markers/`from`/p
 - §5.1: the arity clause gains argument-type matching.
 - Cucumber: `conditions` and `argument_types` features; conformance `static/7-condition-not-bool` and `static/5-1-arg-type-mismatch`.
 - Scope boundary (unchanged from ADR-022): cross-module callees, chained-receiver inference, and argument types whose inference is `Unknown` are not checked.
-- Rejected alternative: comparison/boolean operators in conditions (`==`, `&&`) — still open (§12 #3); this ADR only types the existing condition forms.
+- Comparison/boolean operators in conditions (`==`, `&&`) are added by ADR-038; this ADR types the condition shape (`bool`), ADR-038 supplies the operators that build it.

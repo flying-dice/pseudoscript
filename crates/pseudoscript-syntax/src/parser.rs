@@ -5,10 +5,10 @@
 //! The result always carries a (possibly partial) [`Module`].
 
 use crate::ast::{
-    Block, BodyMember, Callable, Data, DataBody, Decl, DeclKind, DocBlock, Expr, ExprKind, Feature,
-    FeatureStep, Field, FromSource, Ident, InnerDoc, Item, Literal, Macro, MacroArg, MacroArgs,
-    MarkerKind, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref, StepKind, Stmt, StmtKind,
-    Tag, Type, Variant,
+    BinOp, Block, BodyMember, Callable, Constant, Data, DataBody, Decl, DeclKind, DocBlock, Expr,
+    ExprKind, Feature, FeatureStep, Field, FromSource, Ident, InnerDoc, Item, Literal, Macro,
+    MacroArg, MacroArgs, MarkerKind, Module, Node, NodeKind, Param, Path, PostfixSeg, Ref,
+    StepKind, Stmt, StmtKind, Tag, Type, UnaryOp, Variant,
 };
 use crate::diagnostic::Diagnostic;
 use crate::lexer::{Lexed, SpannedTrivia, lex};
@@ -376,7 +376,35 @@ impl Parser {
                 Some(DeclKind::Component(self.parse_node(NodeKind::Component)))
             }
             TokenKind::KwData => Some(DeclKind::Data(self.parse_data())),
+            TokenKind::KwConstant => Some(DeclKind::Constant(self.parse_constant())),
             _ => None,
+        }
+    }
+
+    /// Parses `constant Ident "=" Literal` (§3.6, ADR-039). The value MUST be a
+    /// primitive literal; a non-literal right-hand side is rejected and a
+    /// placeholder `0` substituted for recovery.
+    fn parse_constant(&mut self) -> Constant {
+        let kw = self.bump().expect("peeked `constant`");
+        let name = self.expect_ident("constant name");
+        if self.eat(TokenKind::Eq).is_none() {
+            self.error(self.cur_span(), "expected `=` after the constant name");
+        }
+        let value = self.parse_literal().unwrap_or_else(|| {
+            let span = self.cur_span();
+            self.error(
+                span,
+                "a constant value must be a primitive literal (number, string, or bool)",
+            );
+            Literal::Number {
+                raw: "0".to_owned(),
+                span,
+            }
+        });
+        Constant {
+            name,
+            span: Span::new(kw.span.start, self.prev_end()),
+            value,
         }
     }
 
@@ -476,6 +504,7 @@ impl Parser {
                     | TokenKind::KwContainer
                     | TokenKind::KwComponent
                     | TokenKind::KwData
+                    | TokenKind::KwConstant
             )
         ) {
             // ADR-011 / §5: a disclosed block holds callables only. Containers
@@ -1002,37 +1031,168 @@ impl Parser {
                     | TokenKind::KwTrue
                     | TokenKind::KwFalse
                     | TokenKind::Bang
+                    | TokenKind::Minus
                     | TokenKind::LParen
             )
         )
     }
 
-    fn parse_expr(&mut self) -> Expr {
-        let base = self.parse_unary_or_primary();
-        self.parse_postfix(base)
+    /// Disambiguates a `<` after a path in value position: `true` when it opens
+    /// generic type-args of a `from` target (`Path<…> from` or `Path<…>[] from`),
+    /// `false` when it is the less-than operator (§7.5). Scans the balanced
+    /// `<`/`>` and checks whether `from` follows the close; a non-type token
+    /// inside the angles means it is a comparison, not generics.
+    fn generic_from_ahead(&self) -> bool {
+        debug_assert!(self.at(TokenKind::LAngle));
+        let mut i = self.pos + 1;
+        let mut depth = 1u32;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LAngle => depth += 1,
+                TokenKind::RAngle => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let after = self.tokens.get(i + 1).map(|t| t.kind);
+                        if after == Some(TokenKind::KwFrom) {
+                            return true;
+                        }
+                        // A generic array target: `<…>[] from`.
+                        return after == Some(TokenKind::LBracket)
+                            && self.tokens.get(i + 2).map(|t| t.kind) == Some(TokenKind::RBracket)
+                            && self.tokens.get(i + 3).map(|t| t.kind) == Some(TokenKind::KwFrom);
+                    }
+                }
+                // Tokens that can appear inside a type argument list.
+                TokenKind::Ident
+                | TokenKind::ColonColon
+                | TokenKind::Comma
+                | TokenKind::LBracket
+                | TokenKind::RBracket => {}
+                // Anything else (an operator, paren, literal, …) means the `<`
+                // was the less-than operator over a value.
+                _ => return false,
+            }
+            i += 1;
+        }
+        false
     }
 
-    fn parse_unary_or_primary(&mut self) -> Expr {
-        if self.at(TokenKind::Bang) {
-            let bang = self.bump().expect("peeked `!`");
-            let expr = self.parse_expr();
-            let span = bang.span.to(expr.span);
+    fn parse_expr(&mut self) -> Expr {
+        // `Marker` is an expression head (§10, ADR-038): it does not combine with
+        // binary operators. A `from` head likewise stays out of the cascade — it
+        // begins with a type path in the value tier and swallows its own source.
+        if matches!(
+            self.peek_kind(),
+            Some(TokenKind::KwOk | TokenKind::KwErr | TokenKind::KwSome | TokenKind::KwNone)
+        ) {
+            let marker = self.parse_marker();
+            return self.parse_postfix(marker);
+        }
+        self.parse_or()
+    }
+
+    /// Builds one left-associative binary level: `next { op next }` (§7.5).
+    fn parse_binary_level(
+        &mut self,
+        ops: &[(TokenKind, BinOp)],
+        next: fn(&mut Self) -> Expr,
+    ) -> Expr {
+        let mut left = next(self);
+        while let Some(&(_, op)) = self
+            .peek_kind()
+            .and_then(|k| ops.iter().find(|(tk, _)| *tk == k))
+        {
+            let op_span = self.bump().expect("peeked operator").span;
+            let right = next(self);
+            let span = left.span.to(right.span);
+            left = Expr {
+                kind: ExprKind::Binary {
+                    left: Box::new(left),
+                    op,
+                    op_span,
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+        left
+    }
+
+    fn parse_or(&mut self) -> Expr {
+        self.parse_binary_level(&[(TokenKind::PipePipe, BinOp::Or)], Self::parse_and)
+    }
+
+    fn parse_and(&mut self) -> Expr {
+        self.parse_binary_level(&[(TokenKind::AmpAmp, BinOp::And)], Self::parse_eq)
+    }
+
+    fn parse_eq(&mut self) -> Expr {
+        self.parse_binary_level(
+            &[(TokenKind::EqEq, BinOp::Eq), (TokenKind::BangEq, BinOp::Ne)],
+            Self::parse_rel,
+        )
+    }
+
+    fn parse_rel(&mut self) -> Expr {
+        self.parse_binary_level(
+            &[
+                (TokenKind::LAngle, BinOp::Lt),
+                (TokenKind::RAngle, BinOp::Gt),
+                (TokenKind::LAngleEq, BinOp::Le),
+                (TokenKind::RAngleEq, BinOp::Ge),
+            ],
+            Self::parse_add,
+        )
+    }
+
+    fn parse_add(&mut self) -> Expr {
+        self.parse_binary_level(
+            &[
+                (TokenKind::Plus, BinOp::Add),
+                (TokenKind::Minus, BinOp::Sub),
+            ],
+            Self::parse_mul,
+        )
+    }
+
+    fn parse_mul(&mut self) -> Expr {
+        self.parse_binary_level(
+            &[
+                (TokenKind::Star, BinOp::Mul),
+                (TokenKind::Slash, BinOp::Div),
+                (TokenKind::Percent, BinOp::Rem),
+            ],
+            Self::parse_unary,
+        )
+    }
+
+    /// Parses a prefix unary (`!` / `-`) or, failing that, a postfix chain over a
+    /// primary (§7.5).
+    fn parse_unary(&mut self) -> Expr {
+        let op = match self.peek_kind() {
+            Some(TokenKind::Bang) => Some(UnaryOp::Not),
+            Some(TokenKind::Minus) => Some(UnaryOp::Neg),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let token = self.bump().expect("peeked unary operator");
+            let expr = self.parse_unary();
+            let span = token.span.to(expr.span);
             return Expr {
                 kind: ExprKind::Unary {
-                    op_span: bang.span,
+                    op,
+                    op_span: token.span,
                     expr: Box::new(expr),
                 },
                 span,
             };
         }
-        self.parse_primary()
+        let base = self.parse_primary();
+        self.parse_postfix(base)
     }
 
     fn parse_primary(&mut self) -> Expr {
         match self.peek_kind() {
-            Some(TokenKind::KwOk | TokenKind::KwErr | TokenKind::KwSome | TokenKind::KwNone) => {
-                self.parse_marker()
-            }
             Some(
                 TokenKind::String | TokenKind::Number | TokenKind::KwTrue | TokenKind::KwFalse,
             ) => {
@@ -1064,9 +1224,11 @@ impl Parser {
                 let path = self.parse_path();
                 // A type-led expression is a `from` (§7.2, ADR-035). `<..>`
                 // generics, or a `[]` directly before `from`, commit to a `from`
-                // target; a bare `from` uses the path as the target type. `<`
-                // has no other meaning in expression position.
-                if self.at(TokenKind::LAngle) {
+                // target; a bare `from` uses the path as the target type. A `<`
+                // is generic type-args only when a balanced `>` is followed by
+                // `from` — otherwise it is the less-than operator (§7.5), left
+                // for the precedence cascade.
+                if self.at(TokenKind::LAngle) && self.generic_from_ahead() {
                     let ty = self.finish_type(path);
                     return self.parse_from(ty);
                 }

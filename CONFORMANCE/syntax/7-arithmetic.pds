@@ -1,0 +1,12 @@
+// LANG.md §7.5 / §10 (ADR-038): a callable body may state arithmetic over
+// primitives; operators compose by precedence and a `return` operand is a full
+// expression.
+
+//! example
+
+public system S;
+
+public container C for S {
+  half(x: number): number { return x / 2 }
+  blend(a: number, b: number): number { return a * 2 + b % 3 }
+}

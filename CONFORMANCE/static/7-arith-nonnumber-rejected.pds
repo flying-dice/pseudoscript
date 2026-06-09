@@ -1,0 +1,10 @@
+// LANG.md §7.5 (ADR-038): an arithmetic operator requires `number` operands. A
+// determinable `string` operand is rejected.
+
+//! example
+
+public system S;
+
+public container C for S {
+  bad(a: string, b: number): number { return a + b }
+}
