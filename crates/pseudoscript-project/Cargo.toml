@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # modules off disk — delegating the slug/lock/prefix logic to the WASM-safe
 # `pseudoscript-model::deps`. Depended on by the `pds` binary and the stdio LSP.
 [dependencies]
-pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.5" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.6" }
 anyhow = "1"
 walkdir = "2"
 

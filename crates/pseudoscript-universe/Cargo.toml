@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # The resolved C4 model — the same source of truth the 2D view consumes. WASM-safe.
-pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.5" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.6" }
 # The containment tree + relationship graph. MIT/Apache, WASM-safe.
 petgraph = "0.6"
 # Serialises the graph snapshot the renderer consumes.
