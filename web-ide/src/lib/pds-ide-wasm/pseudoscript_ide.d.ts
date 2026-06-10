@@ -61,6 +61,15 @@ export interface DocManifestItem {
 }
 
 /**
+ * One call leg of an entry-point flow, between two placed universe nodes.
+ */
+export interface UniverseFlowHop {
+    from: string;
+    to: string;
+    label: string;
+}
+
+/**
  * One completion item: the label, the integer LSP `CompletionItemKind` (the
  * editor maps it to an icon), and an optional detail.
  */
@@ -121,6 +130,18 @@ export interface UniverseEdge {
 export interface DocGroupInput {
     title?: string;
     items?: DocItemInput[];
+}
+
+/**
+ * One entry-point flow: the entry\'s FQN and simple name, its stable palette
+ * colour, and its ordered legs — traced and lifted by the universe crate, so
+ * the IDE and the doc site share one tracer.
+ */
+export interface UniverseFlow {
+    fqn: string;
+    name: string;
+    color: string;
+    hops: UniverseFlowHop[];
 }
 
 /**
@@ -468,6 +489,12 @@ export class IdeSession {
      * client-side.
      */
     universe(): UniverseSnapshot;
+    /**
+     * The entry-point flows of the held workspace, traced and lifted in Rust —
+     * the filaments the 3D view animates. Replaces the former client-side
+     * sequence-walking, so the IDE and the doc site share one tracer.
+     */
+    universe_flows(): UniverseFlow[];
 }
 
 /**
@@ -502,6 +529,7 @@ export interface InitOutput {
     readonly idesession_set_source: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly idesession_symbol_scene: (a: number, b: number, c: number) => [number, number, number, number];
     readonly idesession_universe: (a: number) => any;
+    readonly idesession_universe_flows: (a: number) => [number, number];
     readonly version: () => [number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

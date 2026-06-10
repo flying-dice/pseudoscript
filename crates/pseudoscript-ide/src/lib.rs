@@ -162,6 +162,46 @@ impl From<pseudoscript_universe::Snapshot> for UniverseSnapshot {
     }
 }
 
+/// One call leg of an entry-point flow, between two placed universe nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct UniverseFlowHop {
+    pub from: String,
+    pub to: String,
+    pub label: String,
+}
+
+/// One entry-point flow: the entry's FQN and simple name, its stable palette
+/// colour, and its ordered legs — traced and lifted by the universe crate, so
+/// the IDE and the doc site share one tracer.
+#[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct UniverseFlow {
+    pub fqn: String,
+    pub name: String,
+    pub color: String,
+    pub hops: Vec<UniverseFlowHop>,
+}
+
+impl From<pseudoscript_universe::FlowDef> for UniverseFlow {
+    fn from(f: pseudoscript_universe::FlowDef) -> Self {
+        Self {
+            fqn: f.fqn,
+            name: f.name,
+            color: f.color,
+            hops: f
+                .hops
+                .into_iter()
+                .map(|h| UniverseFlowHop {
+                    from: h.from,
+                    to: h.to,
+                    label: h.label,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The result of find-usages: the resolved symbol plus every occurrence.
 #[derive(Debug, Clone, Serialize, Deserialize, Tsify)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
@@ -742,6 +782,17 @@ impl IdeSession {
         self.ensure_built();
         let u = pseudoscript_universe::from_model(self.graph());
         pseudoscript_universe::snapshot(&u).into()
+    }
+
+    /// The entry-point flows of the held workspace, traced and lifted in Rust —
+    /// the filaments the 3D view animates. Replaces the former client-side
+    /// sequence-walking, so the IDE and the doc site share one tracer.
+    pub fn universe_flows(&mut self) -> Vec<UniverseFlow> {
+        self.ensure_built();
+        pseudoscript_universe::flows(self.graph())
+            .into_iter()
+            .map(UniverseFlow::from)
+            .collect()
     }
 
     /// Positions a [`Scene`] (as JSON) into absolute coordinates, returning the

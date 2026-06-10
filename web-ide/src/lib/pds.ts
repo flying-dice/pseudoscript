@@ -31,6 +31,7 @@ import type {
   RenameSelection,
   RenderedFile,
   SemanticTokens,
+  UniverseFlow,
   UniverseSnapshot,
   VendoredInput,
   DocManifest as WasmDocManifest,
@@ -54,6 +55,7 @@ export type {
   RenameSelection,
   RenderedFile,
   SemanticTokens,
+  UniverseFlow,
   UniverseSnapshot,
 };
 // Names the existing call sites use; aliased onto the generated types.
@@ -170,6 +172,13 @@ export function ideEmitScene(view: string, target = ""): Scene {
  *  DTO (Rust is the source of truth; the renderer lays it out with d3-force-3d). */
 export function ideUniverse(): UniverseSnapshot {
   return callWasm("universe", () => ide().universe());
+}
+
+/** The entry-point flows of the held workspace, traced and lifted in Rust by the
+ *  universe crate — the same tracer the doc site's 3D page uses, so the two
+ *  always agree on flows, hops, and colours. */
+export function ideUniverseFlows(): UniverseFlow[] {
+  return callWasm("universeFlows", () => ide().universe_flows());
 }
 
 /** Project the fitting diagram for the symbol `fqn` to its scene. A throw here

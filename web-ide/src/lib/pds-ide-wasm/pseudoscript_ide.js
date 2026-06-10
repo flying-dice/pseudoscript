@@ -423,6 +423,18 @@ export class IdeSession {
         const ret = wasm.idesession_universe(this.__wbg_ptr);
         return ret;
     }
+    /**
+     * The entry-point flows of the held workspace, traced and lifted in Rust —
+     * the filaments the 3D view animates. Replaces the former client-side
+     * sequence-walking, so the IDE and the doc site share one tracer.
+     * @returns {UniverseFlow[]}
+     */
+    universe_flows() {
+        const ret = wasm.idesession_universe_flows(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
 }
 if (Symbol.dispose) IdeSession.prototype[Symbol.dispose] = IdeSession.prototype.free;
 

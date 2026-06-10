@@ -5,13 +5,13 @@
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
-  import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, ideUniverse, initWasm, mountIde, renderDocSite, setIdeSource, type UniverseSnapshot } from "$lib/pds.js";
+  import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, ideUniverse, ideUniverseFlows, initWasm, mountIde, renderDocSite, setIdeSource, type UniverseFlow, type UniverseSnapshot } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
   import { fsSupported, scaffoldWorkspace, pickDirectoryOutcome, emptySeed, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES, type PickOutcome } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
   import { viewKey, getPins, serializeLayoutDoc } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
-  import type { Depth, SceneItem } from "$lib/sequence.js";
+  import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
   import { SAMPLES, sampleSeed } from "$lib/samples.js";
   import { getRecents, recordFolder, reopenFolder, forget } from "$lib/recents.js";
@@ -19,7 +19,6 @@
   import { encodeWorkspace, decodeWorkspace, bytesToBase64Url, base64UrlToBytes, MAX_HASH_BYTES } from "$lib/codec.js";
   import type { MountableWorkspace } from "$lib/codec.js";
   import { theme } from "$lib/theme.svelte.js";
-  import { flowColor } from "$lib/flow-color.js";
   import { simpleName } from "$lib/graph-route.js";
   import * as nav from "$lib/core/navigation.js";
   import * as ops from "$lib/core/workspace-ops.js";
@@ -508,7 +507,7 @@
   // callers own those, so back/forward replay can reuse this without re-recording).
   function applySpaceTarget(fqn: string | null): void {
     const flow = fqn ? flowOf(fqn) : null;
-    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flowColor(fqn!); spaceFlowName = simpleName(fqn!); spaceFocus = null; }
+    if (flow) { spacePath = flow.participants; spaceFlow = flow.hops; spaceFlowColor = flow.color; spaceFlowName = simpleName(fqn!); spaceFocus = null; }
     else { spaceFocus = fqn; spacePath = null; spaceFlow = null; spaceFlowColor = null; spaceFlowName = null; }
     spaceTargetFqn = fqn;
     selection.view = "space";
@@ -525,64 +524,32 @@
     spaceTargetFqn = null;
     selection.selected = null;
   }
-  // The flow `fqn`'s sequence — its participant nodes and its ordered call hops — mapped
-  // to 3D-graph node ids, or null if it isn't a flow. The sequence and the universe use
-  // different FQN forms, so we bridge them by node simple-name (last `::` segment).
-  function flowOf(fqn: string): { participants: string[]; hops: { from: string; to: string; label: string }[] } | null {
-    // The view's snapshot is built lazily on entering the view, so when this is invoked
-    // from the canvas it may not exist yet — resolve against a fresh build then.
-    let snap = spaceSnapshot;
-    if (!snap) {
-      try { snap = ideUniverse(); } catch { return null; }
-    }
-    let scene: { participants?: { fqn: string }[]; items?: SceneItem[] };
+  // The workspace's entry-point flows, traced and lifted in Rust by the universe
+  // crate (the same tracer the doc site uses) — hops land on 3D-graph node ids
+  // directly, so no client-side name bridging remains.
+  function universeFlows(): UniverseFlow[] {
     try {
-      scene = ideSymbolScene(fqn) as typeof scene;
+      return ideUniverseFlows();
     } catch {
-      return null; // not a projectable flow
+      return [];
     }
-    if (!Array.isArray(scene.participants) || scene.participants.length <= 1) return null;
-    const byName = new Map<string, string[]>();
-    for (const n of snap.nodes) {
-      const s = simpleName(n.id);
-      (byName.get(s) ?? byName.set(s, []).get(s)!).push(n.id);
-    }
-    const mapId = (f: string) => {
-      const m = byName.get(simpleName(f));
-      return m && m.length === 1 ? m[0] : null; // unambiguous only
-    };
-    const participants = [...new Set(scene.participants.map((p) => mapId(p.fqn)).filter((x): x is string => !!x))];
+  }
+  // The flow `fqn`'s chain — its placed participant node ids, ordered hops, and
+  // stable colour — or null when it isn't a flow that crosses nodes.
+  function flowOf(fqn: string): { participants: string[]; hops: { from: string; to: string; label: string }[]; color: string } | null {
+    const flow = universeFlows().find((f) => f.fqn === fqn);
+    if (!flow || flow.hops.length === 0) return null;
+    const participants = [...new Set(flow.hops.flatMap((h) => [h.from, h.to]))];
     if (participants.length <= 1) return null;
-    // Flatten the ordered call messages (recursing into loop/alt frames) into hops.
-    const hops: { from: string; to: string; label: string }[] = [];
-    const walk = (items: SceneItem[]) => {
-      for (const it of items) {
-        if (it.Message && it.Message.kind !== "return") {
-          const a = mapId(it.Message.from), b = mapId(it.Message.to);
-          if (a && b && a !== b) hops.push({ from: a, to: b, label: it.Message.label ?? "" });
-        } else if (it.Frame) walk(it.Frame.body);
-      }
-    };
-    walk(scene.items ?? []);
-    return { participants, hops };
+    return { participants, hops: flow.hops, color: flow.color };
   }
 
-  // Every flow in the model, for the 3D view's resting filaments: each entry point's
-  // whole call chain, coloured by its start. Entry points are the callables that begin
-  // a flow — a person's actions, plus anything explicitly triggered (scheduled / http /
-  // event). Each becomes one or more stacked filaments via its hops.
+  // Every flow in the model, for the 3D view's resting filaments — straight from
+  // the Rust tracer; flows whose legs all collapse to one node carry nothing to
+  // draw and are dropped.
   const spaceFlows = $derived.by(() => {
     if (selection.view !== "space" || !spaceSnapshot) return [];
-    const personFqns = new Set(nodes.filter((n) => n.kind === "person").map((n) => n.fqn));
-    const out: { fqn: string; color: string; hops: { from: string; to: string; label: string }[] }[] = [];
-    for (const n of nodes) {
-      if (n.kind !== "callable") continue;
-      const isEntry = n.triggered || (n.parent != null && personFqns.has(n.parent));
-      if (!isEntry) continue;
-      const flow = flowOf(n.fqn);
-      if (flow && flow.hops.length) out.push({ fqn: n.fqn, color: flowColor(n.fqn), hops: flow.hops });
-    }
-    return out;
+    return universeFlows().filter((f) => f.hops.length > 0);
   });
 
   // Unlocking only arms drag-to-pin; it pins nothing. A dragged card pins just itself
