@@ -1,14 +1,19 @@
 //! doc — resolved graph to a Svelte-rendered documentation site (crate `pseudoscript-doc`).
 //!
-//! The headline subsystem (ADR-017). Sits above `model`, `emit`, and `layout`:
-//! turns a resolved `model::Graph` into a cargo-doc-style site, pre-positioning
-//! each embedded sequence figure with the `layout` engine. Each page is authored in
-//! Svelte and server-rendered through an embedded JavaScript engine at generation
-//! time, so the shipped tool needs no JS toolchain — only the prebuilt bundles. The
-//! server pass renders the page chrome and all text for first paint; diagrams ship
-//! as scene geometry and become interactive client islands. Owns the site
-//! vocabulary (`Site`, `DocConfig`, `PageProps`). Pure: returns in-memory files; the
-//! CLI writes them. No threads, no clock, no randomness, so output is deterministic.
+//! The headline subsystem (ADR-017). Sits above `model`, `emit`, and `universe`:
+//! turns a resolved `model::Graph` into a cargo-doc-style site that fully
+//! represents the system — every view (C4, sequence, data, feature) as
+//! deterministic server-rendered SVG identical to `pds svg`, the 3D universe
+//! with its entry-point flows, an architecture-health page fed by the host's
+//! diagnostics, a static full-text search index, and build-time-highlighted
+//! code. Each page is authored in Svelte and server-rendered through an embedded
+//! JavaScript engine at generation time, so the shipped tool needs no JS
+//! toolchain — only the prebuilt bundles. The server pass renders the page
+//! chrome and ALL content; the client bundle only progressively enhances
+//! (pan/zoom, search, theme, drawer) — no hydration, and only the universe page
+//! carries page data for its 3D island. Owns the site vocabulary (`Site`,
+//! `DocConfig`, `PageProps`). Pure: returns in-memory files; the CLI writes
+//! them. No threads, no clock, no randomness, so output is deterministic.
 
 /// Site presentation, filled by the CLI from the `[doc]` table of `pds.toml`.
 /// `[doc]` tunes presentation only, never what is documented.
@@ -25,10 +30,36 @@ public data DocGroup { title: string, pages: doc::DocPage[] }
 public data DocPage { title: string, path: string, markdown: string }
 
 /// Doc-site colour scheme, written as the `data-theme` attribute on the root
-/// `<html>` to select the light or dark CSS variable set.
+/// `<html>` to select a CSS variable set. `System` (the default) follows the
+/// OS `prefers-color-scheme`, overridable by the in-page toggle; `Light` and
+/// `Dark` pin the scheme.
 public data Theme =
   | Light
   | Dark
+  | System
+
+/// One host-prepared diagnostic, positioned in its module's source: severity
+/// word (`error`/`warning`), the stable rule code and its principle-article URL
+/// (empty for plain diagnostics), the message, and the 1-based line/column with
+/// the byte span. The host computes line/column once — this crate never sees
+/// module sources.
+public data DiagnosticInput { module: string, severity: string, code: string, codeUrl: string, message: string, line: number, column: number, start: number, end: number }
+
+/// One architecture-health finding, attributed to the node whose section it
+/// belongs on: the diagnostic fields plus the owning node's FQN and the
+/// (prefixed) href to its section — the module page when no node encloses the
+/// span.
+public data HealthEntry { module: string, severity: string, code: string, codeUrl: string, message: string, line: number, column: number, nodeFqn: string, href: string }
+
+/// One inline badge on a node's section: the severity, rule code, article URL,
+/// message, and source line of a finding attributed to that node.
+public data SectionDiagnostic { severity: string, code: string, codeUrl: string, message: string, line: number }
+
+/// One record in the static full-text search index: the symbol or page's FQN,
+/// display name, kind word, one-line summary, plain-text body, declaring
+/// module, and root-relative href. Sorted by href then FQN so the index is
+/// deterministic.
+public data SearchEntry { fqn: string, name: string, kind: string, summary: string, text: string, module: string, href: string }
 
 /// One generated file: a site-root-relative `/`-separated path (`index.html`,
 /// `module/banking.core.html`, `style.css`, `client.js`) and its complete contents.
@@ -45,17 +76,28 @@ public data Site { files: doc::SiteFile[] }
 /// entry and renders as plain text.
 public data NodeUrl { page: string, anchor: string }
 
-/// The serialisable model for one page, handed to the Svelte renderer and embedded
-/// verbatim for hydration. Every derived value (resolved hrefs, anchors, edge
-/// labels, counts) is precomputed here so the Svelte components do no graph logic.
-/// User text is carried raw — the renderer escapes it on interpolation. `docGroups`
-/// carries the authored `[[doc.sidebar]]` navigation shown above the module tree on
-/// every page (empty when no docs are configured).
-public data PageProps { site: doc::SiteInfo, docGroups: doc::SidebarDocGroup[], sidebar: doc::SidebarModule[], page: doc::PageBody }
+/// The serialisable model for one page, handed to the Svelte server renderer.
+/// Every derived value (resolved hrefs, anchors, edge labels, counts) is
+/// precomputed here so the Svelte components do no graph logic. User text is
+/// carried raw — the renderer escapes it on interpolation. `docGroups` carries
+/// the authored `[[doc.sidebar]]` navigation shown above the module tree;
+/// `nav` carries the header links (Overview, Universe, Health with its finding
+/// count); `crumbs` is the breadcrumb trail. Only the universe page's props are
+/// also embedded in the document, for its 3D island — every other page ships no
+/// page data.
+public data PageProps { site: doc::SiteInfo, docGroups: doc::SidebarDocGroup[], sidebar: doc::SidebarModule[], nav: doc::NavLink[], crumbs: doc::Crumb[], page: doc::PageBody }
 
-/// Site-wide presentation, identical across pages: the title, the `light`/`dark`
-/// theme word, the optional logo filename, and the `../` prefix to the site root
-/// for this page's depth.
+/// One header navigation link, its href prefixed for the page's depth; `badge`
+/// carries the Health page's finding count (empty elsewhere).
+public data NavLink { label: string, href: string, badge: string }
+
+/// One breadcrumb hop: its label and href; the trailing crumb (the current
+/// page) carries no href.
+public data Crumb { label: string, href: string }
+
+/// Site-wide presentation, identical across pages: the title, the
+/// `light`/`dark`/`system` theme word, the optional logo filename, and the
+/// `../` prefix to the site root for this page's depth.
 public data SiteInfo { name: string, theme: string, logoFilename: string, prefix: string }
 
 /// One sidebar entry: a module-page link and its node tree, hrefs already prefixed
@@ -73,19 +115,31 @@ public data SidebarDocItem { title: string, href: string }
 /// One node in the sidebar tree, recursing into its same-module children.
 public data SidebarNode { name: string, fqn: string, kind: string, href: string, children: doc::SidebarNode[] }
 
-/// The page body: the landing index, one authored doc page, or one module's page.
+/// The page body: the landing index, one authored doc page, one module's page,
+/// the 3D universe, or the architecture-health report.
 public data PageBody =
-  | IndexPage { title: string, contextDiagram: doc::Diagram, cards: doc::ModuleCard[] }
+  | IndexPage { title: string, contextDiagram: doc::Diagram, cards: doc::ModuleCard[], stats: doc::SiteStats }
   | DocBody { title: string, html: string }
   | ModulePage { name: string, sections: doc::NodeSection[] }
+  | UniversePage { nodes: universe::NodeOut[], edges: universe::EdgeOut[], flows: universe::FlowDef[], hrefs: doc::NodeHref[] }
+  | HealthPage { entries: doc::HealthEntry[], errorCount: number, warningCount: number }
+
+/// The index page's stats strip: how many systems, containers, components,
+/// flows, and health findings the model carries.
+public data SiteStats { systems: number, containers: number, components: number, flows: number, findings: number }
+
+/// A universe node's documentation link: its id and the (prefixed) href to its
+/// section, so clicking a sphere can navigate to the docs.
+public data NodeHref { id: string, href: string }
 
 /// A module card on the index: its FQN, the (prefixed) href to its page, and an
 /// "N item(s)" line.
 public data ModuleCard { name: string, href: string, meta: string }
 
 /// One node's documentation section: head fields, `///` docs, tags, relationship
-/// groups, scenario cards, and embedded diagrams.
-public data NodeSection { id: string, kind: string, name: string, fqn: string, visibility: string, summary: string, extended: string, tags: string[], relationships: doc::RelGroup[], scenarios: doc::ScenarioCard[], diagrams: doc::Diagram[] }
+/// groups, scenario cards, embedded diagrams, and the health findings attributed
+/// to the node (rendered as inline badges).
+public data NodeSection { id: string, kind: string, name: string, fqn: string, visibility: string, summary: string, extended: string, tags: string[], relationships: doc::RelGroup[], scenarios: doc::ScenarioCard[], diagrams: doc::Diagram[], diagnostics: doc::SectionDiagnostic[] }
 
 /// One relationship group ("Parent", "Inbound", or "Outbound") and its endpoints.
 public data RelGroup { title: string, items: doc::RelItem[] }
@@ -101,14 +155,13 @@ public data ScenarioCard { name: string, summary: string, extended: string, tags
 /// One scenario step: its keyword (given/when/then/and/but) and prose.
 public data Step { keyword: string, text: string }
 
-/// A diagram figure. A C4 or Sequence figure carries the laid-out `emit::Scene`
-/// geometry (not pre-rendered SVG) for a client island to draw; an `Svg` figure
-/// carries a data entity or feature flow view (LANG.md §9.4, §9.5) pre-rendered
-/// to themed SVG; `Empty` marks a view that failed to project.
+/// A diagram figure. Every view — C4, sequence, data, feature — ships as
+/// deterministic server-rendered SVG, identical to `pds svg` (the client adds
+/// pan/zoom only); `kind` is the view word (`c4`/`sequence`/`entity`/`flow`)
+/// the figure exposes as its `data-diagram` hook. `Empty` marks a view that
+/// failed to project.
 public data Diagram =
-  | C4 { caption: string, scene: emit::Scene }
-  | Sequence { caption: string, scene: emit::Scene }
-  | Svg { caption: string, svg: string }
+  | Svg { caption: string, eyebrow: string, kind: string, svg: string }
   | Empty { caption: string, eyebrow: string }
 
 /// The server-render result for one page: the `<svelte:head>` contents and the
@@ -124,61 +177,82 @@ public data RenderError =
   | Codec { message: string }
 
 /// `crates/pseudoscript-doc`. Turns a resolved graph into a Svelte-rendered,
-/// cargo-doc-style site: each node's `///` docs and relationships on its page, C4
-/// and sequence diagrams as interactive client islands, data entity and feature
-/// flow figures as pre-rendered SVG. Pure: returns in-memory files, the CLI
-/// writes.
+/// cargo-doc-style site that fully represents the system: each node's `///`
+/// docs and relationships on its page, every diagram as deterministic
+/// server-rendered SVG, the 3D universe with its flows, the architecture-health
+/// report, and a static full-text search index. Pure: returns in-memory files,
+/// the CLI writes.
 /// #headline
 public container Doc for context::Pseudoscript {
-  /// Render the SSR HTML documentation site for `graph` under `config`.
-  public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
-    return doc::SiteBuilder.render(graph, config)
+  /// Render the SSR HTML documentation site for `graph` under `config`, with
+  /// the host's prepared diagnostics woven in as the Health page and section
+  /// badges.
+  public render(graph: model::Graph, config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): Result<doc::Site, doc::RenderError> {
+    return doc::SiteBuilder.render(graph, config, diagnostics)
   }
 
-  /// Render the documentation as Markdown files with the diagrams inlined as
-  /// self-contained SVG — the static, engine-free alternative to the HTML site.
-  /// One `.md` per module plus an `index.md`, mirroring the HTML site's paths.
-  /// Needs no SSR engine, so it is infallible and available on every target.
-  public renderMarkdown(graph: model::Graph, config: doc::DocConfig): doc::Site {
-    pages = doc::PageProps[] from doc::Pages.buildAll(graph, config)
+  /// Render the documentation as Markdown files with the diagrams as
+  /// self-contained SVG assets — the static, engine-free alternative to the
+  /// HTML site. One `.md` per page, mirroring the HTML site's paths. Needs no
+  /// SSR engine, so it is infallible and available on every target.
+  public renderMarkdown(graph: model::Graph, config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): doc::Site {
+    pages = doc::PageProps[] from doc::Pages.buildAll(graph, config, diagnostics)
     return doc::MarkdownSite.render(pages, config.theme)
+  }
+
+  /// Position raw per-module diagnostics in their sources for the doc build:
+  /// computes each diagnostic's 1-based line/column from the module text — done
+  /// once here, for both hosts, because the renderer never sees sources.
+  public prepareDiagnostics(modules: model::WorkspaceModule[], perModule: model::ModuleDiagnostics[]): doc::DiagnosticInput[] {
+    return doc::Health.prepare(modules, perModule)
   }
 }
 
 /// Orchestrates the whole site: build the URL map, project each page's props, server
 /// render it through the SSR engine, wrap it in the document shell, and ship the
-/// shared assets. Pure: returns in-memory `Site` files, writes none.
+/// shared assets plus the search index. Pure: returns in-memory `Site` files,
+/// writes none.
 component SiteBuilder for doc::Doc {
   /// Render the documentation site for `graph` under `config`: build the FQN→URL
-  /// map, render the index, a page per authored doc (declaration order), and a
-  /// page per module (sorted by FQN), then add the shared assets. Any failed
-  /// server-render aborts with its `RenderError`.
-  public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
+  /// map, render the index, a page per authored doc (declaration order), a page
+  /// per module (sorted by FQN), then the universe and health pages, and finally
+  /// add the shared assets and the search index. Any failed server-render aborts
+  /// with its `RenderError`.
+  public render(graph: model::Graph, config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): Result<doc::Site, doc::RenderError> {
     doc::Urls.build(graph)
     modules = string[] from doc::Pages.sortedModules(graph)
-    index = Result<SiteFile, RenderError> from self.emitPage("index.html", doc::Pages.index(graph, config, modules))
+    index = Result<SiteFile, RenderError> from self.emitPage("index.html", doc::Pages.index(graph, config, modules, diagnostics))
     if (index.isErr) {
       return Err(index.error)
     }
-    docPages = Result<SiteFile[], RenderError> from self.emitDocPages(config)
+    docPages = Result<SiteFile[], RenderError> from self.emitDocPages(config, diagnostics)
     if (docPages.isErr) {
       return Err(docPages.error)
     }
-    modulePages = Result<SiteFile[], RenderError> from self.emitModulePages(graph, config, modules)
+    modulePages = Result<SiteFile[], RenderError> from self.emitModulePages(graph, config, modules, diagnostics)
     if (modulePages.isErr) {
       return Err(modulePages.error)
     }
+    universe = Result<SiteFile, RenderError> from self.emitPage("universe.html", doc::Pages.universePage(graph, config, modules, diagnostics))
+    if (universe.isErr) {
+      return Err(universe.error)
+    }
+    health = Result<SiteFile, RenderError> from self.emitPage("health.html", doc::Pages.healthPage(graph, config, modules, diagnostics))
+    if (health.isErr) {
+      return Err(health.error)
+    }
+    searchIndex = SiteFile from doc::SearchIndex.build(graph, config)
     assets = SiteFile[] from doc::Assets.shared()
-    return Ok(Site from { index.value, docPages.value, modulePages.value, assets })
+    return Ok(Site from { index.value, docPages.value, modulePages.value, universe.value, health.value, searchIndex, assets })
   }
 
   /// Render one `SiteFile` per authored doc (`[[doc.sidebar]]`, declaration
   /// order); aborts with the first page's `RenderError`.
-  emitDocPages(config: doc::DocConfig): Result<doc::SiteFile[], doc::RenderError>;
+  emitDocPages(config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): Result<doc::SiteFile[], doc::RenderError>;
 
   /// Render one `SiteFile` per module (sorted by FQN); aborts with the first
   /// page's `RenderError`.
-  emitModulePages(graph: model::Graph, config: doc::DocConfig, modules: string[]): Result<doc::SiteFile[], doc::RenderError>;
+  emitModulePages(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): Result<doc::SiteFile[], doc::RenderError>;
 
   /// Render one page: server-render its props through the engine, then wrap the
   /// `{head, body}` result in the document shell. Propagates a `RenderError`.
@@ -196,26 +270,71 @@ component SiteBuilder for doc::Doc {
 /// Builds the index props (title, context diagram, module cards), each module page's
 /// node sections, and the depth-prefixed sidebar tree mirroring the C4 hierarchy.
 component Pages for doc::Doc {
-  /// The index props: the shared sidebar, a card per module, and the system-context
-  /// diagram.
-  index(graph: model::Graph, config: doc::DocConfig, modules: string[]): doc::PageProps {
+  /// The index props: the shared chrome, a card per module, the system-context
+  /// diagram, and the stats strip summarising the model and its findings.
+  index(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
     docGroups = SidebarDocGroup[] from self.docGroups(config, "")
     sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
+    nav = NavLink[] from self.navLinks(diagnostics, "")
+    crumbs = Crumb[] from self.crumbsOf("index.html")
     cards = ModuleCard[] from self.moduleCards(graph, modules)
     context = Diagram from doc::Diagrams.context(graph)
-    body = IndexPage from { config, context, cards }
-    return PageProps from { config, docGroups, sidebar, body }
+    stats = SiteStats from self.stats(graph, diagnostics)
+    body = IndexPage from { config, context, cards, stats }
+    return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
 
+  /// The universe page's props: the flat snapshot, the traced flows, and each
+  /// placed node's documentation href — everything the 3D island draws.
+  universePage(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
+    docGroups = SidebarDocGroup[] from self.docGroups(config, "")
+    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
+    nav = NavLink[] from self.navLinks(diagnostics, "")
+    crumbs = Crumb[] from self.crumbsOf("universe.html")
+    snapshot = universe::Snapshot from universe::Universe.snapshot(universe::Universe.fromModel(graph))
+    flows = universe::FlowDef[] from universe::Universe.flows(graph)
+    hrefs = NodeHref[] from self.nodeHrefs(snapshot)
+    body = UniversePage from { snapshot, flows, hrefs }
+    return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
+  }
+
+  /// The health page's props: every prepared diagnostic attributed to its node,
+  /// sorted by severity, module, then line, with the error/warning counts.
+  healthPage(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
+    docGroups = SidebarDocGroup[] from self.docGroups(config, "")
+    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
+    nav = NavLink[] from self.navLinks(diagnostics, "")
+    crumbs = Crumb[] from self.crumbsOf("health.html")
+    body = PageBody from doc::Health.page(graph, diagnostics)
+    return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
+  }
+
+  /// The header navigation links — Overview, Universe, and Health with its
+  /// finding-count badge — hrefs prefixed for the page's depth.
+  navLinks(diagnostics: doc::DiagnosticInput[], prefix: string): doc::NavLink[];
+
+  /// The breadcrumb trail for a page path; the trailing crumb has no href.
+  crumbsOf(path: string): doc::Crumb[];
+
+  /// The stats strip: structural node counts, the flow count, and the finding
+  /// count.
+  stats(graph: model::Graph, diagnostics: doc::DiagnosticInput[]): doc::SiteStats;
+
+  /// Each placed snapshot node's documentation href, via the URL map.
+  nodeHrefs(snapshot: universe::Snapshot): doc::NodeHref[];
+
   /// One authored doc page's props: the page's title with its Markdown rendered to
-  /// HTML. Doc pages sit one directory deep (`docs/<slug>.html`), so the `../`
-  /// depth prefix is used for the shared chrome.
-  docPage(config: doc::DocConfig, page: doc::DocPage): doc::PageProps {
+  /// HTML, fenced code blocks highlighted at build time. Doc pages sit one
+  /// directory deep (`docs/<slug>.html`), so the `../` depth prefix is used for
+  /// the shared chrome.
+  docPage(config: doc::DocConfig, page: doc::DocPage, diagnostics: doc::DiagnosticInput[]): doc::PageProps {
     docGroups = SidebarDocGroup[] from self.docGroups(config, "../")
     sidebar = SidebarModule[] from self.emptySidebar()
+    nav = NavLink[] from self.navLinks(diagnostics, "../")
+    crumbs = Crumb[] from self.crumbsOf(page.path)
     html = string from doc::Markdown.render(page.markdown)
     body = DocBody from { page, html }
-    return PageProps from { config, docGroups, sidebar, body }
+    return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
 
   /// The authored doc pages from the `[doc]` configuration, flattened across the
@@ -231,24 +350,27 @@ component Pages for doc::Doc {
   /// the authored `[[doc.sidebar]]` groups rather than the module tree.
   emptySidebar(): doc::SidebarModule[];
 
-  /// One module page's props: the sidebar (prefixed `../` for the page's depth) and
+  /// One module page's props: the chrome (prefixed `../` for the page's depth) and
   /// a section per non-callable node declared in the module, sorted by FQN.
-  modulePage(graph: model::Graph, config: doc::DocConfig, module: string, modules: string[]): doc::PageProps {
+  modulePage(graph: model::Graph, config: doc::DocConfig, module: string, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
     docGroups = SidebarDocGroup[] from self.docGroups(config, "../")
     sidebar = SidebarModule[] from self.sidebar(graph, modules, "../")
+    nav = NavLink[] from self.navLinks(diagnostics, "../")
+    crumbs = Crumb[] from self.crumbsOf(module)
     nodes = model::GraphNode[] from self.moduleNodes(graph, module)
-    sections = NodeSection[] from self.sections(graph, nodes)
+    sections = NodeSection[] from self.sections(graph, nodes, diagnostics)
     body = ModulePage from { module, sections }
-    return PageProps from { config, docGroups, sidebar, body }
+    return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
 
   /// One node section: head fields, `///` docs, tags, relationships, scenario cards,
-  /// and embedded diagrams.
-  section(graph: model::Graph, node: model::GraphNode): doc::NodeSection {
+  /// embedded diagrams, and the health findings attributed to the node.
+  section(graph: model::Graph, node: model::GraphNode, diagnostics: doc::DiagnosticInput[]): doc::NodeSection {
     rels = RelGroup[] from doc::Relationships.groups(graph, node)
     cards = ScenarioCard[] from doc::Scenarios.cards(graph, node)
     diagrams = Diagram[] from doc::Diagrams.forNode(graph, node)
-    return NodeSection from { node, rels, cards, diagrams }
+    badges = SectionDiagnostic[] from doc::Health.badgesFor(graph, node, diagnostics)
+    return NodeSection from { node, rels, cards, diagrams, badges }
   }
 
   /// The brand + search + collapsible tree sidebar, identical on every page bar the
@@ -267,13 +389,14 @@ component Pages for doc::Doc {
   /// documented inside their owner's section, not as their own entries.
   moduleNodes(graph: model::Graph, module: string): model::GraphNode[];
 
-  /// Every page's props in emission order — the index, the authored docs, then
-  /// the module pages — the shared input both the HTML and Markdown renderers
-  /// consume, so the two sites never disagree on content.
-  buildAll(graph: model::Graph, config: doc::DocConfig): doc::PageProps[];
+  /// Every page's props in emission order — the index, the authored docs, the
+  /// module pages, then the universe and health pages — the shared input both
+  /// the HTML and Markdown renderers consume, so the two sites never disagree
+  /// on content.
+  buildAll(graph: model::Graph, config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): doc::PageProps[];
 
   /// Render each node's section in order.
-  sections(graph: model::Graph, nodes: model::GraphNode[]): doc::NodeSection[];
+  sections(graph: model::Graph, nodes: model::GraphNode[], diagnostics: doc::DiagnosticInput[]): doc::NodeSection[];
 }
 
 /// The server-side render boundary: a JSON-string-in / JSON-string-out seam to the
@@ -290,25 +413,29 @@ component Ssr for doc::Doc {
 }
 
 /// Owns the document shell that wraps each server-rendered body — the part Rust
-/// renders, not Svelte: doctype, `<html data-theme>`, font + stylesheet links, the
-/// hydration data, and the client-bundle script. The rendered body mounts into
-/// `
-/// `, which the client hydrates.
+/// renders, not Svelte: doctype, `<html data-theme>`, font + stylesheet links,
+/// the theme pre-paint script, and the classic deferred scripts. Scripts are
+/// classic (never `type="module"`) and shared data ships as JS-global files, so
+/// the site works opened from disk (`file://`). Only the universe page embeds
+/// its props (`window.__DATA__`) — for its 3D island; every other page ships no
+/// page data and the client only progressively enhances.
 /// #app
 component Shell for doc::Doc {
-  /// Wrap a server-rendered page in the full HTML document: escape the title and
-  /// theme into the document attributes, embed the props as `window.__DATA__` for
-  /// hydration, link the depth-relative `style.css` and `client.js`, and mount the
-  /// body into `
-  /// `.
+  /// Wrap a server-rendered page in the full HTML document: escape the title
+  /// and theme into the document attributes, inline the theme pre-paint script
+  /// (stored preference, else the OS scheme, else the configured default —
+  /// applied before first paint), link the depth-relative `style.css` and
+  /// deferred `client.js`, and on the universe page only, embed the props and
+  /// link `universe.js`.
   /// #app
   wrap(path: string, props: doc::PageProps, rendered: doc::RenderedPage): string {
     title = string from doc::Escape.text(props.site.name)
     return self.document(path, title, props, rendered)
   }
 
-  /// Assemble the document string from its escaped title, the hydration props, and
-  /// the rendered head/body — the static template around the rendered content.
+  /// Assemble the document string from its escaped title, the rendered
+  /// head/body, the pre-paint script, and the page's scripts — the static
+  /// template around the rendered content.
   document(path: string, title: string, props: doc::PageProps, rendered: doc::RenderedPage): string;
 }
 
@@ -376,11 +503,12 @@ component Scenarios for doc::Doc {
   toCards(scenarios: model::Scenario[], flows: doc::Diagram[]): doc::ScenarioCard[];
 }
 
-/// The bridge into `emit`: project a view into a `Scene` and carry its geometry as
-/// page data. A view that fails to project degrades to an `Empty` placeholder rather
-/// than aborting the build — the cargo-doc stance that a partial model still
-/// documents. The client islands lay out the geometry: C4 as a flow graph, sequences
-/// as an animated timeline; a data or feature scene ships pre-rendered as themed SVG.
+/// The bridge into `emit`: project a view into a `Scene` and render it to the
+/// same deterministic SVG `pds svg` emits, under the adaptive palette so the
+/// figure follows the site theme. A view that fails to project degrades to an
+/// `Empty` placeholder rather than aborting the build — the cargo-doc stance
+/// that a partial model still documents. The client adds pan/zoom around the
+/// figure; it never re-lays-out.
 component Diagrams for doc::Doc {
   /// The diagrams embedded on a node: a container diagram on a `system`, a component
   /// diagram on a `container`, an entity diagram on a `data` (LANG.md §9.4), plus a
@@ -412,7 +540,7 @@ component Diagrams for doc::Doc {
     return self.figure(graph, self.contextView(), "Context", "System context")
   }
 
-  /// Project `view` into a `Diagram`: carry the laid-out scene on success, or an
+  /// Project `view` into a `Diagram`: render the scene to SVG on success, or an
   /// `Empty` placeholder on an `EmitError` (e.g. an empty boundary), so a failed
   /// projection never aborts the build.
   figure(graph: model::Graph, view: emit::View, eyebrow: string, caption: string): doc::Diagram {
@@ -420,40 +548,19 @@ component Diagrams for doc::Doc {
     if (scene.isErr) {
       return Empty from { caption, eyebrow }
     }
-    return self.embed(scene.value, caption)
+    return self.embed(scene.value, caption, eyebrow)
   }
 
-  /// Wrap a laid-out scene in its matching figure, total over the four `Scene`
-  /// variants: a sequence scene is pre-positioned by the `layout` sequence engine so
-  /// the diagram island's props ship ready-to-draw geometry; a C4 scene becomes a
-  /// `C4` diagram; a data or feature scene is pre-rendered to SVG in the site's
-  /// configured theme and ships as an `Svg` figure.
-  embed(scene: emit::Scene, caption: string): doc::Diagram {
-    if (scene.isSequenceScene) {
-      placed = layout::SequenceLayout from layout::Layout.layout(self.asSequenceDiagram(scene), self.sequenceMetrics())
-      return self.sequenceFigure(scene, caption, placed)
-    }
-    if (scene.isC4Scene) {
-      return self.c4Figure(scene, caption)
-    }
-    return self.svgFigure(scene, caption)
+  /// Wrap a laid-out scene in its figure: every variant — C4, sequence, data,
+  /// feature — renders through the emit face under the adaptive palette and
+  /// ships as an `Svg` figure tagged with its view kind.
+  embed(scene: emit::Scene, caption: string, eyebrow: string): doc::Diagram {
+    return self.svgFigure(scene, caption, eyebrow)
   }
 
-  /// Translate a sequence scene into the `layout` engine's structural diagram.
-  asSequenceDiagram(scene: emit::Scene): layout::Diagram;
-
-  /// Render a data or feature scene to SVG in the site's configured theme, through
-  /// the emit face, and wrap it in an `Svg` figure.
-  svgFigure(scene: emit::Scene, caption: string): doc::Diagram;
-
-  /// The sequence engine's default metrics for embedded figures.
-  sequenceMetrics(): layout::Metrics;
-
-  /// Build a `Sequence` figure carrying the pre-positioned geometry.
-  sequenceFigure(scene: emit::Scene, caption: string, placed: layout::SequenceLayout): doc::Diagram;
-
-  /// Build a `C4` figure carrying the laid-out scene.
-  c4Figure(scene: emit::Scene, caption: string): doc::Diagram;
+  /// Render a scene to adaptive-palette SVG through the emit face and wrap it
+  /// in an `Svg` figure carrying the scene's view kind word.
+  svgFigure(scene: emit::Scene, caption: string, eyebrow: string): doc::Diagram;
 
   /// One sequence figure per triggered callable the node owns; a callable with no
   /// trigger is skipped, since only entry points get a sequence diagram.
@@ -488,6 +595,93 @@ component Diagrams for doc::Doc {
 
   /// The empty list (no boundary diagram).
   none(): doc::Diagram[];
+}
+
+/// Positions the host's diagnostics in the documentation: prepares raw
+/// per-module findings (line/column from sources), attributes each to the node
+/// whose section it belongs on, and builds the health page and the per-section
+/// badges. Attribution is positional: the node whose declaration starts
+/// closest before the diagnostic's span owns it, a callable lifting to its
+/// owner; a span no node encloses falls back to the module page.
+component Health for doc::Doc {
+  /// Position raw per-module diagnostics: compute each finding's 1-based
+  /// line/column from its module's source text, carrying severity, rule code,
+  /// and article URL through.
+  public prepare(modules: model::WorkspaceModule[], perModule: model::ModuleDiagnostics[]): doc::DiagnosticInput[];
+
+  /// The health page body: every finding attributed and sorted by severity,
+  /// module, then line, with the error and warning counts.
+  page(graph: model::Graph, diagnostics: doc::DiagnosticInput[]): doc::PageBody {
+    entries = HealthEntry[] from self.attributeAll(graph, diagnostics)
+    errorCount = number from self.countOf(entries, "error")
+    warningCount = number from self.countOf(entries, "warning")
+    return HealthPage from { entries, errorCount, warningCount }
+  }
+
+  /// The findings attributed to one node, as its section badges.
+  badgesFor(graph: model::Graph, node: model::GraphNode, diagnostics: doc::DiagnosticInput[]): doc::SectionDiagnostic[];
+
+  /// Attribute every finding to its owning node and resolve its section href,
+  /// sorted by severity, module, then line.
+  attributeAll(graph: model::Graph, diagnostics: doc::DiagnosticInput[]): doc::HealthEntry[];
+
+  /// How many entries carry the given severity word.
+  countOf(entries: doc::HealthEntry[], severity: string): number;
+}
+
+/// Builds the static full-text search index the client palette queries: one
+/// record per linkable node, module page, and authored doc page, plus the
+/// universe and health pages. Shipped as a classic-script JS assignment
+/// (`search-index.js` setting a window global) so it loads under `file://` —
+/// never fetched.
+component SearchIndex for doc::Doc {
+  /// The index file: every entry sorted by href then FQN, serialised as a JS
+  /// assignment of the entry array.
+  public build(graph: model::Graph, config: doc::DocConfig): doc::SiteFile {
+    entries = SearchEntry[] from self.entries(graph, config)
+    return SiteFile from { entries }
+  }
+
+  /// Every search entry: each non-callable node (name, kind, summary, plain doc
+  /// text, href), each module page, each authored doc page (markdown stripped
+  /// to text), and the universe and health pages.
+  entries(graph: model::Graph, config: doc::DocConfig): doc::SearchEntry[];
+}
+
+/// Highlights fenced code blocks at build time, so the shipped site needs no
+/// client highlighter and one deterministic output serves every theme:
+/// PseudoScript through the toolchain's own lexer, common languages through an
+/// embedded grammar set — both emit class-based spans coloured by the site
+/// stylesheet. An unknown language passes through escaped and unhighlighted.
+component Highlight for doc::Doc {
+  /// Highlight `source` as `lang` into class-based HTML spans: `pds` through
+  /// the syntax lexer's token kinds, a known common language through the
+  /// embedded grammar set, anything else escaped verbatim.
+  public code(lang: string, source: string): string {
+    if (self.isPds(lang)) {
+      return self.pdsTokens(source)
+    }
+    if (self.isKnown(lang)) {
+      return self.grammarTokens(lang, source)
+    }
+    return self.escaped(source)
+  }
+
+  /// Whether the language word names PseudoScript (`pds`, `pseudoscript`).
+  isPds(lang: string): bool;
+
+  /// Whether the embedded grammar set covers the language.
+  isKnown(lang: string): bool;
+
+  /// Lex the source with the toolchain lexer and wrap each token in its
+  /// kind-classed span.
+  pdsTokens(source: string): string;
+
+  /// Highlight through the embedded grammar set with class-based output.
+  grammarTokens(lang: string, source: string): string;
+
+  /// The escaped, unhighlighted fallback.
+  escaped(source: string): string;
 }
 
 /// Maps every node FQN to its page path and anchor, and resolves cross-references to
@@ -527,12 +721,17 @@ component Urls for doc::Doc {
 }
 
 /// Ships the prebuilt presentation bundles, authored in the `web/` Svelte package and
-/// embedded at build time (LANG.md §9.3). `style.css` and `client.js` ship once at
-/// the site root and every page links them; `ssr.js` is build-time only — the engine
-/// (`Doc::Ssr`) evaluates it and it is never written to the site.
+/// embedded at build time (LANG.md §9.3). `style.css`, `client.js`, and
+/// `universe.js` ship once at the site root; `ssr.js` is build-time only — the
+/// engine (`Doc::Ssr`) evaluates it and it is never written to the site. The
+/// universe bundle is the only one that carries WebGL; the SSR bundle never
+/// does.
 component Assets for doc::Doc {
-  /// The shared site-root assets: `style.css` (light + dark variable sets) and
-  /// `client.js` (hydration and the diagram islands).
+  /// The shared site-root assets: `style.css` (light + dark variable sets,
+  /// including the `--pds-*` diagram palette), `client.js` (progressive
+  /// enhancement: pan/zoom, search palette, theme toggle, drawer, copy
+  /// buttons), and `universe.js` (the 3D island, loaded by the universe page
+  /// only).
   shared(): doc::SiteFile[];
 
   /// The Svelte SSR bundle the engine evaluates to render a page.
@@ -553,17 +752,21 @@ component Escape for doc::Doc {
 /// content in memory. The rendered HTML carries through unescaped as trusted
 /// authored content.
 component Markdown for doc::Doc {
-  /// Render the authored doc page's raw `markdown` content to HTML.
+  /// Render the authored doc page's raw `markdown` content to HTML, routing
+  /// each fenced code block through the build-time highlighter.
   render(markdown: string): string;
 }
 
 /// The static Markdown output mode: turns the same per-page props the HTML
-/// renderer consumes into flat `.md` files, each diagram inlined as a themed,
-/// self-contained SVG. No SSR engine, no shared assets, no logo — the
+/// renderer consumes into flat `.md` files, each diagram a standalone `.svg`
+/// asset referenced as an image. The universe page renders as text lists
+/// (nodes by level, edges with traffic, each flow's legs); the health page as
+/// a table with article links. No SSR engine, no shared assets, no logo — the
 /// engine-free site for wikis and code hosts.
 component MarkdownSite for doc::Doc {
   /// One `.md` file per page, mirroring the HTML site's paths, with every
-  /// diagram rendered to inline SVG under `theme`.
+  /// diagram written as a `.svg` asset under `theme` — a `System` theme writes
+  /// adaptive SVGs carrying the embedded prefers-color-scheme style block.
   render(pages: doc::PageProps[], theme: doc::Theme): doc::Site;
 }
 
@@ -571,8 +774,8 @@ component MarkdownSite for doc::Doc {
 feature MarkdownSiteMirrorsHtml for doc::MarkdownSite {
   given "the same resolved graph and configuration"
   when "the Markdown site is rendered"
-  then "one .md per module plus an index.md mirror the HTML site's paths"
-  and "each diagram is inlined as a themed, self-contained SVG"
+  then "one .md per page mirrors the HTML site's paths"
+  and "each diagram is written as a standalone themed .svg asset referenced as an image"
   but "no SSR engine runs and no shared assets or logo are emitted"
 }
 
@@ -601,21 +804,60 @@ feature ServerRenderedFirstPaint for doc::Ssr {
   and "the renderer needs no JavaScript toolchain, only the embedded prebuilt bundle"
 }
 
-/// Each page embeds its props so client islands hydrate without refetching.
-feature HydrationDataEmbedded for doc::Shell {
-  given "a server-rendered page"
-  when "the document shell is assembled"
-  then "the page props are embedded as window.__DATA__ and the client bundle is linked"
-  and "the rendered body is mounted in #app for the client to hydrate"
+/// Only the universe page carries page data; everything else is pure SSR.
+feature OnlyUniverseEmbedsData for doc::Shell {
+  given "a generated site"
+  when "the document shells are assembled"
+  then "the universe page embeds its props as window.__DATA__ for the 3D island"
+  and "every script is a classic deferred script so the site works from file://"
+  but "no other page embeds page data — the client only progressively enhances"
 }
 
-/// Diagrams ship as scene geometry and render as interactive client islands.
-feature InteractiveDiagramIslands for doc::Diagrams {
-  given "a node that anchors a C4 boundary or owns a triggered callable"
+/// Every diagram ships as deterministic server-rendered SVG.
+feature AllDiagramsServerRendered for doc::Diagrams {
+  given "a node that anchors a C4 boundary, owns a triggered callable, or is a data type"
   when "its page is rendered"
   then "a system carries a container diagram and a container carries a component diagram"
   and "each triggered callable carries its sequence diagram"
-  and "each diagram's laid-out scene geometry is carried in the page data for a client island to draw"
+  and "every figure is the same deterministic SVG pds svg emits, under the adaptive palette"
+  but "the client adds pan and zoom only — it never re-lays-out a diagram"
+}
+
+/// The universe page ships the 3D structure and its flows.
+feature UniversePageShipsStructureAndFlows for doc::Pages {
+  given "a resolved model with entry-point flows"
+  when "the universe page is built"
+  then "the flat snapshot, the traced flows, and each node's documentation href are embedded"
+  and "the 3D island lays the graph out in the browser and links spheres to their docs"
+  but "a browser without WebGL keeps the server-rendered fallback listing"
+}
+
+/// The health page lists every finding; affected sections carry badges.
+feature HealthPageListsDiagnostics for doc::Health {
+  given "host-prepared diagnostics including an architecture lint"
+  when "the site is rendered"
+  then "the health page lists each finding with severity, code, location, and its principle-article link"
+  and "each entry deep-links to the owning node's documentation section"
+  and "the affected section shows an inline badge"
+  but "a clean model renders an empty health page, not a missing one"
+}
+
+/// The search index is static and file://-safe.
+feature SearchIndexIsStatic for doc::SearchIndex {
+  given "a generated site"
+  when "the search palette opens"
+  then "the index loads as a classic script setting a window global, never fetched"
+  and "entries cover nodes, modules, authored docs, and the universe and health pages"
+  and "the index is sorted and deterministic"
+}
+
+/// Code blocks are highlighted at build time.
+feature CodeBlocksHighlightedAtBuildTime for doc::Highlight {
+  given "an authored doc page with fenced code blocks"
+  when "the page is rendered"
+  then "PseudoScript blocks highlight through the toolchain lexer and known languages through the embedded grammar set"
+  and "output is class-based spans so one deterministic render serves every theme"
+  but "an unknown language passes through escaped and unhighlighted"
 }
 
 /// A failed projection degrades to a placeholder rather than aborting.
@@ -650,11 +892,13 @@ feature SharedAssetsShipOnce for doc::Assets {
   and "every page links them by a depth-relative path rather than inlining them"
 }
 
-/// The theme is chosen from the `[doc]` configuration.
-feature ThemeFromConfig for doc::Shell {
-  given "a DocConfig carrying a light or dark theme"
+/// The theme follows the OS by default, overridable in-page and in config.
+feature SystemThemeFollowsOs for doc::Shell {
+  given "a DocConfig carrying the system theme"
   when "the document shell is rendered"
-  then "the root html carries the matching data-theme attribute"
+  then "a pre-paint script applies the stored preference, else the OS scheme, else the configured default"
+  and "diagram SVGs follow the active scheme through the --pds-* variables"
+  but "a light or dark config pins the default without removing the toggle"
 }
 
 /// Document attributes are HTML-escaped; content is escaped by the renderer.

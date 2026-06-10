@@ -1,12 +1,14 @@
 //! universe — the software-graph model behind the 3D relationship view (crate
 //! `pseudoscript-universe`).
 //!
-//! Sits above `model`: adapts the resolved C4 `Graph` into a relationship graph
-//! the web IDE's `ForceGraph` renders — structural nodes (systems, containers,
-//! components, people) with the containment tree, plus directed relationship
-//! edges weighted by traffic. Positions are NOT computed here: the renderer lays
-//! the graph out with d3-force-3d in the browser. Pure and wasm-safe: no
-//! rendering, no layout, no I/O.
+//! Sits above `model` and `emit`: adapts the resolved C4 `Graph` into a
+//! relationship graph the 3D renderers (the web IDE's `ForceGraph` and the doc
+//! site's universe page) draw — structural nodes (systems, containers,
+//! components, people) with the containment tree, directed relationship edges
+//! weighted by traffic, and the entry-point flows traced through `emit`'s
+//! sequence projection. Positions are NOT computed here: the renderer lays the
+//! graph out with d3-force-3d in the browser. Pure and wasm-safe: no rendering,
+//! no layout, no I/O.
 
 /// The C4 abstraction level a node sits at. Only these four enter the graph;
 /// data and callables do not — a relationship through them is lifted to the
@@ -36,15 +38,24 @@ public data SoftwareGraph { nodes: universe::GraphNode[], relationships: univers
 
 /// One node in the flat snapshot: its id, C4 level as a lowercase string, and the
 /// id of its containment parent (empty for a top-level system).
-data NodeOut { id: string, level: string, parent: string }
+public data NodeOut { id: string, level: string, parent: string }
 
 /// One relationship in the flat snapshot, with its traffic (call count).
-data EdgeOut { source: string, to: string, traffic: number }
+public data EdgeOut { source: string, to: string, traffic: number }
 
 /// The flat, serialisable contract the web IDE's `ForceGraph` consumes: nodes
 /// and directed weighted edges, with no engine internals (petgraph indices)
 /// leaking across the boundary. Positions are not here.
 public data Snapshot { nodes: universe::NodeOut[], edges: universe::EdgeOut[] }
+
+/// One call leg of a flow: the caller and callee as structural node ids (the
+/// same ids the snapshot places), plus the message label shown on the leg.
+public data FlowHop { source: string, to: string, label: string }
+
+/// One entry-point flow: the entry callable's FQN and simple name, the flow's
+/// palette colour, and its ordered legs. The renderer draws one filament chain
+/// per flow and streams its beads in the flow's colour.
+public data FlowDef { fqn: string, name: string, color: string, hops: universe::FlowHop[] }
 
 /// `crates/pseudoscript-universe`. Maps the resolved C4 model into the software
 /// graph the 3D view renders, then flattens it to a determinstic snapshot.
@@ -54,9 +65,22 @@ public container Universe for context::Pseudoscript {
     return universe::Adapter.build(modules)
   }
 
+  /// Build the software graph from an already-resolved model — the face a host
+  /// holding a `model::Graph` (the doc builder, the IDE) adapts through.
+  public fromModel(graph: model::Graph): universe::SoftwareGraph {
+    return universe::Adapter.fromModel(graph)
+  }
+
   /// Flatten the software graph into the renderer-facing snapshot.
   public snapshot(graph: universe::SoftwareGraph): universe::Snapshot {
     return universe::Flatten.snapshot(graph)
+  }
+
+  /// Trace every entry-point flow through the resolved model, each leg lifted to
+  /// the structural nodes the snapshot places — the filaments the 3D renderers
+  /// animate.
+  public flows(graph: model::Graph): universe::FlowDef[] {
+    return universe::FlowTracer.flows(graph)
   }
 }
 
@@ -101,6 +125,63 @@ component Adapter for universe::Universe {
   /// Walk a model FQN up its parent chain to the nearest structural node present
   /// in the graph, or nothing if the chain reaches the top without one.
   lift(graph: model::Graph, fqn: string): Option<string>;
+}
+
+/// Traces every entry-point flow: a triggered callable (or a person-owned
+/// action) starts a flow; its sequence projection is walked call-by-call and
+/// each leg's endpoints lift to the nearest placed structural node — the same
+/// lift the Adapter applies to relationships, so flows and edges agree. Colours
+/// key from the entry's FQN by a stable hash into a fixed palette — the same
+/// keying the web IDE paints with — so a flow keeps its hue everywhere it
+/// appears and an unrelated model edit never recolours it.
+component FlowTracer for universe::Universe {
+  /// Every flow, one per entry point in FQN order, coloured by its FQN key.
+  public flows(graph: model::Graph): universe::FlowDef[] {
+    entries = model::GraphNode[] from self.entryPoints(graph)
+    return self.traceAll(graph, entries)
+  }
+
+  /// The flow entry points: every callable carrying a trigger macro, plus every
+  /// callable owned by a `person` (an action the person initiates), sorted by
+  /// FQN so order and colours are stable.
+  entryPoints(graph: model::Graph): model::GraphNode[];
+
+  /// Trace each entry into its `FlowDef`, colouring each by its FQN key.
+  traceAll(graph: model::Graph, entries: model::GraphNode[]): universe::FlowDef[];
+
+  /// One entry's flow: project its sequence view, flatten the call messages into
+  /// hops, and carry the flow's colour. A projection failure yields a flow with
+  /// no hops rather than aborting — a partial model still animates.
+  trace(graph: model::Graph, entry: model::GraphNode, color: string): universe::FlowDef {
+    scene = Result<Scene, EmitError> from emit::Emit.project(graph, self.sequenceView(entry))
+    if (scene.isErr) {
+      return self.emptyFlow(entry, color)
+    }
+    hops = universe::FlowHop[] from self.walkMessages(graph, scene.value)
+    return self.flowOf(entry, color, hops)
+  }
+
+  /// Assemble the flow from the entry's FQN and simple name, its colour, and
+  /// its traced hops.
+  flowOf(entry: model::GraphNode, color: string, hops: universe::FlowHop[]): universe::FlowDef;
+
+  /// The sequence view for the entry callable (`emit::View::Sequence` on the
+  /// entry's FQN).
+  sequenceView(entry: model::GraphNode): emit::View;
+
+  /// Flatten a sequence scene's messages into hops: calls and self-calls become
+  /// legs (returns are skipped), alt/loop frames recurse into their bodies in
+  /// order, and each leg's caller and callee lift to the nearest placed
+  /// structural node. A leg whose ends lift to the same node, or fail to lift,
+  /// is dropped.
+  walkMessages(graph: model::Graph, scene: emit::Scene): universe::FlowHop[];
+
+  /// A flow with no hops, for an entry whose sequence fails to project.
+  emptyFlow(entry: model::GraphNode, color: string): universe::FlowDef;
+
+  /// The palette colour for an entry FQN: a stable hash of the key into the
+  /// fixed categorical palette the web IDE shares.
+  colorOf(fqn: string): string;
 }
 
 /// Flattens the software graph into the renderer-facing snapshot: each node's id,
@@ -154,6 +235,30 @@ feature SnapshotIsDeterministic for universe::Flatten {
   when "the snapshots are compared"
   then "nodes and edges appear in the same stable order both times"
   but "no petgraph index or other engine internal crosses the boundary"
+}
+
+/// A triggered callable or a person-owned action starts a flow.
+feature EntryPointsStartFlows for universe::FlowTracer {
+  given "a model with trigger-macro callables and person-owned actions"
+  when "flows are traced"
+  then "each triggered callable and each person-owned callable yields one flow"
+  and "entries are ordered by FQN so the set is stable"
+}
+
+/// Flow legs land on the structural nodes the renderer places.
+feature FlowsLiftToStructuralNodes for universe::FlowTracer {
+  given "a flow whose calls land on components and callables"
+  when "its hops are traced"
+  then "each leg's caller and callee lift to the nearest placed structural node"
+  but "a leg whose ends lift to the same node, or fail to lift, is dropped"
+}
+
+/// Flows are deterministic: same model, same flows, same colours.
+feature FlowsAreDeterministic for universe::FlowTracer {
+  given "the same model traced twice"
+  when "the flow sets are compared"
+  then "flows, hops, and colours are identical"
+  and "a colour keys from its entry's FQN, so an unrelated model edit never recolours a flow"
 }
 
 /// Layout is the renderer's job, not this crate's.

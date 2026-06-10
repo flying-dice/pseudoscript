@@ -236,8 +236,7 @@ public component LanguageSession for ide::IdeSession {
 /// form is a CLI/doc concern of the `emit` crate, not exposed here.
 public component Diagrams for ide::IdeSession {
   /// Project a view of the held workspace to the layout-ready JSON `Scene` —
-  /// the notation-neutral geometry the interactive canvas and the HTML doc
-  /// islands both draw from.
+  /// the notation-neutral geometry the interactive canvas draws from.
   public emitScene(view: emit::View, target: string): emit::Scene;
   /// Project the fitting view for a single symbol (a system/container's C4
   /// sub-view, a callable's sequence, a data type's entity view) — the IDE's
@@ -253,11 +252,28 @@ public component Diagrams for ide::IdeSession {
 /// The doc-site builder: renders the whole site in-browser through the same
 /// `pseudoscript-doc` crate `pds doc` runs, driving SSR through a render
 /// callback the host supplies (the browser's JS engine is the SSR engine) — so
-/// the IDE previews the exact site the CLI ships.
+/// the IDE previews the exact site the CLI ships, health page included.
 public component Docs for ide::IdeSession {
   /// Build the documentation site for the held workspace: the typed config in,
-  /// every rendered file out. SSR crosses to the host's render callback.
-  render(config: ide::DocConfig): ide::RenderedFile[];
+  /// every rendered file out. The session checks the held modules itself and
+  /// prepares the diagnostics for the doc face (the wasm signature is
+  /// unchanged — diagnostics never cross the boundary). SSR crosses to the
+  /// host's render callback.
+  render(config: ide::DocConfig): ide::RenderedFile[] {
+    perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(self.heldDocModules(), self.heldExternals())
+    prepared = doc::DiagnosticInput[] from doc::Doc.prepareDiagnostics(self.heldDocModules(), perModule)
+    return self.renderWith(config, prepared)
+  }
+
+  /// The held workspace's own modules, the check input.
+  heldDocModules(): model::WorkspaceModule[];
+
+  /// The held dependency modules, the check's external context.
+  heldExternals(): model::WorkspaceModule[];
+
+  /// Drive the doc face with the prepared diagnostics, crossing SSR to the
+  /// host's render callback.
+  renderWith(config: ide::DocConfig, diagnostics: doc::DiagnosticInput[]): ide::RenderedFile[];
   /// Parse a `pds.toml` into the doc manifest the host reads to load pages.
   manifest(toml: string): string;
   /// The shared client-side bundle every doc page loads once — the same SSR
@@ -266,14 +282,23 @@ public component Docs for ide::IdeSession {
 }
 
 /// The 3D universe: builds the software graph from the held workspace and flattens
-/// it to a snapshot the `ForceGraph` renders. Delegates to the `universe` crate;
-/// the wasm surface carries only the flat snapshot — positions are the renderer's.
+/// it to a snapshot the `ForceGraph` renders, with the entry-point flows traced
+/// in Rust. Delegates to the `universe` crate; the wasm surface carries only the
+/// flat snapshot and flows — positions are the renderer's.
 public component Universe for ide::IdeSession {
   /// The 3D-view snapshot of the held workspace: structural nodes with
   /// containment and directed traffic-weighted relationships, no positions.
   universe(): ide::UniverseSnapshot {
     graph = universe::SoftwareGraph from universe::Universe.build(self.heldModules())
     return self.toSnapshot(universe::Universe.snapshot(graph))
+  }
+
+  /// The entry-point flows of the held workspace, traced and lifted by the
+  /// universe crate — the filaments the ForceGraph animates. Replaces the IDE's
+  /// former client-side sequence-walking, so doc site and IDE share one tracer.
+  universeFlows(): universe::FlowDef[] {
+    graph = model::Graph from model::Model.graph(self.heldModules())
+    return universe::Universe.flows(graph)
   }
 
   /// The held workspace's own modules, the universe input.

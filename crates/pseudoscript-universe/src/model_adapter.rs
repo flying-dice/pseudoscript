@@ -144,10 +144,21 @@ fn level_of(kind: NodeKind) -> Option<C4Level> {
 /// Walk a model FQN up its `parent` chain to the nearest structural node present in
 /// the graph; `None` if the chain reaches the top without one.
 fn lift(model: &Model, fqn: &str, ix: &HashMap<&str, NodeIx>) -> Option<NodeIx> {
+    lift_fqn(model, fqn, |cur| ix.contains_key(cur)).and_then(|cur| ix.get(cur).copied())
+}
+
+/// Walk a model FQN up its `parent` chain to the nearest FQN `is_placed`
+/// accepts — the one lift relationships and flows share, so the two always
+/// agree on where a call lands.
+pub(crate) fn lift_fqn<'m>(
+    model: &'m Model,
+    fqn: &'m str,
+    is_placed: impl Fn(&str) -> bool,
+) -> Option<&'m str> {
     let mut cur = fqn;
     loop {
-        if let Some(&nx) = ix.get(cur) {
-            return Some(nx);
+        if is_placed(cur) {
+            return Some(cur);
         }
         cur = model.node(cur)?.parent.as_deref()?;
     }

@@ -183,6 +183,13 @@ public container Emit for context::Pseudoscript {
   public render(scene: emit::Scene): string {
     return emit::SvgRenderer.render(scene)
   }
+
+  /// The style block a standalone adaptive SVG embeds: a `prefers-color-scheme`
+  /// media query assigning the dark palette to the `--pds-*` variables, so the
+  /// file follows the OS theme outside any host stylesheet.
+  public adaptiveStyle(): string {
+    return emit::SvgRenderer.adaptiveStyleBlock()
+  }
 }
 
 /// Projects a `View` out of the graph (LANG.md §9): dispatches on the view
@@ -625,9 +632,16 @@ component SvgRenderer for emit::Emit {
     return self.renderFeature(scene)
   }
 
-  /// Render any scene to SVG under a chosen colour theme (light or dark) — the
-  /// themed counterpart `pds svg --theme` drives.
+  /// Render any scene to SVG under a chosen colour theme. `light` and `dark`
+  /// paint literal palette colours (the pairs `pds svg --theme` drives);
+  /// `adaptive` paints every palette role as `var(--pds-<role>, <light value>)`
+  /// so a host stylesheet swaps the palette at display time — light and dark
+  /// output stay byte-identical to before.
   public renderThemed(scene: emit::Scene, theme: string): string;
+
+  /// The `prefers-color-scheme` style block a standalone adaptive SVG embeds:
+  /// assigns the dark palette to the `--pds-*` variables when the OS is dark.
+  public adaptiveStyleBlock(): string;
 
   /// Re-emit the laid-out C4 placement as modern C4 cards (coloured left rule,
   /// kind eyebrow, bold title, dimmed wrapped description) and routed edges;
@@ -716,6 +730,14 @@ feature RenderSvgAsString for emit::SvgRenderer {
   when "render runs"
   then "a self-contained SVG document is built by string concatenation"
   but "no template engine or headless browser is invoked"
+}
+
+/// The adaptive theme defers colour choice to the host stylesheet.
+feature AdaptiveSvgUsesCssVariables for emit::SvgRenderer {
+  given "a scene rendered under the adaptive theme"
+  when "the SVG is emitted"
+  then "every palette role paints as a --pds-* CSS variable with the light value as fallback"
+  and "the light and dark outputs stay byte-identical to their literal palettes"
 }
 
 /// C4 layout is delegated to the `dot` layered engine.

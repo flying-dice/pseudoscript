@@ -53,7 +53,10 @@ const FACADES: &[(&str, &[&str])] = &[
         &["hover", "definition", "format_edit"],
     ),
     ("pseudoscript-project", &["find_root", "load_modules"]),
-    ("pseudoscript-universe", &["build", "snapshot"]),
+    (
+        "pseudoscript-universe",
+        &["build", "from_model", "snapshot", "flows"],
+    ),
     ("pseudoscript-lsp", &["run_stdio"]),
     ("pseudoscript-ide", &["mount", "set_source"]),
 ];

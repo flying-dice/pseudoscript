@@ -46,8 +46,8 @@ pub use c4_render::{
 };
 pub use project::{EmitError, View, project, project_symbol};
 pub use render::{
-    Theme, layout_data_scene, layout_feature_scene, layout_sequence_scene, render_svg,
-    render_svg_themed,
+    Theme, adaptive_style_block, layout_data_scene, layout_feature_scene, layout_sequence_scene,
+    render_svg, render_svg_themed,
 };
 pub use scene::{
     C4EdgeKind, C4Scene, C4View, DataEntity, DataLink, DataScene, EntityForm, EntityRow,

@@ -203,10 +203,14 @@ fn kind_token(kind: NodeKind) -> &'static str {
 /// ink-on-paper palette byte-for-byte; `Dark` swaps the structural colours
 /// (ink, hairlines, card/boundary fills, plates) for a dark surface while
 /// keeping the per-kind accent colours, mirroring the doc site's two modes.
+/// `Adaptive` paints every palette role as a `var(--pds-<role>, <light value>)`
+/// CSS custom property, deferring the colour choice to the host stylesheet —
+/// the doc site's theme-following diagrams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
     Light,
     Dark,
+    Adaptive,
 }
 
 /// Every colour the SVG emitters draw with, by role. Two instances exist
@@ -285,6 +289,29 @@ pub(crate) static DARK: Palette = Palette {
     edge_plate: "#2b2d31e6",
 };
 
+/// The adaptive palette: every role is a `--pds-*` CSS custom property with the
+/// light value as fallback, so an adaptive SVG renders light standalone and
+/// follows whatever palette the host stylesheet (or an embedded
+/// [`adaptive_style_block`]) assigns. The `tests` module pins each entry to
+/// `var(--pds-<role>, <LIGHT value>)` so the fallbacks cannot drift.
+pub(crate) static ADAPTIVE: Palette = Palette {
+    ink: "var(--pds-ink, #2a2f3a)",
+    arrow_seq: "var(--pds-arrow-seq, #333)",
+    hairline: "var(--pds-hairline, #c3c8d2)",
+    muted: "var(--pds-muted, #6b7280)",
+    frame: "var(--pds-frame, #aab0bd)",
+    accent: "var(--pds-accent, #e8431f)",
+    ok: "var(--pds-ok, #0f9d8a)",
+    err: "var(--pds-err, #d6432a)",
+    card_fill: "var(--pds-card-fill, #ffffff)",
+    boundary_fill: "var(--pds-boundary-fill, #f6f7fa)",
+    shadow: "var(--pds-shadow, #1a1f2a)",
+    act_fill: "var(--pds-act-fill, #fff)",
+    on_accent: "var(--pds-on-accent, #fff)",
+    pill: "var(--pds-pill, #fff)",
+    edge_plate: "var(--pds-edge-plate, #ffffffe6)",
+};
+
 thread_local! {
     /// The palette in effect for the current render (defaults to light).
     static PALETTE: std::cell::Cell<&'static Palette> = const { std::cell::Cell::new(&LIGHT) };
@@ -309,6 +336,7 @@ pub fn render_svg_themed(scene: &Scene, theme: Theme) -> String {
     let palette: &'static Palette = match theme {
         Theme::Light => &LIGHT,
         Theme::Dark => &DARK,
+        Theme::Adaptive => &ADAPTIVE,
     };
     PALETTE.with(|p| p.set(palette));
     let svg = match scene {
@@ -319,6 +347,38 @@ pub fn render_svg_themed(scene: &Scene, theme: Theme) -> String {
     };
     PALETTE.with(|p| p.set(&LIGHT));
     svg
+}
+
+/// The style block a standalone adaptive SVG embeds so the file follows the OS
+/// theme outside any host stylesheet: a `prefers-color-scheme: dark` media
+/// query assigning the dark palette to the `--pds-*` variables. Built from
+/// [`DARK`] so the two cannot drift.
+#[must_use]
+pub fn adaptive_style_block() -> String {
+    let d = &DARK;
+    format!(
+        "<style>@media (prefers-color-scheme: dark){{:root{{\
+         --pds-ink:{};--pds-arrow-seq:{};--pds-hairline:{};--pds-muted:{};\
+         --pds-frame:{};--pds-accent:{};--pds-ok:{};--pds-err:{};\
+         --pds-card-fill:{};--pds-boundary-fill:{};--pds-shadow:{};\
+         --pds-act-fill:{};--pds-on-accent:{};--pds-pill:{};--pds-edge-plate:{}\
+         }}}}</style>",
+        d.ink,
+        d.arrow_seq,
+        d.hairline,
+        d.muted,
+        d.frame,
+        d.accent,
+        d.ok,
+        d.err,
+        d.card_fill,
+        d.boundary_fill,
+        d.shadow,
+        d.act_fill,
+        d.on_accent,
+        d.pill,
+        d.edge_plate,
+    )
 }
 
 /// SVG document header with a viewBox and an arrowhead marker.
@@ -1075,6 +1135,63 @@ mod tests {
     #[test]
     fn escapes_xml_metacharacters() {
         assert_eq!(escape_xml("a<b&c>\"d\""), "a&lt;b&amp;c&gt;&quot;d&quot;");
+    }
+
+    #[test]
+    fn adaptive_palette_wraps_light_fallbacks() {
+        // Every adaptive role must be `var(--pds-<role>, <LIGHT value>)` so a
+        // standalone adaptive SVG renders identically to the light theme.
+        let roles = [
+            ("ink", ADAPTIVE.ink, LIGHT.ink),
+            ("arrow-seq", ADAPTIVE.arrow_seq, LIGHT.arrow_seq),
+            ("hairline", ADAPTIVE.hairline, LIGHT.hairline),
+            ("muted", ADAPTIVE.muted, LIGHT.muted),
+            ("frame", ADAPTIVE.frame, LIGHT.frame),
+            ("accent", ADAPTIVE.accent, LIGHT.accent),
+            ("ok", ADAPTIVE.ok, LIGHT.ok),
+            ("err", ADAPTIVE.err, LIGHT.err),
+            ("card-fill", ADAPTIVE.card_fill, LIGHT.card_fill),
+            ("boundary-fill", ADAPTIVE.boundary_fill, LIGHT.boundary_fill),
+            ("shadow", ADAPTIVE.shadow, LIGHT.shadow),
+            ("act-fill", ADAPTIVE.act_fill, LIGHT.act_fill),
+            ("on-accent", ADAPTIVE.on_accent, LIGHT.on_accent),
+            ("pill", ADAPTIVE.pill, LIGHT.pill),
+            ("edge-plate", ADAPTIVE.edge_plate, LIGHT.edge_plate),
+        ];
+        for (role, adaptive, light) in roles {
+            assert_eq!(adaptive, format!("var(--pds-{role}, {light})"));
+        }
+    }
+
+    #[test]
+    fn adaptive_render_paints_css_variables_and_restores_light() {
+        use crate::scene::{Lifeline, SequenceScene};
+        let scene = Scene::Sequence(SequenceScene {
+            entry: "m::Comp::run".to_owned(),
+            participants: vec![Lifeline {
+                fqn: "m::Comp".to_owned(),
+                kind: NodeKind::Component,
+                summary: None,
+                parent_path: None,
+            }],
+            items: Vec::new(),
+        });
+        let adaptive = render_svg_themed(&scene, Theme::Adaptive);
+        assert!(
+            adaptive.contains("var(--pds-ink"),
+            "roles paint as variables"
+        );
+        // The thread-local restores: a plain render afterwards is light again.
+        assert_eq!(render_svg(&scene), render_svg_themed(&scene, Theme::Light));
+        assert!(!render_svg(&scene).contains("var(--pds-"));
+    }
+
+    #[test]
+    fn adaptive_style_block_assigns_the_dark_palette() {
+        let block = adaptive_style_block();
+        assert!(block.starts_with("<style>@media (prefers-color-scheme: dark)"));
+        assert!(block.contains(&format!("--pds-ink:{}", DARK.ink)));
+        assert!(block.contains(&format!("--pds-edge-plate:{}", DARK.edge_plate)));
     }
 
     #[test]
