@@ -137,6 +137,11 @@ component Loader for cli::Cli {
 
   /// Lift a `project` I/O failure into the CLI's exit-code error.
   ioError(e: project::IoError): cli::IoError;
+
+  /// Every `pds.toml` workspace root under `root`, recursively — the `--all`
+  /// monorepo sweep `pds doc --all`, `pds check --all`, and `pds list` share.
+  /// Skips `target/` and `pds_modules/`; an empty result is the caller's error.
+  discoverWorkspaces(root: string): Result<string[], cli::IoError>;
 }
 
 /// `pds init` — bootstrap a workspace: write `pds.toml` and a starter `main.pds`.
@@ -228,7 +233,27 @@ component DocCmd for cli::Cli {
 
   /// The flat-Markdown site for `graph` under `config`, through the doc face.
   /// Infallible: Markdown needs no SSR engine, so it cannot fail the way HTML can.
-  renderMarkdown(graph: model::Graph, config: doc::DocConfig): doc::Site;
+  renderMarkdown(graph: model::Graph, config: doc::DocConfig): doc::Site {
+    return doc::Doc.renderMarkdown(graph, config)
+  }
+
+  /// `pds doc --all`: generate docs for every `pds.toml` workspace discovered
+  /// under `root` (serving and watching are incompatible with `--all`). Each
+  /// workspace builds independently; any failure is reported against its root
+  /// and the command fails after the sweep, so one broken workspace never hides
+  /// the others.
+  #[manual]
+  public runAll(root: string, cliFormat: string): Result<void, cli::IoError> {
+    roots = Result<string[], IoError> from cli::Loader.discoverWorkspaces(root)
+    if (roots.isErr) {
+      return Err(roots.error)
+    }
+    return self.buildEach(roots.value, cliFormat)
+  }
+
+  /// Build each discovered workspace in order, collecting failures; errors after
+  /// the sweep if any build failed.
+  buildEach(roots: string[], cliFormat: string): Result<void, cli::IoError>;
 
   /// Generate once, then optionally serve — with a watcher and live reload when
   /// `watch` is set. Markdown output skips serving entirely: a Markdown build
@@ -328,6 +353,21 @@ component CheckCmd for cli::Cli {
 
   /// Whether any diagnostic is error-severity — the non-zero-exit signal.
   anyError(diagnostics: syntax::Diagnostic[]): bool;
+
+  /// `pds check --all`: check every `pds.toml` workspace discovered under
+  /// `root`, each with its own dependency externals; fails after the sweep if
+  /// any workspace failed.
+  #[manual]
+  public runAll(root: string): Result<void, cli::IoError> {
+    roots = Result<string[], IoError> from cli::Loader.discoverWorkspaces(root)
+    if (roots.isErr) {
+      return Err(roots.error)
+    }
+    return self.checkEach(roots.value)
+  }
+
+  /// Check each discovered workspace in order, collecting failures.
+  checkEach(roots: string[]): Result<void, cli::IoError>;
 }
 
 /// `pds eval` — read a model from stdin and statically check it, printing each

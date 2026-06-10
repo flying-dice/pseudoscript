@@ -8,8 +8,8 @@
 //! - after `#[` → the built-in macros;
 //! - after `:` or `<` (type position) → primitive types, `Result`, and every
 //!   declared type;
-//! - otherwise → keywords, this module's symbols and aliases, and the other
-//!   workspace modules (to start a cross-module reference).
+//! - otherwise → keywords, this module's symbols, and the other workspace
+//!   modules (to start a cross-module reference).
 //!
 //! The caller filters the returned set against the prefix being typed, so the
 //! full candidate list is offered. Positions are byte offsets, so the engine is
@@ -323,9 +323,9 @@ fn type_items(ws: &Workspace) -> Vec<CompletionItem> {
     primitives.chain(declared).collect()
 }
 
-/// Keywords, this module's own symbols and aliases, and the other modules in the
-/// workspace (so a cross-module reference can be started — pick the module, then
-/// `::` drills into its public symbols).
+/// Keywords, this module's own symbols, and the other modules in the workspace
+/// (so a cross-module reference can be started — pick the module, then `::`
+/// drills into its public symbols).
 fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
     let keywords = TokenKind::KEYWORDS
         .iter()

@@ -7,7 +7,7 @@
   import "../app.css";
   import { dependencyModules, docManifest, format as formatSource, ideEmitScene, ideLayoutScene, ideOutline, ideReferences, ideRename, ideSymbolScene, ideUniverse, initWasm, mountIde, renderDocSite, setIdeSource, type UniverseSnapshot } from "$lib/pds.js";
   import type { Module, Occurrence, References, RenameSelection } from "$lib/pds.js";
-  import { fsSupported, scaffoldWorkspace, pickDirectory, emptySeed, openWorkspace, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES } from "$lib/workspace.js";
+  import { fsSupported, scaffoldWorkspace, pickDirectoryOutcome, emptySeed, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES, type PickOutcome } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
   import { viewKey, getPins, serializeLayoutDoc } from "$lib/core/pins.js";
   import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
@@ -59,6 +59,7 @@
   import ProblemsPane from "$lib/components/ProblemsPane.svelte";
   import Notifications from "$lib/components/Notifications.svelte";
   import ProjectPanel from "$lib/components/ProjectPanel.svelte";
+  import ReferenceDialog from "$lib/components/ReferenceDialog.svelte";
   import NewProjectDialog from "$lib/components/NewProjectDialog.svelte";
   import Settings from "$lib/components/Settings.svelte";
   import { llm } from "$lib/llm.svelte.js";
@@ -782,10 +783,10 @@
     if (!(await wasm.init())) return;
     refreshRecents();
     wasm.ready = true;
-    // Disk-only: without the File System Access API there's nowhere to read or
-    // write a project, so the render shows an unsupported notice and the launcher
-    // never opens.
-    if (!fsSupported) return;
+    // Without the File System Access API only the *disk* features are gone
+    // (open folder, save, watch). Share links and the bundled examples mount in
+    // memory, so the IDE still boots; the disk actions are disabled with a
+    // notice instead of a wall (model: ide::Bootstrap / DiskGatesOnlyDiskFeatures).
     // The URL hash restores its workspace + location and skips the project panel;
     // otherwise open the panel on start (never autoload a model). Route history
     // writes through SvelteKit's shallow-routing API — raw history.replaceState
@@ -2075,24 +2076,46 @@
     }
   }
 
-  // Prompt for the New-project target folder (the dialog stores the handle).
-  // Returns null if the picker is cancelled, so the dialog keeps its prior choice.
-  async function chooseProjectFolder(): Promise<FileSystemDirectoryHandle | null> {
-    try {
-      return await pickDirectory();
-    } catch {
-      return null;
-    }
+  // Prompt for the New-project target folder (the dialog stores the handle and
+  // renders a failure inline). Cancel and failure are distinct: a cancel keeps
+  // the prior choice silently, a failure is surfaced (model: ide::PickError).
+  function chooseProjectFolder(): Promise<PickOutcome> {
+    return pickDirectoryOutcome();
   }
 
   async function openFolder() {
+    const picked = await pickDirectoryOutcome();
+    if (picked.kind === "cancelled") return; // the user's choice — silent
+    if (picked.kind === "failed") {
+      notify("error", "Couldn't open a folder", picked.message);
+      return;
+    }
     try {
-      const ws = await openWorkspace();
+      const ws = await readWorkspace(picked.handle);
       await adoptWorkspace(ws);
       notify("success", `Opened ${ws.name} · ${ws.files.length} modules`);
-    } catch {
-      // picker cancelled or permission denied — keep the current workspace
+    } catch (e) {
+      notify("error", "Couldn't read the folder", String((e as Error)?.message ?? e));
     }
+  }
+
+  // Open a bundled example in memory, session-only — the zero-commitment route
+  // to a working model: no name, no folder, no disk. Exactly the share-link
+  // mount path; saving later upgrades it to a real folder (model:
+  // ide::Launcher.openExample).
+  async function openExample(id: string) {
+    const sample = SAMPLES.find((s) => s.id === id);
+    if (!sample) return;
+    ui.projectOpen = false;
+    await mountDecoded({
+      workspace: {
+        name: sample.name,
+        files: sample.files.map(({ path, fqn, source }) => ({ path, fqn, source })),
+        manifestToml: sample.manifestToml,
+        docs: sample.docs,
+      },
+      landing: sample.landing,
+    });
   }
 
   // Tear down the current workspace and return to the launcher. Mirrors the reset
@@ -2542,7 +2565,8 @@ show('index.html');
     if (e.key === "Escape") {
       if (buildNotice) ui.buildNotice = false;
       if (settingsOpen) ui.settingsOpen = false;
-      if (projectOpen && workspace) ui.projectOpen = false;
+      if (ui.referenceOpen) ui.referenceOpen = false;
+      if (projectOpen) ui.projectOpen = false;
       ui.canvasUsages = null;
     }
     // Cmd/Ctrl-S saves the active file (Cmd/Ctrl-Shift-S saves all) even when the
@@ -2630,10 +2654,13 @@ show('index.html');
 {#if ready && projectOpen}
   <ProjectPanel
     {recents}
-    dismissible={!!workspace}
+    examples={SAMPLES.map((s) => ({ id: s.id, name: s.name, description: s.description, moduleCount: s.moduleCount }))}
+    {fsSupported}
+    dismissible
     onpickrecent={openRecent}
     onopenfolder={openFolder}
     onnewproject={() => (ui.newProjectOpen = true)}
+    onpickexample={openExample}
     onforget={forgetRecent}
     onclose={() => (ui.projectOpen = false)}
   />
@@ -2650,6 +2677,10 @@ show('index.html');
 
 {#if settingsOpen}
   <Settings initialTab={settingsTab} onclose={() => ((ui.settingsOpen = false), (settingsTab = "keyboard"))} />
+{/if}
+
+{#if ui.referenceOpen}
+  <ReferenceDialog onclose={() => (ui.referenceOpen = false)} />
 {/if}
 
 <!-- Canvas usages: a click-away list of references; picking one jumps to it. -->
@@ -2769,13 +2800,16 @@ show('index.html');
     {onbuilddocs}
     onshortcuts={() => (ui.settingsOpen = true)}
     onaisettings={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}
+    onreference={() => (ui.referenceOpen = true)}
     onview={(v) => (selection.view = v)}
     ontogglestructure={() => (ui.structureOpen = !ui.structureOpen)}
+    perfHud={ui.perfHud}
+    ontoggleperfhud={() => ui.togglePerfHud()}
   />
 
   <div
     class="body"
-    class:loaded={ready && !!workspace && !wasmError && fsSupported}
+    class:loaded={ready && !!workspace && !wasmError}
     style="--explorer-w:{panelSizes.explorerW}px; --structure-w:{panelSizes.structureW}px; --problems-h:{panelSizes.problemsH}px; --explorer-track:{view === 'code' && explorerOpen ? panelSizes.explorerW + 'px' : '0px'}; --structure-track:{structureOpen ? panelSizes.structureW + 'px' : '0px'}; --problems-track:{problemsOpen ? panelSizes.problemsH + 'px' : '0px'}"
   >
     <ActivityBar
@@ -2800,15 +2834,6 @@ show('index.html');
         <div class="kicker">compiler failed to load</div>
         <p class="msg">{wasmError}</p>
         <button class="retry" onclick={boot}>Retry</button>
-      </div>
-    {:else if !fsSupported}
-      <div class="curtain span">
-        <div class="kicker">browser not supported</div>
-        <p class="msg">
-          The PseudoScript IDE reads and writes your project as real files on disk, which needs the File
-          System Access API. That's available in Chromium browsers — Chrome, Edge, Brave, Arc. Firefox and
-          Safari don't support it yet.
-        </p>
       </div>
     {:else if ready && workspace}
       {#if view === "code" && explorerOpen}
@@ -2974,7 +2999,12 @@ show('index.html');
         />
       {/if}
     {:else if ready}
-      <div class="stage-empty span"></div>
+      <div class="stage-empty span">
+        <p class="stage-hint">
+          No project open —
+          <button class="stage-link" onclick={() => (ui.projectOpen = true)}>open a project</button>
+        </p>
+      </div>
     {:else}
       <div class="curtain span">
         <div class="loader"><span class="bar"></span></div>
@@ -3001,7 +3031,7 @@ show('index.html');
         onclick={() => ((settingsTab = "ai"), (ui.settingsOpen = true))}>AI</button
       >
     {/if}
-    <PerfMeter />
+    {#if ui.perfHud}<PerfMeter />{/if}
   </StatusBar>
 </div>
 
@@ -3067,10 +3097,31 @@ show('index.html');
   /* the backdrop behind the project panel when no workspace is loaded yet */
   .stage-empty {
     min-height: 0;
+    display: grid;
+    place-items: center;
     background-image:
       linear-gradient(var(--grid) 1px, transparent 1px),
       linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 30px 30px, 30px 30px;
+  }
+  .stage-hint {
+    margin: 0;
+    font-size: 0.88rem;
+    color: var(--ink-faint);
+  }
+  .stage-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .stage-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
   .explorer {
     min-width: 0;

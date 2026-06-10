@@ -186,19 +186,21 @@ pub struct Node {
     pub parent: Option<Path>,
     /// Disclosed body members, or `None` for a black box (`;`).
     ///
-    /// A disclosed block holds callables and — as the §11 worked example shows
-    /// — nested structural declarations (a `component` inside a `container`).
+    /// A disclosed block holds callables only (ADR-011). A nested structural
+    /// declaration still parses — as [`BodyMember::Decl`], for error recovery —
+    /// but the parser rejects it with a diagnostic.
     pub body: Option<Vec<BodyMember>>,
     /// Source span of the node declaration.
     pub span: Span,
 }
 
-/// A member of a disclosed node body: a callable or a nested declaration.
+/// A member of a disclosed node body: a callable or — under error recovery — a
+/// nested structural declaration the parser flags as illegal (ADR-011).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BodyMember {
     /// A callable (implicit operation, §5.1).
     Callable(Callable),
-    /// A nested structural declaration (e.g. a `component` inside a `container`).
+    /// A nested structural declaration, parsed for recovery and rejected.
     Decl(Decl),
 }
 

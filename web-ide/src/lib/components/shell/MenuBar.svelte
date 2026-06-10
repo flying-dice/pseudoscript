@@ -27,10 +27,13 @@
     onbuilddocs?: () => void;
     onshortcuts?: () => void;
     onaisettings?: () => void;
+    onreference?: () => void;
     onback?: () => void;
     onforward?: () => void;
     onview?: (view: "code" | "canvas" | "space") => void;
     ontogglestructure?: () => void;
+    perfHud?: boolean;
+    ontoggleperfhud?: () => void;
   };
 
   let {
@@ -53,10 +56,13 @@
     onbuilddocs,
     onshortcuts,
     onaisettings,
+    onreference,
     onback,
     onforward,
     onview,
     ontogglestructure,
+    perfHud = false,
+    ontoggleperfhud,
   }: Props = $props();
 
   // The platform-correct modifier glyph for the shortcut hints.
@@ -137,6 +143,9 @@
       >
         Structure panel
       </DropdownMenu.CheckboxItem>
+      <DropdownMenu.CheckboxItem checked={perfHud} onCheckedChange={() => ontoggleperfhud?.()}>
+        Performance meter
+      </DropdownMenu.CheckboxItem>
       <DropdownMenu.Separator />
       <DropdownMenu.Sub>
         <DropdownMenu.SubTrigger>Theme</DropdownMenu.SubTrigger>
@@ -158,6 +167,9 @@
       <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content class="menu-content" align="start" sideOffset={4}>
+      <DropdownMenu.Item onSelect={() => onreference?.()} data-testid="menu-reference">
+        Language reference…
+      </DropdownMenu.Item>
       <DropdownMenu.Item onSelect={() => onshortcuts?.()}>Keyboard shortcuts…</DropdownMenu.Item>
       <DropdownMenu.Item onSelect={() => onaisettings?.()}>AI Completion…</DropdownMenu.Item>
       <DropdownMenu.Item>

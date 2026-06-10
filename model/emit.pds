@@ -30,7 +30,7 @@ data C4View =
 /// conformance surface (ADR-017): coordinates are carried for the renderer only,
 /// never serialised to the golden.
 public data Scene =
-  | C4Scene { view: emit::C4View, of: string, nodes: emit::PlacedNode[], edges: emit::RoutedEdge[] }
+  | C4Scene { view: emit::C4View, of: Option<string>, nodes: emit::PlacedNode[], edges: emit::RoutedEdge[] }
   | SequenceScene { entry: string, participants: emit::Lifeline[], items: emit::SeqItem[] }
   | DataScene { of: string, entities: emit::DataEntity[], links: emit::DataLink[], width: number, height: number }
   | FeatureScene { entry: string, targetFqn: string, targetLabel: string, name: string, steps: emit::FeatureStepNode[], width: number, height: number }
@@ -54,7 +54,38 @@ data C4EdgeKind =
 /// An edge routed between two C4 nodes: its endpoints, kind, and the merged call
 /// labels (sorted and de-duplicated; empty for a trigger or provenance edge).
 /// Parallel calls between the same pair collapse into one multi-label edge.
+/// `source` is the wire field `from`, renamed because `from` is a PseudoScript
+/// keyword.
 data RoutedEdge { source: string, to: string, kind: emit::C4EdgeKind, labels: string[] }
+
+/// An integer point on the canvas (a rounded layout coordinate).
+data PointI { x: number, y: number }
+
+/// A node card placed by the `dot` engine for the canvas/SVG: its FQN, C4 kind
+/// (accent and eyebrow), display label, optional `///` summary, and rectangle.
+data LaidOutNode { fqn: string, kind: string, label: string, summary: Option<string>, rect: emit::Rect }
+
+/// A routed edge for the canvas/SVG: its endpoints (`source` stands for the wire
+/// `from`), kind, stacked labels, the engine's polyline (at least two points),
+/// the label position at the polyline midpoint when labels exist, and whether it
+/// draws dashed (a `from`-provenance edge).
+data LaidOutEdge { source: string, to: string, kind: emit::C4EdgeKind, labels: string[], points: emit::PointI[], labelPos: Option<emit::PointI>, dashed: bool }
+
+/// An enclosing frame of a boundary view: the boundary node's FQN (so the canvas
+/// can drill into it), title, C4 kind (frame accent), and the cluster rectangle.
+data BoundaryFrame { fqn: string, title: string, kind: string, rect: emit::Rect }
+
+/// The grid the experimental placement used, in absolute canvas coordinates:
+/// cell `(r, c)` is centred at `origin + (c·cellW, r·cellH)`; `pad` is the
+/// drag-room frame, so a pixel maps to its pin cell by recovering the raw cell
+/// then subtracting `pad`.
+data GridInfo { cols: number, rows: number, cellW: number, cellH: number, origin: emit::PointI, pad: number }
+
+/// A dot-placed C4 view for the interactive canvas and the static SVG: canvas
+/// size, placed node cards, routed edges, the enclosing boundary frames
+/// (outermost first; empty for a context view), and — only under experimental
+/// grid placement — the grid geometry for drag-to-pin.
+public data C4Layout { width: number, height: number, nodes: emit::LaidOutNode[], edges: emit::LaidOutEdge[], boundaries: emit::BoundaryFrame[], grid: Option<emit::GridInfo> }
 
 /// A sequence lifeline (a participant): its FQN, C4 kind for the head card, the
 /// node's `///` summary shown dimmed under the name, and the structural ancestry
@@ -182,9 +213,15 @@ component Projector for emit::Emit {
   }
 
   /// Project the diagram that best explains a single symbol, picking the view
-  /// from the symbol's kind: a callable traces as a sequence, a system shows its
-  /// containers, a container or component its components, a `data` type its
-  /// entity view. The web IDE's "show this symbol" entry point.
+  /// from the symbol's kind — the compiler's "what diagram fits this symbol"
+  /// decision, so a host never encodes view selection itself. A callable traces
+  /// as a sequence; a system with containers shows them; a container with
+  /// components shows them. A childless boundary falls back to the view that
+  /// frames it as a peer (a childless container to its parent system's
+  /// container view, a childless system to the context overview); a `data` type
+  /// shows its entity view; a person shows the context. An FQN naming no graph
+  /// node projects its `feature` flow view — a feature is not a graph node —
+  /// and only when that also misses does `UnknownNode` surface.
   public projectSymbol(graph: model::Graph, fqn: string): Result<emit::Scene, emit::EmitError>;
 
   /// Build the resolved graph for a single-file generation fixture, deriving its
@@ -351,34 +388,79 @@ component Edges for emit::Emit {
 /// participant on first appearance (LANG.md §9.2, §7). A real trigger's
 /// initiator leads as the first lifeline with a synthesised inbound call;
 /// absent a trigger the owner leads. A `call` is a message to the target; a
-/// `self.` call is a self-message; a return marks `Ok`/`Err`; `if`/`else` nests
-/// an `alt` frame, `for`/`while` a `loop` frame.
+/// disclosed callee expands inline; a `self.` call is a self-message; a return
+/// marks `Ok`/`Err`; `if`/`else` nests an `alt` frame, `for`/`while` a `loop`
+/// frame.
 component Trace for emit::Emit {
   /// Build the sequence scene. The owner (the callable's parent node) runs the
   /// entry body. When the entry bears a real trigger, the trigger's initiator
-  /// leads as the first lifeline and a synthesised inbound call (initiator →
-  /// owner, labelled the entry name) heads the trace; absent a real trigger the
-  /// owner leads and no inbound call is synthesised.
+  /// leads as the first lifeline, a synthesised inbound call (initiator →
+  /// owner, labelled the entry name) heads the trace, and the entry's returns
+  /// land on the initiator. The call stack starts at the entry, guarding
+  /// against re-expanding a callable already in flight.
   walk(graph: model::Graph, entry: string, body: model::Step[]): emit::Scene {
     owner = string from self.ownerOf(graph, entry)
     actor = Option<string> from self.triggerActorOf(graph, entry)
+    stack = string[] from self.entryStack(entry)
     if (actor.isNone) {
-      return self.untriggered(graph, entry, body, owner)
+      return self.untriggered(graph, entry, body, owner, stack)
     }
     inbound = SeqItem from self.inboundCall(graph, actor.value, owner, entry)
-    rest = SeqItem[] from self.traceItems(body, owner)
+    rest = SeqItem[] from self.traceItems(graph, body, owner, actor.value, stack)
     items = SeqItem[] from self.prependItem(inbound, rest)
     participants = Lifeline[] from self.participantsOf(graph, actor.value, items)
     return SequenceScene from { entry, participants, items }
   }
 
-  /// Build the scene for an entry with no real trigger: the owner leads, no inbound
-  /// call is synthesised, and the body traces directly into the lifelines.
-  untriggered(graph: model::Graph, entry: string, body: model::Step[], owner: string): emit::Scene {
-    items = SeqItem[] from self.traceItems(body, owner)
+  /// Build the scene for an entry with no real trigger: the generic `caller`
+  /// would only restate the diagram title, so the owner leads, no inbound call
+  /// is synthesised, and the entry's own `return`s are suppressed — they only
+  /// make sense once a real incoming trigger exists. Inner expanded callees
+  /// still return to their callers.
+  untriggered(graph: model::Graph, entry: string, body: model::Step[], owner: string, stack: string[]): emit::Scene {
+    items = SeqItem[] from self.traceItems(graph, body, owner, self.noCaller(), stack)
     participants = Lifeline[] from self.participantsOf(graph, owner, items)
     return SequenceScene from { entry, participants, items }
   }
+
+  /// The starting call stack: the entry alone in flight.
+  entryStack(entry: string): string[];
+
+  /// The empty caller marker that suppresses the entry's returns in an
+  /// untriggered trace.
+  noCaller(): string;
+
+  /// Trace one cross-node call step (§9.2): the call message always emits; then
+  /// a disclosed callee not already in flight expands inline — the active
+  /// lifeline switches to the callee, whose own `return`s flow back to this
+  /// caller — while a black-box callee, or one already on the stack (direct or
+  /// mutual recursion), closes with a synthesised return of its declared type,
+  /// so every call has its reply.
+  traceCall(graph: model::Graph, target: string, method: string, active: string, stack: string[]): emit::SeqItem[] {
+    msg = SeqItem from self.callMessage(graph, active, target, method)
+    disclosed = Option<model::Step[]> from self.expandableBody(graph, target, method, stack)
+    if (disclosed.isNone) {
+      reply = SeqItem from self.syntheticReturn(graph, target, method, active)
+      return SeqItem[] from { msg, reply }
+    }
+    inner = SeqItem[] from self.traceItems(graph, disclosed.value, target, active, self.pushCall(stack, target, method))
+    return SeqItem[] from { msg, inner }
+  }
+
+  /// The callee's disclosed body when it may expand: none for a black box or a
+  /// callable already on the stack.
+  expandableBody(graph: model::Graph, target: string, method: string, stack: string[]): Option<model::Step[]>;
+
+  /// The call message `active → target`, labelled the method with its signature
+  /// detail.
+  callMessage(graph: model::Graph, active: string, target: string, method: string): emit::SeqItem;
+
+  /// The synthesised out-and-back reply for a leaf call, carrying the callee's
+  /// declared return type (empty for void).
+  syntheticReturn(graph: model::Graph, target: string, method: string, active: string): emit::SeqItem;
+
+  /// The stack with one more callable in flight.
+  pushCall(stack: string[], target: string, method: string): string[];
 
   /// Build the scene for a black-box (bodyless) callable: the actor leads, a
   /// single inbound call heads the trace, and a return of the callable's declared
@@ -420,50 +502,63 @@ component Trace for emit::Emit {
   /// Prepend an item ahead of the traced body items.
   prependItem(head: emit::SeqItem, rest: emit::SeqItem[]): emit::SeqItem[];
 
-  /// Walk a step list into sequence items, recursing into frame bodies.
-  traceItems(steps: model::Step[], owner: string): emit::SeqItem[];
+  /// Walk a step list for `active` into sequence items: each cross-node call
+  /// through `traceCall`, each `self.` call as a self-message, each `return` as
+  /// a message back to `caller` (suppressed when `caller` is the empty marker),
+  /// and `Alt`/`Loop` frames recursing into their bodies with the same caller
+  /// and stack.
+  traceItems(graph: model::Graph, steps: model::Step[], active: string, caller: string, stack: string[]): emit::SeqItem[];
 
   /// The leading lifeline first, then each message target in first-appearance
   /// order, each tagged with its node's C4 kind (defaulting to container).
   participantsOf(graph: model::Graph, leading: string, items: emit::SeqItem[]): emit::Lifeline[];
 }
 
-/// Assigns geometry to a projected scene. A C4 scene is placed by the `dot`
-/// layered engine (rank/order/position/splines), boundary children framed as a
-/// cluster; per-diagram `C4Tweaks` and drag-to-pin cells tune it. The
-/// sequence/data/feature scenes are placed by the matching `layout` engine. An
-/// empty or unplaceable view falls back to the scene's own simple coordinates —
-/// the engines never panic.
+/// Assigns geometry. Projection stamps each C4 scene with simple row-flow
+/// coordinates (`solveC4`) — the panic-proof fallback geometry every scene
+/// carries. The real placement runs at render/canvas time: `layoutC4` drives the
+/// `dot` layered engine (rank/order/position/splines), framing boundary children
+/// as a cluster, tuned by per-diagram `C4Tweaks` and drag-to-pin cells. The
+/// sequence/data/feature scenes are placed by the matching `layout` engine.
 component Layout for emit::Emit {
-  /// Place a C4 scene with default tweaks and no pins, delegating to `dot`.
-  solveC4(scene: emit::Scene): emit::Scene {
-    return self.layoutC4With(scene, self.defaultTweaks(), self.noPins())
-  }
+  /// Stamp a projected C4 scene with simple coordinates: free nodes flow
+  /// left-to-right in a row, boundary children in a row inside their boundary
+  /// box. The scene-carried fallback the renderer uses when the engine yields
+  /// no usable placement.
+  solveC4(scene: emit::Scene): emit::Scene;
 
   /// The empty pin set — the default C4 layout fixes no cells.
   noPins(): emit::GridPin[];
 
-  /// Place a C4 scene under `tweaks`, with `pins` fixing nodes to grid cells
-  /// (honoured only under experimental grid placement). Builds a `dot::Graph`,
-  /// runs the placement the tweaks select, and reads it back onto the scene.
-  layoutC4With(scene: emit::Scene, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): emit::Scene {
+  /// Place a C4 scene by the `dot` engine with default tweaks and no pins.
+  layoutC4Default(scene: emit::Scene): emit::C4Layout {
+    return self.layoutC4(scene, self.defaultTweaks(), self.noPins())
+  }
+
+  /// Place a C4 scene under `tweaks` into a `C4Layout`, with `pins` fixing
+  /// nodes to grid cells (honoured only under experimental grid placement).
+  /// Builds a `dot::Graph`, runs the placement the tweaks select, and reads the
+  /// geometry back as cards, polylines, and frames. An empty view (only the
+  /// framed boundary) falls back to the scene's own simple coordinates; the
+  /// engine itself never panics.
+  layoutC4(scene: emit::Scene, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): emit::C4Layout {
     g = dot::Graph from self.toDotGraph(scene, tweaks)
     return self.readBack(scene, self.place(g, tweaks, pins))
   }
 
-  /// Run the placement the tweaks select: the experimental grid placer (honouring
-  /// the drag-to-pin cells) when grid placement is on; else the layered engine —
-  /// with the long-edge optimiser when `minimizeLongEdges` is set, the plain
-  /// layered layout otherwise.
+  /// Run the placement the tweaks select: the experimental grid placer
+  /// (honouring the drag-to-pin cells) when grid placement is on; else the
+  /// layered pipeline, folded through the pass list the tweaks select.
   place(g: dot::Graph, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): dot::Layout {
     if (tweaks.experimentalGrid) {
       return dot::Dot.gridLayout(g, self.gridParams(tweaks), self.dotPins(pins))
     }
-    if (tweaks.minimizeLongEdges) {
-      return dot::Dot.layoutShortened(g)
-    }
-    return dot::Dot.layout(g)
+    return dot::Dot.runPipeline(g, self.layoutPasses(tweaks))
   }
+
+  /// The pipeline passes the tweaks select: `ShortenLongEdges` when
+  /// `minimizeLongEdges` is set, else none (the plain layered layout).
+  layoutPasses(tweaks: emit::C4Tweaks): dot::Pass[];
 
   /// Translate the IDE's tweaks into the `dot` grid placer's parameters.
   gridParams(tweaks: emit::C4Tweaks): dot::GridParams;
@@ -480,17 +575,22 @@ component Layout for emit::Emit {
   /// from the tweaks.
   toDotGraph(scene: emit::Scene, tweaks: emit::C4Tweaks): dot::Graph;
 
-  /// Read a `dot` placement back onto the scene's nodes and edges as rectangles
-  /// and routed polylines.
-  readBack(scene: emit::Scene, placed: dot::Layout): emit::Scene;
+  /// Read a `dot` placement back as the canvas geometry: node cards, routed
+  /// polylines with label positions, boundary frames, and any grid metadata.
+  readBack(scene: emit::Scene, placed: dot::Layout): emit::C4Layout;
 
   /// Place a sequence scene with the `layout` sequence engine: lifeline
   /// x-positions in first-appearance order, message rows stacked by evaluation
   /// order, frames sized to their body.
   solveSequence(scene: emit::Scene): emit::Scene {
-    placed = layout::SequenceLayout from layout::Layout.layout(self.toSequenceDiagram(scene))
+    metrics = layout::Metrics from self.sequenceMetrics()
+    placed = layout::SequenceLayout from layout::Layout.layout(self.toSequenceDiagram(scene), metrics)
     return self.fromSequenceLayout(scene, placed)
   }
+
+  /// The sequence engine's default metrics — the one source of truth for the
+  /// static SVG's spacing.
+  sequenceMetrics(): layout::Metrics;
 
   /// Translate a sequence scene into the `layout` engine's structural diagram.
   toSequenceDiagram(scene: emit::Scene): layout::Diagram;
@@ -587,8 +687,10 @@ feature DispatchOnViewKind for emit::Projector {
 feature ProjectSymbolPicksAView for emit::Projector {
   given "a single symbol FQN — a callable, system, container, component, or data type"
   when "the symbol is projected"
-  then "a callable traces as a sequence, a system or container shows its children, a data type shows its entity view"
-  but "an unknown FQN fails with EmitError::UnknownNode"
+  then "a callable traces as a sequence, a system or container with children shows them, a data type shows its entity view"
+  and "a childless boundary falls back to the view that frames it as a peer"
+  and "an FQN naming no graph node projects its feature flow view"
+  but "an FQN naming neither a node nor a feature fails with EmitError::UnknownNode"
 }
 
 /// The data and feature views project their own scene families.
@@ -678,4 +780,21 @@ feature CallsBecomeMessages for emit::Trace {
   then "each call to another node is a left-to-right message to that lifeline"
   and "each self. call is a self-message on the owner's own lifeline"
   and "every target is registered as a participant on first appearance"
+}
+
+/// Disclosed callees expand inline; black boxes and recursion stay single calls.
+feature DisclosedCalleesExpandInline for emit::Trace {
+  given "a traced body whose calls reach disclosed, black-box, and recursive callees"
+  when "each call is traced"
+  then "a disclosed callee's body expands inline, the active lifeline switching to it"
+  and "its own returns flow back to its caller"
+  but "a black-box callee, or one already in flight on the call stack, is one message closed by a synthesised return of its declared type"
+}
+
+/// A triggerless entry suppresses its own returns.
+feature TriggerlessEntrySuppressesReturns for emit::Trace {
+  given "a sequence entry that bears no trigger macro"
+  when "its body is traced"
+  then "the owner leads with no inbound call and the entry's returns are suppressed"
+  but "inner expanded callees still return to their callers"
 }

@@ -48,7 +48,16 @@ const entries = walk(skillDir).map((full) =>
 // SKILL.md defers every syntax question to `references/LANG.md`; ship the
 // canonical spec (the repo root LANG.md) at that path so the skill is
 // self-contained once downloaded.
-entries.push(entry(`${rootName}/references/LANG.md`, readFileSync(join(here, "../../LANG.md"))));
+const langMd = readFileSync(join(here, "../../LANG.md"));
+entries.push(entry(`${rootName}/references/LANG.md`, langMd));
+
+// The same spec also backs the IDE's Help → Language reference: vendored under
+// src/lib/bundled/ so the bundle imports it (`?raw`). Committed (the root
+// .gitignore reserves `reference/` for the Graphviz oracle clone), and
+// refreshed by this script whenever LANG.md changes.
+const bundledDir = join(here, "../src/lib/bundled");
+mkdirSync(bundledDir, { recursive: true });
+writeFileSync(join(bundledDir, "LANG.md"), langMd);
 
 const locals = [];
 const central = [];

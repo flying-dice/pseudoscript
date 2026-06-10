@@ -84,8 +84,8 @@ component Server for lsp::Lsp {
   publish(uri: string, diags: syntax::Diagnostic[]): void;
 
   /// Hover the symbol under the cursor: hand the active text, the resolved
-  /// workspace, and the position to `lsp_core`.
-  hover(uri: string, position: lsp_core::Position): lsp_core::Hover {
+  /// workspace, and the position to `lsp_core`; none renders no tooltip.
+  hover(uri: string, position: lsp_core::Position): Option<lsp_core::Hover> {
     text = string from lsp::Store.source(uri)
     fqn = string from lsp::Store.fqnFor(uri)
     return lsp_core::LspCore.hover(lsp::Store.workspace(), fqn, text, position)
@@ -95,15 +95,20 @@ component Server for lsp::Lsp {
   /// definition lives in, and its span there — then map that FQN to its file URI
   /// and range the span against *that* file. Nothing under the cursor yields no
   /// location.
-  gotoDefinition(uri: string, position: lsp_core::Position): lsp::Occurrence {
+  gotoDefinition(uri: string, position: lsp_core::Position): Option<lsp::Occurrence> {
     text = string from lsp::Store.source(uri)
     fqn = string from lsp::Store.fqnFor(uri)
-    target = lsp::DefTarget from lsp_core::LspCore.definition(lsp::Store.workspace(), fqn, text, position)
-    return self.locate(target)
+    found = Option<lsp::DefTarget> from lsp_core::LspCore.definition(lsp::Store.workspace(), fqn, text, position)
+    if (found.isNone) {
+      return None
+    }
+    target = lsp::DefTarget from found.value
+    return Some(self.locate(target))
   }
 
-  /// Whole-document formatting edit, or nothing when the buffer does not parse.
-  formatting(uri: string): lsp_core::TextEdit {
+  /// Whole-document formatting edit; none when the buffer is already canonical
+  /// or does not parse.
+  formatting(uri: string): Option<lsp_core::TextEdit> {
     text = string from lsp::Store.source(uri)
     return lsp_core::LspCore.formatEdit(text)
   }

@@ -7,7 +7,10 @@
 //! same results to JSON. Resolution is delegated to `model`; this crate maps the
 //! resolved answers into LSP shapes and converts byte spans to UTF-16 positions.
 
-/// A zero-based caret position: line and UTF-16 character offset within the line.
+/// A zero-based caret position: line and UTF-16 character offset within the
+/// line. This and the shapes below model the standalone `lsp_types` vocabulary
+/// the crate returns (pinned to the version tower-lsp re-exports, wasm-safe),
+/// so the server edge passes values through with no conversion.
 public data Position { line: number, character: number }
 
 /// A half-open text range between two positions.
@@ -42,18 +45,21 @@ public data DefTarget { fqn: string, span: syntax::Span }
 /// transport-neutral handlers — the same logic the stdio server and the browser
 /// wasm both call.
 public container LspCore for context::Pseudoscript {
-  /// Go-to-definition for the symbol under the caret.
-  public definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget {
+  /// Go-to-definition for the symbol under the caret; none when the caret
+  /// resolves to no symbol.
+  public definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): Option<lsp_core::DefTarget> {
     return lsp_core::Analysis.definition(ws, fromFqn, src, position)
   }
 
-  /// The canonical format edit for a buffer.
-  public formatEdit(src: string): lsp_core::TextEdit {
+  /// The canonical format edit for a buffer; none when it is already canonical
+  /// or fails to parse.
+  public formatEdit(src: string): Option<lsp_core::TextEdit> {
     return lsp_core::Analysis.formatEdit(src)
   }
 
-  /// Markdown hover for the symbol under the caret.
-  public hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Hover {
+  /// Markdown hover for the symbol under the caret; none when the caret
+  /// resolves to no symbol and no typeable local binding.
+  public hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): Option<lsp_core::Hover> {
     return lsp_core::Analysis.hover(ws, fromFqn, src, position)
   }
 }
@@ -73,22 +79,24 @@ component Analysis for lsp_core::LspCore {
   lspDiagnostics(src: string, diags: syntax::Diagnostic[]): lsp_core::Diagnostic[];
 
   /// Markdown hover for the symbol under the caret: its doc summary, or its
-  /// inferred type when undocumented; nothing when the caret resolves to no
-  /// symbol.
-  hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Hover;
+  /// inferred type when the caret rests on a local binding instead; none when
+  /// neither resolves.
+  hover(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): Option<lsp_core::Hover>;
 
-  /// The FQN and location the identifier under the caret points at.
-  definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::DefTarget;
+  /// The FQN and location the identifier under the caret points at; none when
+  /// the caret resolves to no symbol.
+  definition(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): Option<lsp_core::DefTarget>;
 
   /// Inlay hints (inferred binding types) across one buffer.
   inlayHints(ws: model::Workspace, fromFqn: string, src: string): string[];
 
-  /// Whether the symbol under the caret can be renamed, and its range.
-  renameable(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): lsp_core::Range;
+  /// The editor range of the identifier under the caret when it resolves to a
+  /// renameable symbol; none otherwise.
+  renameable(ws: model::Workspace, fromFqn: string, src: string, position: lsp_core::Position): Option<lsp_core::Range>;
 
-  /// The canonical formatting edit for a buffer, or nothing when it is already
+  /// The canonical formatting edit for a buffer; none when it is already
   /// canonical or fails to parse.
-  formatEdit(src: string): lsp_core::TextEdit;
+  formatEdit(src: string): Option<lsp_core::TextEdit>;
 }
 
 /// Completion: the candidates offered at a byte offset, resolved across the

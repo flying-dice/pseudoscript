@@ -84,8 +84,10 @@ component Adapter for universe::Universe {
   /// becomes a graph node; data and callables are skipped.
   placeStructural(graph: model::Graph): universe::GraphNode[];
 
-  /// Hook each node to its nearest structural parent, collecting the top-level
-  /// systems as the containment roots.
+  /// Hook each node to its direct parent when that parent is itself a placed
+  /// structural node; a node whose parent is absent or unplaced becomes a
+  /// containment root. (Call endpoints, by contrast, are lifted up the chain by
+  /// `lift`.)
   wireContainment(graph: model::Graph, nodes: universe::GraphNode[]): universe::SoftwareGraph;
 
   /// Lift every `call` edge to the structural level and tally directed traffic

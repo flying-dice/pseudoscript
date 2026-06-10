@@ -12,7 +12,7 @@ public person Developer {
   /// #headline
   #[manual]
   public renderDocs(path: string): void {
-    cli::Cli.runDoc(path)
+    context::Pseudoscript.renderDocs(path)
   }
 
   /// Author a model in the editor, which drives the language server.
@@ -23,19 +23,32 @@ public person Developer {
 }
 
 /// The PseudoScript CLI — loads a `.pds` workspace into one resolved graph and
-/// documents it as a static site, or serves the language to editors.
+/// documents it as a static site, or serves the language to editors. Cross-system
+/// callers couple to these published faces; the containers stay behind them.
 /// #headline
-public system Pseudoscript;
+public system Pseudoscript {
+  /// Published face: render the workspace containing `path` to its doc site.
+  /// Delegates inward to the CLI container.
+  public renderDocs(path: string): void {
+    cli::Cli.runDoc(path)
+  }
+
+  /// Published face: language services for one editor document change. Ensures
+  /// `pds lsp` is running, then routes the change to the language server.
+  public serveLanguage(doc: model::WorkspaceModule): void {
+    cli::Cli.runLsp()
+    lsp::Lsp.onChange(doc)
+  }
+}
 
 /// IDEs that speak the Language Server Protocol (VS Code, Neovim, …). The editor
 /// spawns `pds lsp` as a child process and drives it over stdio: it streams
 /// document changes to the server and renders the diagnostics it publishes.
 public system Editor {
-  /// Track an open document: ensure `pds lsp` is running, then push each change
-  /// to the server (which replies with diagnostics).
+  /// Track an open document: hand each change to the toolchain's published
+  /// language face, which spawns and drives the server.
   public openDocument(doc: model::WorkspaceModule): void {
-    cli::Cli.runLsp()
-    lsp::Lsp.onChange(doc)
+    context::Pseudoscript.serveLanguage(doc)
   }
 }
 
@@ -50,7 +63,7 @@ feature DocumentAWorkspace for context::Pseudoscript {
   and "the modules form a well-formed C4 model"
   when "the developer runs `pds doc` against the directory"
   then "every module is loaded into one resolved graph"
-  and "C4 and sequence diagrams are projected and embedded as inline SVG"
+  and "C4 and sequence diagrams are projected as scene geometry the site's client islands draw"
   and "a static site is written under the configured output directory"
 }
 

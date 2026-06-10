@@ -130,9 +130,18 @@ public data RenderError =
 /// writes.
 /// #headline
 public container Doc for context::Pseudoscript {
-  /// Render the documentation site for `graph` under `config`.
+  /// Render the SSR HTML documentation site for `graph` under `config`.
   public render(graph: model::Graph, config: doc::DocConfig): Result<doc::Site, doc::RenderError> {
     return doc::SiteBuilder.render(graph, config)
+  }
+
+  /// Render the documentation as Markdown files with the diagrams inlined as
+  /// self-contained SVG — the static, engine-free alternative to the HTML site.
+  /// One `.md` per module plus an `index.md`, mirroring the HTML site's paths.
+  /// Needs no SSR engine, so it is infallible and available on every target.
+  public renderMarkdown(graph: model::Graph, config: doc::DocConfig): doc::Site {
+    pages = doc::PageProps[] from doc::Pages.buildAll(graph, config)
+    return doc::MarkdownSite.render(pages, config.theme)
   }
 }
 
@@ -257,6 +266,11 @@ component Pages for doc::Doc {
   /// Every non-callable node declared in `module`, sorted by FQN. Callables are
   /// documented inside their owner's section, not as their own entries.
   moduleNodes(graph: model::Graph, module: string): model::GraphNode[];
+
+  /// Every page's props in emission order — the index, the authored docs, then
+  /// the module pages — the shared input both the HTML and Markdown renderers
+  /// consume, so the two sites never disagree on content.
+  buildAll(graph: model::Graph, config: doc::DocConfig): doc::PageProps[];
 
   /// Render each node's section in order.
   sections(graph: model::Graph, nodes: model::GraphNode[]): doc::NodeSection[];
@@ -416,7 +430,7 @@ component Diagrams for doc::Doc {
   /// configured theme and ships as an `Svg` figure.
   embed(scene: emit::Scene, caption: string): doc::Diagram {
     if (scene.isSequenceScene) {
-      placed = layout::SequenceLayout from layout::Layout.layout(self.asSequenceDiagram(scene))
+      placed = layout::SequenceLayout from layout::Layout.layout(self.asSequenceDiagram(scene), self.sequenceMetrics())
       return self.sequenceFigure(scene, caption, placed)
     }
     if (scene.isC4Scene) {
@@ -431,6 +445,9 @@ component Diagrams for doc::Doc {
   /// Render a data or feature scene to SVG in the site's configured theme, through
   /// the emit face, and wrap it in an `Svg` figure.
   svgFigure(scene: emit::Scene, caption: string): doc::Diagram;
+
+  /// The sequence engine's default metrics for embedded figures.
+  sequenceMetrics(): layout::Metrics;
 
   /// Build a `Sequence` figure carrying the pre-positioned geometry.
   sequenceFigure(scene: emit::Scene, caption: string, placed: layout::SequenceLayout): doc::Diagram;
@@ -538,6 +555,25 @@ component Escape for doc::Doc {
 component Markdown for doc::Doc {
   /// Render the authored doc page's raw `markdown` content to HTML.
   render(markdown: string): string;
+}
+
+/// The static Markdown output mode: turns the same per-page props the HTML
+/// renderer consumes into flat `.md` files, each diagram inlined as a themed,
+/// self-contained SVG. No SSR engine, no shared assets, no logo — the
+/// engine-free site for wikis and code hosts.
+component MarkdownSite for doc::Doc {
+  /// One `.md` file per page, mirroring the HTML site's paths, with every
+  /// diagram rendered to inline SVG under `theme`.
+  render(pages: doc::PageProps[], theme: doc::Theme): doc::Site;
+}
+
+/// The Markdown site is the engine-free twin of the HTML site.
+feature MarkdownSiteMirrorsHtml for doc::MarkdownSite {
+  given "the same resolved graph and configuration"
+  when "the Markdown site is rendered"
+  then "one .md per module plus an index.md mirror the HTML site's paths"
+  and "each diagram is inlined as a themed, self-contained SVG"
+  but "no SSR engine runs and no shared assets or logo are emitted"
 }
 
 /// A partial model still documents.

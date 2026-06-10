@@ -35,7 +35,7 @@
   const tone = $derived(fps >= 50 ? "good" : fps >= 30 ? "warn" : "bad");
 </script>
 
-<div class="perf" title="Frame rate{memMb != null ? ' · JS heap used' : ''}">
+<div class="perf" data-testid="perf-meter" title="Frame rate{memMb != null ? ' · JS heap used' : ''}">
   <span class="fps {tone}">{fps} fps</span>
   {#if memMb != null}<span class="mem">{memMb} MB</span>{/if}
 </div>

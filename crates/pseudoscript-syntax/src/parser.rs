@@ -1580,6 +1580,7 @@ impl Parser {
                     | TokenKind::KwContainer
                     | TokenKind::KwComponent
                     | TokenKind::KwData
+                    | TokenKind::KwConstant
                     | TokenKind::KwFeature
                     | TokenKind::Doc
                     | TokenKind::HashLBracket
@@ -1635,6 +1636,23 @@ mod tests {
     fn stray_token_in_body_terminates() {
         let parsed = parse("public system S { = }");
         assert!(parsed.diagnostics.iter().any(Diagnostic::is_error));
+    }
+
+    /// Regression: top-level recovery stops at a `constant` declaration
+    /// (ADR-039), so a stray token never swallows the constant after it.
+    #[test]
+    fn recovery_stops_at_constant() {
+        let parsed = parse("}\nconstant LIMIT = 10\n");
+        assert!(
+            parsed.diagnostics.iter().any(Diagnostic::is_error),
+            "the stray token is reported"
+        );
+        assert_eq!(
+            parsed.ast.items.len(),
+            1,
+            "the constant survives recovery: {:?}",
+            parsed.ast.items
+        );
     }
 
     /// Regression: a labelled `from` source set (`{ name: "x" }` — invalid, since
