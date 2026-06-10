@@ -12,12 +12,17 @@ git_tag_enable = false
 git_release_enable = false
 
 # The binary crate (`pseudoscript` → `pds`): the only tagged/released package.
+# `git_only` makes release-plz read the last release from the `v*` git tags
+# instead of the cargo registry — without it, an unpublished crate looks
+# perpetually unreleased, so release-pr proposes the current version forever
+# and never bumps (every release then needs a manual bump PR, e.g. #47, #60).
 # The release is created NOT marked latest (`git_release_latest = false`); the
 # release-assets workflow flips it to latest only after the installer + upgrade
 # smoke test passes on all three OSes, so a broken release never becomes the one
 # `/releases/latest`, scripts/install.*, and `pds upgrade` resolve.
 [[package]]
 name = "pseudoscript"
+git_only = true
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
 git_release_enable = true
