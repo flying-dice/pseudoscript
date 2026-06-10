@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/flying-dice/pseudoscript/compare/pseudoscript-layout-v0.1.6...pseudoscript-layout-v0.1.7) - 2026-06-10
+
+### Added
+
+- *(web-ide)* 3D relationship-graph view (d3-force-3d)
+- *(emit)* drive C4 layout with pseudoscript-dot, drop layout-rs
+- *(emit)* show for-ancestry and description on sequence lifelines
+- *(docs)* authored Markdown docs + rich live-preview editor
+
+### Other
+
+- release
+- release v0.1.4
+- release v0.1.0
+
 ## [0.1.6](https://github.com/flying-dice/pseudoscript/releases/tag/pseudoscript-layout-v0.1.6) - 2026-06-10
 
 ### Added
