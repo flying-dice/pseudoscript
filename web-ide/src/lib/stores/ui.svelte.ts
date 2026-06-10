@@ -17,6 +17,16 @@ function readDocWidth(): string {
   }
 }
 
+function readPerfHud(): boolean {
+  try {
+    const v = localStorage.getItem("pds-perf-hud");
+    // Off unless explicitly enabled (or in dev, where it aids the work).
+    return v === null ? import.meta.env.DEV : v === "1";
+  } catch {
+    return false;
+  }
+}
+
 function readLayoutTweaks(): LayoutTweaks {
   try {
     const raw = localStorage.getItem("pds-layout");
@@ -36,6 +46,11 @@ class UiStore {
   newProjectOpen = $state(false);
   settingsOpen = $state(false);
   mdHelpOpen = $state(false);
+  // The in-product language reference (Help menu).
+  referenceOpen = $state(false);
+  // The status-bar frame-rate / heap readout — a developer aid, off by default
+  // in production; toggled from the View menu and persisted.
+  perfHud = $state(readPerfHud());
   // Tool-window islands: the left-hand Explorer (file tree) and right-hand
   // Structure panel are open by default; the bottom Problems dock starts closed.
   explorerOpen = $state(true);
@@ -64,6 +79,16 @@ class UiStore {
     this.docWidth = w;
     try {
       localStorage.setItem("pds-doc-width", w);
+    } catch {
+      /* storage unavailable — session-only */
+    }
+  }
+
+  /** Toggle and persist the performance HUD. */
+  togglePerfHud(): void {
+    this.perfHud = !this.perfHud;
+    try {
+      localStorage.setItem("pds-perf-hud", this.perfHud ? "1" : "0");
     } catch {
       /* storage unavailable — session-only */
     }

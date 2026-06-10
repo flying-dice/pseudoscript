@@ -1,25 +1,36 @@
 <script lang="ts">
-  // The project launcher: opens on start and from the toolbar. Open a folder,
-  // re-open a recent, or start a New project (which opens its own dialog). Every
-  // project is a real folder on disk. Drafting styling.
+  // The project launcher: opens on start and from the toolbar. Open one of the
+  // bundled examples in memory (no disk, no commitment — model:
+  // ide::Launcher.openExample), open a folder, re-open a recent, or start a New
+  // project (which opens its own dialog). Only the disk actions gate on File
+  // System Access support. Drafting styling.
   import type { Recent } from "$lib/recents";
+  import { FS_ACCESS_BROWSERS } from "$lib/workspace.js";
+
+  type Example = { id: string; name: string; description: string; moduleCount: number };
 
   type Props = {
     recents?: Recent[];
+    examples?: Example[];
+    fsSupported?: boolean;
     dismissible?: boolean;
     onpickrecent?: (recent: Recent) => void;
     onopenfolder?: () => void;
     onnewproject?: () => void;
+    onpickexample?: (id: string) => void;
     onforget?: (recent: Recent) => void;
     onclose?: () => void;
   };
 
   let {
     recents = [],
+    examples = [],
+    fsSupported = true,
     dismissible = false,
     onpickrecent,
     onopenfolder,
     onnewproject,
+    onpickexample,
     onforget,
     onclose,
   }: Props = $props();
@@ -90,9 +101,28 @@
           aria-label="Search projects"
         />
       </label>
-      <button class="btn" data-testid="open-folder" onclick={() => onopenfolder?.()}>Open</button>
-      <button class="btn primary" data-testid="new-project" onclick={() => onnewproject?.()}>New Project</button>
+      <button
+        class="btn"
+        data-testid="open-folder"
+        disabled={!fsSupported}
+        title={fsSupported ? "Open a project folder from disk" : `Folders need the File System Access API (${FS_ACCESS_BROWSERS})`}
+        onclick={() => onopenfolder?.()}>Open folder</button
+      >
+      <button
+        class="btn primary"
+        data-testid="new-project"
+        disabled={!fsSupported}
+        title={fsSupported ? undefined : `New projects write to disk, which needs the File System Access API (${FS_ACCESS_BROWSERS})`}
+        onclick={() => onnewproject?.()}>New Project</button
+      >
     </div>
+
+    {#if !fsSupported}
+      <p class="fs-note" data-testid="fs-note">
+        This browser has no File System Access API, so folders can't be opened or saved — that needs
+        {FS_ACCESS_BROWSERS}. The examples below still open right here, in memory.
+      </p>
+    {/if}
 
     <div class="recent">
       {#if filtered.length}
@@ -112,8 +142,25 @@
         </ul>
       {:else if folderRecents.length}
         <p class="empty">No projects match “{query.trim()}”.</p>
-      {:else}
-        <p class="empty">No recent projects yet — create one with New Project.</p>
+      {:else if fsSupported}
+        <p class="empty">No recent projects yet — open an example below, or create one with New Project.</p>
+      {/if}
+
+      {#if examples.length}
+        <h2 class="kicker">Examples — open in your browser, nothing to install</h2>
+        <ul class="rows examples">
+          {#each examples as ex (ex.id)}
+            <li>
+              <button class="row" data-testid="example-{ex.id}" onclick={() => onpickexample?.(ex.id)}>
+                <span class="avatar" style="--h: {hue(ex.name)}" aria-hidden="true">{initials(ex.name)}</span>
+                <span class="meta">
+                  <span class="name">{ex.name}</span>
+                  <span class="sub">{ex.moduleCount} module{ex.moduleCount === 1 ? "" : "s"} · opens in memory</span>
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
       {/if}
     </div>
   </div>
@@ -208,9 +255,29 @@
     color: var(--ink); font-family: var(--font-sans); font-size: 0.85rem; font-weight: 600;
     white-space: nowrap;
   }
-  .btn:hover { border-color: var(--accent); }
+  .btn:hover:not(:disabled) { border-color: var(--accent); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
-  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* the unsupported-browser note: disk actions are off, examples still work */
+  .fs-note {
+    margin: -0.4rem 0 0.9rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+
+  .kicker {
+    margin: 1.1rem 0 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  .kicker::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 
   .recent {
     animation: rise 0.4s 0.1s both;

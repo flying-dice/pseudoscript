@@ -1,10 +1,11 @@
 // Folder-as-workspace via the File System Access API (Chromium browsers).
 //
-// `openWorkspace()` prompts for a directory, walks it for `.pds` modules, and
-// derives each module's FQN the way the compiler does (LANG.md §8.1): relative
-// to the directory that holds `pds.toml`, path separators become `::` and the
-// filename is the final segment (`banking/core.pds` → `banking::core`). Files
-// are read and written through their handles, so edits persist to disk.
+// `pickDirectoryOutcome()` + `readWorkspace()` prompt for a directory, walk it
+// for `.pds` modules, and derive each module's FQN the way the compiler does
+// (LANG.md §8.1): relative to the directory that holds `pds.toml`, path
+// separators become `::` and the filename is the final segment
+// (`banking/core.pds` → `banking::core`). Files are read and written through
+// their handles, so edits persist to disk.
 
 import type { ManifestSection, VendoredDepFile } from "./pds.js";
 
@@ -102,11 +103,35 @@ export function pickDirectory(): Promise<FileSystemDirectoryHandle> {
   return window.showDirectoryPicker({ mode: "readwrite" });
 }
 
-/**
- * Prompts for a folder and loads it as a workspace.
- */
-export async function openWorkspace(): Promise<Workspace> {
-  return readWorkspace(await pickDirectory());
+/** The browsers that ship the File System Access API — the one list every
+ *  unsupported-browser message derives from. */
+export const FS_ACCESS_BROWSERS = "Chrome, Edge, Brave, or Arc";
+
+/** The three-way outcome of a folder pick: a handle, a silent user cancel, or
+ *  a failure the UI must surface. Cancel and failure are never conflated — a
+ *  swallowed failure leaves a dead control (model: `ide::PickError`). */
+export type PickOutcome =
+  | { kind: "picked"; handle: FileSystemDirectoryHandle }
+  | { kind: "cancelled" }
+  | { kind: "failed"; message: string };
+
+/** {@link pickDirectory}, classified. An `AbortError` is the user closing the
+ *  picker (silent); a missing API or any other rejection — permission policy,
+ *  embedder denial, insecure context — is a failure with its cause. */
+export async function pickDirectoryOutcome(): Promise<PickOutcome> {
+  if (!fsSupported) {
+    return {
+      kind: "failed",
+      message: `This browser has no File System Access API — folders need ${FS_ACCESS_BROWSERS}.`,
+    };
+  }
+  try {
+    return { kind: "picked", handle: await pickDirectory() };
+  } catch (e) {
+    const err = e as DOMException;
+    if (err?.name === "AbortError") return { kind: "cancelled" };
+    return { kind: "failed", message: err?.message || String(e) };
+  }
 }
 
 /** A safe directory name: trims, lowercases spaces to hyphens, strips anything

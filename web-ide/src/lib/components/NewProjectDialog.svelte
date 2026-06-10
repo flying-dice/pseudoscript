@@ -7,11 +7,15 @@
   // A project template: the empty starter or a bundled example.
   type Template = { id: string; name: string; description: string; moduleCount: number };
 
+  import type { PickOutcome } from "$lib/workspace.js";
+
   type Props = {
     templates?: Template[];
     // Prompts for the target folder (the native picker lives in the parent); the
-    // dialog stores the handle and shows its name. Returns null if cancelled.
-    onchoosefolder?: () => Promise<FileSystemDirectoryHandle | null>;
+    // dialog stores the handle and shows its name. A cancel keeps the prior
+    // choice silently; a failure renders inline under the field (model:
+    // ide::PickError — cancel and failure are never conflated).
+    onchoosefolder?: () => Promise<PickOutcome>;
     onpick?: (name: string, templateId: string, parent: FileSystemDirectoryHandle) => void;
     onclose?: () => void;
   };
@@ -22,11 +26,18 @@
   // chosen until both are set; the template scaffolds a `<name>` dir in `folder`.
   let name = $state("");
   let folder = $state<FileSystemDirectoryHandle | null>(null);
+  let pickError = $state<string | null>(null);
   const valid = $derived(name.trim().length > 0 && folder !== null);
 
   async function chooseFolder() {
     const picked = await onchoosefolder?.();
-    if (picked) folder = picked;
+    if (!picked || picked.kind === "cancelled") return; // the user's choice — keep the prior state
+    if (picked.kind === "failed") {
+      pickError = picked.message;
+      return;
+    }
+    pickError = null;
+    folder = picked.handle;
   }
   const choose = (templateId: string) => {
     if (valid && folder) onpick?.(name.trim(), templateId, folder);
@@ -62,11 +73,20 @@
 
     <div class="folderfield">
       <span class="namelabel">Target folder <span class="req" aria-hidden="true">*</span></span>
-      <button class="folderpick" class:chosen={folder} data-testid="choose-folder" onclick={chooseFolder}>
+      <button
+        class="folderpick"
+        class:chosen={folder}
+        data-testid="choose-folder"
+        aria-invalid={pickError != null}
+        onclick={chooseFolder}
+      >
         <span class="folderpick-glyph" aria-hidden="true">▢</span>
         <span class="folderpick-text">{folder ? folder.name : "Choose a folder…"}</span>
         <span class="folderpick-action" aria-hidden="true">{folder ? "Change" : "Browse"}</span>
       </button>
+      {#if pickError}
+        <p class="fielderror" data-testid="pick-error" role="alert">Couldn't open the folder picker: {pickError}</p>
+      {/if}
       <p class="fieldhint">A <code>{name.trim() || "<name>"}</code> directory is created inside it for the project.</p>
     </div>
 
@@ -198,6 +218,8 @@
     flex: none; font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--accent);
   }
+  .fielderror { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--err, #f87171); line-height: 1.5; }
+  .folderpick[aria-invalid="true"] { border-color: var(--err, #f87171); }
   .fieldhint { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--ink-faint); line-height: 1.5; }
   .fieldhint code { font-family: var(--font-mono); font-size: 0.95em; color: var(--ink-soft); }
 

@@ -25,8 +25,11 @@
     onbuilddocs?: () => void;
     onshortcuts?: () => void;
     onaisettings?: () => void;
+    onreference?: () => void;
     onview?: (view: "code" | "canvas" | "space") => void;
     ontogglestructure?: () => void;
+    perfHud?: boolean;
+    ontoggleperfhud?: () => void;
   };
 
   let {

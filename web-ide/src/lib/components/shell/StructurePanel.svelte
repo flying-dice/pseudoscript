@@ -102,8 +102,11 @@
     border-radius: var(--radius-sm);
     color: var(--ink-faint);
   }
+  /* Keyboard focus must be unmistakable (WCAG 2.4.7): the accent border plus a
+     soft outer ring, since the inner input carries no outline of its own. */
   .search:focus-within {
     border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
   }
   .search input {
     flex: 1;

@@ -123,6 +123,12 @@ public data ProviderError { kind: string, message: string, hint: string }
 /// emit valid PseudoScript.
 public data FimPrompt { prefix: string, suffix: string, primer: string }
 
+/// Why a folder pick yielded no workspace: the picker failed — the API missing,
+/// blocked by permission policy, or denied by the embedder. Distinct from a
+/// user cancel, which is silent: a cancel is the user's choice, a failure is
+/// the product's to explain.
+public data PickError { message: string }
+
 // === Layer 1 — the IDE session: the one typed wasm ========================
 
 /// `crates/pseudoscript-ide` — the IDE application, Rust compiled to a single
@@ -288,6 +294,11 @@ public container WebIde for context::Pseudoscript {
   public open(): void {
     ide::Bootstrap.start()
   }
+
+  /// Open the bundled language reference in-product (Help menu) — the same
+  /// version-pinned spec the authoring-skill zip vendors, so an author never
+  /// leaves the IDE to look up syntax.
+  openLanguageReference(): void;
 }
 
 /// The file-system adapter over the browser File System Access API: directory
@@ -297,6 +308,11 @@ public container WebIde for context::Pseudoscript {
 /// FS-Access specifics live; it pushes what it reads into the session via
 /// `mount`.
 public component FsAccessAdapter for ide::WebIde {
+  /// Show the native directory picker. Ok(true) = a folder was picked and
+  /// retained; Ok(false) = the user cancelled; Err = the picker failed (API
+  /// missing, permission policy, embedder denial) — the caller surfaces it.
+  pickFolder(): Result<bool, ide::PickError>;
+
   /// Walk the picked directory for the project's own modules.
   readModules(): model::WorkspaceModule[];
   /// Read `pds.lock` and the dependency files under `pds_modules/` (deriving each
@@ -519,16 +535,75 @@ public component DiagramCanvas for ide::WebIde {
   exportSvg(): void;
 }
 
-/// Boots the IDE in a browser tab: load the one wasm bundle (IdeSession), read
-/// the workspace through the FS adapter, and mount it into the session.
+/// Boots the IDE in a browser tab: load the one wasm bundle (IdeSession), then
+/// restore the URL hash's workspace — a share link mounts in memory and needs
+/// no disk — or fall back to the launcher. File System Access support gates
+/// only the disk features (open folder, save, watch): without it those actions
+/// are disabled with a notice, while share links and the bundled examples
+/// still open.
 public component Bootstrap for ide::WebIde {
-  /// Read the workspace and its dependency externals, then mount the session;
-  /// the editor adapter takes over from the first edit.
+  /// Restore from the hash when it carries a workspace; else show the launcher.
   start(): void {
+    restored = bool from self.restoreFromHash()
+    if (!restored) {
+      ide::Launcher.show()
+    }
+  }
+
+  /// Decode and mount the URL hash's embedded workspace (a share link), in
+  /// memory, session-only; false when the hash carries none. A corrupt payload
+  /// surfaces a notification and falls back to the launcher.
+  restoreFromHash(): bool;
+}
+
+/// The bundled example catalogue, discovered at build time from the samples
+/// folder (one folder per example: meta.json, the `.pds` modules, `pds.toml`,
+/// doc pages). Each entry doubles as a New-project template and as an
+/// in-memory workspace.
+public component Samples for ide::WebIde {
+  /// One example in the in-memory workspace shape the session mounts — the
+  /// same shape a decoded share link yields.
+  workspaceOf(id: string): ide::BrowserWorkspace;
+}
+
+/// The project launcher — the first surface. Offers the recents, open-a-folder,
+/// New Project, and the bundled examples. Examples and share links mount in
+/// memory and need no disk; only the disk actions gate on File System Access
+/// support. Dismissible, so the menus, help, and settings stay reachable
+/// without a project.
+public component Launcher for ide::WebIde {
+  /// Present the launcher.
+  show(): void;
+
+  /// Open one bundled example in memory, session-only — the zero-commitment
+  /// route to a working model: no name, no folder, no disk. Exactly the mount
+  /// path a share link uses; saving later upgrades it to a real folder.
+  openExample(id: string): void {
+    ws = ide::BrowserWorkspace from ide::Samples.workspaceOf(id)
+    ide::IdeSession.mount(ws.modules, ws.externals)
+  }
+
+  /// Open a real folder from disk (File System Access; disk-gated). The pick
+  /// is three-way: a failure surfaces inline where the user acted, a cancel is
+  /// silent, and a picked folder mounts. Cancel and failure are never
+  /// conflated — swallowing a failure leaves a dead control.
+  openFolder(): void {
+    picked = Result<bool, ide::PickError> from ide::FsAccessAdapter.pickFolder()
+    if (picked.isErr) {
+      self.showPickError(picked.error)
+      return
+    }
+    if (!picked.value) {
+      return
+    }
     mods = model::WorkspaceModule[] from ide::FsAccessAdapter.readModules()
     deps = model::WorkspaceModule[] from ide::FsAccessAdapter.readDependencies()
     ide::IdeSession.mount(mods, deps)
   }
+
+  /// Render a pick failure inline at the control that triggered it, naming the
+  /// cause.
+  showPickError(err: ide::PickError): void;
 }
 
 // === Invariants ==========================================================
@@ -617,6 +692,32 @@ feature StructuralCompletionStaysLocal for ide::GhostText {
   then "structural candidates stay local and deterministic"
   and "the remote model supplies only multi-token inline suggestions"
   but "with AI completion off or unconfigured, the editor behaves exactly as before"
+}
+
+/// Examples open in memory — value before any commitment.
+feature ExamplesNeedNoDisk for ide::Launcher {
+  given "a first-time visitor on the launcher"
+  when "they open a bundled example"
+  then "it mounts in memory with no name, no folder, and no disk permission"
+  and "the same session-only mount path a share link uses carries it"
+  but "saving to a folder later upgrades it to a real on-disk workspace"
+}
+
+/// Missing File System Access disables disk features, never the IDE.
+feature DiskGatesOnlyDiskFeatures for ide::Bootstrap {
+  given "a browser without the File System Access API (Firefox, Safari)"
+  when "the IDE boots"
+  then "share links and bundled examples still open in memory"
+  and "the disk actions — open folder, save, watch — are disabled with a notice naming the supported browsers"
+  but "no full-screen wall blocks the product"
+}
+
+/// A pick failure is surfaced; a cancel is silent.
+feature PickerFailureSurfaced for ide::Launcher {
+  given "the native folder picker invoked from Open or New Project"
+  when "it closes without a folder"
+  then "a user cancel changes nothing, silently"
+  but "a failure — blocked API, permission policy, embedder denial — renders inline at the control with the cause"
 }
 
 /// Editing a model in the browser checks and redraws it live, with no backend.

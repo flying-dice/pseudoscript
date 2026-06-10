@@ -49,4 +49,27 @@ describe("ProjectPanel", () => {
     render(ProjectPanel, { props: { recents: [] } });
     expect(screen.getByText(/No recent projects yet/)).toBeInTheDocument();
   });
+
+  it("lists the bundled examples and opens one in memory", async () => {
+    const onpickexample = vi.fn();
+    const examples = [
+      { id: "banking", name: "Internet Banking", description: "C4 example.", moduleCount: 1 },
+      { id: "acme-pay", name: "ACME Pay", description: "Payments.", moduleCount: 16 },
+    ];
+    render(ProjectPanel, { props: { recents: [], examples, onpickexample } });
+
+    expect(screen.getByText(/Examples — open in your browser/)).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("example-banking"));
+    expect(onpickexample).toHaveBeenCalledWith("banking");
+  });
+
+  it("disables the disk actions and explains, with examples still open, when FS Access is missing", () => {
+    const examples = [{ id: "banking", name: "Internet Banking", description: "C4 example.", moduleCount: 1 }];
+    render(ProjectPanel, { props: { recents: [], examples, fsSupported: false } });
+
+    expect(screen.getByTestId("open-folder")).toBeDisabled();
+    expect(screen.getByTestId("new-project")).toBeDisabled();
+    expect(screen.getByTestId("fs-note")).toHaveTextContent(/examples below still open/i);
+    expect(screen.getByTestId("example-banking")).toBeEnabled();
+  });
 });

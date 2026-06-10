@@ -64,6 +64,9 @@
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let tipEl = $state<HTMLDivElement | null>(null);
+  // Re-frames the camera to the whole graph; assigned in onMount, wired to the
+  // re-center control.
+  let recenter: (() => void) | undefined;
   // The selected flow's ordered steps + which one the request is on, for the timeline.
   let flowSteps = $state<{ from: string; to: string; label: string }[]>([]);
   let flowStep = $state(-1);
@@ -465,12 +468,23 @@
       }
     };
 
-    // Frame the whole graph.
+    // Frame the whole graph — at mount, on re-center, and on a host resize
+    // (skipped once the user has orbited, whose viewpoint a refit would yank).
+    let userMoved = false;
+    const frameGraph = () => {
+      const b = new THREE.Box3().setFromObject(scene);
+      const c = b.getCenter(new THREE.Vector3());
+      const s = b.getSize(new THREE.Vector3());
+      controls.target.copy(c);
+      camera.position.copy(c).add(new THREE.Vector3(s.x * 0.4, s.y * 0.3, Math.max(s.x, s.y, s.z) * 1.5 + 40));
+      controls.update();
+      userMoved = false;
+    };
+    controls.addEventListener("start", () => (userMoved = true));
+    recenter = frameGraph;
     const box = new THREE.Box3().setFromObject(scene);
     const centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
-    controls.target.copy(centre);
-    camera.position.copy(centre).add(new THREE.Vector3(size.x * 0.4, size.y * 0.3, Math.max(size.x, size.y, size.z) * 1.5 + 40));
-    controls.update();
+    frameGraph();
 
     // Distance fog tinted to the backdrop: nearer orbs read crisp, far ones recede into
     // the sheet, adding aerial depth. Camera-relative, so it tracks orbit/zoom for free.
@@ -635,8 +649,18 @@
     cv.addEventListener("pointerdown", onDown);
     cv.addEventListener("pointerup", onUp);
 
-    const resize = () => { camera.aspect = W() / H(); camera.updateProjectionMatrix(); renderer.setSize(W(), H()); };
+    const resize = () => {
+      camera.aspect = W() / H();
+      camera.updateProjectionMatrix();
+      renderer.setSize(W(), H());
+      // Keep the graph framed through window and panel resizes; an orbiting
+      // user's viewpoint is left alone.
+      if (!userMoved) frameGraph();
+    };
     addEventListener("resize", resize);
+    // A window listener misses panel (splitter) resizes — observe the host too.
+    const ro = new ResizeObserver(resize);
+    ro.observe(cv.parentElement ?? cv);
     const onKey = (e: KeyboardEvent) => { if (e.key !== "Escape") return; clearSelection(); if (onclose) onclose(); else ondeselect?.(); };
     addEventListener("keydown", onKey);
 
@@ -692,6 +716,8 @@
       cv.removeEventListener("pointermove", onMove);
       cv.removeEventListener("pointerdown", onDown); cv.removeEventListener("pointerup", onUp);
       removeEventListener("resize", resize); removeEventListener("keydown", onKey);
+      ro.disconnect();
+      recenter = undefined;
       // Free GPU resources — renderer.dispose() doesn't reclaim user geometries /
       // materials / textures, and this component remounts on theme + workspace changes.
       // Collect each resource ONCE (a texture shared by two materials, e.g. the bead
@@ -729,6 +755,9 @@
   <div class="hint">
     {snapshot.nodes.length} nodes · {flows?.length ?? 0} flows · <b>hover</b> a leg · <b>click</b> to open a flow · <b>drag</b> orbit · <b>scroll</b> zoom
   </div>
+  <button class="recenter" data-testid="universe-recenter" title="Re-center the graph" aria-label="Re-center the graph" onclick={() => recenter?.()}>
+    ⌖ Re-center
+  </button>
   {#if flowChoice}
     <div class="flow-choice" style="left:{flowChoice.x}px; top:{flowChoice.y}px">
       <div class="fc-head">Open flow</div>
@@ -782,6 +811,18 @@
   .bar button:hover { border-color: var(--accent); color: var(--ink); }
   .hint { position: absolute; top: 16px; left: 18px; font: 12px/1.6 var(--font-mono); color: var(--ink-faint); pointer-events: none; }
   .hint b { color: var(--ink-soft); }
+  .recenter {
+    position: absolute; top: 14px; right: 16px;
+    padding: 0.3rem 0.6rem;
+    font: 11px/1 var(--font-mono);
+    color: var(--ink-soft);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .recenter:hover { border-color: var(--accent); color: var(--ink); }
+  .recenter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .legend { position: absolute; left: 18px; bottom: 16px; display: flex; gap: 14px; font: 12px/1.5 var(--font-sans); color: var(--ink-soft); pointer-events: none; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 7px currentColor; }

@@ -121,9 +121,18 @@
     transform: translateY(50%);
   }
   .splitter:hover,
-  .splitter:focus-visible,
   .splitter.dragging {
     opacity: 0.7;
     outline: none;
+  }
+  /* Keyboard focus must be unmistakable (WCAG 2.4.7): widen the hairline to a
+     3px bar at full opacity — the hover hairline alone is too faint to track. */
+  .splitter:focus-visible {
+    opacity: 1;
+    outline: none;
+    background-size: 3px 100%;
+  }
+  .splitter.bottom:focus-visible {
+    background-size: 100% 3px;
   }
 </style>
