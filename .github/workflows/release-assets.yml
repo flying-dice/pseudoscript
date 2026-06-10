@@ -211,6 +211,15 @@ jobs:
           $binDir = Join-Path $env:USERPROFILE ".pseudoscript\bin"
           $exe = Join-Path $binDir "pds.exe"
           if (-not (Test-Path $exe)) { Write-Error "install.ps1 did not produce $exe"; exit 1 }
+
+          # Re-run the installer the way users invoke it: `irm | iex` in an
+          # interactive Windows PowerShell 5.1 console. REPL mode loads
+          # PSReadLine, whose 2.0 DLL embeds a stub of
+          # System.Runtime.InteropServices.RuntimeInformation that shadows the
+          # real type — a failure class the file-based run above cannot catch
+          # (it silently broke arch detection in v0.1.2–v0.1.6).
+          "`$env:PDS_VERSION = '$tag'; Get-Content -Raw '$ps1' | iex" | powershell.exe -NoProfile -
+          if ($LASTEXITCODE -ne 0) { Write-Error "REPL-mode (5.1) install failed"; exit 1 }
           $env:PATH = "$binDir;$env:PATH"
 
           # Version must match the tag (strip leading 'v').

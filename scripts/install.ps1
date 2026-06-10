@@ -51,10 +51,20 @@ function Resolve-Version {
 }
 
 function Get-Target {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    # Not RuntimeInformation: PSReadLine 2.0 (loaded in every interactive 5.1
+    # session, i.e. exactly where `irm | iex` runs) embeds a stub of that type
+    # without OSArchitecture, and the bare type name binds to the stub - the
+    # property read silently yields $null. Env vars cannot be shadowed.
+    # PROCESSOR_ARCHITEW6432 is set only in a 32-bit process on a 64-bit OS
+    # and then carries the real OS architecture.
+    $arch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
     switch ($arch) {
-        "X64"   { return "x86_64-pc-windows-msvc" }
-        "Arm64" {
+        "AMD64" { return "x86_64-pc-windows-msvc" }
+        "ARM64" {
             Fail "No prebuilt binary for aarch64 Windows - build from source: cargo install --git https://github.com/$Repo"
         }
         default {
