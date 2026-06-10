@@ -387,6 +387,13 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .svelte-flow__node.c4-node.callable { --k: var(--k-callable); }
 .svelte-flow__edge.c4-edge .svelte-flow__edge-path { stroke-width: 2.5; }
 .svelte-flow__edge.c4-edge.trigger .svelte-flow__edge-path { stroke: var(--k-callable); }
+/* edges open a context menu (definition / usages per call) — read as clickable */
+.svelte-flow__edge.c4-edge { cursor: pointer; }
+.svelte-flow__edge.c4-edge:hover .svelte-flow__edge-path { stroke: var(--accent); }
+/* labels are passive text in their own overlay; let clicks fall through to the
+   edge's hit-path beneath so the label is as clickable as the line it sits on
+   (!important: xyflow's EdgeLabel sets `pointer-events: all` inline) */
+.svelte-flow .svelte-flow__edge-labels .svelte-flow__edge-label { pointer-events: none !important; }
 
 /* boundary box: the `of` node of a container/component view, drawn as an
    enclosing frame (the C4 "system boundary" look) rather than a peer card */

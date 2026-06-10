@@ -76,6 +76,31 @@ test("show in 3D view from the structure panel opens the universe; Back returns 
   await expect(page.getByTestId("editor")).toBeVisible();
 });
 
+test("right-clicking a node sphere opens its context menu (the canvas's actions)", async ({ page }) => {
+  await openUniverse(page);
+
+  // Focus a node from the structure panel — the camera flies to it, centring it
+  // on the canvas, which makes the sphere a deterministic right-click target.
+  await page.getByTestId(NODE).click({ button: "right" });
+  await page.getByTestId("ctx-show-universe").click();
+  await expect(page.getByTestId("universe")).toBeVisible();
+
+  // Right-click the canvas centre once the fly-to settles on the node.
+  const box = (await page.getByTestId("universe-canvas").boundingBox())!;
+  const menu = page.locator(".ctx-menu");
+  await expect(async () => {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+    await expect(menu).toBeVisible({ timeout: 500 });
+  }).toPass({ timeout: 15_000 });
+  await expect(menu.getByRole("menuitem", { name: "Reveal on canvas" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Find usages" })).toBeVisible();
+
+  // Go to definition leaves the universe for the editor.
+  await menu.getByRole("menuitem", { name: "Go to definition" }).click();
+  await expect(page.getByTestId("editor").locator(".cm-content")).toBeVisible();
+  await expect(page.getByTestId("universe")).toHaveCount(0);
+});
+
 test("go to definition from the universe opens the source", async ({ page }) => {
   await openUniverse(page);
 

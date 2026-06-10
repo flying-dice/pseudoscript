@@ -33,9 +33,16 @@
     onclose();
   }
 
-  // Move keyboard focus to the menu when it opens so Escape works.
+  // Move keyboard focus to the menu when it opens so Escape works, and nudge it
+  // back inside the viewport when the pointer anchor would push it off-screen
+  // (e.g. a long Flows list opened near the bottom edge).
   $effect(() => {
-    menuEl?.focus();
+    if (!menuEl) return;
+    menuEl.focus();
+    const r = menuEl.getBoundingClientRect();
+    const dx = Math.min(0, window.innerWidth - 8 - r.right);
+    const dy = Math.min(0, window.innerHeight - 8 - r.bottom);
+    if (dx || dy) menuEl.style.transform = `translate(${dx}px, ${dy}px)`;
   });
 </script>
 
@@ -86,6 +93,9 @@
     z-index: 61;
     min-width: 13rem;
     max-width: 18rem;
+    max-height: min(70vh, calc(100vh - 2rem));
+    overflow-y: auto;
+    scrollbar-width: thin;
     padding: 0.3rem;
     background: var(--surface);
     border: 1px solid var(--line-strong);

@@ -2948,7 +2948,7 @@ show('index.html');
             <div class="layer space-layer" data-testid="space-view">
               {#if spaceSnapshot}
                 {#key spaceKey}
-                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} flowName={spaceFlowName} ondeselect={resetSpace} onpick={openUniverse} />
+                  <ForceGraph snapshot={spaceSnapshot} flows={spaceFlows} focusFqn={spaceFocus} highlightPath={spacePath} flowSequence={spaceFlow} flowColor={spaceFlowColor} flowName={spaceFlowName} ondeselect={resetSpace} onpick={openUniverse} onsource={openNodeInEditor} onusages={showCanvasUsages} onreveal={revealSymbol} />
                 {/key}
               {:else}
                 <div class="note"><span class="kicker">3d graph</span><p>Building the relationship graph…</p></div>

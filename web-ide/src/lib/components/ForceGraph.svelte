@@ -21,8 +21,10 @@
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide, forceX, forceY, forceZ } from "d3-force-3d";
+  import CanvasMenu from "./CanvasMenu.svelte";
   import { flowColor as flowHexOf } from "$lib/flow-color";
   import { ancestors, routeOf, simpleName } from "$lib/graph-route";
+  import type { MenuItem, MenuSection } from "$lib/core/types.js";
   import type { UniverseSnapshot } from "$lib/pds";
 
   // The graph shape is the Rust-derived DTO (single source of truth across the wasm
@@ -54,8 +56,13 @@
     flows?: FlowDef[] | null;
     // Clicking a node or a flow filament → pick it (same effect as the structure panel).
     onpick?: ((fqn: string) => void) | null;
+    // The node context menu's actions (same menu the C4 canvas gets): jump to the
+    // declaration, list usages at the pointer, reveal the node on the canvas.
+    onsource?: ((fqn: string) => void) | null;
+    onusages?: ((fqn: string, event: MouseEvent) => void) | null;
+    onreveal?: ((fqn: string) => void) | null;
   };
-  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, flowName = null, ondeselect = null, flows = null, onpick = null }: Props = $props();
+  let { snapshot, onclose = null, focusFqn = null, highlightPath = null, flowSequence = null, flowColor = null, flowName = null, ondeselect = null, flows = null, onpick = null, onsource = null, onusages = null, onreveal = null }: Props = $props();
 
   // Reset handle into onMount's scene (clears the in-canvas highlight on Deselect/Esc).
   let clearLocal: (() => void) | null = null;
@@ -73,6 +80,9 @@
   // When a clicked leg carries several flows, the chooser: where to anchor it (canvas
   // coords) and the flows to pick from. Null = closed.
   let flowChoice = $state<{ x: number; y: number; items: { fqn: string; name: string; color: string }[] } | null>(null);
+  // The node a right-click opened the context menu on (sections pre-built at the
+  // raycast, where the scene's flow data is in scope). Null = closed.
+  let ctxMenu = $state<{ kind: string; label: string; x: number; y: number; sections: MenuSection[] } | null>(null);
 
   // Set by onMount once the scene exists; the effect drives focus/highlight on change.
   let applyFocus: ((fqn: string) => void) | null = null;
@@ -369,7 +379,9 @@
     dctx.fillStyle = grad; dctx.beginPath(); dctx.arc(32, 32, 32, 0, Math.PI * 2); dctx.fill();
     const dotTex = new THREE.CanvasTexture(dotCanvas);
     const flowMat = new THREE.PointsMaterial({ vertexColors: true, map: dotTex, size: 2.2, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: beadBlend, depthWrite: false });
-    scene.add(new THREE.Points(flowGeo, flowMat));
+    const beadCloud = new THREE.Points(flowGeo, flowMat);
+    beadCloud.frustumCulled = false; // beads park at NaN when filtered — a NaN bounding sphere breaks culling
+    scene.add(beadCloud);
     // Position `out` at fraction `t` along a polyline (its points + cumulative lengths).
     const along = ({ pts, cum, total }: Poly, t: number, out: THREE.Vector3) => {
       const d = t * total;
@@ -403,7 +415,9 @@
     streamGeo.setAttribute("position", new THREE.BufferAttribute(streamArr, 3));
     streamGeo.setDrawRange(0, 0);
     const streamMat = new THREE.PointsMaterial({ color: hotColor.clone().multiplyScalar(beadDim), map: dotTex, size: 3.6, sizeAttenuation: true, transparent: true, opacity: 0.95, blending: beadBlend, depthWrite: false });
-    scene.add(new THREE.Points(streamGeo, streamMat));
+    const streamCloud = new THREE.Points(streamGeo, streamMat);
+    streamCloud.frustumCulled = false; // drawRange starts at 0 and dots reposition every frame
+    scene.add(streamCloud);
     const FLOW_SPEED = 55; // world units / second — one constant crossing speed
     let stepRoutes: Poly[] = [];
     let current: { sr: Poly; count: number; travel: number } | null = null;
@@ -627,6 +641,7 @@
     let down = { x: 0, y: 0 };
     const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
     const onUp = (e: PointerEvent) => {
+      if (e.button !== 0) return; // right-click is the context menu's, not a pick
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // a drag (orbit/pan)
       const r = cv.getBoundingClientRect();
       ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
@@ -651,6 +666,36 @@
     cv.addEventListener("pointerdown", onDown);
     cv.addEventListener("pointerup", onUp);
 
+    // Right-click on a node → its context menu (the same actions the C4 canvas
+    // offers): the flows under it, definition / usages, reveal on canvas. Empty
+    // space keeps OrbitControls' right-drag pan.
+    const onCtx = (e: MouseEvent) => {
+      e.preventDefault();
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // a right-drag pan, not a menu request
+      const r = cv.getBoundingClientRect();
+      ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+      ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+      ray.setFromCamera(ndc, camera);
+      const nodeHit = ray.intersectObject(nodes3d, false)[0];
+      if (!nodeHit || nodeHit.instanceId == null) return;
+      const n = placed[nodeHit.instanceId];
+      const sections: MenuSection[] = [];
+      // Every flow running under the node (itself or a descendant), like the hover count.
+      const under = new Map<string, LegFlow>();
+      for (const f of filaments) if (filUnder(f, n.id)) for (const lf of f.legFlows) under.set(lf.fqn, lf);
+      if (under.size && onpick) {
+        sections.push({ label: "Flows", items: [...under.values()].map((lf): MenuItem => ({ label: lf.name, run: () => onpick?.(lf.fqn), icon: "▶" })) });
+      }
+      const symbolRows: MenuItem[] = [];
+      if (onsource) symbolRows.push({ label: "Go to definition", run: () => onsource?.(n.id) });
+      if (onusages) symbolRows.push({ label: "Find usages", run: () => onusages?.(n.id, e) });
+      if (symbolRows.length) sections.push({ items: symbolRows });
+      if (onreveal) sections.push({ items: [{ label: "Reveal on canvas", run: () => onreveal?.(n.id) }] });
+      if (!sections.length) return;
+      ctxMenu = { kind: n.level, label: simpleName(n.id), x: e.clientX, y: e.clientY, sections };
+    };
+    cv.addEventListener("contextmenu", onCtx);
+
     const resize = () => {
       camera.aspect = W() / H();
       camera.updateProjectionMatrix();
@@ -663,7 +708,13 @@
     // A window listener misses panel (splitter) resizes — observe the host too.
     const ro = new ResizeObserver(resize);
     ro.observe(cv.parentElement ?? cv);
-    const onKey = (e: KeyboardEvent) => { if (e.key !== "Escape") return; clearSelection(); if (onclose) onclose(); else ondeselect?.(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // An open popup owns the first Escape: dismiss it without touching the
+      // selection or the overlay.
+      if (ctxMenu || flowChoice) { ctxMenu = null; flowChoice = null; return; }
+      clearSelection(); if (onclose) onclose(); else ondeselect?.();
+    };
     addEventListener("keydown", onKey);
 
     let raf = 0, alive = true, last = performance.now(), flowT = 0;
@@ -717,6 +768,7 @@
       alive = false; cancelAnimationFrame(raf);
       cv.removeEventListener("pointermove", onMove);
       cv.removeEventListener("pointerdown", onDown); cv.removeEventListener("pointerup", onUp);
+      cv.removeEventListener("contextmenu", onCtx);
       removeEventListener("resize", resize); removeEventListener("keydown", onKey);
       ro.disconnect();
       recenter = undefined;
@@ -760,6 +812,10 @@
   <button class="recenter" data-testid="universe-recenter" title="Re-center the graph" aria-label="Re-center the graph" onclick={() => recenter?.()}>
     ⌖ Re-center
   </button>
+  {#if ctxMenu}
+    {@const m = ctxMenu}
+    <CanvasMenu kind={m.kind} label={m.label} x={m.x} y={m.y} sections={m.sections} onclose={() => (ctxMenu = null)} />
+  {/if}
   {#if flowChoice}
     <div class="flow-choice" style="left:{flowChoice.x}px; top:{flowChoice.y}px">
       <div class="fc-head">Open flow</div>

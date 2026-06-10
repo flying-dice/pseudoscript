@@ -238,15 +238,19 @@
       };
     });
 
+    // Edges sit above the boundary frames (zIndex 0) so their hit-path receives
+    // clicks instead of the frame behind; cards (zIndex 1, rendered after) still
+    // cover them. `labels` rides along for the edge's context menu.
     const edges: Edge[] = l.edges.map((e, i) => ({
       id: `e${i}`,
       source: e.from,
       target: e.to,
       label: e.labels.join("\n") || undefined,
       type: "polyline",
-      data: { points: e.points, labelPos: e.label_pos ?? null, dashed: e.dashed },
+      data: { points: e.points, labelPos: e.label_pos ?? null, dashed: e.dashed, labels: e.labels },
       class: `c4-edge ${e.kind}`,
       selectable: false,
+      zIndex: 1,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: e.kind === "trigger" ? "var(--k-callable)" : "var(--line-strong)" },
     }));
 
@@ -272,6 +276,31 @@
     menu = { fqn: data.fqn, kind: data.kind, label: data.label, isBoundary: node.type === "boundary", x: event.clientX, y: event.clientY, event };
   }
   const closeMenu = () => (menu = null);
+
+  // The definition / usages row pair for a symbol, anchored at `event` (shared by
+  // the node and edge menus).
+  const symbolRows = (fqn: string, event: MouseEvent): MenuItem[] => [
+    { label: "Go to definition", run: () => onsource?.(fqn) },
+    { label: "Find usages", run: () => onusages?.(fqn, event) },
+  ];
+
+  // Clicking an edge (left or right) opens the relationship's menu. Each merged
+  // call label is a callable on the TARGET node (`to::label` — the same mapping
+  // the sequence diagram uses), offered with definition / usages per call; a
+  // label-less edge (trigger / provenance) falls back to the target node itself.
+  type EdgeMenuState = { label: string; x: number; y: number; sections: MenuSection[] };
+  let edgeMenu = $state<EdgeMenuState | null>(null);
+  const closeEdgeMenu = () => (edgeMenu = null);
+  const leaf = (fqn: string): string => fqn.split("::").pop() ?? fqn;
+
+  function onedgeclick({ event, edge }: { event: MouseEvent; edge: Edge }): void {
+    event.preventDefault();
+    const labels = ((edge.data as { labels?: string[] })?.labels ?? []).filter(Boolean);
+    const sections: MenuSection[] = labels.length
+      ? labels.map((name) => ({ label: name, items: symbolRows(`${edge.target}::${name}`, event) }))
+      : [{ items: symbolRows(edge.target, event) }];
+    edgeMenu = { label: `${leaf(edge.source)} → ${leaf(edge.target)}`, x: event.clientX, y: event.clientY, sections };
+  }
 
   // Drag-to-pin: snap a dropped card to the nearest grid cell and report it. The
   // re-layout (driven by the new pin) repositions the card exactly on that cell.
@@ -306,12 +335,7 @@
       });
     }
 
-    sections.push({
-      items: [
-        { label: "Go to definition", run: () => onsource?.(m.fqn) },
-        { label: "Find usages", run: () => onusages?.(m.fqn, m.event) },
-      ],
-    });
+    sections.push({ items: symbolRows(m.fqn, m.event) });
     if (onuniverse) {
       sections.push({ items: [{ label: "Show in 3D graph", run: () => onuniverse?.(m.fqn), icon: "✦" }] });
     }
@@ -334,6 +358,8 @@
     elementsSelectable={dragging}
     proOptions={{ hideAttribution: true }}
     {onnodecontextmenu}
+    {onedgeclick}
+    onedgecontextmenu={onedgeclick}
     {onnodedragstop}
   >
     <Background gap={24} />
@@ -398,6 +424,10 @@
   {#if menu}
     {@const m = menu}
     <CanvasMenu kind={m.kind} label={m.label} x={m.x} y={m.y} sections={menuSections(m)} onclose={closeMenu} />
+  {/if}
+  {#if edgeMenu}
+    {@const m = edgeMenu}
+    <CanvasMenu kind="callable" label={m.label} x={m.x} y={m.y} sections={m.sections} onclose={closeEdgeMenu} />
   {/if}
 </div>
 

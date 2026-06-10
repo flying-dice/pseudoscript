@@ -29,6 +29,28 @@ test("right-clicking a canvas node opens its context menu; Go to definition open
   await expect(page.locator(".svelte-flow")).toHaveCount(0);
 });
 
+test("clicking an edge opens the relationship menu, not the node behind it", async ({ page }) => {
+  await createProject(page, "acme-tickets", "orders");
+
+  await page.getByLabel("Canvas").click();
+  await expect(page.locator(".svelte-flow__node-card").first()).toBeVisible({ timeout: 20_000 });
+
+  // Click a labelled edge at its label anchor — the label is click-through, so
+  // the click lands on the edge's hit-path beneath it (which sits above the
+  // boundary frame, the old swallow-the-click bug).
+  const label = page.locator(".svelte-flow__edge-label").first();
+  await expect(label).toBeVisible();
+  const box = (await label.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+  // The menu is the edge's (from → to), offering definition / usages per call.
+  const menu = page.locator(".ctx-menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.locator(".ctx-name")).toContainText("→");
+  await expect(menu.getByRole("menuitem", { name: "Find usages" }).first()).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Go to definition" }).first()).toBeVisible();
+});
+
 test("the menu bar persists across views", async ({ page }) => {
   await createProject(page, "empty");
 
