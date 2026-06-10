@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/flying-dice/pseudoscript/compare/v0.1.6...v0.1.7) - 2026-06-10
+
+### Other
+
+- updated the following local packages: pseudoscript-syntax, pseudoscript-model, pseudoscript-emit, pseudoscript-doc, pseudoscript-format, pseudoscript-project, pseudoscript-lsp
+
 ## [0.1.5](https://github.com/flying-dice/pseudoscript/releases/tag/v0.1.5) - 2026-06-10
 
 ### Added

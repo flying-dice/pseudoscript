@@ -11,18 +11,18 @@ name = "pseudoscript_lsp"
 path = "src/lib.rs"
 
 [dependencies]
-pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.5" }
-pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.5" }
-pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core", version = "0.1.5" }
-pseudoscript-format = { path = "../pseudoscript-format", version = "0.1.5" }
-pseudoscript-project = { path = "../pseudoscript-project", version = "0.1.5" }
+pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.6" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.6" }
+pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core", version = "0.1.6" }
+pseudoscript-format = { path = "../pseudoscript-format", version = "0.1.6" }
+pseudoscript-project = { path = "../pseudoscript-project", version = "0.1.6" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 walkdir = "2"
 
 [dev-dependencies]
-pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core", version = "0.1.5" }
+pseudoscript-lsp-core = { path = "../pseudoscript-lsp-core", version = "0.1.6" }
 cucumber = "0.21"
 futures = "0.3"
 tempfile = "3"
