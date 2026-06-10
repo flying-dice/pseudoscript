@@ -79,6 +79,16 @@ Feature: Svelte documentation site generation
     And the file "universe.html" contains "data-universe-fallback"
     And the file "universe.html" contains "banking::core::Bank"
 
+  Scenario: a seeded architecture lint reaches the health page and its section
+    Given a workspace with a facade bypass
+    When I render the checked site titled "Shop Docs"
+    Then the file "health.html" contains "PDS-ARCH-001"
+    And the file "health.html" contains "docs/principles/PDS-ARCH-001"
+    And the file "health.html" contains "badge-warning"
+    And the file "health.html" contains "module/shop.html#"
+    And the file "module/shop.html" contains "badge-warning"
+    And the file "index.html" contains "nav-badge"
+
   Scenario: the health page reports the clean model
     When I render the site titled "Banking Architecture"
     Then the file "health.html" exists

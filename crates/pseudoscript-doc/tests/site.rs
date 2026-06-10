@@ -59,9 +59,15 @@ public container Api for Bank {
 }
 "#;
 
+/// A pair of modules seeding PDS-ARCH-001: `shop` reaches into `core`'s
+/// component instead of the container face.
+const LINT_CALLER: &str = "//! shop\n\npublic system Shop;\n\npublic container Front for Shop {\n  #[manual]\n  public Buy(): number {\n    n = number from core::Gate.check()\n    return n\n  }\n}\n";
+const LINT_CORE: &str = "//! core\n\npublic system Core;\n\npublic container Api for Core {\n  /// The gate.\n  public component Gate for Api {\n    public check(): number;\n  }\n}\n";
+
 #[derive(Debug, Default, World)]
 struct DocWorld {
     graph: Option<Graph>,
+    modules: Vec<WorkspaceModule>,
     site: Option<Site>,
     again: Option<Site>,
 }
@@ -69,6 +75,15 @@ struct DocWorld {
 #[given("the banking workspace model")]
 fn given_model(world: &mut DocWorld) {
     world.graph = Some(graph(&[WorkspaceModule::new("banking::core", MODEL)]));
+}
+
+#[given("a workspace with a facade bypass")]
+fn given_lint_model(world: &mut DocWorld) {
+    world.modules = vec![
+        WorkspaceModule::new("shop", LINT_CALLER),
+        WorkspaceModule::new("core", LINT_CORE),
+    ];
+    world.graph = Some(graph(&world.modules));
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -79,6 +94,19 @@ fn render(world: &mut DocWorld, title: String) {
         ..DocConfig::default()
     };
     world.site = Some(render_site(world.graph(), &config, &[]));
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[when(regex = r#"^I render the checked site titled "([^"]*)"$"#)]
+fn render_checked(world: &mut DocWorld, title: String) {
+    let config = DocConfig {
+        name: title,
+        ..DocConfig::default()
+    };
+    let per_module =
+        pseudoscript_model::check_workspace_modules_with_externals(&world.modules, &[]);
+    let diagnostics = pseudoscript_doc::prepare_diagnostics(&world.modules, &per_module);
+    world.site = Some(render_site(world.graph(), &config, &diagnostics));
 }
 
 #[allow(clippy::needless_pass_by_value)]
