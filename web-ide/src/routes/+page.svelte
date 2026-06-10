@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import type { Component as ComponentType } from "svelte";
-  import { Box, Component, Container, Database, File, FlaskConical, SquareFunction, User } from "@lucide/svelte";
+  import { Box, Component, Container, Database, File, FlaskConical, Settings2, SquareFunction, User } from "@lucide/svelte";
   import { dev } from "$app/environment";
   import { base } from "$app/paths";
   import "../app.css";
@@ -2740,40 +2740,41 @@ show('index.html');
   </div>
 {/snippet}
 
-<!-- The Markdown syntax cheat-sheet button + popover (docs only). -->
-{#snippet mdHelp()}
-  <div class="md-help">
+<!-- The doc settings menu (docs only): a gear hovering over the editor's top-right
+     corner, opening reading-width + the Markdown syntax cheat-sheet in one popover. -->
+{#snippet docSettings()}
+  <div class="doc-settings">
     <button
-      class="md-help-btn"
+      class="ds-btn"
       class:open={mdHelpOpen}
-      title="Markdown syntax"
-      aria-label="Markdown syntax"
+      title="Document settings"
+      aria-label="Document settings"
       aria-expanded={mdHelpOpen}
+      data-testid="doc-settings"
       onclick={() => (ui.mdHelpOpen = !mdHelpOpen)}
-    >?</button>
+    >
+      <Settings2 size={14} strokeWidth={1.8} aria-hidden="true" />
+    </button>
     {#if mdHelpOpen}
-      <button class="md-help-scrim" aria-label="Close" onclick={() => (ui.mdHelpOpen = false)}></button>
-      <div class="md-help-pop" role="dialog" aria-label="Markdown syntax">
-        <div class="md-help-head">Markdown syntax</div>
+      <button class="ds-scrim" aria-label="Close" onclick={() => (ui.mdHelpOpen = false)}></button>
+      <div class="ds-pop" role="dialog" aria-label="Document settings" data-testid="doc-settings-pop">
+        <div class="ds-head">Reading width</div>
+        <div class="ds-width" role="group" aria-label="Document width">
+          {#each [["narrow", "Narrow"], ["wide", "Wide"], ["full", "Full"]] as [val, label] (val)}
+            <button class:active={docWidth === val} data-testid="doc-width-{val}" onclick={() => setDocWidth(val)} title="{label} width">{label}</button>
+          {/each}
+        </div>
+        <div class="ds-head">Markdown syntax</div>
         <ul>
           {#each MD_SYNTAX as row (row.name)}
             <li>
-              <span class="md-help-name">{row.name}</span>
+              <span class="ds-name">{row.name}</span>
               <code>{row.syntax}</code>
             </li>
           {/each}
         </ul>
       </div>
     {/if}
-  </div>
-{/snippet}
-
-<!-- The Markdown reading-width selector (docs only). -->
-{#snippet docWidthToggle()}
-  <div class="view-toggle" role="group" aria-label="Document width">
-    {#each [["narrow", "Narrow"], ["wide", "Wide"], ["full", "Full"]] as [val, label] (val)}
-      <button class:active={docWidth === val} onclick={() => setDocWidth(val)} title="{label} width">{label}</button>
-    {/each}
   </div>
 {/snippet}
 
@@ -2877,11 +2878,6 @@ show('index.html');
       {/if}
 
       <section class="center island reveal r2">
-        {#if openFile?.isDoc}
-          <header class="content-bar">
-            <div class="bar-actions">{@render mdHelp()}{@render docWidthToggle()}</div>
-          </header>
-        {/if}
         <div class="content-body">
           <div class="layer code-layer" class:hidden={view !== "code"} data-doc-width={docWidth}>
             {#if tabList.length}
@@ -2913,32 +2909,35 @@ show('index.html');
                 <p class="bp-meta">Binary file{openFile.bytes != null ? ` · ${formatBytes(openFile.bytes)}` : ""} — not shown in the editor.</p>
               </div>
             {:else}
-              <Editor
-                value={source}
-                onchange={onEditorChange}
-                onready={(api) => (editorApi = api)}
-                moduleFqn={openFile?.fqn ?? ""}
-                diagnostics={editorDiagnostics}
-                fileKey={openKey}
-                plain={(openFile?.isDoc || openFile?.isManifest || openFile?.isOther) ?? false}
-                markdown={openFile?.isDoc ?? false}
-                toml={openFile?.isManifest ?? false}
-                filename={openFile?.isOther ? (openFile?.path ?? "") : ""}
-                {previewOpts}
-                {symbols}
-                onopensymbol={revealSymbol}
-                ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
-                oncursorchange={(fqn) => {
-                  // Follow the caret in the structure panel: sync the highlight
-                  // without switching view, opening files, or polluting history.
-                  if (fqn) selectNode(fqn, { goto: false, origin: false, record: false, open: false });
-                }}
-                onnavigate={openUsage}
-                onrename={requestRename}
-                {onformat}
-                onsave={saveActiveFile}
-                onopensettings={() => (ui.settingsOpen = true)}
-              />
+              <div class="editor-wrap">
+                {#if openFile?.isDoc}{@render docSettings()}{/if}
+                <Editor
+                  value={source}
+                  onchange={onEditorChange}
+                  onready={(api) => (editorApi = api)}
+                  moduleFqn={openFile?.fqn ?? ""}
+                  diagnostics={editorDiagnostics}
+                  fileKey={openKey}
+                  plain={(openFile?.isDoc || openFile?.isManifest || openFile?.isOther) ?? false}
+                  markdown={openFile?.isDoc ?? false}
+                  toml={openFile?.isManifest ?? false}
+                  filename={openFile?.isOther ? (openFile?.path ?? "") : ""}
+                  {previewOpts}
+                  {symbols}
+                  onopensymbol={revealSymbol}
+                  ongotodefinition={(fqn) => selectNode(fqn, { goto: true })}
+                  oncursorchange={(fqn) => {
+                    // Follow the caret in the structure panel: sync the highlight
+                    // without switching view, opening files, or polluting history.
+                    if (fqn) selectNode(fqn, { goto: false, origin: false, record: false, open: false });
+                  }}
+                  onnavigate={openUsage}
+                  onrename={requestRename}
+                  {onformat}
+                  onsave={saveActiveFile}
+                  onopensettings={() => (ui.settingsOpen = true)}
+                />
+              </div>
             {/if}
           </div>
           {#if view === "canvas"}
@@ -3128,41 +3127,14 @@ show('index.html');
     min-height: 0;
     background: var(--island-bg);
   }
-  /* the centre: a slim content-bar over the editor / canvas */
   .center {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     background: var(--island-bg);
   }
-  .content-bar {
-    grid-row: 1;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    height: var(--bar-h);
-    padding: 0 0.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .nav-buttons { flex: none; display: flex; gap: 0.2rem; }
-  .nav-btn {
-    width: 1.7rem;
-    height: 1.7rem;
-    display: grid;
-    place-items: center;
-    background: var(--surface-2);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    color: var(--ink-soft);
-    font-size: 0.85rem;
-    line-height: 1;
-  }
-  .nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
-  .nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
   .content-body {
-    grid-row: 2;
     display: grid;
     min-height: 0;
   }
@@ -3178,6 +3150,14 @@ show('index.html');
      to fill the rest. */
   .code-layer { display: flex; flex-direction: column; }
   .code-layer :global(.editor) { flex: 1; min-height: 0; }
+  /* hosts the editor and anchors the floating doc-settings gear over its corner */
+  .editor-wrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
 
   .binary-pane {
     flex: 1;
@@ -3257,40 +3237,32 @@ show('index.html');
   }
   .space-layer .note p { margin: 0; font-family: var(--font-mono); font-size: 0.82rem; }
 
-  /* CODE | CANVAS | Problems toggle */
-  .bar-actions {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
+  /* The doc settings menu: a gear hovering over the editor's top-right corner. */
+  .doc-settings {
+    position: absolute;
+    top: 0.55rem;
+    right: 1.1rem;
+    z-index: 6;
   }
-
-  .md-help {
-    position: relative;
-    flex: none;
-  }
-  .md-help-btn {
-    width: 1.55rem;
-    height: 1.55rem;
+  .ds-btn {
+    width: 1.7rem;
+    height: 1.7rem;
     display: grid;
     place-items: center;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--line-strong);
-    background: var(--surface-2);
+    background: color-mix(in srgb, var(--surface) 85%, transparent);
     color: var(--ink-soft);
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    font-weight: 700;
     cursor: pointer;
     transition: color 0.12s, border-color 0.12s, background 0.12s;
   }
-  .md-help-btn:hover,
-  .md-help-btn.open {
+  .ds-btn:hover,
+  .ds-btn.open {
     color: var(--accent);
     border-color: var(--accent);
     background: var(--accent-soft);
   }
-  .md-help-scrim {
+  .ds-scrim {
     position: fixed;
     inset: 0;
     z-index: 40;
@@ -3298,7 +3270,7 @@ show('index.html');
     border: none;
     cursor: default;
   }
-  .md-help-pop {
+  .ds-pop {
     position: absolute;
     top: calc(100% + 0.4rem);
     right: 0;
@@ -3313,7 +3285,7 @@ show('index.html');
     box-shadow: var(--shadow-lg);
     scrollbar-width: thin;
   }
-  .md-help-head {
+  .ds-head {
     padding: 0.25rem 0.45rem 0.5rem;
     font-family: var(--font-mono);
     font-size: 0.62rem;
@@ -3321,12 +3293,38 @@ show('index.html');
     text-transform: uppercase;
     color: var(--ink-faint);
   }
-  .md-help-pop ul {
+  .ds-width {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    margin: 0 0.45rem 0.7rem;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+  .ds-width button {
+    flex: 1;
+    padding: 0.28rem 0;
+    font-size: 0.74rem;
+    color: var(--ink-soft);
+    background: none;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 2px);
+    cursor: pointer;
+    transition: color 0.12s, background 0.12s;
+  }
+  .ds-width button:hover { color: var(--ink); }
+  .ds-width button.active {
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: 0 1px 2px #0003;
+  }
+  .ds-pop ul {
     list-style: none;
     margin: 0;
     padding: 0;
   }
-  .md-help-pop li {
+  .ds-pop li {
     display: grid;
     grid-template-columns: 7rem 1fr;
     gap: 0.6rem;
@@ -3334,15 +3332,15 @@ show('index.html');
     padding: 0.3rem 0.45rem;
     border-top: 1px solid var(--line);
   }
-  .md-help-pop li:first-child {
+  .ds-pop li:first-child {
     border-top: none;
   }
-  .md-help-name {
+  .ds-name {
     font-size: 0.78rem;
     color: var(--ink-soft);
     padding-top: 0.1rem;
   }
-  .md-help-pop code {
+  .ds-pop code {
     font-family: var(--font-mono);
     font-size: 0.72rem;
     color: var(--ink);

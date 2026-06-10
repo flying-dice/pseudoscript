@@ -470,34 +470,36 @@
 
     // Frame the whole graph — at mount, on re-center, and on a host resize
     // (skipped once the user has orbited, whose viewpoint a refit would yank).
+    // Bounds come from the baked node positions, NOT the scene graph: the scene also
+    // holds the huge ground grid and beads parked at NaN while a flow is selected —
+    // a scene box chases those and parks the camera (or NaNs it) far off the content.
+    const contentBox = new THREE.Box3();
+    for (const p of pos.values()) contentBox.expandByPoint(p);
+    if (contentBox.isEmpty()) contentBox.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+    contentBox.expandByScalar(14); // node radii + labels above
+    const centre = contentBox.getCenter(new THREE.Vector3());
+    const size = contentBox.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 1);
     let userMoved = false;
     const frameGraph = () => {
-      const b = new THREE.Box3().setFromObject(scene);
-      const c = b.getCenter(new THREE.Vector3());
-      const s = b.getSize(new THREE.Vector3());
-      controls.target.copy(c);
-      camera.position.copy(c).add(new THREE.Vector3(s.x * 0.4, s.y * 0.3, Math.max(s.x, s.y, s.z) * 1.5 + 40));
+      controls.target.copy(centre);
+      camera.position.copy(centre).add(new THREE.Vector3(size.x * 0.4, size.y * 0.3, maxDim * 1.5 + 40));
       controls.update();
+      // Distance fog tinted to the backdrop: nearer orbs read crisp, far ones recede
+      // into the sheet, adding aerial depth. Re-derived from the framed distance so a
+      // refit keeps the content inside the fog's far plane.
+      const camDist = camera.position.distanceTo(centre);
+      scene.fog = new THREE.Fog(bgColor, camDist - maxDim * 0.5, camDist + maxDim * 1.3);
       userMoved = false;
     };
     controls.addEventListener("start", () => (userMoved = true));
     recenter = frameGraph;
-    const box = new THREE.Box3().setFromObject(scene);
-    const centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
     frameGraph();
-
-    // Distance fog tinted to the backdrop: nearer orbs read crisp, far ones recede into
-    // the sheet, adding aerial depth. Camera-relative, so it tracks orbit/zoom for free.
-    // Scaled off the framed scene so it fits any model (near just ahead of the front face,
-    // far past the back so distant nodes fade without vanishing).
-    const maxDim = Math.max(size.x, size.y, size.z, 1);
-    const camDist = camera.position.distanceTo(centre);
-    scene.fog = new THREE.Fog(bgColor, camDist - maxDim * 0.5, camDist + maxDim * 1.3);
 
     // An *infinite* ground grid: a huge horizontal plane whose lines are drawn in
     // world space and fade with distance, so it reads as an endless floor (a
     // dimensional anchor) rather than a bounded card. It follows the camera in XZ.
-    const gridBaseY = box.min.y - size.y * 0.12 - 8;
+    const gridBaseY = contentBox.min.y - size.y * 0.12 - 8;
     const gridFade = Math.max(size.x, size.y, size.z, 200) * 2.4;
     const gridMat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, side: THREE.DoubleSide,
