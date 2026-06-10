@@ -57,7 +57,7 @@
               aria-label="{d.severity}{d.file ? ` in ${d.file}` : ''} at line {d.start_line} column {d.start_col}: {d.message}"
             >
               <span class="badge">{d.severity}</span>
-              {#if d.file}<span class="file">{d.file}</span>{/if}
+              {#if d.file}<span class="file" data-testid="problem-{i}-file">{d.file}</span>{/if}
               <span class="loc">{d.start_line}:{d.start_col}</span>
               <span class="msg">{d.message}</span>
             </button>
