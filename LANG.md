@@ -222,7 +222,7 @@ Callables are declared **inside** the disclosing `system`/`container`/`component
 A function-shaped declaration is a callable.
 - It MAY **disclose** its logic with a block, or be a **black box** with `;`.
 - All calls are request/response. A call to a resolvable callable MUST pass one argument per declared parameter, and each inferable argument MUST match its parameter's type; a wrong arity or argument type MUST be rejected (ADR-022, ADR-023).
-- Return type is optional; absence means `void`. A disclosed non-`void` callable MUST return a value on every path.
+- Every callable MUST declare a return type; a callable without one MUST be rejected (ADR-040). `void` declares that no value is returned. A disclosed non-`void` callable MUST return a value on every path.
 - A `return` operand whose type is determinable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `from` (§7.2), a typed binding, or a call to a resolvable callable — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). A bare reference resolving to a `data` record or a node is not a value and MUST be rejected (§7.2).
 - A bare name in a body MUST resolve to a parameter, a binding, or a `for` binding; it MUST NOT resolve to a node or union variant (ADR-030) — those are referenced by FQN (§8.1). An unresolved bare name MUST be rejected (ADR-022).
 - A same-node callable is invoked via `self.Name(args)` (`self` = the enclosing node); this also covers recursion.
@@ -534,7 +534,7 @@ Component   = "component" Ident "for" Path Body ;   // parent MUST be a containe
 Body        = "{" { BodyMember } "}" | ";" ;        // block discloses, ';' = black box
 
 BodyMember  = DocBlock { Macro } [ "public" ] Callable ;
-Callable    = Ident "(" [ Params ] ")" [ ":" Type ] ( Block | ";" ) ;
+Callable    = Ident "(" [ Params ] ")" ":" Type ( Block | ";" ) ;
 Params      = Param { "," Param } ;
 Param       = Ident ":" Type ;
 

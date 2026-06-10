@@ -235,3 +235,9 @@ Read in full for the precedence cascade, the operand/result table, and the rejec
 Adds `constant Ident = Literal`: top-level only, a single primitive literal, type inferred from the literal, `public` for cross-module, referenced by FQN `module::NAME` and immutable. Constant names occupy a new value namespace (§8.1) beside type/node/feature. A bare leaf does not resolve to a constant; only `module::NAME` does (ADR-030). A non-literal initialiser and a macro on a constant are rejected.
 
 Read in full for the value-namespace rule, the FQN-only resolution, and the rejected operator-initialiser alternative.
+
+## [040 — Mandatory return types](040-mandatory-return-types.md)
+
+Every callable MUST declare a return type; `F()` without one is rejected and `void` is the explicit nothing-spelling (`F(): void`, still composable as `Result<void, E>`). §10's `Callable` production requires `":" Type`; the parser recovers a missing type as `void` with a syntax diagnostic. Mandatory signatures make a call to any resolvable callable a determinable `return` operand, extending the §5.1 type-match clause cross-module without widening ADR-022's inference.
+
+Read in full for the Java/C#-precedent rationale and the rejected implicit-void and full-typing alternatives.

@@ -133,7 +133,8 @@ public data Field { name: string, ty: syntax::Type, span: syntax::Span }
 public data Variant { name: string, record: syntax::Field[], span: syntax::Span }
 
 /// A callable (implicit operation) declared inside a disclosed node (§5.1).
-/// `returnTy` absent means `void`; `body` absent means a black box (`;`).
+/// `returnTy` is required (ADR-040) — a missing return type is a syntax error,
+/// recovered as `void`; `body` absent means a black box (`;`).
 public data CallableDecl { doc: syntax::DocBlock, macros: syntax::Macro[], isPublic: bool, name: string, params: syntax::Param[], returnTy: syntax::Type, body: syntax::Block, leadingTrivia: syntax::SpannedTrivia[], span: syntax::Span }
 
 /// A callable parameter `name: Type`.
@@ -426,7 +427,8 @@ component Parser for syntax::Syntax {
   /// `data Name`: a `{ record }`, an `= | union`, or a `;` black box (§3.4).
   parseData(): syntax::DataDecl;
 
-  /// One callable: name, params, optional `: Ret`, then a `{ }` body or `;`.
+  /// One callable: name, params, `: Ret`, then a `{ }` body or `;`. A missing
+  /// return type is reported and recovered as `void` (ADR-040).
   parseCallable(doc: syntax::DocBlock, macros: syntax::Macro[], isPublic: bool): syntax::CallableDecl;
 
   /// A `{ }` statement block. A forward-progress guard reports and skips any
@@ -476,11 +478,11 @@ component Parser for syntax::Syntax {
 
   /// Skips to the next top-level boundary (`public`/keyword/`feature`/`Doc`/
   /// `#[`).
-  recoverToItem();
+  recoverToItem(): void;
 
   /// Skips to the next `;`, `}`, or member start, consuming a trailing `;` so
   /// the enclosing loop makes progress.
-  recoverInBlock();
+  recoverInBlock(): void;
 }
 
 /// Parsing always yields a tree, even on malformed input.

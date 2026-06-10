@@ -1,0 +1,7 @@
+// LANG.md §5.1 (ADR-040): every callable must declare a return type.
+// `Reconcile()` declares none; `void` must be written explicitly.
+
+public system Banking;
+public container Mainframe for Banking {
+  Reconcile() { }
+}

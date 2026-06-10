@@ -70,8 +70,7 @@ mod tests {
 
     #[test]
     fn adapter_scopes_members_with_prefix() {
-        let src =
-            "//! m\n\nsystem S {\n  run() {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);

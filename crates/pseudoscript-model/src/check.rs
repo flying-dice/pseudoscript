@@ -515,7 +515,7 @@ impl Checker<'_> {
         // single-expression source against the target).
         let vars = build_vars(callable, body, self.model);
         if let Some(ret) = &callable.return_ty {
-            self.check_return_types(body, ret, &vars);
+            self.check_return_types(body, ret, &vars, owner);
         }
         self.check_from(body, owner, &vars);
 
@@ -676,11 +676,20 @@ impl Checker<'_> {
 
     /// The same-module node a call's receiver resolves to: the enclosing node for
     /// `self`, or a node named by the receiver path's leaf. `None` for a value
-    /// receiver or a name that is not a node.
+    /// receiver, a name that is not a node, or a qualified path into another
+    /// module — a cross-module node's members are not in this single-module
+    /// model (ADR-022), and a leaf-only match would land on the wrong node.
     fn call_receiver_node(&self, base: &Expr, owner: &str) -> Option<String> {
         match &base.kind {
             ExprKind::Ref(Ref::SelfNode(_)) => Some(owner.to_owned()),
             ExprKind::Ref(Ref::Path(path)) => {
+                if path.segments.len() > 1 && !self.model.module_path.is_empty() {
+                    let module = &path.segments[..path.segments.len() - 1];
+                    let qualified = module.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
+                    if qualified.join("::") != self.model.module_path {
+                        return None;
+                    }
+                }
                 let leaf = path.segments.last()?.name.clone();
                 self.model
                     .symbol(&leaf)
@@ -959,24 +968,49 @@ impl Checker<'_> {
     // --- §5.1 / §7.2 (ADR-020) return-type & `from` checks ---------------------
 
     /// A `return` whose operand has a statically-known type — a literal, an
-    /// `Ok`/`Err`/`Some`/`None` marker, or a `Type from { .. }` composition —
-    /// must match the declared return type `ret`. Calls, field accesses, and
-    /// `self` yield `Unknown` and are left unchecked.
-    fn check_return_types(&mut self, block: &Block, ret: &Type, vars: &FxHashMap<String, Ty>) {
+    /// `Ok`/`Err`/`Some`/`None` marker, a `Type from { .. }` composition, or a
+    /// call whose callee resolves in-module (ADR-040) — must match the declared
+    /// return type `ret`. Field accesses and unresolvable calls yield `Unknown`
+    /// and are left unchecked.
+    fn check_return_types(
+        &mut self,
+        block: &Block,
+        ret: &Type,
+        vars: &FxHashMap<String, Ty>,
+        owner: &str,
+    ) {
         for_each_stmt(block, &mut |stmt| {
             if let StmtKind::Return(Some(expr)) = &stmt.kind {
-                self.check_return_expr(expr, ret, vars);
+                self.check_return_expr(expr, ret, vars, owner);
             }
         });
     }
 
-    fn check_return_expr(&mut self, expr: &Expr, ret: &Type, vars: &FxHashMap<String, Ty>) {
+    fn check_return_expr(
+        &mut self,
+        expr: &Expr,
+        ret: &Type,
+        vars: &FxHashMap<String, Ty>,
+        owner: &str,
+    ) {
         // §7.2 (ADR-035): a bare `data`-record or node reference is not a value.
         if self.report_not_a_value(expr, vars) {
             return;
         }
-        let ty = infer(expr, vars);
+        let ty = self.infer_value(expr, vars, owner);
         if matches!(ty, Ty::Unknown) {
+            return;
+        }
+        // §3.3: an unresolved type already carries its own diagnostic — on the
+        // declared side or on a resolved callee's signature; a match verdict
+        // against it would be noise. An inferred name this module cannot see
+        // (a cross-module type) is also skipped, mirroring ADR-022's boundary.
+        if !self.ret_type_resolves(ret) {
+            return;
+        }
+        if let Ty::Named { name, .. } = &ty
+            && !self.type_name_resolves(name)
+        {
             return;
         }
         if !self.ty_satisfies_ret(&ty, ret) {
@@ -1015,6 +1049,23 @@ impl Checker<'_> {
         };
         self.error(expr.span, message);
         true
+    }
+
+    /// Whether a declared return type resolves in-module — mirrors
+    /// [`Self::check_type`]'s judgement on a simple name. A cross-module FQN is
+    /// out of this checker's sight and counts as resolved.
+    fn ret_type_resolves(&self, ret: &Type) -> bool {
+        !ret.name.is_simple() || self.type_name_resolves(&ret.name.segments[0].name)
+    }
+
+    /// Whether a bare type name resolves in-module: a primitive, a built-in
+    /// generic, a declared symbol, or a hoisted union variant (§3.3).
+    fn type_name_resolves(&self, leaf: &str) -> bool {
+        is_primitive(leaf)
+            || leaf == "Result"
+            || leaf == "Option"
+            || self.model.symbol(leaf).is_some()
+            || self.variant_names.contains(leaf)
     }
 
     /// Whether an inferred type satisfies the declared return type. `Unknown` is
@@ -1088,32 +1139,36 @@ impl Checker<'_> {
         }
     }
 
-    /// Like [`infer`], but additionally resolves a same-node `self.Method()` call
-    /// to the callee's declared return type (ADR-035) — the determinable source
-    /// a `from` conversion checks. Other calls stay `Unknown`.
+    /// Like [`infer`], but additionally resolves a call whose receiver is `self`
+    /// or a same-module node to the callee's declared return type (ADR-035,
+    /// ADR-040) — the determinable form `return` and `from` checks share. Other
+    /// calls stay `Unknown`.
     fn infer_value(&self, expr: &Expr, vars: &FxHashMap<String, Ty>, owner: &str) -> Ty {
         match infer(expr, vars) {
-            Ty::Unknown => self.self_call_return(expr, owner).unwrap_or(Ty::Unknown),
+            Ty::Unknown => self.call_return(expr, owner).unwrap_or(Ty::Unknown),
             ty => ty,
         }
     }
 
-    /// The declared return type of a `self.Method(args)` call whose `Method` is a
-    /// callable of the enclosing node `owner`, as a [`Ty`]; `None` otherwise.
-    fn self_call_return(&self, expr: &Expr, owner: &str) -> Option<Ty> {
+    /// The declared return type of a `Receiver.Method(args)` call whose receiver
+    /// resolves in-module (`self` or a same-module node) and whose `Method` is a
+    /// callable of that node, as a [`Ty`]; `None` otherwise.
+    fn call_return(&self, expr: &Expr, owner: &str) -> Option<Ty> {
+        let mut expr = expr;
+        while let ExprKind::Paren(inner) = &expr.kind {
+            expr = inner;
+        }
         let ExprKind::Postfix { base, segments } = &expr.kind else {
             return None;
         };
-        if !matches!(&base.kind, ExprKind::Ref(Ref::SelfNode(_))) {
-            return None;
-        }
         let [seg] = segments.as_slice() else {
             return None;
         };
         seg.call_args.as_ref()?; // a call segment, not a field access
+        let node = self.call_receiver_node(base, owner)?;
         let member = self
             .model
-            .members(owner)
+            .members(&node)
             .iter()
             .find(|m| m.kind == MemberKind::Callable && m.name == seg.name.name)?;
         Some(ty_from_rendered(&member.ty))
@@ -1515,7 +1570,9 @@ fn ty_from_rendered(rendered: &str) -> Ty {
     match leaf {
         "Result" => Ty::Result,
         "Option" => Ty::Option,
-        "" | "void" => Ty::Unknown,
+        "" => Ty::Unknown,
+        // `void` stays concrete: a void call returned as a value (ADR-040) or
+        // feeding a `from` is a mismatch worth reporting, not an unknown.
         name => Ty::Named {
             name: name.to_owned(),
             array,

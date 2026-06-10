@@ -440,7 +440,7 @@ mod tests {
             ),
             (
                 "m",
-                "//! m\n\nsystem S {\n  run() {\n    identity::sessions.req\n  }\n}\n",
+                "//! m\n\nsystem S {\n  run(): void {\n    identity::sessions.req\n  }\n}\n",
             ),
         ];
         let ws = workspace(&mods);
@@ -463,7 +463,7 @@ mod tests {
     fn members_after_local_binding() {
         // `a: Account = Repo.fetch(x); a.` — the binding's declared type drives
         // member completion, even though `a` is not a declared node.
-        let src = "//! m\n\ndata Account { id: uuid, owner: string }\n\nsystem Repo {\n  fetch(x: uuid): Account;\n}\n\nsystem S {\n  run() {\n    a: Account = Repo.fetch(x)\n    a.\n  }\n}\n";
+        let src = "//! m\n\ndata Account { id: uuid, owner: string }\n\nsystem Repo {\n  fetch(x: uuid): Account;\n}\n\nsystem S {\n  run(): void {\n    a: Account = Repo.fetch(x)\n    a.\n  }\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("a.\n").unwrap() + 2) as u32;
         let labels = labels_at(&ws, "m", src, offset);
@@ -483,7 +483,8 @@ mod tests {
 
     #[test]
     fn members_after_self_dot() {
-        let src = "//! m\n\nsystem S {\n  run() {\n    self.\n  }\n  helper(x: number): uuid;\n}\n";
+        let src =
+            "//! m\n\nsystem S {\n  run(): void {\n    self.\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("self.").unwrap() + "self.".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);
@@ -588,8 +589,7 @@ mod tests {
 
     #[test]
     fn members_after_self_dot_with_prefix() {
-        let src =
-            "//! m\n\nsystem S {\n  run() {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);

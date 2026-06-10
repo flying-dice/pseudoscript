@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn local_types_read_literal_and_from_annotations() {
-        let src = "//! m\n\nsystem S {\n  go() {\n    n: number = 42\n    p: Parsed = Parsed from { n }\n  }\n}\n\npublic data Parsed { x: number }\n";
+        let src = "//! m\n\nsystem S {\n  go(): void {\n    n: number = 42\n    p: Parsed = Parsed from { n }\n  }\n}\n\npublic data Parsed { x: number }\n";
         let workspace = ws(&[("m", src)]);
         let locals = local_types(&workspace, "m");
         assert_eq!(locals.iter().find(|l| l.name == "n").unwrap().ty, "number");

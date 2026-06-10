@@ -10,7 +10,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Api for Banking {
         #[retry(3)]
-        Ping() { }
+        Ping(): void { }
       }
       """
     Then the diagnostics include "unknown macro `retry`"
@@ -36,7 +36,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Audit for Banking {
         #[onevent(banking::core::BankAccCreated)]
-        StoreCreation(e: banking::core::AuditEntry) { }
+        StoreCreation(e: banking::core::AuditEntry): void { }
       }
       """
     Then the diagnostics include "handler parameter type `banking::core::AuditEntry` does not match triggered event `banking::core::BankAccCreated`"
@@ -50,7 +50,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Audit for Banking {
         #[onevent(banking::core::BankAccCreated)]
-        StoreCreation(e: banking::core::BankAccCreated) { }
+        StoreCreation(e: banking::core::BankAccCreated): void { }
       }
       """
     Then there are no diagnostics

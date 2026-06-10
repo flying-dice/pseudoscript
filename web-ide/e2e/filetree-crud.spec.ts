@@ -20,6 +20,20 @@ test("creates a new module from the context menu", async ({ page }) => {
 
   await expect(page.getByTestId("file-extra")).toBeVisible();
   await expect(page.getByText("Created extra.pds")).toBeVisible();
+
+  // The scaffolded module checks clean — no problem row names it (issue #49:
+  // the skeleton must fully qualify its `for` parent and type every callable).
+  // The sample's own architectural warnings may populate the dock; only rows
+  // for the new module would betray an invalid scaffold.
+  await page.getByTestId("view-problems").click();
+  await expect(page.getByTestId("bottom-dock")).toBeVisible();
+  // Anchor on the sample's own architectural warnings so diagnostics have
+  // demonstrably arrived before asserting the new module contributes none.
+  // Match the row's file field exactly — a substring match over the whole row
+  // would hit unrelated message text (e.g. "…by extracting a shared contract").
+  await expect(page.getByTestId("problem-0")).toBeVisible({ timeout: 15_000 });
+  const fileTags = page.locator('[data-testid^="problem-"][data-testid$="-file"]');
+  await expect(fileTags.filter({ hasText: /^extra$/ })).toHaveCount(0);
 });
 
 test("deletes a module after confirmation", async ({ page }) => {

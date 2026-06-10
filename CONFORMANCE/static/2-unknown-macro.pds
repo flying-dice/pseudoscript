@@ -7,5 +7,5 @@ public system Banking;
 
 public container Api for Banking {
   #[retry(3)]
-  Ping() { }
+  Ping(): void { }
 }

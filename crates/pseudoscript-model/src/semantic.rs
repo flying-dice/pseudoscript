@@ -455,14 +455,14 @@ mod tests {
 
     #[test]
     fn member_access_vs_call() {
-        let src = "//! m\n\nsystem S {\n  go() {\n    Repo.run(x)\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  go(): void {\n    Repo.run(x)\n  }\n}\n";
         let tokens = semantic_tokens(src);
         assert_eq!(at(&tokens, src, "run").kind, SemKind::Method);
     }
 
     #[test]
     fn string_literal_and_keyword() {
-        let src = "//! m\n\nsystem S {\n  f() {\n    return Err(\"boom\")\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  f(): void {\n    return Err(\"boom\")\n  }\n}\n";
         let tokens = semantic_tokens(src);
         assert_eq!(at(&tokens, src, "\"boom\"").kind, SemKind::String);
         assert_eq!(at(&tokens, src, "Err").kind, SemKind::Keyword);

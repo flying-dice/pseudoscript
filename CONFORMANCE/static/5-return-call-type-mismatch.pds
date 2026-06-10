@@ -1,0 +1,17 @@
+// LANG.md §5.1 (ADR-040): a `return` whose operand is a call to a resolvable
+// callable must match the declared return type. `Fetch` returns a `string`,
+// not the `number` that `Count` declares.
+
+//! example
+
+public system S;
+
+public container C for S {
+  Count(): number {
+    return example::Repo.Fetch()
+  }
+}
+
+public container Repo for S {
+  Fetch(): string;
+}

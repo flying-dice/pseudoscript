@@ -1,0 +1,7 @@
+// LANG.md §5.1 (ADR-040): a black-box callable must declare a return type.
+// `Reconcile();` declares none; the signature is all a black box discloses.
+
+public system Banking;
+public container Mainframe for Banking {
+  Reconcile();
+}
