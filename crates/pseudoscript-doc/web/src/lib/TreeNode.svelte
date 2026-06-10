@@ -7,7 +7,7 @@
 <li data-search={node.fqn}>
   <div class="row">
     {#if node.children.length}
-      <span class="toggle">&#9662;</span>
+      <button class="toggle" type="button" aria-expanded="true" aria-label="Toggle {node.name}">&#9662;</button>
     {:else}
       <span class="toggle-spacer"></span>
     {/if}

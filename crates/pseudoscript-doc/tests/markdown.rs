@@ -33,7 +33,29 @@ fn render() -> Site {
         name: "Shop".to_owned(),
         ..DocConfig::default()
     };
-    render_markdown_site(&model, &config)
+    render_markdown_site(&model, &config, &[])
+}
+
+#[test]
+fn writes_universe_and_health_pages() {
+    let site = render();
+
+    let universe = &site.file("universe.md").expect("universe.md").contents;
+    assert!(universe.contains("# Universe"), "got:\n{universe}");
+    assert!(
+        universe.contains("`shop::Shop`"),
+        "the universe lists the model's nodes, got:\n{universe}"
+    );
+
+    let health = &site.file("health.md").expect("health.md").contents;
+    assert!(
+        health.contains("# Architecture health"),
+        "got:\n{health}"
+    );
+    assert!(
+        health.contains("No findings."),
+        "the clean fixture reports no findings, got:\n{health}"
+    );
 }
 
 #[test]

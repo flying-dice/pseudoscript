@@ -1,6 +1,6 @@
 <script>
   import NodeSection from "./NodeSection.svelte";
-  let { page } = $props();
+  let { page, prefix = "" } = $props();
 </script>
 
 <header class="page-head">
@@ -9,5 +9,5 @@
 </header>
 
 {#each page.sections as section}
-  <NodeSection {section} />
+  <NodeSection {section} {prefix} />
 {/each}

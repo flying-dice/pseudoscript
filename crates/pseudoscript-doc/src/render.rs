@@ -1,45 +1,77 @@
 //! Projects a resolved [`Graph`] into per-page [`PageProps`].
 //!
 //! Pure and deterministic: modules and nodes are sorted by FQN, callables
-//! document under their owner, and same-module children nest. No clock, no
+//! document under their owner, and same-module children nest. Pages emit in a
+//! fixed order — index, authored docs, module pages, then the universe and
+//! health pages. Every diagram is pre-rendered SVG under the adaptive palette
+//! (the same output as `pds svg`); the client never re-lays-out. No clock, no
 //! randomness, no I/O.
 
 use crate::config::{DocConfig, DocPage};
+use crate::diag::DiagnosticInput;
+use crate::health::{badges_for, build_health};
+use crate::highlight::highlight;
 use crate::nav::{callables_of, child_nodes, module_top_level, sorted_modules};
 use crate::url::{UrlMap, anchor, doc_page_path, module_page_path};
-use pseudoscript_emit::{Scene, Theme, View, layout_sequence_scene, project, render_svg_themed};
+use pseudoscript_emit::{Theme, View, project, render_svg_themed};
 use pseudoscript_model::{Edge, EdgeKind, Graph, GraphNode, NodeKind, Visibility};
-use pulldown_cmark::{BlockQuoteKind, Event, Options, Parser, Tag, TagEnd, html};
+use pseudoscript_universe::{flows, from_model, snapshot};
+use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 
 use crate::props::{
-    Diagram, DocPageProps, IndexProps, ModuleCard, ModuleProps, NodeSection, PageBody, PageProps,
-    RelGroup, RelItem, ScenarioCard, SidebarDocGroup, SidebarDocItem, SidebarModule, SidebarNode,
-    SiteInfo, Step,
+    Crumb, Diagram, DocPageProps, HealthProps, IndexProps, ModuleCard, ModuleProps, NavLink,
+    NodeHref, NodeSection, PageBody, PageProps, RelGroup, RelItem, ScenarioCard, SidebarDocGroup,
+    SidebarDocItem, SidebarModule, SidebarNode, SiteInfo, SiteStats, Step, UniverseEdge,
+    UniverseNode, UniverseProps,
 };
+
+/// The universe page's output path.
+pub(crate) const UNIVERSE_PATH: &str = "universe.html";
+/// The health page's output path.
+pub(crate) const HEALTH_PATH: &str = "health.html";
 
 /// Builds every page's props in deterministic file order: `index.html` first,
 /// then one page per authored doc (`[[doc.sidebar]]`, in declaration order),
-/// then one module page per module sorted by FQN. The returned path is the
-/// site-relative output path.
-pub(crate) fn build_pages(graph: &Graph, config: &DocConfig) -> Vec<(String, PageProps)> {
+/// one module page per module sorted by FQN, then the universe and health
+/// pages. The returned path is the site-relative output path. `svg_theme`
+/// drives the embedded figures: the HTML site always renders adaptively (the
+/// `--pds-*` variables recolour at display time); the Markdown site pins its
+/// standalone files to the configured scheme.
+pub(crate) fn build_pages(
+    graph: &Graph,
+    config: &DocConfig,
+    diagnostics: &[DiagnosticInput],
+    svg_theme: Theme,
+) -> Vec<(String, PageProps)> {
     let urls = UrlMap::build(graph);
     let modules = sorted_modules(graph);
 
     let doc_pages: Vec<&DocPage> = config.docs.iter().flat_map(|group| &group.pages).collect();
-    let mut pages = Vec::with_capacity(modules.len() + doc_pages.len() + 1);
+    let mut pages = Vec::with_capacity(modules.len() + doc_pages.len() + 3);
     pages.push((
         "index.html".to_owned(),
-        build_index(graph, config, &modules, &urls),
+        build_index(graph, config, &modules, &urls, diagnostics, svg_theme),
     ));
     for page in &doc_pages {
-        pages.push((doc_page_path(&page.path), build_doc(config, page)));
+        pages.push((
+            doc_page_path(&page.path),
+            build_doc(config, page, diagnostics),
+        ));
     }
     for module in &modules {
         pages.push((
             module_page_path(module),
-            build_module(graph, config, module, &modules, &urls),
+            build_module(graph, config, module, &modules, &urls, diagnostics, svg_theme),
         ));
     }
+    pages.push((
+        UNIVERSE_PATH.to_owned(),
+        build_universe(graph, config, &modules, &urls, diagnostics),
+    ));
+    pages.push((
+        HEALTH_PATH.to_owned(),
+        build_health_page(graph, config, &modules, &urls, diagnostics),
+    ));
     pages
 }
 
@@ -53,15 +85,53 @@ fn site_info(config: &DocConfig, prefix: &str) -> SiteInfo {
     }
 }
 
+/// The header navigation links: Overview, Universe, and Health with its
+/// finding-count badge. `current` marks this page's link.
+fn nav_links(diagnostics: &[DiagnosticInput], prefix: &str, current: &str) -> Vec<NavLink> {
+    let findings = diagnostics.len();
+    [
+        ("Overview", "index.html", None),
+        ("Universe", UNIVERSE_PATH, None),
+        (
+            "Health",
+            HEALTH_PATH,
+            (findings > 0).then(|| findings.to_string()),
+        ),
+    ]
+    .into_iter()
+    .map(|(label, path, badge)| NavLink {
+        label: label.to_owned(),
+        href: format!("{prefix}{path}"),
+        badge,
+        current: path == current,
+    })
+    .collect()
+}
+
+/// The breadcrumb trail to a page: Overview, then the page's own crumb.
+fn crumbs_of(prefix: &str, trail: &[(&str, Option<&str>)]) -> Vec<Crumb> {
+    let mut crumbs = vec![Crumb {
+        label: "Overview".to_owned(),
+        href: Some(format!("{prefix}index.html")),
+    }];
+    crumbs.extend(trail.iter().map(|(label, href)| Crumb {
+        label: (*label).to_owned(),
+        href: href.map(|h| format!("{prefix}{h}")),
+    }));
+    crumbs
+}
+
 // ---- authored doc pages ----------------------------------------------------
 
 /// One authored Markdown page (`[[doc.sidebar]]`). Doc pages sit one directory
 /// deep (`docs/<slug>.html`), so their sidebar/asset links take a `../` prefix.
-fn build_doc(config: &DocConfig, page: &DocPage) -> PageProps {
+fn build_doc(config: &DocConfig, page: &DocPage, diagnostics: &[DiagnosticInput]) -> PageProps {
     PageProps {
         site: site_info(config, "../"),
         doc_groups: build_doc_groups(config, "../"),
         sidebar: Vec::new(),
+        nav: nav_links(diagnostics, "../", ""),
+        crumbs: crumbs_of("../", &[("Docs", None), (&page.title, None)]),
         page: PageBody::Doc(DocPageProps {
             title: page.title.clone(),
             html: render_markdown(&page.markdown),
@@ -90,8 +160,9 @@ fn build_doc_groups(config: &DocConfig, prefix: &str) -> Vec<SidebarDocGroup> {
 
 /// Renders authored Markdown to HTML. GitHub-flavoured extensions (tables,
 /// strikethrough, task lists, footnotes, and `> [!NOTE]`-style alerts) are
-/// enabled; the content is project-authored and trusted, so raw inline HTML
-/// passes through.
+/// enabled; fenced code blocks highlight at build time (class-based spans);
+/// the content is project-authored and trusted, so raw inline HTML passes
+/// through.
 fn render_markdown(markdown: &str) -> String {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
@@ -99,17 +170,48 @@ fn render_markdown(markdown: &str) -> String {
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_SMART_PUNCTUATION
         | Options::ENABLE_GFM;
-    // Rewrite GitHub alert blockquotes into titled callout `<div>`s, matching
-    // the IDE live preview. A non-alert blockquote passes through unchanged.
-    let events = Parser::new_ext(markdown, options).map(|event| match event {
+    // Rewrite GitHub alert blockquotes into titled callout `<div>`s (matching
+    // the IDE live preview) and intercept fenced code blocks for build-time
+    // highlighting. A non-alert blockquote passes through unchanged.
+    let mut code: Option<(String, String)> = None; // (lang, source) inside a fence
+    let events = Parser::new_ext(markdown, options).filter_map(|event| match event {
         Event::Start(Tag::BlockQuote(Some(kind))) => {
             let (slug, label) = callout_meta(kind);
-            Event::Html(
+            Some(Event::Html(
                 format!("<div class=\"callout callout-{slug}\">\n<p class=\"callout-title\">{label}</p>\n").into(),
-            )
+            ))
         }
-        Event::End(TagEnd::BlockQuote(Some(_))) => Event::Html("</div>\n".into()),
-        other => other,
+        Event::End(TagEnd::BlockQuote(Some(_))) => Some(Event::Html("</div>\n".into())),
+        Event::Start(Tag::CodeBlock(kind)) => {
+            let lang = match kind {
+                CodeBlockKind::Fenced(lang) => lang.split_whitespace().next().unwrap_or("").to_owned(),
+                CodeBlockKind::Indented => String::new(),
+            };
+            code = Some((lang, String::new()));
+            None
+        }
+        Event::Text(text) if code.is_some() => {
+            if let Some((_, source)) = code.as_mut() {
+                source.push_str(&text);
+            }
+            None
+        }
+        Event::End(TagEnd::CodeBlock) => {
+            let (lang, source) = code.take().unwrap_or_default();
+            let classes = if lang.is_empty() {
+                "code-block".to_owned()
+            } else {
+                format!("code-block language-{lang}")
+            };
+            Some(Event::Html(
+                format!(
+                    "<pre class=\"{classes}\"><code>{}</code></pre>\n",
+                    highlight(&lang, &source)
+                )
+                .into(),
+            ))
+        }
+        other => Some(other),
     });
     let mut html = String::with_capacity(markdown.len() * 3 / 2);
     html::push_html(&mut html, events);
@@ -129,7 +231,14 @@ fn callout_meta(kind: BlockQuoteKind) -> (&'static str, &'static str) {
 
 // ---- index ----------------------------------------------------------------
 
-fn build_index(graph: &Graph, config: &DocConfig, modules: &[String], urls: &UrlMap) -> PageProps {
+fn build_index(
+    graph: &Graph,
+    config: &DocConfig,
+    modules: &[String],
+    urls: &UrlMap,
+    diagnostics: &[DiagnosticInput],
+    svg_theme: Theme,
+) -> PageProps {
     // The index sits at the site root: no `../` prefix on its links.
     let sidebar = build_sidebar(graph, modules, urls, "");
     let cards = modules
@@ -145,25 +254,117 @@ fn build_index(graph: &Graph, config: &DocConfig, modules: &[String], urls: &Url
         .collect();
     let page = PageBody::Index(IndexProps {
         title: config.name.clone(),
-        context_diagram: build_diagram(graph, View::Context, "Context", "System context"),
+        context_diagram: build_svg_diagram(graph, View::Context, "Context", "System context", svg_theme),
         cards,
+        stats: build_stats(graph, diagnostics),
     });
     PageProps {
         site: site_info(config, ""),
         doc_groups: build_doc_groups(config, ""),
         sidebar,
+        nav: nav_links(diagnostics, "", "index.html"),
+        crumbs: Vec::new(), // the index IS the root; no trail
         page,
+    }
+}
+
+/// The stats strip: structural node counts, the flow count, the finding count.
+fn build_stats(graph: &Graph, diagnostics: &[DiagnosticInput]) -> SiteStats {
+    let count = |kind: NodeKind| graph.nodes().iter().filter(|n| n.kind == kind).count();
+    SiteStats {
+        systems: count(NodeKind::System),
+        containers: count(NodeKind::Container),
+        components: count(NodeKind::Component),
+        flows: flows(graph).len(),
+        findings: diagnostics.len(),
+    }
+}
+
+// ---- universe ---------------------------------------------------------------
+
+/// The universe page: the flat snapshot, the traced flows, and each placed
+/// node's documentation href — everything the 3D island draws.
+fn build_universe(
+    graph: &Graph,
+    config: &DocConfig,
+    modules: &[String],
+    urls: &UrlMap,
+    diagnostics: &[DiagnosticInput],
+) -> PageProps {
+    let snap = snapshot(&from_model(graph));
+    let hrefs = snap
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            urls.get(&n.id).map(|url| NodeHref {
+                id: n.id.clone(),
+                href: format!("{}#{}", url.page, url.anchor),
+            })
+        })
+        .collect();
+    let page = PageBody::Universe(UniverseProps {
+        nodes: snap
+            .nodes
+            .into_iter()
+            .map(|n| UniverseNode {
+                id: n.id,
+                level: n.level.to_owned(),
+                parent: n.parent,
+            })
+            .collect(),
+        edges: snap
+            .edges
+            .into_iter()
+            .map(|e| UniverseEdge {
+                from: e.from,
+                to: e.to,
+                traffic: e.traffic,
+            })
+            .collect(),
+        flows: flows(graph),
+        hrefs,
+    });
+    PageProps {
+        site: site_info(config, ""),
+        doc_groups: build_doc_groups(config, ""),
+        sidebar: build_sidebar(graph, modules, urls, ""),
+        nav: nav_links(diagnostics, "", UNIVERSE_PATH),
+        crumbs: crumbs_of("", &[("Universe", None)]),
+        page,
+    }
+}
+
+// ---- health -----------------------------------------------------------------
+
+fn build_health_page(
+    graph: &Graph,
+    config: &DocConfig,
+    modules: &[String],
+    urls: &UrlMap,
+    diagnostics: &[DiagnosticInput],
+) -> PageProps {
+    let health: HealthProps = build_health(graph, diagnostics, urls, "");
+    PageProps {
+        site: site_info(config, ""),
+        doc_groups: build_doc_groups(config, ""),
+        sidebar: build_sidebar(graph, modules, urls, ""),
+        nav: nav_links(diagnostics, "", HEALTH_PATH),
+        crumbs: crumbs_of("", &[("Health", None)]),
+        page: PageBody::Health(health),
     }
 }
 
 // ---- module page -----------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn build_module(
     graph: &Graph,
     config: &DocConfig,
     module: &str,
     modules: &[String],
     urls: &UrlMap,
+    diagnostics: &[DiagnosticInput],
+    svg_theme: Theme,
 ) -> PageProps {
     // Module pages sit one directory deep (`module/<fqn>.html`): links to the
     // root assets and to other module pages take a `../` prefix.
@@ -177,7 +378,7 @@ fn build_module(
     nodes.sort_by(|a, b| a.fqn.cmp(&b.fqn));
     let sections = nodes
         .iter()
-        .map(|node| build_section(graph, node, urls, config.theme.emit()))
+        .map(|node| build_section(graph, node, urls, diagnostics, svg_theme))
         .collect();
 
     let page = PageBody::Module(ModuleProps {
@@ -188,12 +389,21 @@ fn build_module(
         site: site_info(config, "../"),
         doc_groups: build_doc_groups(config, "../"),
         sidebar,
+        nav: nav_links(diagnostics, "../", ""),
+        crumbs: crumbs_of("../", &[("Modules", None), (module, None)]),
         page,
     }
 }
 
-/// One node's section: head, docs, tags, relationships, scenarios, diagrams.
-fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap, theme: Theme) -> NodeSection {
+/// One node's section: head, docs, tags, relationships, scenarios, diagrams,
+/// and the health findings attributed to it.
+fn build_section(
+    graph: &Graph,
+    node: &GraphNode,
+    urls: &UrlMap,
+    diagnostics: &[DiagnosticInput],
+    svg_theme: Theme,
+) -> NodeSection {
     NodeSection {
         id: anchor(&node.fqn),
         kind: node.kind.keyword().to_owned(),
@@ -204,8 +414,9 @@ fn build_section(graph: &Graph, node: &GraphNode, urls: &UrlMap, theme: Theme) -
         extended: node.doc.extended.clone(),
         tags: node.doc.tags.clone(),
         relationships: build_relationships(graph, node, urls),
-        scenarios: build_scenarios(graph, node, theme),
-        diagrams: build_node_diagrams(graph, node, theme),
+        scenarios: build_scenarios(graph, node, svg_theme),
+        diagrams: build_node_diagrams(graph, node, svg_theme),
+        diagnostics: badges_for(graph, node, diagnostics),
     }
 }
 
@@ -275,7 +486,7 @@ fn rel_item(edge: &Edge, endpoint: &str, arrow: bool, urls: &UrlMap) -> RelItem 
 
 // ---- scenarios -------------------------------------------------------------
 
-fn build_scenarios(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<ScenarioCard> {
+fn build_scenarios(graph: &Graph, node: &GraphNode, svg_theme: Theme) -> Vec<ScenarioCard> {
     graph
         .scenarios_of(&node.fqn)
         .map(|scenario| ScenarioCard {
@@ -296,9 +507,9 @@ fn build_scenarios(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<Scenari
                 View::Feature {
                     of: format!("{}::{}", scenario.module, scenario.name),
                 },
-                "flow",
+                "Flow",
                 &format!("Flow — {}", scenario.name),
-                theme,
+                svg_theme,
             ),
         })
         .collect()
@@ -309,34 +520,36 @@ fn build_scenarios(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<Scenari
 /// The diagrams embedded on a node: a C4 sub-view for a system/container, an
 /// entity view for a `data` type (`LANG.md` §9.4), plus a sequence diagram for
 /// each triggered callable it owns.
-fn build_node_diagrams(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<Diagram> {
+fn build_node_diagrams(graph: &Graph, node: &GraphNode, svg_theme: Theme) -> Vec<Diagram> {
     let mut diagrams = Vec::new();
 
     match node.kind {
-        NodeKind::System => diagrams.push(build_diagram(
+        NodeKind::System => diagrams.push(build_svg_diagram(
             graph,
             View::Container {
                 of: node.fqn.clone(),
             },
             "Containers",
             "Container diagram",
+            svg_theme,
         )),
-        NodeKind::Container => diagrams.push(build_diagram(
+        NodeKind::Container => diagrams.push(build_svg_diagram(
             graph,
             View::Component {
                 of: node.fqn.clone(),
             },
             "Components",
             "Component diagram",
+            svg_theme,
         )),
         NodeKind::Data => diagrams.push(build_svg_diagram(
             graph,
             View::Data {
                 of: node.fqn.clone(),
             },
-            "entity",
+            "Entities",
             "Entity diagram",
-            theme,
+            svg_theme,
         )),
         _ => {}
     }
@@ -345,59 +558,51 @@ fn build_node_diagrams(graph: &Graph, node: &GraphNode, theme: Theme) -> Vec<Dia
         if callable.triggers.is_empty() {
             continue;
         }
-        diagrams.push(build_diagram(
+        diagrams.push(build_svg_diagram(
             graph,
             View::Sequence {
                 entry: callable.fqn.clone(),
             },
             "Sequence",
             &format!("Sequence — {}", callable.name),
+            svg_theme,
         ));
     }
 
     diagrams
 }
 
-/// Projects `view` into a [`Diagram`]; an un-projectable view becomes an
-/// `Empty` placeholder rather than failing the page.
-fn build_diagram(graph: &Graph, view: View, eyebrow: &str, caption: &str) -> Diagram {
-    match project(graph, view) {
-        Ok(Scene::C4(scene)) => Diagram::C4 {
-            caption: caption.to_owned(),
-            scene,
-        },
-        Ok(Scene::Sequence(scene)) => Diagram::Sequence {
-            caption: caption.to_owned(),
-            layout: layout_sequence_scene(&scene),
-            scene,
-        },
-        // Data/feature views go through `build_svg_diagram`, never here; a
-        // placeholder keeps the match total.
-        Ok(Scene::Data(_) | Scene::Feature(_)) | Err(_) => Diagram::Empty {
-            caption: caption.to_owned(),
-            eyebrow: eyebrow.to_lowercase(),
-        },
+/// The `data-diagram` kind word for a view.
+fn view_kind(view: &View) -> &'static str {
+    match view {
+        View::Context | View::Container { .. } | View::Component { .. } => "c4",
+        View::Sequence { .. } => "sequence",
+        View::Data { .. } => "entity",
+        View::Feature { .. } => "flow",
     }
 }
 
-/// Projects `view` and pre-renders it to SVG in the site's theme; an
-/// un-projectable view becomes an `Empty` placeholder rather than failing the
-/// page.
+/// Projects `view` and pre-renders it to deterministic SVG under the adaptive
+/// palette — the same output as `pds svg`. An un-projectable view becomes an
+/// `Empty` placeholder rather than failing the page.
 fn build_svg_diagram(
     graph: &Graph,
     view: View,
     eyebrow: &str,
     caption: &str,
-    theme: Theme,
+    svg_theme: Theme,
 ) -> Diagram {
+    let kind = view_kind(&view);
     match project(graph, view) {
         Ok(scene) => Diagram::Svg {
             caption: caption.to_owned(),
-            svg: render_svg_themed(&scene, theme),
+            eyebrow: eyebrow.to_owned(),
+            kind: kind.to_owned(),
+            svg: render_svg_themed(&scene, svg_theme),
         },
         Err(_) => Diagram::Empty {
             caption: caption.to_owned(),
-            eyebrow: eyebrow.to_owned(),
+            eyebrow: eyebrow.to_lowercase(),
         },
     }
 }
@@ -467,7 +672,7 @@ fn visibility_label(visibility: Visibility) -> &'static str {
 mod tests {
     use super::{build_pages, render_markdown};
     use crate::config::{DocConfig, DocGroup, DocPage};
-    use crate::props::PageBody;
+    use crate::props::{Diagram, PageBody};
     use pseudoscript_model::{WorkspaceModule, graph};
 
     fn config_with_docs() -> DocConfig {
@@ -485,19 +690,21 @@ mod tests {
     }
 
     #[test]
-    fn doc_page_emitted_after_index_before_modules() {
+    fn pages_emit_in_order_index_docs_modules_universe_health() {
         let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
-        let pages = build_pages(&g, &config_with_docs());
+        let pages = build_pages(&g, &config_with_docs(), &[], pseudoscript_emit::Theme::Adaptive);
         let paths: Vec<&str> = pages.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths[0], "index.html");
         assert_eq!(paths[1], "docs/introduction.html");
         assert!(paths.iter().any(|p| p.starts_with("module/")));
+        assert_eq!(paths[paths.len() - 2], "universe.html");
+        assert_eq!(paths[paths.len() - 1], "health.html");
     }
 
     #[test]
     fn doc_page_carries_rendered_markdown_and_sidebar_group() {
         let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
-        let pages = build_pages(&g, &config_with_docs());
+        let pages = build_pages(&g, &config_with_docs(), &[], pseudoscript_emit::Theme::Adaptive);
         let (_, doc) = pages
             .iter()
             .find(|(p, _)| p == "docs/introduction.html")
@@ -510,6 +717,46 @@ mod tests {
         let group = &doc.doc_groups[0];
         assert_eq!(group.title, "Getting Started");
         assert_eq!(group.items[0].href, "../docs/introduction.html");
+    }
+
+    #[test]
+    fn every_diagram_is_adaptive_inline_svg() {
+        let src = "//! m\n/// Sys.\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    self.Step()\n  }\n  Step();\n}\n";
+        let g = graph(&[WorkspaceModule::new("m", src)]);
+        let pages = build_pages(&g, &DocConfig::default(), &[], pseudoscript_emit::Theme::Adaptive);
+        let (_, module) = pages
+            .iter()
+            .find(|(p, _)| p.starts_with("module/"))
+            .expect("module page");
+        let PageBody::Module(body) = &module.page else {
+            panic!("expected a module page body");
+        };
+        let diagrams: Vec<&Diagram> = body.sections.iter().flat_map(|s| &s.diagrams).collect();
+        assert!(!diagrams.is_empty());
+        for diagram in diagrams {
+            if let Diagram::Svg { svg, kind, .. } = diagram {
+                assert!(svg.starts_with("<svg"), "inline SVG, kind {kind}");
+                assert!(svg.contains("var(--pds-"), "adaptive palette");
+            }
+        }
+    }
+
+    #[test]
+    fn universe_page_carries_snapshot_flows_and_hrefs() {
+        let src = "//! m\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    m::D.Go()\n  }\n}\npublic container D for m::S {\n  public Go();\n}\n";
+        let g = graph(&[WorkspaceModule::new("m", src)]);
+        let pages = build_pages(&g, &DocConfig::default(), &[], pseudoscript_emit::Theme::Adaptive);
+        let (_, universe) = pages
+            .iter()
+            .find(|(p, _)| p == "universe.html")
+            .expect("universe page");
+        let PageBody::Universe(body) = &universe.page else {
+            panic!("expected the universe page body");
+        };
+        assert_eq!(body.nodes.len(), 3, "system + two containers");
+        assert!(!body.edges.is_empty());
+        assert_eq!(body.flows.len(), 1);
+        assert!(body.hrefs.iter().any(|h| h.id == "m::C"));
     }
 
     #[test]
@@ -539,5 +786,16 @@ mod tests {
         let html = render_markdown("> just a quote");
         assert!(html.contains("<blockquote>"), "{html}");
         assert!(!html.contains("callout"), "{html}");
+    }
+
+    #[test]
+    fn markdown_highlights_pds_fences_and_escapes_others() {
+        let html = render_markdown("```pds\npublic system S;\n```\n\n```js\nlet a = 1 < 2;\n```");
+        assert!(
+            html.contains(r#"<span class="tok-kw">public</span>"#),
+            "{html}"
+        );
+        assert!(html.contains("language-js"), "{html}");
+        assert!(html.contains("1 &lt; 2"), "{html}");
     }
 }

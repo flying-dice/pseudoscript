@@ -10,17 +10,18 @@
 
 use std::fmt::Write as _;
 
-use pseudoscript_emit::{Scene, Theme, render_svg_themed};
+use pseudoscript_emit::{Theme, adaptive_style_block};
 
 use crate::props::{
-    Diagram, DocPageProps, IndexProps, ModuleProps, NodeSection, PageBody, PageProps, RelGroup,
-    ScenarioCard,
+    Diagram, DocPageProps, HealthProps, IndexProps, ModuleProps, NodeSection, PageBody, PageProps,
+    RelGroup, ScenarioCard, UniverseProps,
 };
 use crate::site::SiteFile;
 
-/// State threaded through one page: the diagram theme, the page's `../`-to-root
-/// prefix (so an image link resolves to the site-root `diagrams/` dir), and the
-/// collector the standalone `.svg` files are pushed onto.
+/// State threaded through one page: the diagram theme (drives the adaptive
+/// style block on standalone files), the page's `../`-to-root prefix (so an
+/// image link resolves to the site-root `diagrams/` dir), and the collector the
+/// standalone `.svg` files are pushed onto.
 struct Ctx<'a> {
     theme: Theme,
     prefix: &'a str,
@@ -74,8 +75,83 @@ fn render_page(props: &PageProps, ctx: &mut Ctx) -> String {
         PageBody::Index(index) => render_index(&mut out, index, ctx),
         PageBody::Module(module) => render_module(&mut out, module, ctx),
         PageBody::Doc(doc) => render_doc(&mut out, doc),
+        PageBody::Universe(universe) => render_universe(&mut out, universe),
+        PageBody::Health(health) => render_health(&mut out, health),
     }
     out
+}
+
+/// The universe as text lists: nodes by level, edges with traffic, each flow's
+/// legs — the engine-free reading of the 3D page.
+fn render_universe(out: &mut String, universe: &UniverseProps) {
+    out.push_str("# Universe\n\n");
+    if !universe.nodes.is_empty() {
+        out.push_str("## Nodes\n\n");
+        for node in &universe.nodes {
+            let _ = writeln!(out, "- `{}` — {}", node.id, node.level);
+        }
+        out.push('\n');
+    }
+    if !universe.edges.is_empty() {
+        out.push_str("## Relationships\n\n");
+        for edge in &universe.edges {
+            let _ = writeln!(out, "- `{}` \u{2192} `{}` ({} call{})", edge.from, edge.to, edge.traffic, if edge.traffic == 1 { "" } else { "s" });
+        }
+        out.push('\n');
+    }
+    if !universe.flows.is_empty() {
+        out.push_str("## Flows\n\n");
+        for flow in &universe.flows {
+            let _ = writeln!(out, "- **{}** (`{}`)", flow.name, flow.fqn);
+            for hop in &flow.hops {
+                let _ = writeln!(out, "  - `{}` \u{2192} `{}` — {}", hop.from, hop.to, hop.label);
+            }
+        }
+        out.push('\n');
+    }
+}
+
+/// The health report as a table: severity, code (linked to its article),
+/// location, message, and the owning node.
+fn render_health(out: &mut String, health: &HealthProps) {
+    out.push_str("# Architecture health\n\n");
+    let _ = writeln!(
+        out,
+        "{} error{}, {} warning{}\n",
+        health.error_count,
+        if health.error_count == 1 { "" } else { "s" },
+        health.warning_count,
+        if health.warning_count == 1 { "" } else { "s" },
+    );
+    if health.entries.is_empty() {
+        out.push_str("No findings.\n\n");
+        return;
+    }
+    out.push_str("| Severity | Code | Location | Message | Node |\n|---|---|---|---|---|\n");
+    for entry in &health.entries {
+        let code = match (&entry.code, &entry.code_url) {
+            (Some(code), Some(url)) => format!("[{code}]({url})"),
+            (Some(code), None) => code.clone(),
+            _ => String::new(),
+        };
+        let node = if entry.node_fqn.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]({})", entry.node_fqn, md_href(&entry.href))
+        };
+        let _ = writeln!(
+            out,
+            "| {} | {} | {}:{}:{} | {} | {} |",
+            entry.severity,
+            code,
+            entry.module,
+            entry.line,
+            entry.column,
+            entry.message.replace('|', "\\|"),
+            node,
+        );
+    }
+    out.push('\n');
 }
 
 fn render_index(out: &mut String, index: &IndexProps, ctx: &mut Ctx) {
@@ -182,28 +258,39 @@ fn render_scenarios(out: &mut String, scenarios: &[ScenarioCard], section_id: &s
 }
 
 /// Writes a diagram as a standalone `diagrams/<stem>.svg` file and references it
-/// from the page with a captioned image link. An unprojectable view becomes a
-/// one-line note (no file).
+/// from the page with a captioned image link. Diagrams arrive pre-rendered in
+/// the Markdown site's standalone theme; an adaptive render additionally embeds
+/// the `prefers-color-scheme` style block so the file follows the OS scheme on
+/// its own. An unprojectable view becomes a one-line note (no file).
 fn emit_diagram(out: &mut String, diagram: &Diagram, stem: &str, ctx: &mut Ctx) {
     let (caption, svg) = match diagram {
-        Diagram::C4 { caption, scene } => (
-            caption,
-            render_svg_themed(&Scene::C4(scene.clone()), ctx.theme),
-        ),
-        Diagram::Sequence { caption, scene, .. } => (
-            caption,
-            render_svg_themed(&Scene::Sequence(scene.clone()), ctx.theme),
-        ),
-        // Pre-rendered upstream in the site's configured theme — the same theme
-        // this Markdown render uses.
-        Diagram::Svg { caption, svg } => (caption, svg.clone()),
+        Diagram::Svg { caption, svg, .. } => (caption, svg.clone()),
         Diagram::Empty { caption, eyebrow } => {
             let _ = writeln!(out, "_{caption}: no {eyebrow}._\n");
             return;
         }
     };
+    let svg = if ctx.theme == Theme::Adaptive {
+        embed_adaptive_style(&svg)
+    } else {
+        svg
+    };
     let file = format!("diagrams/{stem}.svg");
     let _ = writeln!(out, "**{caption}**\n");
     let _ = writeln!(out, "![{caption}]({}{file})\n", ctx.prefix);
     ctx.svgs.push(SiteFile::new(file, svg));
+}
+
+/// Splices the adaptive style block just after the opening `<svg ...>` tag.
+fn embed_adaptive_style(svg: &str) -> String {
+    svg.find('>').map_or_else(
+        || svg.to_owned(),
+        |end| {
+            let mut out = String::with_capacity(svg.len() + 512);
+            out.push_str(&svg[..=end]);
+            out.push_str(&adaptive_style_block());
+            out.push_str(&svg[end + 1..]);
+            out
+        },
+    )
 }

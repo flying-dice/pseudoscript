@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "Banking Architecture".to_owned(),
         ..DocConfig::default()
     };
-    let site = try_render_site(&g, &config)?;
+    let site = try_render_site(&g, &config, &[])?;
     for file in &site.files {
         let dest = std::path::Path::new(&out).join(&file.path);
         if let Some(parent) = dest.parent() {

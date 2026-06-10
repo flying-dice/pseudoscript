@@ -3,9 +3,11 @@
 //! The presentation is authored in Svelte and rendered through an embedded
 //! `QuickJS` engine ([`rquickjs`]) at generation time, so the shipped binary
 //! needs no JavaScript toolchain — only the prebuilt bundles embedded into it.
-//! The diagrams are interactive client islands: C4 views render as a Svelte Flow
-//! graph, and sequence views as an animated code-flow timeline. The server-side
-//! pass renders the page chrome and all text content for first paint.
+//! Every diagram is deterministic server-rendered SVG (the same output as
+//! `pds svg`, under the adaptive palette); the client bundle only progressively
+//! enhances — pan/zoom, search, theme, drawer. The server-side pass renders the
+//! page chrome and ALL content; only the universe page carries page data, for
+//! its 3D island.
 //!
 //! The model→page logic — the [`DocConfig`]/[`Theme`] config, the URL scheme,
 //! graph navigation, HTML [`escape`]ing, and the [`Site`] / [`SiteFile`] value
@@ -22,17 +24,22 @@
 
 mod assets;
 mod config;
+mod diag;
 mod escape;
+mod health;
+mod highlight;
 mod nav;
 mod props;
 mod render;
 mod render_md;
 mod renderer;
+mod search;
 mod shell;
 mod site;
 mod url;
 
 pub use config::{DocConfig, DocGroup, DocPage, Theme};
+pub use diag::{DiagnosticInput, prepare_diagnostics};
 pub use escape::escape;
 pub use props::RenderedPage;
 pub use renderer::{RenderError, SsrEngine};
@@ -63,11 +70,14 @@ pub fn ssr_bundle() -> &'static str {
 pub fn try_render_site_with(
     graph: &Graph,
     config: &DocConfig,
+    diagnostics: &[DiagnosticInput],
     engine: &impl SsrEngine,
 ) -> Result<Site, RenderError> {
-    let pages = render::build_pages(graph, config);
+    // The HTML site always renders its figures adaptively: the `--pds-*`
+    // variables in `style.css` recolour every diagram under the active scheme.
+    let pages = render::build_pages(graph, config, diagnostics, config.theme.emit());
 
-    let mut files = Vec::with_capacity(pages.len() + 2);
+    let mut files = Vec::with_capacity(pages.len() + 4);
     for (path, props) in &pages {
         let props_json =
             serde_json::to_string(props).map_err(|e| RenderError::Codec(e.to_string()))?;
@@ -77,8 +87,10 @@ pub fn try_render_site_with(
             shell::wrap(path, props, &props_json, &result),
         ));
     }
+    files.push(search::build_search_index(graph, config, &crate::url::UrlMap::build(graph)));
     files.push(SiteFile::new("style.css", assets::STYLE_CSS));
     files.push(SiteFile::new("client.js", assets::CLIENT_JS));
+    files.push(SiteFile::new("universe.js", assets::UNIVERSE_JS));
     Ok(Site { files })
 }
 
@@ -92,8 +104,9 @@ pub fn try_render_site_with(
 /// handle the failure instead.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn render_site(graph: &Graph, config: &DocConfig) -> Site {
-    try_render_site(graph, config).expect("svelte doc SSR failed (bundle or engine defect)")
+pub fn render_site(graph: &Graph, config: &DocConfig, diagnostics: &[DiagnosticInput]) -> Site {
+    try_render_site(graph, config, diagnostics)
+        .expect("svelte doc SSR failed (bundle or engine defect)")
 }
 
 /// Renders the whole documentation site with the embedded `QuickJS` engine,
@@ -105,21 +118,32 @@ pub fn render_site(graph: &Graph, config: &DocConfig) -> Site {
 /// bundle fails to evaluate, `SSR.renderPage` throws, or props (de)serialisation
 /// fails.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn try_render_site(graph: &Graph, config: &DocConfig) -> Result<Site, RenderError> {
+pub fn try_render_site(
+    graph: &Graph,
+    config: &DocConfig,
+    diagnostics: &[DiagnosticInput],
+) -> Result<Site, RenderError> {
     let engine = QuickJsEngine::new()?;
-    try_render_site_with(graph, config, &engine)
+    try_render_site_with(graph, config, diagnostics, &engine)
 }
 
-/// Renders the documentation as Markdown files with the diagrams inlined as
-/// self-contained SVG — a static, engine-free alternative to the Svelte site
-/// ([`render_site`]). One `.md` per module plus an `index.md`, mirroring the
-/// HTML site's paths. Needs no SSR engine, so it is available on every target.
+/// Renders the documentation as Markdown files with the diagrams as standalone
+/// `.svg` assets — a static, engine-free alternative to the Svelte site
+/// ([`render_site`]). One `.md` per page, mirroring the HTML site's paths.
+/// Needs no SSR engine, so it is available on every target.
 #[must_use]
-pub fn render_markdown_site(graph: &Graph, config: &DocConfig) -> Site {
+pub fn render_markdown_site(
+    graph: &Graph,
+    config: &DocConfig,
+    diagnostics: &[DiagnosticInput],
+) -> Site {
+    // Standalone files pin the configured scheme; `system` writes adaptive
+    // SVGs that carry their own prefers-color-scheme block.
+    let theme = config.theme.emit_standalone();
     Site {
         files: render_md::pages_to_markdown(
-            &render::build_pages(graph, config),
-            config.theme.emit(),
+            &render::build_pages(graph, config, diagnostics, theme),
+            theme,
         ),
     }
 }

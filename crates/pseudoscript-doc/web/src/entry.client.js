@@ -1,9 +1,9 @@
-// Client entry: hydrate the SSR markup with the identical props the server
-// used (embedded as window.__DATA__), so server and client agree.
-import { hydrate } from "svelte";
-import Page from "./lib/Page.svelte";
+// Client entry: pure progressive enhancement — no Svelte, no hydration. The
+// SSR markup is final; behaviors.js wires the interactive bits by DOM.
+import { initBehaviors } from "./lib/behaviors.js";
 
-const target = document.getElementById("app");
-if (target && window.__DATA__) {
-  hydrate(Page, { target, props: window.__DATA__ });
+if (document.readyState === "loading") {
+  addEventListener("DOMContentLoaded", () => initBehaviors(document));
+} else {
+  initBehaviors(document);
 }

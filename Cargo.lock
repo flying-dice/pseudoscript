@@ -1379,8 +1379,9 @@ dependencies = [
  "cucumber",
  "futures",
  "pseudoscript-emit",
- "pseudoscript-layout",
  "pseudoscript-model",
+ "pseudoscript-syntax",
+ "pseudoscript-universe",
  "pulldown-cmark",
  "rquickjs",
  "serde",
@@ -1520,6 +1521,7 @@ name = "pseudoscript-universe"
 version = "0.1.6"
 dependencies = [
  "petgraph",
+ "pseudoscript-emit",
  "pseudoscript-model",
  "serde",
 ]

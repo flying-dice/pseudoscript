@@ -1,5 +1,5 @@
 <script>
-  import Diagram from "./Diagram.svelte";
+  import SvgFigure from "./SvgFigure.svelte";
 
   let { scenarios } = $props();
 </script>
@@ -25,7 +25,7 @@
             </li>
           {/each}
         </ul>
-        <Diagram diagram={scenario.flow} />
+        <SvgFigure diagram={scenario.flow} />
       </div>
     {/each}
   </div>

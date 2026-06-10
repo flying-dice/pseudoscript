@@ -114,7 +114,7 @@ impl DocTable {
     /// Markdown from disk, relative to `root`.
     fn resolve(self, root: &Path) -> Result<(DocConfig, PathBuf, Option<DocFormat>)> {
         let name = self.name.unwrap_or_else(|| default_name(root));
-        let theme = self.theme.as_deref().map_or(Ok(Theme::Dark), parse_theme)?;
+        let theme = self.theme.as_deref().map_or(Ok(Theme::System), parse_theme)?;
         let format = self.format.as_deref().map(parse_format).transpose()?;
         let out = self.out.unwrap_or_else(|| "target/doc".to_owned());
         let docs = self
@@ -173,12 +173,15 @@ fn default_name(root: &Path) -> String {
     )
 }
 
-/// Parses a `[doc].theme` value, rejecting anything but `light`/`dark`.
+/// Parses a `[doc].theme` value: `light`, `dark`, or `system` (the default).
 fn parse_theme(value: &str) -> Result<Theme> {
     match value {
         "light" => Ok(Theme::Light),
         "dark" => Ok(Theme::Dark),
-        other => bail!("invalid `[doc].theme` value `{other}`: expected `light` or `dark`"),
+        "system" => Ok(Theme::System),
+        other => {
+            bail!("invalid `[doc].theme` value `{other}`: expected `light`, `dark`, or `system`")
+        }
     }
 }
 
@@ -204,7 +207,7 @@ mod tests {
             .resolve(Path::new("/tmp/my-project"))
             .unwrap();
         assert_eq!(config.name, "my-project");
-        assert_eq!(config.theme, Theme::Dark);
+        assert_eq!(config.theme, Theme::System);
         assert!(config.logo.is_none());
         assert_eq!(out, Path::new("target/doc"));
         assert_eq!(format, None);

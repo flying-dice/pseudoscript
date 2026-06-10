@@ -882,16 +882,30 @@ fn build_site(
     // Precedence: an explicit `--format` wins over `[doc].format`, else HTML.
     let format = cli_format.or(project.doc_format).unwrap_or(DocFormat::Html);
 
-    report_diagnostics(&check_workspace_with_externals(
-        &project.modules,
-        &project.dependencies,
-    ));
+    // One per-module check pass feeds both the console report and the site's
+    // health page.
+    let per_module =
+        pseudoscript_model::check_workspace_modules_with_externals(
+            &project.modules,
+            &project.dependencies,
+        );
+    report_diagnostics(
+        &per_module
+            .iter()
+            .flat_map(|m| m.diagnostics.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let diagnostics = pseudoscript_doc::prepare_diagnostics(&project.modules, &per_module);
 
     let model = graph(&project.modules);
     let site = match format {
-        DocFormat::Html => pseudoscript_doc::try_render_site(&model, &project.config)
-            .context("rendering the documentation site")?,
-        DocFormat::Md => pseudoscript_doc::render_markdown_site(&model, &project.config),
+        DocFormat::Html => {
+            pseudoscript_doc::try_render_site(&model, &project.config, &diagnostics)
+                .context("rendering the documentation site")?
+        }
+        DocFormat::Md => {
+            pseudoscript_doc::render_markdown_site(&model, &project.config, &diagnostics)
+        }
     };
     for file in &site.files {
         let dest = project.out_dir.join(&file.path);

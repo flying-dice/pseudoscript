@@ -650,19 +650,16 @@ component SearchIndex for doc::Doc {
 
 /// Highlights fenced code blocks at build time, so the shipped site needs no
 /// client highlighter and one deterministic output serves every theme:
-/// PseudoScript through the toolchain's own lexer, common languages through an
-/// embedded grammar set — both emit class-based spans coloured by the site
-/// stylesheet. An unknown language passes through escaped and unhighlighted.
+/// PseudoScript through the toolchain's own lexer, emitting class-based spans
+/// coloured by the site stylesheet. Any other language passes through escaped
+/// and unhighlighted — an embedded grammar set for common languages is a
+/// deliberate future extension (it would bloat the IDE wasm today).
 component Highlight for doc::Doc {
   /// Highlight `source` as `lang` into class-based HTML spans: `pds` through
-  /// the syntax lexer's token kinds, a known common language through the
-  /// embedded grammar set, anything else escaped verbatim.
+  /// the syntax lexer's token kinds, anything else escaped verbatim.
   public code(lang: string, source: string): string {
     if (self.isPds(lang)) {
       return self.pdsTokens(source)
-    }
-    if (self.isKnown(lang)) {
-      return self.grammarTokens(lang, source)
     }
     return self.escaped(source)
   }
@@ -670,15 +667,10 @@ component Highlight for doc::Doc {
   /// Whether the language word names PseudoScript (`pds`, `pseudoscript`).
   isPds(lang: string): bool;
 
-  /// Whether the embedded grammar set covers the language.
-  isKnown(lang: string): bool;
-
-  /// Lex the source with the toolchain lexer and wrap each token in its
-  /// kind-classed span.
+  /// Lex the source with the toolchain lexer and wrap each token (and comment)
+  /// in its kind-classed span, slicing the raw source by span so the snippet
+  /// reassembles byte-for-byte.
   pdsTokens(source: string): string;
-
-  /// Highlight through the embedded grammar set with class-based output.
-  grammarTokens(lang: string, source: string): string;
 
   /// The escaped, unhighlighted fallback.
   escaped(source: string): string;
@@ -855,9 +847,9 @@ feature SearchIndexIsStatic for doc::SearchIndex {
 feature CodeBlocksHighlightedAtBuildTime for doc::Highlight {
   given "an authored doc page with fenced code blocks"
   when "the page is rendered"
-  then "PseudoScript blocks highlight through the toolchain lexer and known languages through the embedded grammar set"
+  then "PseudoScript blocks highlight through the toolchain lexer"
   and "output is class-based spans so one deterministic render serves every theme"
-  but "an unknown language passes through escaped and unhighlighted"
+  but "any other language passes through escaped and unhighlighted"
 }
 
 /// A failed projection degrades to a placeholder rather than aborting.

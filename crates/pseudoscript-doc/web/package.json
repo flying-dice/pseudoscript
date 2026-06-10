@@ -2,13 +2,11 @@
   "name": "pseudoscript-doc-web",
   "private": true,
   "type": "module",
-  "description": "Svelte presentation layer for pseudoscript-doc. Builds the SSR + client + CSS bundles embedded into the Rust crate.",
+  "description": "Svelte presentation layer for pseudoscript-doc. Builds the SSR + client + universe + CSS bundles embedded into the Rust crate.",
   "scripts": {
     "build": "node build.mjs"
   },
   "devDependencies": {
-    "@dagrejs/dagre": "3.0.0",
-    "@xyflow/svelte": "1.5.2",
     "esbuild": "0.28.0",
     "esbuild-svelte": "0.9.5",
     "svelte": "5.56.0"

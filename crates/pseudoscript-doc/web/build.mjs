@@ -1,7 +1,8 @@
-// Builds the three committed bundles the Rust crate embeds:
-//   ../src/assets/ssr.js     — SSR IIFE exposing globalThis.SSR.renderPage
-//   ../src/assets/client.js  — browser hydration + diagram islands
-//   ../src/assets/style.css  — global sheet + Svelte Flow + timeline styles
+// Builds the four committed bundles the Rust crate embeds:
+//   ../src/assets/ssr.js      — SSR IIFE exposing globalThis.SSR.renderPage
+//   ../src/assets/client.js   — progressive enhancement (no hydration)
+//   ../src/assets/universe.js — the universe page's 3D island (phase-4 stub)
+//   ../src/assets/style.css   — the site sheet (tokens + --pds-* palettes)
 //
 // Determinism: exact-pinned deps, ascii charset, no sourcemaps, no legal
 // comments, fixed target. Run with `npm ci && npm run build`.
@@ -9,7 +10,7 @@
 import { build } from "esbuild";
 import sveltePlugin from "esbuild-svelte";
 import { fileURLToPath } from "node:url";
-import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 
 const out = fileURLToPath(new URL("../src/assets/", import.meta.url));
 
@@ -23,9 +24,8 @@ const shared = {
   define: { "process.env.NODE_ENV": '"production"' },
 };
 
-// SSR: pure ECMAScript IIFE for QuickJS. The diagram islands (Svelte Flow,
-// dagre) are dynamically imported only in the browser, so they are marked
-// external here and never enter the SSR bundle.
+// SSR: pure ECMAScript IIFE for QuickJS. Server-rendered markup only — no
+// islands, no browser-only deps.
 await build({
   ...shared,
   entryPoints: [fileURLToPath(new URL("./src/entry.server.js", import.meta.url))],
@@ -35,25 +35,29 @@ await build({
   platform: "neutral",
   mainFields: ["svelte", "module", "main"],
   conditions: ["svelte", "production"],
-  external: ["@xyflow/svelte", "@dagrejs/dagre"],
   plugins: [sveltePlugin({ compilerOptions: { generate: "server" }, emitCss: false })],
 });
 
-// Client: browser bundle, hydrates the SSR markup and mounts the diagram
-// islands. Svelte components compile in DOM (client) mode.
+// Client: plain-JS progressive enhancement over the SSR markup. No Svelte in
+// the bundle — entry.client.js imports only behaviors.js.
 await build({
   ...shared,
   entryPoints: [fileURLToPath(new URL("./src/entry.client.js", import.meta.url))],
   outfile: out + "client.js",
   format: "iife",
   platform: "browser",
-  mainFields: ["svelte", "browser", "module", "main"],
-  conditions: ["svelte", "browser", "production"],
-  plugins: [sveltePlugin({ compilerOptions: { generate: "client" }, emitCss: false })],
 });
 
-// CSS: the global sheet @imports the Svelte Flow stylesheet; esbuild resolves
-// the bare package import via node resolution.
+// Universe island: linked only by universe.html. A phase-4 stub today.
+await build({
+  ...shared,
+  entryPoints: [fileURLToPath(new URL("./src/entry.universe.js", import.meta.url))],
+  outfile: out + "universe.js",
+  format: "iife",
+  platform: "browser",
+});
+
+// CSS: the global sheet, standalone (no package imports).
 await build({
   ...shared,
   minify: false,
@@ -62,19 +66,16 @@ await build({
   loader: { ".css": "css" },
 });
 
-// The client build extracts Svelte Flow's component-scoped styles into a
-// `client.css` sidecar. The page loads only `style.css`, so fold those rules
-// in and drop the sidecar (deterministic: same inputs → same output).
-const clientCss = out + "client.css";
-if (existsSync(clientCss)) {
-  appendFileSync(out + "style.css", "\n" + readFileSync(clientCss, "utf8"));
-  rmSync(clientCss);
-}
-
-// The SSR build also extracts component styles into `ssr.css`; the SSR bundle
-// runs in QuickJS (no DOM, no CSS) and its styles already reached `style.css`
-// via the client build above, so the sidecar is redundant — drop it.
+// The SSR build may extract component-scoped styles into an `ssr.css` sidecar;
+// the SSR bundle runs in QuickJS (no DOM, no CSS), so drop it.
 const ssrCss = out + "ssr.css";
 if (existsSync(ssrCss)) rmSync(ssrCss);
 
-console.log("built ssr.js, client.js, style.css → ../src/assets/");
+// Guard: the SSR bundle must stay engine-free — a three.js leak (the universe
+// island) would break QuickJS evaluation and balloon the embedded asset.
+if (readFileSync(out + "ssr.js", "utf8").includes("WebGLRenderer")) {
+  console.error("ssr.js contains WebGLRenderer — a browser-only island leaked into the SSR bundle");
+  process.exit(1);
+}
+
+console.log("built ssr.js, client.js, universe.js, style.css → ../src/assets/");

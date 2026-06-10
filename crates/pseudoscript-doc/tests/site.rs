@@ -3,10 +3,11 @@
 //! Mirrors the `pseudoscript-doc` contract on the same `banking::core` model —
 //! every documented element, a `feature` scenario, and a triggered callable.
 //! Server-rendered text (names, summaries, tags, scenario steps, cross-links)
-//! is asserted directly; diagrams are client islands, so the assertions check
-//! the diagram container and its scene-kind hook rather than inline SVG. Output
-//! must stay byte-for-byte deterministic (`LANG.md` §9.3). Requires the prebuilt
-//! bundle (`src/assets/*`) to be present.
+//! is asserted directly; every diagram is server-rendered inline SVG carried
+//! by a `data-diagram` figure, page data is embedded only on the universe
+//! page, and the chrome (skip link, theme toggle, classic deferred scripts)
+//! ships on every page. Output must stay byte-for-byte deterministic
+//! (`LANG.md` §9.3). Requires the prebuilt bundle (`src/assets/*`).
 
 use cucumber::{World, given, then, when};
 use pseudoscript_doc::{DocConfig, Site, render_site};
@@ -77,7 +78,7 @@ fn render(world: &mut DocWorld, title: String) {
         name: title,
         ..DocConfig::default()
     };
-    world.site = Some(render_site(world.graph(), &config));
+    world.site = Some(render_site(world.graph(), &config, &[]));
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -87,7 +88,7 @@ fn render_again(world: &mut DocWorld, title: String) {
         name: title,
         ..DocConfig::default()
     };
-    world.again = Some(render_site(world.graph(), &config));
+    world.again = Some(render_site(world.graph(), &config, &[]));
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -108,12 +109,22 @@ fn file_contains(world: &mut DocWorld, path: String, needle: String) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-#[then(regex = r#"^the file "([^"]*)" embeds a "([^"]*)" diagram$"#)]
+#[then(regex = r#"^the file "([^"]*)" does not contain "([^"]*)"$"#)]
+fn file_not_contains(world: &mut DocWorld, path: String, needle: String) {
+    let contents = world.contents(&path);
+    assert!(
+        !contents.contains(&needle),
+        "{path:?} must not contain {needle:?}"
+    );
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[then(regex = r#"^the file "([^"]*)" embeds an? "([^"]*)" diagram$"#)]
 fn file_embeds_diagram(world: &mut DocWorld, path: String, kind: String) {
     let needle = format!("data-diagram=\"{kind}\"");
     assert!(
         world.contents(&path).contains(&needle),
-        "{path:?} embeds a {kind:?} diagram container"
+        "{path:?} embeds a {kind:?} diagram figure"
     );
 }
 
@@ -129,7 +140,7 @@ fn file_references(world: &mut DocWorld, path: String, asset: String) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-#[then(regex = r#"^the section "([^"]*)" on "([^"]*)" embeds a "([^"]*)" diagram$"#)]
+#[then(regex = r#"^the section "([^"]*)" on "([^"]*)" embeds an? "([^"]*)" diagram$"#)]
 fn section_embeds_diagram(world: &mut DocWorld, fqn: String, path: String, kind: String) {
     let contents = world.contents(&path);
     let id = anchor(&fqn);
@@ -149,13 +160,62 @@ fn section_embeds_diagram(world: &mut DocWorld, fqn: String, path: String, kind:
 #[allow(clippy::needless_pass_by_value)]
 #[then(regex = r#"^the file "([^"]*)" links to the anchor of "([^"]*)"$"#)]
 fn links_to_anchor(world: &mut DocWorld, path: String, fqn: String) {
+    // The strict sibling-page form only: every section also carries a
+    // same-page `href="#<anchor>"` self-link, so a bare-anchor fallback would
+    // pass even with cross-links broken.
     let contents = world.contents(&path);
     let needle = format!("href=\"banking.core.html#{}\"", anchor(&fqn));
-    let plain = format!("#{}\"", anchor(&fqn));
     assert!(
-        contents.contains(&needle) || contents.contains(&plain),
+        contents.contains(&needle),
         "{path:?} links the anchor of {fqn:?}"
     );
+}
+
+/// Every `data-diagram` figure carries an inline `<svg` document before its
+/// closing `</figure>` — no figure is an empty island canvas.
+#[allow(clippy::needless_pass_by_value)]
+#[then(regex = r#"^every diagram figure on "([^"]*)" contains inline SVG$"#)]
+fn figures_carry_inline_svg(world: &mut DocWorld, path: String) {
+    let contents = world.contents(&path);
+    let mut figures = 0;
+    for chunk in contents.split("<figure").skip(1) {
+        if !chunk.starts_with(' ') && !chunk.starts_with('>') {
+            continue;
+        }
+        let figure = chunk.split("</figure>").next().unwrap_or(chunk);
+        if figure.contains("data-diagram=") {
+            figures += 1;
+            assert!(
+                figure.contains("<svg"),
+                "a data-diagram figure in {path:?} lacks inline SVG"
+            );
+        }
+    }
+    assert!(figures > 0, "{path:?} has at least one diagram figure");
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[then(regex = r#"^every page contains "([^"]*)"$"#)]
+fn every_page_contains(world: &mut DocWorld, needle: String) {
+    for (path, contents) in world.pages() {
+        assert!(contents.contains(&needle), "{path:?} contains {needle:?}");
+    }
+}
+
+/// `client.js` loads as a classic deferred script on every page — never a
+/// module (Chrome blocks module scripts under `file://`).
+#[then("every page loads the client script as a classic deferred script")]
+fn every_page_classic_client_script(world: &mut DocWorld) {
+    for (path, contents) in world.pages() {
+        assert!(
+            contents.contains("<script defer src="),
+            "{path:?} loads a classic deferred script"
+        );
+        assert!(
+            !contents.contains("type=\"module\""),
+            "{path:?} must not load module scripts"
+        );
+    }
 }
 
 #[then("both renders are identical")]
@@ -194,6 +254,20 @@ impl DocWorld {
             .file(path)
             .unwrap_or_else(|| panic!("site has file {path:?}; has: {:?}", self.paths()))
             .contents
+    }
+
+    /// Every generated HTML page, as `(path, contents)`.
+    fn pages(&self) -> Vec<(&str, &str)> {
+        self.site()
+            .files
+            .iter()
+            .filter(|f| {
+                std::path::Path::new(&f.path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+            })
+            .map(|f| (f.path.as_str(), f.contents.as_str()))
+            .collect()
     }
 
     fn paths(&self) -> Vec<&str> {

@@ -4,14 +4,18 @@
 //! crate only reads it. Documentation is automatic — `[doc]` tunes presentation
 //! (title, theme, logo), never *what* is documented.
 
-/// The colour theme the site ships, written as a `data-theme` attribute on the
-/// root `<html>` and selecting between the light/dark CSS variable sets.
+/// The colour scheme the site ships, written as a `data-theme` attribute on the
+/// root `<html>` to select a CSS variable set. `System` (the default) follows
+/// the OS `prefers-color-scheme` and is overridable by the in-page toggle;
+/// `Light` and `Dark` pin the default without removing the toggle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// The default dark palette (matches the IDE and the interactive diagrams).
+    /// Follow the OS scheme; the in-page toggle can override per visitor.
     #[default]
+    System,
+    /// Default to the dark palette (matches the IDE).
     Dark,
-    /// The neutral light palette.
+    /// Default to the neutral light palette.
     Light,
 }
 
@@ -22,14 +26,28 @@ impl Theme {
         match self {
             Theme::Light => "light",
             Theme::Dark => "dark",
+            Theme::System => "system",
         }
     }
 
-    /// The emit-crate theme that renders this site theme's diagrams.
+    /// The emit-crate theme that renders this site theme's diagrams. The HTML
+    /// site always renders adaptively — the `--pds-*` variables in `style.css`
+    /// recolour every figure under whichever scheme is active — so pinning the
+    /// site light or dark restyles diagrams through CSS, not re-rendering.
+    #[allow(clippy::unused_self)] // every site theme renders adaptively today; the parameter keeps the call sites theme-driven
     pub(crate) fn emit(self) -> pseudoscript_emit::Theme {
+        pseudoscript_emit::Theme::Adaptive
+    }
+
+    /// The emit-crate theme for **standalone** diagram files (the Markdown
+    /// site's `diagrams/*.svg`): a pinned scheme renders literal colours so the
+    /// file matches the configured look anywhere; `System` renders adaptively
+    /// and embeds the dark palette behind a `prefers-color-scheme` query.
+    pub(crate) fn emit_standalone(self) -> pseudoscript_emit::Theme {
         match self {
             Theme::Light => pseudoscript_emit::Theme::Light,
             Theme::Dark => pseudoscript_emit::Theme::Dark,
+            Theme::System => pseudoscript_emit::Theme::Adaptive,
         }
     }
 }
@@ -76,7 +94,7 @@ impl Default for DocConfig {
     fn default() -> Self {
         Self {
             name: "Documentation".to_owned(),
-            theme: Theme::Dark,
+            theme: Theme::System,
             logo: None,
             docs: Vec::new(),
         }
@@ -102,11 +120,29 @@ mod tests {
     use super::{DocConfig, Theme};
 
     #[test]
-    fn default_is_dark_named_documentation_no_logo() {
+    fn default_is_system_named_documentation_no_logo() {
         let config = DocConfig::default();
         assert_eq!(config.name, "Documentation");
-        assert_eq!(config.theme, Theme::Dark);
+        assert_eq!(config.theme, Theme::System);
         assert!(config.logo.is_none());
+    }
+
+    #[test]
+    fn html_diagrams_always_render_adaptively() {
+        // The HTML site recolours figures through the --pds-* variables, so a
+        // pinned light or dark site still renders adaptive SVG.
+        for theme in [Theme::System, Theme::Light, Theme::Dark] {
+            assert_eq!(theme.emit(), pseudoscript_emit::Theme::Adaptive);
+        }
+        // Standalone files pin their colours; only System stays adaptive.
+        assert_eq!(
+            Theme::Light.emit_standalone(),
+            pseudoscript_emit::Theme::Light
+        );
+        assert_eq!(
+            Theme::System.emit_standalone(),
+            pseudoscript_emit::Theme::Adaptive
+        );
     }
 
     #[test]

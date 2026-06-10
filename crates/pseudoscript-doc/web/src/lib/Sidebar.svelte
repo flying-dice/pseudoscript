@@ -3,12 +3,13 @@
   let { site, docGroups = [], sidebar } = $props();
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" id="sidebar" aria-label="Model navigation">
   <div class="brand">
     <a class="brand-link" href="{site.prefix}index.html">
       {#if site.logoFilename}<img src="{site.prefix}{site.logoFilename}" alt="" />{/if}
       <span class="title">{site.name}<small>PseudoScript</small></span>
     </a>
+    <button class="sidebar-close" type="button" aria-label="Close navigation">&times;</button>
   </div>
   <div class="search">
     <input
@@ -37,7 +38,7 @@
     {#each sidebar as module}
       <li class="module" data-search={module.label}>
         <div class="row">
-          <span class="toggle">&#9662;</span>
+          <button class="toggle" type="button" aria-expanded="true" aria-label="Toggle {module.label}">&#9662;</button>
           <a class="label" href={module.href}>{module.label}</a>
         </div>
         <ul class="children">

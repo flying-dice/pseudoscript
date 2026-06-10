@@ -840,8 +840,21 @@ impl IdeSession {
             render: render.clone(),
         };
         self.ensure_built();
+        // The session checks the held modules itself and prepares the
+        // diagnostics for the doc face — the wasm signature is unchanged, and
+        // the in-IDE preview ships the same health page `pds doc` does.
+        let modules: Vec<WorkspaceModule> = self
+            .modules
+            .iter()
+            .map(|(fqn, m)| WorkspaceModule::new(fqn.clone(), m.source.clone()))
+            .collect();
+        let per_module = pseudoscript_model::check_workspace_modules_with_externals(
+            &modules,
+            &self.externals,
+        );
+        let diagnostics = pseudoscript_doc::prepare_diagnostics(&modules, &per_module);
         let graph = self.graph();
-        let site = try_render_site_with(graph, &doc_config(config), &engine)
+        let site = try_render_site_with(graph, &doc_config(config), &diagnostics, &engine)
             .map_err(|e| JsError::new(&e.to_string()))?;
         Ok(site
             .files
