@@ -53,7 +53,7 @@ Feature: LSP semantic tokens
     Given the inline source:
       """
       system S {
-        f() {
+        f(): void {
           return Err("boom")
         }
       }

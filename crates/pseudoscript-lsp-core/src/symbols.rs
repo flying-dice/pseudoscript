@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn outline_nests_members_under_node() {
-        let src = "//! m\n\nsystem Bank {\n  open() {}\n}\n\ndata Acct { id: uuid }\n";
+        let src = "//! m\n\nsystem Bank {\n  open(): void {}\n}\n\ndata Acct { id: uuid }\n";
         let symbols = document_symbols(src);
         let bank = symbols.iter().find(|s| s.name == "Bank").expect("Bank");
         assert_eq!(bank.kind, SymbolKind::NAMESPACE);
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn folds_multi_line_node_and_block() {
-        let src = "//! m\n\nsystem Bank {\n  open() {\n    return\n  }\n}\n";
+        let src = "//! m\n\nsystem Bank {\n  open(): void {\n    return\n  }\n}\n";
         let ranges = folding_ranges(src);
         // the node body and the callable body each fold (end strictly past start)
         assert!(ranges.len() >= 2, "{ranges:?}");

@@ -10,5 +10,5 @@ public system Banking;
 
 public container Audit for Banking {
   #[onevent(banking::core::BankAccCreated)]
-  StoreCreation(e: banking::core::AuditEntry) { }
+  StoreCreation(e: banking::core::AuditEntry): void { }
 }

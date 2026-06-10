@@ -138,7 +138,11 @@ component Events for catalog::Catalog {
 
   /// Read one event, or `EventNotFound`.
   public get(id: shared::EventId): Result<catalog::Event, catalog::EventNotFound> {
-    return catalog::EventStore.fetch(id)
+    found = Option<Event> from catalog::EventStore.fetch(id)
+    if (found.isNone) {
+      return Err(EventNotFound from { id })
+    }
+    return Ok(found.value)
   }
 
   /// `Err(NotSellable)` unless the event is `OnSale` — the gate sales pass before

@@ -396,7 +396,9 @@ component Checks for model::Model {
   /// Runs the per-item checks over every declaration. On each callable body:
   /// macro targeting (§2.4), single-assignment rebinds (§7.1), return coverage
   /// (ADR-016), `Result`/`Option` accessor narrowing (§6), return-type and `from`
-  /// source/target matching (§5.1, §7.2 — ADR-035), `for` iterates an array
+  /// source/target matching — a `return` or `from` source call whose callee
+  /// resolves in-module (`self.` or a same-module node) carries the callee's
+  /// declared return type (§5.1, §7.2 — ADR-035, ADR-040), `for` iterates an array
   /// (§7.3 — ADR-014), `self.` calls and bare references resolve (§5.1, §8 —
   /// ADR-004), `.field` reads name a declared field (§2.2, §3.4), call arity and
   /// argument types match (§5.1 — ADR-022), `.method(args)` calls name a callable
@@ -523,7 +525,8 @@ public component ResultFlow for model::Model {
 /// ADR-016 — return coverage. A disclosed non-void callable MUST return on every
 /// path. A `return` makes a block diverge; an `if`/`else` diverges only when both
 /// arms do; `for`/`while` bodies and bare expressions never guarantee a return.
-/// An absent return type and an explicit `void` both mean void.
+/// An explicit `void` and a parse-recovered missing return type (ADR-040) both
+/// mean void.
 public component ReturnCoverage for model::Model {
   /// Whether a block returns on every path: any statement diverges.
   public blockReturns(body: syntax::Module): bool {

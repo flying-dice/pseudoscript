@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn folds_disclosed_node_and_nested_block() {
-        let src = "//! m\n\nsystem S {\n  run() {\n    return self\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void {\n    return self\n  }\n}\n";
         let ranges = folding_ranges(src);
         // the system declaration and the callable's block
         assert!(ranges.len() >= 2, "{ranges:?}");
@@ -160,8 +160,7 @@ mod tests {
 
     #[test]
     fn tags_node_member_and_nested_block_kinds() {
-        let src =
-            "//! m\n\nsystem S {\n  run() {\n    if (cond) {\n      return self\n    }\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void {\n    if (cond) {\n      return self\n    }\n  }\n}\n";
         let kinds: Vec<FoldKind> = folding_ranges(src).iter().map(|r| r.kind).collect();
         // outer node body, the callable's member impl block, the nested `if` scope
         assert_eq!(

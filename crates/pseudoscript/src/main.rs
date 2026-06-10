@@ -469,7 +469,7 @@ const STARTER_MODULE: &str = "\
 /// The system this workspace models.
 public system App {
     /// An example operation.
-    start();
+    start(): void;
 }
 ";
 

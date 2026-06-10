@@ -1,0 +1,8 @@
+// LANG.md §2.3 / §3.2 (ADR-040): `Ok`/`Err`/`Some`/`None` are keywords, not
+// type names. `None` in type position fails to parse; absence is typed
+// `Option<T>`, nothing is typed `void`.
+
+public system Banking;
+public container Mainframe for Banking {
+  FindOwner(): None;
+}

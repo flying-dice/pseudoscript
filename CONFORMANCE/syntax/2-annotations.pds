@@ -27,12 +27,12 @@ public container Api for Banking {
   /// the word and name=value forms).
   #[manual]
   #[schedule = "0 3 * * *"]
-  Reconcile() { }
+  Reconcile(): void { }
 }
 
 public container Logger for Banking;
 
 component Audit for Logger {
   /// #deprecated
-  Record(req: Request) { }
+  Record(req: Request): void { }
 }

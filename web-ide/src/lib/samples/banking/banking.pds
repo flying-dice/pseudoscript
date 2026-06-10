@@ -7,7 +7,7 @@
 /// A customer of the bank with one or more personal bank accounts.
 person Customer {
   /// Signs in, views balances, and reads statements via Internet banking.
-  UseInternetBanking() {
+  UseInternetBanking(): void {
     banking::StaticContent.LoadApp()
     banking::SinglePageApp.SignIn()
     banking::SinglePageApp.ViewAccounts()
@@ -15,7 +15,7 @@ person Customer {
   }
 
   /// Receives transactional e-mail from the bank.
-  ReceiveEmail();
+  ReceiveEmail(): void;
 }
 
 // --- the Internet Banking System and its containers -------------------------
@@ -27,7 +27,7 @@ system InternetBanking;
 /// HTML, CSS, JavaScript, etc. Delivers the single-page app to the browser.
 container StaticContent for banking::InternetBanking {
   /// Deliver the single-page app to the customer's browser.
-  LoadApp() {
+  LoadApp(): void {
     banking::SinglePageApp.Deliver()
   }
 }
@@ -35,20 +35,20 @@ container StaticContent for banking::InternetBanking {
 /// Single-page app providing Internet banking in the browser (JavaScript / Angular).
 container SinglePageApp for banking::InternetBanking {
   /// The app shell, delivered by the static content.
-  Deliver();
+  Deliver(): void;
 
   /// Make a sign-in request to the backend (JSON/HTTP).
-  SignIn() {
+  SignIn(): void {
     banking::SigninApi.SignIn()
   }
 
   /// Request the customer's account summary (JSON/HTTP).
-  ViewAccounts() {
+  ViewAccounts(): void {
     banking::AccountsSummaryApi.ListAccounts()
   }
 
   /// Request a PDF statement (JSON/HTTP).
-  ViewStatement() {
+  ViewStatement(): void {
     banking::StatementApi.GetStatement()
   }
 }
@@ -62,7 +62,7 @@ container Backend for banking::InternetBanking;
 /// API endpoint for customer sign in. Spring MVC.
 component SigninApi for banking::Backend {
   /// Validate the customer's credentials.
-  SignIn() {
+  SignIn(): void {
     banking::SecurityComponent.ValidateCredentials()
   }
 }
@@ -70,7 +70,7 @@ component SigninApi for banking::Backend {
 /// API endpoint for bank-accounts summary information. Spring MVC.
 component AccountsSummaryApi for banking::Backend {
   /// List the customer's bank accounts.
-  ListAccounts() {
+  ListAccounts(): void {
     banking::SecurityComponent.ValidateToken()
     banking::CoreBankingSystemAdapter.GetAccounts()
   }
@@ -79,7 +79,7 @@ component AccountsSummaryApi for banking::Backend {
 /// API endpoint for access to PDF statements. Spring MVC.
 component StatementApi for banking::Backend {
   /// Return a PDF statement.
-  GetStatement() {
+  GetStatement(): void {
     banking::SecurityComponent.ValidateToken()
     banking::StatementComponent.GetStatements()
   }
@@ -88,7 +88,7 @@ component StatementApi for banking::Backend {
 /// Provides access to PDF statements. Spring Bean.
 component StatementComponent for banking::Backend {
   /// Read statements and the information that indexes them.
-  GetStatements() {
+  GetStatements(): void {
     banking::StatementStore.Fetch()
     banking::CoreBankingSystemAdapter.GetStatementInfo()
   }
@@ -101,25 +101,25 @@ public constant MAX_SESSION_MINUTES = 30
 /// Spring Bean.
 component SecurityComponent for banking::Backend {
   /// Validate sign-in credentials against the database.
-  ValidateCredentials() {
+  ValidateCredentials(): void {
     banking::Database.ReadUser()
   }
 
   /// Validate an authentication token against the database.
-  ValidateToken() {
+  ValidateToken(): void {
     banking::Database.ReadUser()
   }
 
   /// Re-read the user only while the session is still within its window
   /// (`MAX_SESSION_MINUTES`) — a static business rule, never executed.
-  RefreshToken(elapsed: number) {
+  RefreshToken(elapsed: number): void {
     if (elapsed >= 0 && elapsed <= banking::MAX_SESSION_MINUTES) {
       banking::Database.ReadUser()
     }
   }
 
   /// Change a password, then e-mail the customer a confirmation.
-  ChangePassword() {
+  ChangePassword(): void {
     banking::Database.ReadUser()
     banking::EmailComponent.SendEmail()
   }
@@ -128,12 +128,12 @@ component SecurityComponent for banking::Backend {
 /// A Java wrapper around the API provided by the Core Banking System. Spring Bean.
 component CoreBankingSystemAdapter for banking::Backend {
   /// Request the customer's list of bank accounts (XML/HTTPS).
-  GetAccounts() {
+  GetAccounts(): void {
     banking::CoreBanking.FetchAccounts()
   }
 
   /// Request the information backing a statement (XML/HTTPS).
-  GetStatementInfo() {
+  GetStatementInfo(): void {
     banking::CoreBanking.FetchStatement()
   }
 }
@@ -141,7 +141,7 @@ component CoreBankingSystemAdapter for banking::Backend {
 /// Sends e-mails to users. Spring Bean.
 component EmailComponent for banking::Backend {
   /// Send an e-mail to the customer (AWS SES API/HTTP).
-  SendEmail() {
+  SendEmail(): void {
     banking::Email.SendReceipt()
   }
 }
@@ -152,27 +152,27 @@ component EmailComponent for banking::Backend {
 /// #critical
 container Database for banking::InternetBanking {
   /// Read a user / session record.
-  ReadUser();
+  ReadUser(): void;
 }
 
 /// Bank-account statements rendered as PDF files (AWS S3).
 container StatementStore for banking::InternetBanking {
   /// Read a rendered statement PDF.
-  Fetch();
+  Fetch(): void;
 }
 
 // --- existing systems the bank already runs ---------------------------------
 
 /// Handles core banking functions: customers, accounts, transactions, etc.
 system CoreBanking {
-  FetchAccounts();
-  FetchStatement();
+  FetchAccounts(): void;
+  FetchStatement(): void;
 }
 
 /// Cloud-based e-mail service (AWS Simple Email Service).
 system Email {
   /// E-mail a receipt / notification to the customer.
-  SendReceipt() {
+  SendReceipt(): void {
     banking::Customer.ReceiveEmail()
   }
 }

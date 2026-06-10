@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn references_to_an_operation_include_decl_and_calls() {
         // An operation's declaration and its `self.`-call are the same symbol.
-        let src = "//! m\n\nsystem S {\n  run() { self.op() }\n  op() {}\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void { self.op() }\n  op(): void {}\n}\n";
         let mods = [("m", src)];
         let workspace = ws(&mods);
         let owned = owned(&mods);
@@ -181,8 +181,11 @@ mod tests {
     #[test]
     fn cross_module_operation_references_span_files() {
         let mods = [
-            ("a", "//! a\n\npublic system Svc {\n  op() {}\n}\n"),
-            ("b", "//! b\n\nsystem App {\n  run() { a::Svc.op() }\n}\n"),
+            ("a", "//! a\n\npublic system Svc {\n  op(): void {}\n}\n"),
+            (
+                "b",
+                "//! b\n\nsystem App {\n  run(): void { a::Svc.op() }\n}\n",
+            ),
         ];
         let workspace = ws(&mods);
         let owned = owned(&mods);

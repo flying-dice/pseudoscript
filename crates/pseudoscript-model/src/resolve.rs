@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn self_member_resolves_to_callable() {
-        let src = "//! m\n\nsystem S {\n  run() { self.helper() }\n  helper() {}\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(): void { self.helper() }\n  helper(): void {}\n}\n";
         let mods = [("m", src)];
         let ws = workspace(&mods);
         let hit = hit_at(&ws, "m", src, "helper", 1);
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn node_qualified_member_resolves_to_callable() {
-        let src = "//! m\n\nsystem Repo {\n  fetch() {}\n}\n\nsystem App {\n  run() { Repo.fetch() }\n}\n";
+        let src = "//! m\n\nsystem Repo {\n  fetch(): void {}\n}\n\nsystem App {\n  run(): void { Repo.fetch() }\n}\n";
         let mods = [("m", src)];
         let ws = workspace(&mods);
         // click `fetch` in the `Repo.fetch()` call, not the declaration
@@ -396,8 +396,11 @@ mod tests {
     #[test]
     fn cross_module_member_resolves() {
         let mods = [
-            ("a", "//! a\n\npublic system Svc {\n  op() {}\n}\n"),
-            ("b", "//! b\n\nsystem App {\n  run() { a::Svc.op() }\n}\n"),
+            ("a", "//! a\n\npublic system Svc {\n  op(): void {}\n}\n"),
+            (
+                "b",
+                "//! b\n\nsystem App {\n  run(): void { a::Svc.op() }\n}\n",
+            ),
         ];
         let ws = workspace(&mods);
         let src = mods[1].1;
@@ -465,7 +468,7 @@ mod tests {
 
     #[test]
     fn callable_declaration_resolves_to_itself() {
-        let src = "//! m\n\nsystem S {\n  op() {}\n}\n";
+        let src = "//! m\n\nsystem S {\n  op(): void {}\n}\n";
         let mods = [("m", src)];
         let ws = workspace(&mods);
         let hit = hit_at(&ws, "m", src, "op", 1);

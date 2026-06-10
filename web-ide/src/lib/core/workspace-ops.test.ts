@@ -44,7 +44,14 @@ describe("names & paths", () => {
     const s = pdsSkeleton("billing");
     expect(s).toContain("//! billing");
     expect(s).toContain("public system Billing;");
-    expect(s).toContain("public container Api for Billing");
+    expect(s).toContain("public container Api for billing::Billing");
+  });
+
+  it("pdsSkeleton qualifies the parent with the full module FQN", () => {
+    const s = pdsSkeleton("banking::core");
+    expect(s).toContain("//! core");
+    expect(s).toContain("public system Core;");
+    expect(s).toContain("public container Api for banking::core::Core");
   });
 });
 

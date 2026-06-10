@@ -27,7 +27,7 @@ export function pdsSkeleton(fqn: string): string {
 public system ${sys};
 
 /// A first container. Add components, data, and callables beneath it.
-public container Api for ${sys} {
+public container Api for ${fqn}::${sys} {
   /// A first behaviour. Replace with your own flows.
   public Health(): void {
     // Describe what happens here.

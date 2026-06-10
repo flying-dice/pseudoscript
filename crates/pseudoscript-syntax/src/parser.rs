@@ -571,9 +571,12 @@ impl Parser {
         let params = self.parse_params();
         self.eat(TokenKind::RParen);
 
+        // ADR-040: every callable declares a return type; a missing one is
+        // reported and recovered as `void` (`return_ty` stays `None`).
         let return_ty = if self.eat(TokenKind::Colon).is_some() {
             Some(self.parse_type())
         } else {
+            self.error(name.span, "callable without a declared return type");
             None
         };
 
