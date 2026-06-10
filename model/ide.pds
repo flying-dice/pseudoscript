@@ -252,7 +252,9 @@ public component Diagrams for ide::IdeSession {
 /// The doc-site builder: renders the whole site in-browser through the same
 /// `pseudoscript-doc` crate `pds doc` runs, driving SSR through a render
 /// callback the host supplies (the browser's JS engine is the SSR engine) — so
-/// the IDE previews the exact site the CLI ships, health page included.
+/// the IDE writes the exact site the CLI ships, health page included. The site
+/// builds to the opened folder's `target/doc/` only; an in-memory workspace is
+/// told to open a folder first (no blob-preview path).
 public component Docs for ide::IdeSession {
   /// Build the documentation site for the held workspace: the typed config in,
   /// every rendered file out. The session checks the held modules itself and
@@ -277,7 +279,7 @@ public component Docs for ide::IdeSession {
   /// Parse a `pds.toml` into the doc manifest the host reads to load pages.
   manifest(toml: string): string;
   /// The shared client-side bundle every doc page loads once — the same SSR
-  /// bundle `pds doc` ships, so the IDE preview matches the CLI exactly.
+  /// bundle `pds doc` ships, so the IDE-built site matches the CLI exactly.
   ssrBundle(): string;
 }
 

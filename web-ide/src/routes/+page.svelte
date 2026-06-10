@@ -10,7 +10,7 @@
   import { fsSupported, scaffoldWorkspace, pickDirectoryOutcome, emptySeed, readWorkspace, readVendoredDeps, readDocPages, readFile, readFileAt, writeFile, fileHandleAt, writeSite, resolveDocAsset, fqnOf, createFile, createDir, deleteDir, movePath, deletePath, serializeManifest, isBinaryPath, MAX_OTHER_TEXT_BYTES, type PickOutcome } from "$lib/workspace.js";
   import { pins as pinStore } from "$lib/stores/pins.svelte.js";
   import { viewKey, getPins, serializeLayoutDoc } from "$lib/core/pins.js";
-  import type { Workspace, WorkspaceFile, SiteFile } from "$lib/workspace.js";
+  import type { Workspace, WorkspaceFile } from "$lib/workspace.js";
   import type { Depth } from "$lib/sequence.js";
   import { reportError } from "$lib/errors.js";
   import { SAMPLES, sampleSeed } from "$lib/samples.js";
@@ -2172,11 +2172,6 @@
     }
   }
 
-  // Confirmed from the modal: build the example as a read-only preview.
-  function confirmPreviewBuild() {
-    ui.buildNotice = false;
-    runBuild();
-  }
   // From the modal: open a real folder to build to disk instead.
   function openFolderFromNotice() {
     ui.buildNotice = false;
@@ -2194,77 +2189,27 @@
     docMap: Record<string, string>,
   ) => docs.sampleDocPages(sidebar, docMap);
 
-  // Renders the site, then writes it to `target/doc/` (opened folder) or opens a
-  // preview (example), reporting the outcome as a notification.
+  // Renders the site and writes it to `target/doc/` in the opened folder —
+  // exactly what `pds doc` produces. In-memory workspaces never reach here
+  // (`onbuilddocs` shows the folder notice instead).
   async function runBuild() {
     const ws = workspace;
-    if (!ws) return;
+    if (!ws?.root) return;
     ui.building = true;
     try {
       const config = buildDocConfig();
       const files = renderDocSite(config);
-      if (ws.root) {
-        const dir = await writeSite(ws.root, files);
-        notify(
-          "success",
-          "Documentation built",
-          `Wrote ${files.length} files to ${dir}/ in “${ws.name}”. Open ${dir}/index.html to view it.`,
-        );
-      } else {
-        previewSite(files);
-        notify("success", `Preview built (${files.length} files)`, "Opened a read-only preview in a new tab.");
-      }
+      const dir = await writeSite(ws.root, files);
+      notify(
+        "success",
+        "Documentation built",
+        `Wrote ${files.length} files to ${dir}/ in “${ws.name}”. Open ${dir}/index.html to view it.`,
+      );
     } catch (e) {
       notify("error", "Documentation build failed", String((e as Error)?.message ?? e));
     } finally {
       ui.building = false;
     }
-  }
-
-  // No folder to write to (the bundled sample): open a self-contained preview in
-  // a new tab. The built site is multi-page with relative cross-links, which
-  // can't resolve from a single blob — so the host embeds every file and renders
-  // pages into an iframe, swapping the page (assets inlined) when an internal
-  // link is clicked. External links open out; in-page anchors work natively.
-  function previewSite(files: SiteFile[]) {
-    const byPath = Object.fromEntries(files.map((f) => [f.path, f.contents]));
-    const url = URL.createObjectURL(new Blob([buildPreviewHost(byPath)], { type: "text/html" }));
-    window.open(url, "_blank");
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
-
-  // A standalone HTML shell that previews the in-memory site: it holds every file
-  // and an iframe, inlines each page's `style.css`/`client.js`, and intercepts
-  // internal links to navigate within the preview instead of leaving it.
-  function buildPreviewHost(byPath: Record<string, string>) {
-    const map = JSON.stringify(byPath).replace(/<\/script>/g, "<\\/script>");
-    return `<!doctype html><html><head><meta charset="utf-8">
-<title>Documentation preview</title>
-<style>html,body{margin:0;height:100%;background:#0a0b0e}iframe{border:0;width:100%;height:100vh;display:block}</style>
-</head><body><iframe id="f"></iframe><script>
-const FILES = ${map};
-const f = document.getElementById('f');
-let current = 'index.html';
-const resolve = (from, href) => new URL(href, new URL(from, 'http://h/')).pathname.replace(/^\\//, '');
-function inline(path, html){
-  return html
-    .replace(/<link\\b[^>]*href="([^"]+\\.css)"[^>]*>/g, (m,h)=>'<style>'+(FILES[resolve(path,h)]||'')+'</style>')
-    .replace(/<script\\b[^>]*src="([^"]+\\.js)"[^>]*><\\/script>/g, (m,s)=>'<script>'+(FILES[resolve(path,s)]||'')+'<\\/script>');
-}
-function show(path){ const html = FILES[path]; if(html==null) return; current = path; f.srcdoc = inline(path, html); }
-f.addEventListener('load', () => {
-  const d = f.contentDocument; if(!d) return;
-  d.addEventListener('click', (e) => {
-    const a = e.target.closest && e.target.closest('a[href]'); if(!a) return;
-    const href = a.getAttribute('href');
-    if(/^(https?:|mailto:)/.test(href)){ a.target='_blank'; a.rel='noreferrer'; return; }
-    if(href.startsWith('#')) return;
-    const target = resolve(current, href.split('#')[0]);
-    if(FILES[target]!=null){ e.preventDefault(); show(target); }
-  });
-});
-show('index.html');
-<\/script></body></html>`;
   }
 
   // ── Share / import / export (client-only codec) ──────────────────────────
@@ -2667,7 +2612,6 @@ show('index.html');
 {#if buildNotice}
   <BuildNoticeDialog
     onopenfolder={fsSupported ? openFolderFromNotice : undefined}
-    onbuild={confirmPreviewBuild}
     oncancel={() => (ui.buildNotice = false)}
   />
 {/if}

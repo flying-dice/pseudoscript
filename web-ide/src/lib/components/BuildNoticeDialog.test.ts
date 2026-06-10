@@ -7,15 +7,13 @@ import "@testing-library/jest-dom/vitest";
 import BuildNoticeDialog from "./BuildNoticeDialog.svelte";
 
 describe("BuildNoticeDialog", () => {
-  it("renders the notice and the build action", async () => {
-    const onbuild = vi.fn();
-    render(BuildNoticeDialog, { props: { onbuild } });
+  it("renders the notice without any preview action", () => {
+    render(BuildNoticeDialog, { props: {} });
     expect(screen.getByTestId("build-notice")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Build preview" }));
-    expect(onbuild).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /preview/i })).not.toBeInTheDocument();
   });
 
-  it("offers the open-folder escape hatch only when onopenfolder is set", async () => {
+  it("offers the open-folder action only when onopenfolder is set", async () => {
     const onopenfolder = vi.fn();
     const { unmount } = render(BuildNoticeDialog, { props: {} });
     expect(screen.queryByRole("button", { name: "Open a folder…" })).not.toBeInTheDocument();
