@@ -1,10 +1,12 @@
-//! Assembles the `pds lang` reference bundle at build time.
+//! Stages the repo-level sources `main.rs` embeds: the `pds lang` reference
+//! bundle and the `pds skill` authoring skill.
 //!
-//! Concatenates the spec (`LANG.md`), the patterns guide (`PATTERNS.md`), and
-//! every file in the `CONFORMANCE/` grammar suite into one blob under
-//! `$OUT_DIR/lang-bundle.md`, which `main.rs` embeds via `include_str!`. Each
-//! file is fenced with a `===== <repo-relative path> =====` header so the
-//! single stream stays unambiguously splittable.
+//! The bundle concatenates the spec (`LANG.md`), the patterns guide
+//! (`PATTERNS.md`), and every file in the `CONFORMANCE/` grammar suite into one
+//! blob under `$OUT_DIR/lang-bundle.md`. Each file is fenced with a
+//! `===== <repo-relative path> =====` header so the single stream stays
+//! unambiguously splittable. The skill (`.claude/skills/pseudocode/SKILL.md`)
+//! is copied verbatim to `$OUT_DIR/pds-skill.md`.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -17,6 +19,27 @@ fn main() {
         .join("../..")
         .canonicalize()
         .expect("workspace root resolves from the crate manifest dir");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let bundle_out = out_dir.join("lang-bundle.md");
+    let skill_out = out_dir.join("pds-skill.md");
+
+    // `cargo package` verify builds (release-plz runs one per release) compile
+    // from a tarball that cannot contain the repo-level spec sources. The crate
+    // is never published, so those builds get stubs; builds from the repo
+    // still panic on any unreadable file.
+    if !repo_root.join("LANG.md").exists() {
+        let stub = "unavailable: built outside the PseudoScript repository.\n";
+        for path in [&bundle_out, &skill_out] {
+            fs::write(path, stub)
+                .unwrap_or_else(|err| panic!("writing `{}`: {err}", path.display()));
+        }
+        return;
+    }
+
+    let skill = repo_root.join(".claude/skills/pseudocode/SKILL.md");
+    println!("cargo:rerun-if-changed={}", skill.display());
+    fs::copy(&skill, &skill_out)
+        .unwrap_or_else(|err| panic!("copying `{}`: {err}", skill.display()));
 
     // Spec and patterns first, then every conformance file sorted by path so a
     // case sits next to its expected-output pair (e.g. `*.pds` then `*.tokens`).
@@ -37,8 +60,8 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("lang-bundle.md");
-    fs::write(&out, bundle).unwrap_or_else(|err| panic!("writing `{}`: {err}", out.display()));
+    fs::write(&bundle_out, bundle)
+        .unwrap_or_else(|err| panic!("writing `{}`: {err}", bundle_out.display()));
 }
 
 /// Appends every regular file under `dir`, recursively, to `files`.

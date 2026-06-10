@@ -45,12 +45,10 @@ use serde::Serialize;
 /// by `build.rs` and embedded so `pds lang` always matches the installed binary.
 const LANG_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/lang-bundle.md"));
 
-/// The `PseudoScript` authoring-method skill, embedded verbatim so `pds skill`
-/// prints it like any other skill file.
-const PDS_SKILL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../.claude/skills/pseudocode/SKILL.md"
-));
+/// The `PseudoScript` authoring-method skill, staged into `OUT_DIR` by
+/// `build.rs` and embedded verbatim so `pds skill` prints it like any other
+/// skill file.
+const PDS_SKILL: &str = include_str!(concat!(env!("OUT_DIR"), "/pds-skill.md"));
 
 /// The `PseudoScript` toolchain.
 #[derive(Debug, Parser)]

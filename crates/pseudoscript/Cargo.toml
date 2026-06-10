@@ -11,13 +11,13 @@ name = "pds"
 path = "src/main.rs"
 
 [dependencies]
-pseudoscript-syntax = { path = "../pseudoscript-syntax" }
-pseudoscript-model = { path = "../pseudoscript-model" }
-pseudoscript-format = { path = "../pseudoscript-format" }
-pseudoscript-emit = { path = "../pseudoscript-emit" }
-pseudoscript-lsp = { path = "../pseudoscript-lsp" }
-pseudoscript-doc = { path = "../pseudoscript-doc" }
-pseudoscript-project = { path = "../pseudoscript-project" }
+pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.5" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.5" }
+pseudoscript-format = { path = "../pseudoscript-format", version = "0.1.5" }
+pseudoscript-emit = { path = "../pseudoscript-emit", version = "0.1.5" }
+pseudoscript-lsp = { path = "../pseudoscript-lsp", version = "0.1.5" }
+pseudoscript-doc = { path = "../pseudoscript-doc", version = "0.1.5" }
+pseudoscript-project = { path = "../pseudoscript-project", version = "0.1.5" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 anyhow = "1"
