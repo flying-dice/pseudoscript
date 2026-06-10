@@ -1,7 +1,7 @@
 // Builds the four committed bundles the Rust crate embeds:
 //   ../src/assets/ssr.js      — SSR IIFE exposing globalThis.SSR.renderPage
 //   ../src/assets/client.js   — progressive enhancement (no hydration)
-//   ../src/assets/universe.js — the universe page's 3D island (phase-4 stub)
+//   ../src/assets/universe.js — the universe page's 3D island (three.js + d3-force-3d)
 //   ../src/assets/style.css   — the site sheet (tokens + --pds-* palettes)
 //
 // Determinism: exact-pinned deps, ascii charset, no sourcemaps, no legal
@@ -48,7 +48,8 @@ await build({
   platform: "browser",
 });
 
-// Universe island: linked only by universe.html. A phase-4 stub today.
+// Universe island: linked only by universe.html. Bundles three.js +
+// d3-force-3d; never imported by the SSR components (guard below).
 await build({
   ...shared,
   entryPoints: [fileURLToPath(new URL("./src/entry.universe.js", import.meta.url))],

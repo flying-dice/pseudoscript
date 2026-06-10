@@ -76,6 +76,7 @@ Feature: Svelte documentation site generation
     When I render the site titled "Banking Architecture"
     Then the file "universe.html" exists
     And the file "universe.html" contains "data-universe"
+    And the file "universe.html" contains "data-universe-fallback"
     And the file "universe.html" contains "banking::core::Bank"
 
   Scenario: the health page reports the clean model

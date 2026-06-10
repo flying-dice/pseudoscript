@@ -1212,6 +1212,7 @@ a.badge:hover {
 /* ---- universe page ----------------------------------------------------------- */
 
 .universe-host {
+  position: relative;
   height: min(70vh, 640px);
   margin-top: 1.4rem;
   border: 1px solid var(--line);
@@ -1221,6 +1222,322 @@ a.badge:hover {
 }
 .universe-host:empty {
   display: none;
+}
+
+/* the 3D island's chrome (built as plain DOM by universe.js) */
+.uv-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+.uv-hint {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  pointer-events: none;
+}
+.uv-hint b {
+  color: var(--ink-soft);
+}
+.uv-recenter {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  padding: 0.3rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.uv-recenter:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.uv-legend {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  pointer-events: none;
+}
+.uv-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.uv-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 7px currentColor;
+}
+.uv-tip {
+  position: absolute;
+  z-index: 7;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+  white-space: nowrap;
+  transform: translate(-50%, -135%);
+}
+.uv-tip b {
+  color: var(--ink);
+}
+.uv-tip em {
+  display: block;
+  font-style: normal;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+/* the flow chooser: anchored where a multi-flow leg was clicked */
+.uv-choice {
+  position: absolute;
+  z-index: 8;
+  min-width: 150px;
+  max-height: 50%;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 9px;
+  transform: translate(8px, 8px);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.uv-choice .uv-fc-head {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 3px 7px 5px;
+}
+.uv-choice button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+.uv-choice button:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.uv-choice i {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: 0 0 7px currentColor;
+}
+/* the selected flow's step timeline */
+.uv-timeline {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 260px;
+  max-height: 46%;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.uv-timeline .uv-tl-flow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.uv-timeline .uv-tl-flow i {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: 0 0 7px currentColor;
+}
+.uv-timeline .uv-tl-flow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.uv-timeline .uv-tl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.uv-timeline .uv-tl-ctrls {
+  display: inline-flex;
+  gap: 4px;
+}
+.uv-timeline .uv-tl-ctrls button {
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.uv-timeline .uv-tl-ctrls button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.uv-timeline .uv-tl-ctrls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.uv-timeline ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.uv-timeline li {
+  border-left: 2px solid transparent;
+  border-radius: 4px;
+  transition: opacity 0.2s, background 0.2s;
+}
+.uv-timeline .uv-tl-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.uv-timeline li.pending {
+  opacity: 0.35; /* upcoming steps fade in as the request reaches them */
+}
+.uv-timeline li.done {
+  opacity: 0.7;
+  border-left-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.uv-timeline li.now {
+  opacity: 1;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.uv-timeline .uv-tl-call {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+.uv-timeline li.pending .uv-tl-call {
+  color: var(--ink-soft);
+}
+.uv-timeline .uv-tl-label {
+  display: block;
+  color: var(--ink-soft);
+}
+/* the clicked node's info card */
+.uv-card {
+  position: absolute;
+  left: 16px;
+  top: 44px;
+  z-index: 7;
+  max-width: 280px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.uv-card[hidden] {
+  display: none;
+}
+.uv-card .uv-card-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.uv-card .uv-card-kind i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 7px currentColor;
+}
+.uv-card .uv-card-name {
+  margin-top: 4px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.uv-card .uv-card-fqn {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.uv-card .uv-card-link {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+/* the no-WebGL note (the SSR fallback stays visible alongside it) */
+.uv-nogl {
+  margin: 0;
+  padding: 1rem 1.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-faint);
 }
 .universe-fallback {
   margin-top: 1.4rem;
