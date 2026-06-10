@@ -12,6 +12,11 @@
 /// A point in renderer coordinates.
 data Point { x: number, y: number }
 
+/// Tunable spacing and font metrics for the sequence engine — head-card sizing,
+/// row advance per message kind, fragment padding. Field detail is the engine's
+/// concern; the defaults are the one source of truth consumers start from.
+public data Metrics;
+
 /// A width/height extent.
 data Size { w: number, h: number }
 
@@ -35,7 +40,8 @@ data Item =
 
 /// A message between two lifelines: its source and target ids (equal for a
 /// self-message), kind, primary label (method name or return marker), and the
-/// dimmed detail after it (a call signature or return type).
+/// dimmed detail after it (a call signature or return type). `source` is the
+/// wire field `from`, renamed because `from` is a PseudoScript keyword.
 data Message { source: string, to: string, kind: layout::MsgKind, label: string, detail: string }
 
 /// The kind of a sequence message: a call to another lifeline, a return to the
@@ -92,9 +98,9 @@ data Divider { y: number, guard: string }
 /// engine), which `emit` drives directly; a flowchart engine is a planned
 /// extension point on the same core, not yet built.
 public container Layout for context::Pseudoscript {
-  /// Lay a sequence diagram out into placed geometry.
-  public layout(diagram: layout::Diagram): layout::SequenceLayout {
-    return layout::Sequence.layout(diagram)
+  /// Lay a sequence diagram out under its tunable metrics into placed geometry.
+  public layout(diagram: layout::Diagram, metrics: layout::Metrics): layout::SequenceLayout {
+    return layout::Sequence.layout(diagram, metrics)
   }
 }
 
@@ -114,8 +120,9 @@ public component Core for layout::Layout {
   /// Grow a running bounds accumulator to include a rectangle.
   includeRect(rect: layout::Rect): void;
 
-  /// The tight rectangle over everything accumulated, or nothing when empty.
-  bounds(): layout::Rect;
+  /// The tight rectangle over everything accumulated; none when nothing has
+  /// been accumulated.
+  bounds(): Option<layout::Rect>;
 }
 
 /// The sequence engine: lays a structural `Diagram` out into a `SequenceLayout` —
@@ -124,8 +131,8 @@ public component Core for layout::Layout {
 /// implemented in this crate; C4 placement is `dot`'s job (`emit` drives it), and
 /// a flowchart engine would follow the same `Projection` contract.
 component Sequence for layout::Layout {
-  /// Lay a sequence diagram out under its metrics into placed geometry.
-  layout(diagram: layout::Diagram): layout::SequenceLayout;
+  /// Lay a sequence diagram out under `metrics` into placed geometry.
+  layout(diagram: layout::Diagram, metrics: layout::Metrics): layout::SequenceLayout;
 }
 
 /// Every engine implements one contract: structure in, coordinates out.

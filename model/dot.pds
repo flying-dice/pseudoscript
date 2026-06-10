@@ -58,8 +58,24 @@ data ClusterBox { id: string, bbox: dot::Box2 }
 data GridMeta { cols: number, rows: number, cellW: number, cellH: number, origin: dot::Pt, pad: number }
 
 /// The layout result: the overall bounding box, the placed nodes, the routed
-/// edges, the cluster boxes, and — when the grid placer ran — its grid metadata.
-public data Layout { bbox: dot::Box2, nodes: dot::NodePos[], edges: dot::EdgeRoute[], clusters: dot::ClusterBox[], grid: dot::GridMeta }
+/// edges, the cluster boxes, and — only when the grid placer ran — its grid
+/// metadata.
+public data Layout { bbox: dot::Box2, nodes: dot::NodePos[], edges: dot::EdgeRoute[], clusters: dot::ClusterBox[], grid: Option<dot::GridMeta> }
+
+/// One stage of the composable post-layout pipeline: same structure in, same
+/// structure out, so passes fold freely. `ShortenLongEdges` is the long-edge
+/// optimiser; `GridPlacement` wraps the grid placer so it drops into a pipeline.
+/// New behaviour is added by writing a pass, not by threading flags through the
+/// engine.
+public data Pass =
+  | ShortenLongEdges
+  | GridPlacement
+
+/// The structure that flows through a pipeline: the (possibly pass-mutated)
+/// input graph and its current placement. A pass receives one, returns one, and
+/// the framework hands it to the next pass; a re-ranking pass may edit `graph`
+/// and re-run the base layout.
+public data LayoutState { graph: dot::Graph, layout: dot::Layout }
 
 /// How the experimental grid placer searches for a placement: pick automatically
 /// by size, always the bounded heuristic, or brute-force exhaustive (tiny graphs
@@ -87,10 +103,12 @@ public container Dot for context::Pseudoscript {
     return dot::Engine.layout(graph)
   }
 
-  /// Lay a graph out, then refine it with the long-edge optimiser — what `emit`
-  /// runs when the "minimize long edges" tweak is on.
-  public layoutShortened(graph: dot::Graph): dot::Layout {
-    return dot::Optimize.run(graph)
+  /// Lay a graph out with the base pipeline, then fold the result through
+  /// `passes` in order. Deterministic and total: with no passes it is exactly
+  /// `layout`. `emit` drives this with `ShortenLongEdges` when the "minimize
+  /// long edges" tweak is on.
+  public runPipeline(graph: dot::Graph, passes: dot::Pass[]): dot::Layout {
+    return dot::Pipeline.run(graph, passes)
   }
 
   /// Lay a graph out on a grid under the given weights and pinned cells — the
@@ -167,13 +185,38 @@ public component Grid for dot::Dot {
   gridLayout(graph: dot::Graph, params: dot::GridParams, pins: dot::Pin[]): dot::Layout;
 }
 
-/// The long-edge optimiser: a bounded, deterministic post-layout refinement.
-/// Lay the graph out, greedily search for same-rank moves that reduce the sum of
-/// squared edge lengths (never merging across a cluster boundary), and re-lay-out
-/// with the improving moves applied — `dot`'s composable `Pass` over a base layout.
+/// The composable post-layout pipeline: the base layout produces the starting
+/// `LayoutState`; each `Pass` folds it into the next. A pass adjusts geometry
+/// directly or edits the input graph (e.g. adds same-rank hints) and re-runs the
+/// base layout.
+public component Pipeline for dot::Dot {
+  /// Lay `graph` out from scratch — the pipeline's starting state.
+  base(graph: dot::Graph): dot::LayoutState;
+
+  /// Re-run the base layout for the state's current graph, replacing its
+  /// placement — what a re-ranking pass calls after editing the graph.
+  relayout(state: dot::LayoutState): dot::LayoutState;
+
+  /// Fold the base state through `passes` in order; the last state's placement
+  /// is the result.
+  run(graph: dot::Graph, passes: dot::Pass[]): dot::Layout {
+    state = dot::LayoutState from self.base(graph)
+    folded = dot::LayoutState from self.fold(state, passes)
+    return folded.layout
+  }
+
+  /// Apply each pass in order, the output of one feeding the next.
+  fold(state: dot::LayoutState, passes: dot::Pass[]): dot::LayoutState;
+}
+
+/// The `ShortenLongEdges` pass: a bounded, deterministic post-layout refinement.
+/// Greedily search for same-rank moves that reduce the sum of squared edge
+/// lengths (never merging across a cluster boundary), then re-lay-out with the
+/// improving moves applied.
 public component Optimize for dot::Dot {
-  /// Lay out, shorten the long edges, and return the refined layout.
-  run(graph: dot::Graph): dot::Layout;
+  /// The improving same-rank merge groups for a graph — the move set the
+  /// `ShortenLongEdges` pass applies.
+  minimizeLongEdges(graph: dot::Graph): string[];
 }
 
 /// The test oracle: lays the same graph out with the real `dot` binary and

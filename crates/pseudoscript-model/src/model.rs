@@ -274,11 +274,7 @@ impl Model {
                     is_public,
                     constant.name.span,
                 );
-                let fqn = if self.module_path.is_empty() {
-                    constant.name.name.clone()
-                } else {
-                    format!("{}::{}", self.module_path, constant.name.name)
-                };
+                let fqn = qualify(&self.module_path, &constant.name.name);
                 self.constant_types
                     .insert(fqn, literal_prim_name(&constant.value).to_owned());
             }
@@ -322,11 +318,7 @@ impl Model {
     }
 
     fn insert(&mut self, name: &str, kind: SymbolKind, is_public: bool, span: Span) {
-        let fqn = if self.module_path.is_empty() {
-            name.to_owned()
-        } else {
-            format!("{}::{name}", self.module_path)
-        };
+        let fqn = qualify(&self.module_path, name);
         self.symbols.insert(
             name.to_owned(),
             Symbol {
@@ -537,6 +529,16 @@ impl Workspace {
 /// module (empty string).
 fn symbol_module(fqn: &str) -> &str {
     fqn.rsplit_once("::").map_or("", |(module, _)| module)
+}
+
+/// A symbol's FQN: `module::name`, or the bare name for an anonymous module —
+/// the shared §8.1 rule every symbol insertion follows.
+fn qualify(module_path: &str, name: &str) -> String {
+    if module_path.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{module_path}::{name}")
+    }
 }
 
 /// Builds a [`Member`] for a node callable, with a one-line signature detail.

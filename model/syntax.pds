@@ -88,10 +88,15 @@ public data Item =
 public data Declaration { doc: syntax::DocBlock, macros: syntax::Macro[], isPublic: bool, kind: syntax::DeclKind, leadingTrivia: syntax::SpannedTrivia[], span: syntax::Span }
 
 /// The structural payload of a declaration: a node (person/system/container/
-/// component) or a `data` type.
+/// component), a `data` type, or a top-level `constant` (§3.6, ADR-039).
 public data DeclKind =
   | Node { node: syntax::NodeDecl }
   | Data { decl: syntax::DataDecl }
+  | Constant { decl: syntax::ConstantDecl }
+
+/// A `constant NAME = Literal` declaration (§3.6, ADR-039): a top-level primitive
+/// value. `public` lives on the enclosing `Declaration`, mirroring `data`.
+public data ConstantDecl { name: string, value: syntax::Literal, span: syntax::Span }
 
 /// A `person` / `system` / `container` / `component` declaration. `parent` is
 /// the `for <Parent>` path, present for container/component. `body` is the
@@ -173,15 +178,39 @@ public data Expr { kind: syntax::ExprKind, span: syntax::Span }
 /// The expression forms (§10). `Marker` is a built-in generic constructor —
 /// `Ok`/`Err` (`Result`) or `Some`/`None` (`Option`); `From` names a target
 /// type and its `source`, whose `FromSource` form is the §7.2 vs §7.4 split;
-/// `Postfix` is a `.name`/`.name(..)` access chain (ADR-007).
+/// `Postfix` is a `.name`/`.name(..)` access chain (ADR-007); `Unary`/`Binary`
+/// are the §7.5 operator forms. A `Marker` or `From` head is never a binary
+/// operand (§7.5).
 public data ExprKind =
   | Marker { kind: syntax::MarkerKind, payload: syntax::Expr }
   | From { ty: syntax::Type, source: syntax::FromSource }
   | Postfix { base: syntax::Expr, segments: syntax::PostfixSeg[] }
   | Ref { target: syntax::Reference }
   | Lit { value: syntax::Literal }
-  | Unary { opSpan: syntax::Span, expr: syntax::Expr }
+  | Unary { op: syntax::UnaryOp, opSpan: syntax::Span, expr: syntax::Expr }
+  | Binary { left: syntax::Expr, op: syntax::BinOp, opSpan: syntax::Span, right: syntax::Expr }
   | Paren { inner: syntax::Expr }
+
+/// A unary operator (§7.5): boolean `!` or numeric `-`.
+public data UnaryOp =
+  | Not
+  | Neg
+
+/// A binary operator (§7.5): arithmetic, comparison, equality, and boolean.
+public data BinOp =
+  | Add
+  | Sub
+  | Mul
+  | Div
+  | Rem
+  | Eq
+  | Ne
+  | Lt
+  | Gt
+  | Le
+  | Ge
+  | And
+  | Or
 
 /// The source of a `from` expression (§7.2, §7.4, ADR-035) — the parser
 /// branches on the leading token, so the two forms are distinct: a `{`
@@ -297,8 +326,9 @@ component Lexer for syntax::Syntax {
   /// #name
   lexDocLine(text: string, markerStart: number): syntax::Token[];
 
-  /// Disambiguates a leading `/` (LANG.md §2.1): `//!`→`InnerDoc`, `///`→a doc
-  /// line, plain `//`→discarded line-comment trivia.
+  /// Disambiguates a leading `/` (LANG.md §2.1, §7.5): `//!`→`InnerDoc`, `///`→a
+  /// doc line, plain `//`→discarded line-comment trivia, `/*`→discarded block-
+  /// comment trivia, and a lone `/`→the division operator token.
   lexSlash(text: string): syntax::Token[];
 
   /// Resolves `#`: `#[` opens a macro (`HashLBracket`); a bare `#` outside a
@@ -377,8 +407,13 @@ component Parser for syntax::Syntax {
   /// A missing `when` or `then` is reported at the end.
   parseFeatureBody(nameSpan: syntax::Span): syntax::FeatureStep[];
 
-  /// Dispatches a structural keyword to its node or `data` parser.
+  /// Dispatches a structural keyword to its node, `data`, or `constant` parser.
   parseDeclKind(): syntax::DeclKind;
+
+  /// `constant Ident = Literal` (§3.6, ADR-039). The value MUST be a primitive
+  /// literal; a non-literal right-hand side is rejected, with a placeholder `0`
+  /// substituted for recovery.
+  parseConstant(): syntax::ConstantDecl;
 
   /// `person`/`system`/`container`/`component`: name, optional `for <parent>`
   /// (required for container/component), then a `{ }` body or `;` black box.
@@ -403,13 +438,22 @@ component Parser for syntax::Syntax {
   /// a bare expression statement.
   parseStmt(): syntax::Stmt;
 
-  /// An expression: a unary-or-primary base, then any postfix `.` chain.
+  /// An expression (§10 `Expr = Marker | FromExpr | OrExpr`). A leading marker
+  /// (`Ok`/`Err`/`Some`/`None`) or a `from` head (`Type from ..`, detected by
+  /// lookahead) is parsed before the operator cascade, takes a postfix chain,
+  /// and is rejected as a binary operand (§7.5); anything else enters the
+  /// left-associative precedence cascade `|| → && → ==/!= → < > <= >= → +- →
+  /// */% → unary → postfix-over-primary`.
   parseExpr(): syntax::Expr;
 
-  /// A primary: `Ok`/`Err` marker, a literal, `self`, a `( group )`, or a path —
-  /// where a trailing `from` opens a `Type from ..`, branching on the next token:
-  /// a `{` is the `{ .. }` source-set composition (§7.2), anything else a
-  /// single-value type conversion (§7.4).
+  /// Whether the cursor begins a `FromExpr` head: a type path, optional `<..>`
+  /// generics and `[]` suffix, then `from`. Lookahead only — consumes nothing —
+  /// so `Result<A,B> from ..` is told apart from a comparison `a < b`.
+  atFromHead(): bool;
+
+  /// A primary: a literal, `self`, a `( group )`, or a path reference. Markers
+  /// and `from` heads never reach here — `parseExpr` dispatches them first — so
+  /// a `<` after a path here is the less-than operator (§7.5).
   parsePrimary(): syntax::Expr;
 
   /// A run of `Doc`/`Tag` tokens into a `DocBlock`, splitting summary from
@@ -420,8 +464,10 @@ component Parser for syntax::Syntax {
   /// forms (§2.4).
   parseMacros(): syntax::Macro[];
 
-  /// A `::`-separated path; accepts a reserved keyword in name position
-  /// leniently (reserved-word misuse is a static error, not a parse error).
+  /// A `::`-separated path of `Ident` segments — strict; keywords never appear
+  /// in a path. (Field, variant, and parameter *names* are lenient instead: a
+  /// reserved keyword is accepted there because reserved-word misuse is a
+  /// static error, not a parse error, §2.3.)
   parsePath(): syntax::Path;
 
   /// Drains trivia whose end is at or before `offset`, so the next declaration
@@ -454,6 +500,15 @@ feature StrayTokenTerminates for syntax::Parser {
   then "the stray token is reported as a diagnostic"
   and "the forward-progress guard advances past it"
   but "the surrounding callable still parses"
+}
+
+/// A marker or `from` expression never combines with a binary operator (§7.5).
+feature MarkerAndFromAreNotOperands for syntax::Parser {
+  given "an expression whose head is a marker or a `Type from ..`"
+  when "a binary operator follows the head"
+  then "the operator is reported as a diagnostic"
+  and "the head expression still parses, with its postfix chain"
+  but "the operator is left unconsumed for the enclosing context to resync on"
 }
 
 /// The lexer is greedy and never stalls on bad input.

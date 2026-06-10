@@ -348,7 +348,7 @@ fn type_path(path: &ast::Path, out: &mut Vec<SemToken>) {
     split_path(path, SemKind::Type, out);
 }
 
-/// Colours every segment of a path as a namespace (parent / alias target).
+/// Colours every segment of a path as a namespace (a parent or module prefix).
 fn namespace_path(path: &ast::Path, out: &mut Vec<SemToken>) {
     for segment in &path.segments {
         push(out, segment.span, SemKind::Namespace, false);

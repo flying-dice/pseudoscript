@@ -12,7 +12,7 @@ use pseudoscript_syntax::{LineIndex, Span, parse};
 use crate::convert::span_to_range;
 
 /// The hierarchical outline of `src`: nodes with their callables and nested
-/// declarations, `data` types with their fields or variants, and aliases.
+/// declarations, and `data` types with their fields or variants.
 #[must_use]
 pub fn document_symbols(src: &str) -> Vec<DocumentSymbol> {
     let module = parse(src).ast;

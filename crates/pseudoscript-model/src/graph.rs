@@ -8,7 +8,7 @@
 //! context, container, component, and sequence views.
 //!
 //! The graph is built once, without I/O, so a later salsa/LSP layer can adopt
-//! it (PATTERNS.md). Call/alias/`self.` targets are resolved to FQNs where they
+//! it (PATTERNS.md). Call and `self.` targets are resolved to FQNs where they
 //! resolve; an unresolved target is recorded as-written, not dropped — hard
 //! resolution errors are the static checks' job (`crate::check_workspace`).
 
@@ -837,8 +837,8 @@ impl Builder<'_> {
     /// Canonicalises a node reference written in `module` to a full FQN.
     ///
     /// A reference is its flat FQN `module::Name` (§8.1, ADR-030). Resolution
-    /// tries the path as written (an alias-expanded or cross-module FQN already
-    /// resolves), then `module::<path>` for a bare local name. A structural
+    /// tries the path as written (a cross-module FQN already resolves), then
+    /// `module::<path>` for a bare local name. A structural
     /// drill (`Syntax::Parser` — container `Syntax`, component `Parser`) is not
     /// an FQN: it does not resolve and is returned as written, so the checker
     /// rejects it (§8.1) rather than the model silently building a phantom edge.

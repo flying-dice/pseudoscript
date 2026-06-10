@@ -134,6 +134,9 @@ component Printer for format::Format {
   /// record body, or the union — one `| Variant` per line at one extra indent.
   writeData(state: format::PrinterState, decl: syntax::DataDecl): format::PrinterState;
 
+  /// Emit a `constant NAME = literal` declaration on one line (§3.6, ADR-039).
+  writeConstant(state: format::PrinterState, decl: syntax::ConstantDecl): format::PrinterState;
+
   /// Emit a record body inline: `{ a: T, b: U }`, fields comma-joined; an empty
   /// record renders ` { }`.
   writeRecord(state: format::PrinterState, fields: syntax::Field[]): format::PrinterState;
@@ -163,9 +166,12 @@ component Printer for format::Format {
   /// { }`, a `while (c) { }`, or a bare expression statement.
   writeStmt(state: format::PrinterState, stmt: syntax::Stmt): format::PrinterState;
 
-  /// Emit one expression: the `Ok`/`Err` marker (with optional payload), a
-  /// `Type from { src, ... }` composition, a `.name`/`.name(args)` postfix chain,
-  /// a reference, a literal, a `!`-unary, or a parenthesised group.
+  /// Emit one expression: an `Ok`/`Err`/`Some`/`None` marker (with optional
+  /// payload), a `Type from { src, ... }` composition or `Type from value`
+  /// conversion, a `.name`/`.name(args)` postfix chain, a reference, a literal,
+  /// a `!`/`-` unary, a `left op right` binary (§7.5 — explicit grouping is
+  /// carried by `Paren` nodes, so the round-trip never re-derives precedence),
+  /// or a parenthesised group.
   writeExpr(state: format::PrinterState, expr: syntax::Expr): format::PrinterState;
 
   /// Emit one postfix segment: `.name`, plus a comma-joined `(args)` list when

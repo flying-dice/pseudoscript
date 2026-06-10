@@ -3,7 +3,7 @@
 //! The single-module checks ([`super`]) cannot see other files, so they skip
 //! references they cannot resolve locally. This pass runs over a whole
 //! [`Workspace`]: it walks each module's qualified references — `for` parents,
-//! `alias`/`feature` targets, body call targets, and type annotations (field,
+//! `feature` targets, body call targets, and type annotations (field,
 //! parameter, return, and generic-argument types) — and against the global FQN
 //! index enforces §8.2: a reference from module A to a symbol in module B
 //! resolves only if that symbol is `public`. A cross-module reference to a

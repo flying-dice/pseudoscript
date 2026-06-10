@@ -13,7 +13,7 @@
 /// it from the file path relative to `pds.toml`, LANG.md §8.1) and its source
 /// text. This crate stays pure over in-memory modules; it never touches the
 /// filesystem.
-public data WorkspaceModule { fqn: string, text: string }
+public data WorkspaceModule { fqn: string, source: string }
 
 /// One workspace module's diagnostics, attributed to its FQN. Every span lies in
 /// that module's own source, so a tool with the FQN-to-file mapping publishes
@@ -21,13 +21,15 @@ public data WorkspaceModule { fqn: string, text: string }
 public data ModuleDiagnostics { fqn: string, diagnostics: syntax::Diagnostic[] }
 
 /// The lowercase declaration keyword a `Symbol` names. Drives the parent-kind and
-/// macro-target diagnostics, which embed it as prose.
+/// macro-target diagnostics, which embed it as prose. `Constant` is a top-level
+/// primitive value (§3.6, ADR-039).
 public data SymbolKind =
   | Person
   | System
   | Container
   | Component
   | Data
+  | Constant
 
 /// What kind of member is reachable through `.` from an owner: a node's callable
 /// (§5.1) or a `data` record field (§3.4).
@@ -37,13 +39,12 @@ public data MemberKind =
 
 /// A member reachable through `.` from a node or `data` owner: its name, kind,
 /// definition span, one-line signature detail (`run(name: string): uuid`), value
-/// type (a field's type or a callable's return type), and `///` summary (empty
-/// for a field). Powers member completion and go-to-definition.
-public data Member { name: string, kind: model::MemberKind, span: syntax::Span, detail: string, ty: string, doc: string }
-
-/// A file-local `alias` binding: the `::`-joined target node FQN it expands to,
-/// and the span of the alias name's declaration (LANG.md §8.3).
-public data Alias { target: string, span: syntax::Span }
+/// type (a field's type or a callable's return type), the ordered parameter
+/// types (empty for a field — their count is the call arity, ADR-022), the
+/// `///` summary (absent for a field — the grammar has no field doc), and
+/// whether it is `public` (callables only; gates cross-module member completion,
+/// §8.2). Powers member completion, arity checks, and go-to-definition.
+public data Member { name: string, kind: model::MemberKind, span: syntax::Span, detail: string, ty: string, paramTypes: string[], doc: Option<string>, isPublic: bool }
 
 /// One declared, addressable node in a module namespace: the bare name, its FQN
 /// (`module::Ledger`), its declaration kind, whether it is `public` (§8.2), and
@@ -57,10 +58,20 @@ public data Resolution =
   | Private { symbol: model::Symbol }
   | Missing
 
+/// A union's fieldless variant names, keyed by the union's bare name (§3.5).
+/// Fieldless variants do not hoist a symbol — they are addressed
+/// `module::Union::Variant` (ADR-032) — so they index under their union.
+public data FieldlessVariants { union: string, variants: string[] }
+
+/// One `constant`'s FQN paired with its declared primitive type name (§3.6,
+/// ADR-039), so inference resolves a `module::NAME` reference to its type.
+public data ConstantType { fqn: string, ty: string }
+
 /// One module's resolved symbol table (LANG.md §8): its FQN plus the declared
-/// nodes, the members reachable through `.`, and the file-local `alias` bindings.
-/// The `Resolver` produces it; the `Workspace` indexes and the `Checks` consume it.
-public data SymbolTable { modulePath: string, symbols: model::Symbol[], members: model::Member[], aliases: model::Alias[] }
+/// nodes, the members reachable through `.`, the fieldless-variant index
+/// (ADR-032), and the constant-type index (ADR-039). The `Resolver` produces it;
+/// the `Workspace` indexes and the `Checks` consume it.
+public data SymbolTable { modulePath: string, symbols: model::Symbol[], members: model::Member[], unionVariants: model::FieldlessVariants[], constantTypes: model::ConstantType[] }
 
 /// One module's parsed AST, resolved symbol table, and FQN, as held by a
 /// `Workspace`.
@@ -141,12 +152,14 @@ public data EdgeKind =
   | Trigger
   | Provenance
 
-/// A typed, directed relationship between two graph node FQNs. `to` (and for some
-/// kinds `from`) may name a node not present as a `GraphNode` — a synthesised
-/// trigger initiator, or a target that does not resolve. `label` is the method
-/// name for `Call`, otherwise empty. `span` is the source range that produced the
-/// edge — the call site for a `Call` — so an architectural lint can point its
-/// diagnostic at the offending call; the empty span when the edge is synthesised.
+/// A typed, directed relationship between two graph node FQNs. `source` is the
+/// wire field `from` — `from` is a PseudoScript keyword, so the model renames
+/// it. Either endpoint may name a node not present as a `GraphNode` — a
+/// synthesised trigger initiator, or a target that does not resolve. `label` is
+/// the method name for `Call`, otherwise empty. `span` is the source range that
+/// produced the edge — the call site for a `Call` — so an architectural lint can
+/// point its diagnostic at the offending call; the empty span when the edge is
+/// synthesised.
 public data Edge { source: string, to: string, kind: model::EdgeKind, label: string, span: syntax::Span }
 
 /// One step in a callable's ordered sequence trace (LANG.md §7, §9.2). Calls in a
@@ -209,6 +222,11 @@ public data DepFile { fqn: string, source: string }
 /// shape is the lockfile's concern, not the model's.
 public data Lock;
 
+/// Why parsing a manifest's `[dependencies]` table or a `pds.lock` failed: the
+/// offending entry and a human-readable message. Malformed TOML, an unknown key,
+/// or more than one of tag/rev/branch on one dependency (§8.3).
+public data DepError { message: string }
+
 /// `crates/pseudoscript-model`. AST to one resolved graph; static checks
 /// (resolution, visibility, Result flow, return coverage); the §8.3 dependency
 /// resolver; and the LSP analysis primitives (completion, folding, semantic
@@ -235,19 +253,28 @@ public container Model for context::Pseudoscript {
   public checkWorkspaceModules(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleDiagnostics[] {
     return model::Checks.checkWorkspaceModules(modules, externals)
   }
+
+  /// The static diagnostics for one module of an already-resolved workspace —
+  /// its per-module checks plus the cross-module references that originate in
+  /// it (§8.2). Parse diagnostics are the caller's to prepend. Lets a long-lived
+  /// host (the LSP, the IDE) resolve once and query each module without
+  /// re-parsing.
+  public staticDiagnostics(entries: model::ModuleEntry[], fqn: string): syntax::Diagnostic[];
 }
 
 /// Resolves a module's declarations into a symbol table (LANG.md §8). FQNs are
 /// file-derived: a single `.pds` file is one module, named by its `//!` path.
 /// Holds two namespaces — type names and node names share the symbol table, while
-/// feature names live in a separate namespace the `Checks` enforce — plus member
-/// and alias indexes. The LSP reuses the table for hover and go-to-definition.
+/// feature names live in a separate namespace the `Checks` enforce — plus the
+/// member, fieldless-variant, and constant-type indexes. The LSP reuses the
+/// table for hover and go-to-definition.
 public component Resolver for model::Model {
   /// Builds the per-module symbol table for an anonymous module — no caller FQN,
   /// so the table carries an empty module path (`check`/`eval`, an editor
-  /// snippet). Walks each item: a decl collects a symbol (and its members, and
-  /// hoisted inline union variants); an alias records a binding; a feature adds
-  /// nothing to this table — its name lives in a separate namespace.
+  /// snippet). Walks each item: a decl collects a symbol (and its members,
+  /// hoisted inline union variants, and a constant's declared type, ADR-039); a
+  /// feature adds nothing to this table — its name lives in a separate
+  /// namespace.
   public build(ast: syntax::Module): model::SymbolTable {
     return self.buildWithPath(ast, "")
   }
@@ -304,8 +331,9 @@ public component Workspace for model::Model {
   /// The empty external set — the single-workspace `build` binds no dependencies.
   noExternals(): model::WorkspaceModule[];
 
-  /// Looks up a symbol by its full FQN, regardless of visibility.
-  public symbol(fqn: string): model::Symbol;
+  /// Looks up a symbol by its full FQN, regardless of visibility; none when no
+  /// symbol is indexed under it.
+  public symbol(fqn: string): Option<model::Symbol>;
 
   /// Looks up a symbol by its full FQN, yielding none when no symbol is indexed
   /// under it — the §8.2 existence check that precedes visibility.
@@ -381,17 +409,22 @@ component Checks for model::Model {
   public checkWorkspaceModules(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleDiagnostics[];
 
   /// Runs every per-module check against a parsed module and its resolved model:
-  /// variant collisions (§3.5), feature collisions (§5.2), reserved-word
-  /// identifiers (§2.3), type-reference resolution (§3.3), then each item's
-  /// per-declaration and per-callable checks.
+  /// variant collisions (§3.5), feature collisions (§5.2), constant collisions
+  /// (§3.6, ADR-039), reserved-word identifiers (§2.3), type-reference
+  /// resolution (§3.3), then each item's per-declaration and per-callable checks.
   run(ast: syntax::Module, model: model::SymbolTable): syntax::Diagnostic[] {
     variants = syntax::Diagnostic[] from model::VariantCollision.check(ast)
     features = syntax::Diagnostic[] from model::FeatureCheck.check(ast, model)
+    constants = syntax::Diagnostic[] from self.checkConstantCollisions(ast)
     reserved = syntax::Diagnostic[] from model::ReservedNames.check(ast)
     typeRefs = syntax::Diagnostic[] from model::TypeRefs.check(ast, model)
     items = syntax::Diagnostic[] from self.checkItems(ast)
-    return syntax::Diagnostic[] from { variants, features, reserved, typeRefs, items }
+    return syntax::Diagnostic[] from { variants, features, constants, reserved, typeRefs, items }
   }
+
+  /// §3.6 / ADR-039 — a `constant` repeating an earlier constant's name in the
+  /// same module is a collision, reported at the repeat.
+  checkConstantCollisions(ast: syntax::Module): syntax::Diagnostic[];
 
   /// Runs the per-item checks over every declaration. On each callable body:
   /// macro targeting (§2.4), single-assignment rebinds (§7.1), return coverage
@@ -442,11 +475,11 @@ public component CrossModule for model::Model {
 }
 
 /// One architectural-principle lint rule (LANG.md §9 — the C4 facade/boundary
-/// principles). `code` is its stable identifier (`PDS-ARCH-001`); `title` names the
-/// principle; `href` is the article URL that explains it (a host renders it as the
-/// diagnostic's link); `severity` is the force it carries — `Warning`, since a
-/// violation advises rather than invalidates.
-public data ArchRule { code: string, title: string, href: string, severity: syntax::Severity }
+/// principles). `code` is its stable identifier (`PDS-ARCH-001`); `slug` is the
+/// filename of the article documenting it under the published principles base
+/// URL. Every firing is a `Warning` — a violation advises rather than
+/// invalidates — so the rule carries no severity of its own.
+public data ArchRule { code: string, slug: string }
 
 /// LANG.md §9 — architectural-principle lints over the resolved graph. Beyond §8.2
 /// visibility (which a `public` component still satisfies), these advise on C4
@@ -488,12 +521,16 @@ component Architecture for model::Model {
   /// component-target case is already PDS-ARCH-001, so it is excluded here.
   checkSystemBoundary(graph: model::Graph): syntax::Diagnostic[];
 
-  /// The lint rule for a `code`, carrying its article URL and severity — the
-  /// registry the detectors stamp onto each warning's `code`/`codeDescription`.
-  rule(code: string): model::ArchRule;
+  /// Stamp a rule onto a diagnostic: attach its `code` and the article URL
+  /// (`codeDescription`) derived from the principles base URL plus the rule's
+  /// `slug`. Each detector wraps its warnings through this.
+  warn(rule: model::ArchRule, diag: syntax::Diagnostic): syntax::Diagnostic;
 
   /// The enclosing `system` FQN of a node: walk `parent` up the C4 nesting
-  /// (component -> container -> system). Empty when the node sits under no system.
+  /// (component -> container -> system). Empty when the node sits under no
+  /// system. A seen-set bounds the walk, so a malformed model that wires
+  /// `parent` into a cycle (a §4 diagnostic the graph still builds) never hangs
+  /// the lint.
   systemOf(graph: model::Graph, fqn: string): string;
 }
 
@@ -638,9 +675,9 @@ component Builder for model::Model {
   traceBlock(body: syntax::Module, ownerFqn: string, module: string): model::Step[];
 
   /// Canonicalises a node reference written in `module` to a full FQN: try the
-  /// path as-written (an alias-expanded or cross-module FQN already resolves), then
-  /// `module::path` for a bare local name. An unresolvable reference is returned as
-  /// written, so the emit crate sees what the model named (§8.1).
+  /// path as-written (a cross-module FQN already resolves), then `module::path`
+  /// for a bare local name. An unresolvable reference is returned as written, so
+  /// the emit crate sees what the model named (§8.1).
   canonicalize(reference: string, module: string): string;
 
   /// The synthesised initiator node FQN a trigger contributes an edge from
@@ -655,16 +692,36 @@ component Builder for model::Model {
 /// loader (`project`) and the WASM bridge (`ide`). Pure: fetching and disk are
 /// the caller's job.
 public component Deps for model::Model {
-  /// Parse a manifest's `[dependencies]` table into one spec per dependency name.
-  parseDependencies(manifestToml: string): model::DepSpec[];
+  /// Parse a manifest's `[dependencies]` table into one spec per dependency
+  /// name. Malformed TOML, or more than one of tag/rev/branch on one entry, is
+  /// a `DepError` (§8.3).
+  parseDependencies(manifestToml: string): Result<model::DepSpec[], model::DepError>;
 
-  /// Parse a `pds.lock` into the pinned dependency graph.
-  parseLock(lockToml: string): model::Lock;
+  /// Parse a `pds.lock` into the pinned dependency graph; malformed lock TOML is
+  /// a `DepError` (§8.4).
+  parseLock(lockToml: string): Result<model::Lock, model::DepError>;
 
   /// Map direct dependencies to their prefixed `WorkspaceModule`s (§8.3): select
   /// the vendored git files whose slug matches a lock edge and the local-source
   /// files, then prefix each with its dependency name.
   resolveDependencyModules(lockToml: string, vendored: model::DepFile[], local: model::DepFile[]): model::WorkspaceModule[];
+}
+
+/// One resolved caret hit: the clicked identifier's span, the defining module
+/// and the definition's span there, the resolved graph FQN (a member resolves to
+/// `owner::member` — the key `emit`'s symbol projection uses), a Markdown title
+/// line, and the doc summary or signature detail shown under it.
+public data ResolveHit { clicked: syntax::Span, targetModule: string, targetSpan: syntax::Span, targetFqn: string, title: string, body: Option<string> }
+
+/// Caret resolution — the engine every cursor feature shares (`lsp_core` hover,
+/// definition, references, rename; the IDE's symbol actions). Tokenizes the
+/// active source, finds the identifier under the offset, and resolves it across
+/// the workspace and its externals: a node or data FQN, a `self.`/member access,
+/// or a local reference. Token-level, so it survives a partial parse.
+public component CaretResolve for model::Model {
+  /// Resolve the identifier under `offset` in module `fromFqn`'s source; none
+  /// when the caret rests on whitespace, punctuation, or an unknown name.
+  public resolveAt(ws: model::ModuleEntry[], fromFqn: string, src: string, offset: number): Option<model::ResolveHit>;
 }
 
 /// Context-aware completion (the model-native producer `lsp_core` maps to LSP
