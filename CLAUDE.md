@@ -28,7 +28,7 @@ A rule change (FQN form, visibility, syntax) must leave every worked example com
 - **`model/`** and **`web-ide/src/lib/samples/<name>/`** — buildable example workspaces (each has a `pds.toml`).
 - The worked example in **`LANG.md`** and the snippets in **`PATTERNS.md`**.
 
-Validate an example as a **workspace**: `pds doc <dir>` resolves each file to its module FQN and applies the full-qualification checks (a reference is its flat FQN `module::Name`, §8.1). The doc site is written to `<dir>/target/doc` — except the self-model, whose `[doc].out` is `site/`: `model/site` is **tracked and committed** (deployed to Cloudflare Pages by `deploy-model-docs.yml`), so rebuild it with `pds doc model` and commit it alongside any model change.
+Validate an example as a **workspace**: `pds doc <dir>` resolves each file to its module FQN and applies the full-qualification checks (a reference is its flat FQN `module::Name`, §8.1). The doc site is written to `<dir>/target/doc` — except the self-model, whose `[doc].out` is `site/`: `model/site` is **tracked and committed** (Cloudflare Pages serves it straight from the repo), so rebuild it with `pds doc model` and commit it alongside any model change.
 
 ## Model-driven engineering — model first, then impl (mandatory)
 

@@ -3,8 +3,9 @@
 # convention; `pds doc model` renders its diagrams and doc site.
 #
 # The site builds to `site/` (tracked and committed, unlike the default
-# `target/doc`) so Cloudflare Pages serves the committed output directly —
-# rebuild with `pds doc model` and commit alongside any model change.
+# `target/doc`) so Cloudflare Pages serves the committed output straight from
+# the repo (no build command; output directory `model/site`) — rebuild with
+# `pds doc model` and commit alongside any model change.
 [doc]
 name  = "PseudoScript"
 out   = "site"
