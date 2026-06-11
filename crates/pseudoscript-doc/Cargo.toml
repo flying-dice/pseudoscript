@@ -11,12 +11,12 @@ name = "pseudoscript_doc"
 path = "src/lib.rs"
 
 [dependencies]
-pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.7" }
-pseudoscript-emit = { path = "../pseudoscript-emit", version = "0.1.7" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.8" }
+pseudoscript-emit = { path = "../pseudoscript-emit", version = "0.1.8" }
 # Positions diagnostics and highlights pds code blocks at build time.
-pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.7" }
+pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.8" }
 # The universe page's snapshot + entry-point flows.
-pseudoscript-universe = { path = "../pseudoscript-universe", version = "0.1.7" }
+pseudoscript-universe = { path = "../pseudoscript-universe", version = "0.1.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Renders `[[doc.sidebar]]` markdown pages to HTML. Pure Rust (no C), so it
