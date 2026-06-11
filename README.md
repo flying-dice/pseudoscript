@@ -10,7 +10,7 @@ the model and generates the C4 and sequence diagrams your team and your agents
 build against. [Model-driven engineering](https://en.wikipedia.org/wiki/Model-driven_engineering),
 reignited.
 
-[**Open the Web IDE →**](http://ide.pdscript.dev/)  ·  [Language spec](LANG.md)  ·  [Patterns](PATTERNS.md)
+[**Open the Web IDE →**](http://ide.pdscript.dev/)  ·  [**See a generated doc site →**](https://pseudoscript-model.pages.dev/)  ·  [Language spec](LANG.md)  ·  [Patterns](PATTERNS.md)
 
 </div>
 
@@ -27,7 +27,7 @@ reignited.
 | [`crates/`](crates/) | The Rust toolchain: parser, checker, formatter, diagram emitter, LSP, and the `pds` binary. |
 | [`web-ide/`](web-ide/) | The browser IDE — the whole toolchain compiled to WebAssembly. |
 | [`web-landing/`](web-landing/) | The marketing site. |
-| [`model/`](model/) | PseudoScript modelling its own design — the compiler crates, the web IDE, and the landing site. |
+| [`model/`](model/) | PseudoScript modelling its own design — the compiler crates, the web IDE, and the landing site. Its generated doc site is live at [pseudoscript-model.pages.dev](https://pseudoscript-model.pages.dev/). |
 
 ## The `pds` CLI
 
