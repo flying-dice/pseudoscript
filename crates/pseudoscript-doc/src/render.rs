@@ -61,7 +61,15 @@ pub(crate) fn build_pages(
     for module in &modules {
         pages.push((
             module_page_path(module),
-            build_module(graph, config, module, &modules, &urls, diagnostics, svg_theme),
+            build_module(
+                graph,
+                config,
+                module,
+                &modules,
+                &urls,
+                diagnostics,
+                svg_theme,
+            ),
         ));
     }
     pages.push((
@@ -254,7 +262,13 @@ fn build_index(
         .collect();
     let page = PageBody::Index(IndexProps {
         title: config.name.clone(),
-        context_diagram: build_svg_diagram(graph, View::Context, "Context", "System context", svg_theme),
+        context_diagram: build_svg_diagram(
+            graph,
+            View::Context,
+            "Context",
+            "System context",
+            svg_theme,
+        ),
         cards,
         stats: build_stats(graph, diagnostics),
     });
@@ -692,7 +706,12 @@ mod tests {
     #[test]
     fn pages_emit_in_order_index_docs_modules_universe_health() {
         let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
-        let pages = build_pages(&g, &config_with_docs(), &[], pseudoscript_emit::Theme::Adaptive);
+        let pages = build_pages(
+            &g,
+            &config_with_docs(),
+            &[],
+            pseudoscript_emit::Theme::Adaptive,
+        );
         let paths: Vec<&str> = pages.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths[0], "index.html");
         assert_eq!(paths[1], "docs/introduction.html");
@@ -704,7 +723,12 @@ mod tests {
     #[test]
     fn doc_page_carries_rendered_markdown_and_sidebar_group() {
         let g = graph(&[WorkspaceModule::new("m", "//! m\npublic system S;")]);
-        let pages = build_pages(&g, &config_with_docs(), &[], pseudoscript_emit::Theme::Adaptive);
+        let pages = build_pages(
+            &g,
+            &config_with_docs(),
+            &[],
+            pseudoscript_emit::Theme::Adaptive,
+        );
         let (_, doc) = pages
             .iter()
             .find(|(p, _)| p == "docs/introduction.html")
@@ -723,7 +747,12 @@ mod tests {
     fn every_diagram_is_adaptive_inline_svg() {
         let src = "//! m\n/// Sys.\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    self.Step()\n  }\n  Step();\n}\n";
         let g = graph(&[WorkspaceModule::new("m", src)]);
-        let pages = build_pages(&g, &DocConfig::default(), &[], pseudoscript_emit::Theme::Adaptive);
+        let pages = build_pages(
+            &g,
+            &DocConfig::default(),
+            &[],
+            pseudoscript_emit::Theme::Adaptive,
+        );
         let (_, module) = pages
             .iter()
             .find(|(p, _)| p.starts_with("module/"))
@@ -745,7 +774,12 @@ mod tests {
     fn universe_page_carries_snapshot_flows_and_hrefs() {
         let src = "//! m\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    m::D.Go()\n  }\n}\npublic container D for m::S {\n  public Go();\n}\n";
         let g = graph(&[WorkspaceModule::new("m", src)]);
-        let pages = build_pages(&g, &DocConfig::default(), &[], pseudoscript_emit::Theme::Adaptive);
+        let pages = build_pages(
+            &g,
+            &DocConfig::default(),
+            &[],
+            pseudoscript_emit::Theme::Adaptive,
+        );
         let (_, universe) = pages
             .iter()
             .find(|(p, _)| p == "universe.html")

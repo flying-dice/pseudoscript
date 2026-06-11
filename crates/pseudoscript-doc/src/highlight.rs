@@ -121,8 +121,14 @@ mod tests {
     #[test]
     fn pds_blocks_highlight_keywords_strings_and_docs() {
         let html = highlight("pds", "/// A shop.\npublic system Shop;\n");
-        assert!(html.contains("<span class=\"tok-kw\">public</span>"), "{html}");
-        assert!(html.contains("<span class=\"tok-kw\">system</span>"), "{html}");
+        assert!(
+            html.contains("<span class=\"tok-kw\">public</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"tok-kw\">system</span>"),
+            "{html}"
+        );
         assert!(html.contains("tok-doc"), "{html}");
         assert!(html.contains("Shop"), "plain idents survive: {html}");
     }

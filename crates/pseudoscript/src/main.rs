@@ -884,11 +884,10 @@ fn build_site(
 
     // One per-module check pass feeds both the console report and the site's
     // health page.
-    let per_module =
-        pseudoscript_model::check_workspace_modules_with_externals(
-            &project.modules,
-            &project.dependencies,
-        );
+    let per_module = pseudoscript_model::check_workspace_modules_with_externals(
+        &project.modules,
+        &project.dependencies,
+    );
     report_diagnostics(
         &per_module
             .iter()
@@ -899,10 +898,8 @@ fn build_site(
 
     let model = graph(&project.modules);
     let site = match format {
-        DocFormat::Html => {
-            pseudoscript_doc::try_render_site(&model, &project.config, &diagnostics)
-                .context("rendering the documentation site")?
-        }
+        DocFormat::Html => pseudoscript_doc::try_render_site(&model, &project.config, &diagnostics)
+            .context("rendering the documentation site")?,
         DocFormat::Md => {
             pseudoscript_doc::render_markdown_site(&model, &project.config, &diagnostics)
         }

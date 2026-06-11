@@ -95,7 +95,14 @@ fn render_universe(out: &mut String, universe: &UniverseProps) {
     if !universe.edges.is_empty() {
         out.push_str("## Relationships\n\n");
         for edge in &universe.edges {
-            let _ = writeln!(out, "- `{}` \u{2192} `{}` ({} call{})", edge.from, edge.to, edge.traffic, if edge.traffic == 1 { "" } else { "s" });
+            let _ = writeln!(
+                out,
+                "- `{}` \u{2192} `{}` ({} call{})",
+                edge.from,
+                edge.to,
+                edge.traffic,
+                if edge.traffic == 1 { "" } else { "s" }
+            );
         }
         out.push('\n');
     }
@@ -104,7 +111,11 @@ fn render_universe(out: &mut String, universe: &UniverseProps) {
         for flow in &universe.flows {
             let _ = writeln!(out, "- **{}** (`{}`)", flow.name, flow.fqn);
             for hop in &flow.hops {
-                let _ = writeln!(out, "  - `{}` \u{2192} `{}` — {}", hop.from, hop.to, hop.label);
+                let _ = writeln!(
+                    out,
+                    "  - `{}` \u{2192} `{}` — {}",
+                    hop.from, hop.to, hop.label
+                );
             }
         }
         out.push('\n');

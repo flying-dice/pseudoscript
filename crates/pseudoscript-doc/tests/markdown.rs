@@ -48,10 +48,7 @@ fn writes_universe_and_health_pages() {
     );
 
     let health = &site.file("health.md").expect("health.md").contents;
-    assert!(
-        health.contains("# Architecture health"),
-        "got:\n{health}"
-    );
+    assert!(health.contains("# Architecture health"), "got:\n{health}");
     assert!(
         health.contains("No findings."),
         "the clean fixture reports no findings, got:\n{health}"

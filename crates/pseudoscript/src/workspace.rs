@@ -114,7 +114,10 @@ impl DocTable {
     /// Markdown from disk, relative to `root`.
     fn resolve(self, root: &Path) -> Result<(DocConfig, PathBuf, Option<DocFormat>)> {
         let name = self.name.unwrap_or_else(|| default_name(root));
-        let theme = self.theme.as_deref().map_or(Ok(Theme::System), parse_theme)?;
+        let theme = self
+            .theme
+            .as_deref()
+            .map_or(Ok(Theme::System), parse_theme)?;
         let format = self.format.as_deref().map(parse_format).transpose()?;
         let out = self.out.unwrap_or_else(|| "target/doc".to_owned());
         let docs = self
