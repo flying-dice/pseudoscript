@@ -87,7 +87,11 @@ pub fn try_render_site_with(
             shell::wrap(path, props, &props_json, &result),
         ));
     }
-    files.push(search::build_search_index(graph, config, &crate::url::UrlMap::build(graph)));
+    files.push(search::build_search_index(
+        graph,
+        config,
+        &crate::url::UrlMap::build(graph),
+    ));
     files.push(SiteFile::new("style.css", assets::STYLE_CSS));
     files.push(SiteFile::new("client.js", assets::CLIENT_JS));
     files.push(SiteFile::new("universe.js", assets::UNIVERSE_JS));

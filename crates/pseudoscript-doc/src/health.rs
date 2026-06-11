@@ -24,12 +24,10 @@ pub(crate) fn build_health(
         .iter()
         .map(|d| {
             let node = owning_node(graph, d);
-            let href = node
-                .and_then(|n| urls.get(&n.fqn))
-                .map_or_else(
-                    || format!("{prefix}{}", module_page_path(&d.module)),
-                    |url| format!("{prefix}{}#{}", url.page, url.anchor),
-                );
+            let href = node.and_then(|n| urls.get(&n.fqn)).map_or_else(
+                || format!("{prefix}{}", module_page_path(&d.module)),
+                |url| format!("{prefix}{}#{}", url.page, url.anchor),
+            );
             HealthEntry {
                 module: d.module.clone(),
                 severity: d.severity.clone(),

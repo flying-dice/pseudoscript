@@ -899,10 +899,8 @@ impl IdeSession {
             .iter()
             .map(|(fqn, m)| WorkspaceModule::new(fqn.clone(), m.source.clone()))
             .collect();
-        let per_module = pseudoscript_model::check_workspace_modules_with_externals(
-            &modules,
-            &self.externals,
-        );
+        let per_module =
+            pseudoscript_model::check_workspace_modules_with_externals(&modules, &self.externals);
         let diagnostics = pseudoscript_doc::prepare_diagnostics(&modules, &per_module);
         let graph = self.graph();
         let site = try_render_site_with(graph, &doc_config(config), &diagnostics, &engine)

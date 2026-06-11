@@ -91,8 +91,16 @@ pub(crate) fn build_search_index(graph: &Graph, config: &DocConfig, urls: &UrlMa
     }
 
     for (name, href, summary) in [
-        ("3D Universe", "universe.html", "The model in 3D — structure and flows"),
-        ("Architecture Health", "health.html", "Errors, warnings, and principle lints"),
+        (
+            "3D Universe",
+            "universe.html",
+            "The model in 3D — structure and flows",
+        ),
+        (
+            "Architecture Health",
+            "health.html",
+            "Errors, warnings, and principle lints",
+        ),
     ] {
         entries.push(SearchEntry {
             fqn: href.to_owned(),
@@ -107,10 +115,7 @@ pub(crate) fn build_search_index(graph: &Graph, config: &DocConfig, urls: &UrlMa
 
     entries.sort_by(|a, b| a.href.cmp(&b.href).then_with(|| a.fqn.cmp(&b.fqn)));
     let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_owned());
-    SiteFile::new(
-        "search-index.js",
-        format!("window.__PDS_SEARCH__={json};"),
-    )
+    SiteFile::new("search-index.js", format!("window.__PDS_SEARCH__={json};"))
 }
 
 /// Strips Markdown to plain text: the text and code events space-joined, with
@@ -161,6 +166,9 @@ mod tests {
 
     #[test]
     fn markdown_strips_to_plain_text() {
-        assert_eq!(markdown_text("# Hi\n\nSome **bold** `code`."), "Hi Some bold code .");
+        assert_eq!(
+            markdown_text("# Hi\n\nSome **bold** `code`."),
+            "Hi Some bold code ."
+        );
     }
 }
