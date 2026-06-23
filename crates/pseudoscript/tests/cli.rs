@@ -415,6 +415,21 @@ fn run_check_generated(world: &mut CliWorld) {
     world.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 }
 
+#[when("I run pds check on the bare module name from the workspace")]
+fn run_check_bare_from_workspace(world: &mut CliWorld) {
+    // The exact issue #67 repro: a relative `main.pds` argument with the
+    // workspace as the working directory, not an absolute path.
+    let output = pds()
+        .current_dir(&world.target)
+        .arg("check")
+        .arg("main.pds")
+        .output()
+        .expect("run pds");
+    world.exit_code = output.status.code();
+    world.stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    world.stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+}
+
 #[then(regex = r#"^the workspace contains "(.+)"$"#)]
 // cucumber parses each regex capture into an owned `String`; `&str` won't compile here.
 #[allow(clippy::needless_pass_by_value)]

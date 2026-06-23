@@ -9,17 +9,28 @@ use walkdir::WalkDir;
 use crate::MANIFEST;
 
 /// Walks up from `start` (a file or directory) through its ancestors until a
-/// directory containing `pds.toml` is found, returning that directory.
+/// directory containing `pds.toml` is found, returning that (absolute) directory.
+///
+/// `start` is made absolute first (against the current directory, lexically — no
+/// disk access), so the ancestor walk climbs the real tree to the filesystem
+/// root. A relative path would otherwise bottom out at the empty path, whose
+/// `join("pds.toml")` spuriously resolves against the current directory: that is
+/// why `pds check main.pds` reported an IO error walking the empty path while
+/// `pds check .` worked — the empty root was then handed to the tree walker
+/// (issue #67).
 ///
 /// # Errors
 ///
 /// Returns an error if no ancestor of `start` contains a `pds.toml`.
 pub fn find_root(start: &Path) -> Result<PathBuf> {
-    // A file's own path is not a search directory; begin at its parent.
-    let from = if start.is_file() {
-        start.parent().unwrap_or(start)
+    let absolute =
+        std::path::absolute(start).with_context(|| format!("resolving `{}`", start.display()))?;
+    // A file's own path is not a search directory; begin at its parent. After
+    // absolutising, a file always has a non-empty parent.
+    let from = if absolute.is_file() {
+        absolute.parent().unwrap_or(&absolute)
     } else {
-        start
+        &absolute
     };
     for dir in from.ancestors() {
         if dir.join(MANIFEST).is_file() {
@@ -148,6 +159,39 @@ mod tests {
             module_fqn(Path::new("web-ide/file-tree.pds")).as_deref(),
             Some("web_ide::file_tree")
         );
+    }
+
+    #[test]
+    fn find_root_walks_up_from_a_file_to_its_manifest() {
+        // A `.pds` file inside a workspace resolves to that workspace's root,
+        // even when the file sits directly under it — the regression behind
+        // `pds check <file>` failing where `pds check .` worked (issue #67).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(MANIFEST), "[doc]\nname = \"x\"\n").unwrap();
+        std::fs::write(root.join("main.pds"), "//! m\npublic system A;\n").unwrap();
+
+        assert_eq!(find_root(&root.join("main.pds")).unwrap(), root);
+    }
+
+    #[test]
+    fn find_root_walks_up_from_a_nested_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(MANIFEST), "[doc]\nname = \"x\"\n").unwrap();
+        let nested = root.join("pkg");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("svc.pds"), "//! s\npublic system S;\n").unwrap();
+
+        assert_eq!(find_root(&nested.join("svc.pds")).unwrap(), root);
+    }
+
+    #[test]
+    fn find_root_errors_with_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lone.pds"), "//! l\npublic system L;\n").unwrap();
+
+        assert!(find_root(&dir.path().join("lone.pds")).is_err());
     }
 
     #[test]
