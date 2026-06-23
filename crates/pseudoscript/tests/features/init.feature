@@ -14,6 +14,13 @@ Feature: pds init bootstraps a workspace
     Then the exit code is zero
     And stderr is empty
 
+  Scenario: the generated module checks clean by bare name from the workspace
+    Given an empty workspace directory
+    When I run pds init
+    And I run pds check on the bare module name from the workspace
+    Then the exit code is zero
+    And stderr is empty
+
   Scenario: init refuses to overwrite an existing workspace
     Given an empty workspace directory
     When I run pds init
