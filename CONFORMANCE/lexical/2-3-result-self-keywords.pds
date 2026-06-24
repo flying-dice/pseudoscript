@@ -1,6 +1,6 @@
 // §2.3 — `self`/`Ok`/`Err`/`true`/`false` tokenise as keywords; `Result` and
-//        primitive `number` stay IDENT (classified in type position).
+//        primitive `number` stay IDENT. `self` is reserved (no call; ADR-041).
 
 Make(): Result<number, Err>;
-r = self.Run(true)
+r = self == true
 return Ok(false)

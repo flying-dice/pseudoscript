@@ -1261,7 +1261,10 @@ impl Parser {
             Some(TokenKind::KwSelf) => {
                 // `self.` is removed (ADR-041); a same-node call is bare
                 // `Name(args)`. Recover `self.Name(args)` as that bare call so
-                // only this diagnostic surfaces and the body still resolves.
+                // the body still resolves: a name that resolves draws only this
+                // migration diagnostic. An unknown name additionally draws the
+                // normal unresolved-callable error — the same one `Name(args)`
+                // would draw after migrating, not extra noise.
                 let token = self.bump().expect("peeked self");
                 if self.eat(TokenKind::Dot).is_some() {
                     let name = self.expect_ident("callable name");
