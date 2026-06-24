@@ -10,6 +10,6 @@ public data Dog;
 public system Zoo;
 
 public container Pen for Zoo {
-  AdoptCat(): Cat { return Cat from self.MakeDog() }
+  AdoptCat(): Cat { return Cat from MakeDog() }
   MakeDog(): Dog;
 }

@@ -6,6 +6,6 @@
 public system S;
 
 public container C for S {
-  run(): void { self.take("x") }
+  run(): void { take("x") }
   take(n: number): void { }
 }

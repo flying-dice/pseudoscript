@@ -47,8 +47,8 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 ```
 system  container  component  person
 data    constant   for        from
-public  self
-return  Ok    Err   Some  None
+public  return     Ok         Err
+Some    None
 if      else  while  in
 true    false
 feature given when   then   and    but
@@ -123,7 +123,7 @@ Option<T>        // optional value:   Some(T) | None
 ### 3.3 Type expressions
 A named type (`BankingInfo`), generic (`Result<BankingInfo, NotFound>`, `Option<Person>`), or array (`T[]`). `[]` is the only type suffix; an absent value is modeled with `Option<T>` (§6).
 
-Every named type — a field, parameter, or return type, and each generic argument — MUST resolve to a primitive (§3.1), `Result`/`Option` (§3.2), or a declared type or node (§3.4, §3.5, §4); an unresolved type MUST be rejected (ADR-022). A reference to a declared type or node MUST be its FQN (§8.1), including one in the same module; only primitives, `Result`/`Option`, and `self` are bare.
+Every named type — a field, parameter, or return type, and each generic argument — MUST resolve to a primitive (§3.1), `Result`/`Option` (§3.2), or a declared type or node (§3.4, §3.5, §4); an unresolved type MUST be rejected (ADR-022). A reference to a declared type or node MUST be its FQN (§8.1), including one in the same module; only primitives and `Result`/`Option` are bare.
 
 ### 3.4 Data declarations
 A `data` type models any payload — DTOs, entities, messages alike. It MAY stay a **black box** with `;` (fields not yet disclosed).
@@ -224,8 +224,8 @@ A function-shaped declaration is a callable.
 - All calls are request/response. A call to a resolvable callable MUST pass one argument per declared parameter, and each inferable argument MUST match its parameter's type; a wrong arity or argument type MUST be rejected (ADR-022, ADR-023).
 - Every callable MUST declare a return type; a callable without one MUST be rejected (ADR-040). `void` declares that no value is returned. A disclosed non-`void` callable MUST return a value on every path.
 - A `return` operand whose type is determinable — a literal, an `Ok`/`Err`/`Some`/`None` marker (§6), a `from` (§7.2), a typed binding, or a call to a resolvable callable — MUST match the declared return type; a mismatch MUST be rejected. A union variant satisfies its union type (§3.5). A bare reference resolving to a `data` record or a node is not a value and MUST be rejected (§7.2).
-- A bare name in a body MUST resolve to a parameter, a binding, or a `for` binding; it MUST NOT resolve to a node or union variant (ADR-030) — those are referenced by FQN (§8.1). An unresolved bare name MUST be rejected (ADR-022).
-- A same-node callable is invoked via `self.Name(args)` (`self` = the enclosing node); this also covers recursion.
+- A bare name read as a value MUST resolve to a parameter, a binding, or a `for` binding; it MUST NOT resolve to a node or union variant (ADR-030) — those are referenced by FQN (§8.1). An unresolved bare name MUST be rejected (ADR-022).
+- A same-node callable is invoked by a bare call `Name(args)` — a sibling, or the enclosing callable itself for recursion (ADR-041). A bare name in call position MUST resolve to a callable on the enclosing node; one matching no callable on the node MUST be rejected (ADR-022).
 - A callable's name and its parameter names MUST NOT be reserved words (§2.3) — `container`, `component`, `data`, and `for` are reserved.
 - A call statement MAY ignore its `Result` (the call still renders as a message).
 - A black-box callable shows in C4 as a capability; a call to it in a sequence diagram is a single message with no expansion.
@@ -402,7 +402,7 @@ Each path segment becomes an FQN segment, which MUST be an identifier (§2.2). A
 
 A module has four distinct namespaces: **type names** (`data` declarations and hoisted record variants, §3.5), **node names** (`system`/`container`/`component`/`person`), **feature names** (§5.2), and **value names** (`constant`, §3.6). A name MUST be unique within its namespace; the four do not collide — a `data`, a `container`, a `feature`, and a `constant` MAY share a name. Callable and parameter names are scoped to their owner, not the module.
 
-Every reference to a node, type, union variant, or constant MUST be its FQN, including a reference to one declared in the same module (ADR-030). A bare leaf name MUST NOT resolve to a node, type, variant, or constant; it resolves only to a parameter, a binding, or a `for` binding (§7). `self` and member access (§7.1) are unaffected, as are the primitives (§3.1) and `Result`/`Option` (§3.2). Within `banking/core.pds`, a sibling node is addressed `banking::core::Other`, never `Other`. An FQN names a node by its module path and name only; the system→container→component nesting (§4) is carried by `for`, not the name. A structural drill — a node addressed through its C4 ancestry, `Container::Component` or `module::System::Container::Component` — is not an FQN and MUST NOT resolve (ADR-036).
+Every reference to a node, type, union variant, or constant MUST be its FQN, including a reference to one declared in the same module (ADR-030). A bare leaf name read as a value MUST NOT resolve to a node, type, variant, or constant; it resolves only to a parameter, a binding, or a `for` binding (§7). A bare name in call position resolves to a callable on the enclosing node (§5.1, ADR-041). Member access (§7.1) is unaffected, as are the primitives (§3.1) and `Result`/`Option` (§3.2). Within `banking/core.pds`, a sibling node is addressed `banking::core::Other`, never `Other`. An FQN names a node by its module path and name only; the system→container→component nesting (§4) is carried by `for`, not the name. A structural drill — a node addressed through its C4 ancestry, `Container::Component` or `module::System::Container::Component` — is not an FQN and MUST NOT resolve (ADR-036).
 
 An FQN's first segment is a **root**. The file-derived module paths above are the local roots; a `[dependencies]` entry (§8.3) adds one root per declared dependency.
 
@@ -453,7 +453,7 @@ From disclosed callables per §7. A **triggered** callable (one bearing a trigge
 
 A call to a **disclosed** callee expands inline: the callee becomes the active lifeline, its body traces in place, and each of its `return`s is a return message to its caller's lifeline. A call to a **black-box** callable renders as a single message with no expansion (§5.1). A callee already in flight on the call path (direct or mutual recursion) MUST NOT re-expand; it renders as a single message.
 
-In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A `self.` call renders as a self-message.
+In a chained expression, each call is its own message, emitted left-to-right; field accesses between calls are local. A same-node call (`Name(args)`, §5.1) renders as a self-message and expands its callee's body inline, exactly as a direct call to a disclosed callee does (ADR-041); recursion is stack-guarded as above. A method on a local value or chain intermediate renders as a leaf self-message — it names no node callable and has no body to follow.
 
 Each lifeline head card shows the participant's C4 kind and name. A `container` or `component` participant SHOULD also show its `for` ancestry (enclosing node names, outermost first) dimmed beneath the name. Every declared participant SHOULD show its `///` summary, as on a C4 card (§9.1). A synthesised initiator carries neither.
 
@@ -572,11 +572,12 @@ AddExpr     = MulExpr   { ( "+" | "-" ) MulExpr } ;
 MulExpr     = UnaryExpr { ( "*" | "/" | "%" ) UnaryExpr } ;
 UnaryExpr   = ( "!" | "-" ) UnaryExpr | Postfix ;
 Postfix     = Primary { "." Ident [ "(" [ Args ] ")" ] } ;   // field access / call, chained
-Primary     = Ref | Literal | "(" Expr ")" ;
+Primary     = Call | Ref | Literal | "(" Expr ")" ;
+Call        = Ident "(" [ Args ] ")" ;              // same-node callable (§5.1)
 Marker      = ( "Ok" | "Err" | "Some" ) [ "(" Expr ")" ] | "None" ;   // built-in generic constructors
 FromExpr    = Type "from" ( "{" [ Expr { "," Expr } ] "}" | Expr ) ;   // brace source set, or a single value; "[]" target composes an array
 Args        = Expr { "," Expr } ;
-Ref         = "self" | Ident | Path ;               // self or an FQN
+Ref         = Ident | Path ;                        // a local name or an FQN
 Path        = Ident { "::" Ident } ;
 
 Literal     = String | Number | Bool ;

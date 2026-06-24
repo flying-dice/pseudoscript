@@ -70,9 +70,12 @@ mod tests {
 
     #[test]
     fn adapter_scopes_members_with_prefix() {
-        let src = "//! m\n\nsystem S {\n  run(): void {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
+        // Member completion after a node receiver's `.` offers that node's
+        // members (`helper`), not the general keyword scope, through the LSP
+        // adapter.
+        let src = "//! m\n\nsystem S {\n  run(): void {\n    Engine.he\n  }\n}\ncomponent Engine for m::S {\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
-        let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;
+        let offset = (src.find("Engine.he").unwrap() + "Engine.he".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);
         assert!(labels.contains(&"helper".to_owned()), "{labels:?}");
         assert!(

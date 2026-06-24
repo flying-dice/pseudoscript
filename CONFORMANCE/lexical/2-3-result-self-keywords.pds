@@ -1,6 +1,0 @@
-// §2.3 — `self`/`Ok`/`Err`/`true`/`false` tokenise as keywords; `Result` and
-//        primitive `number` stay IDENT (classified in type position).
-
-Make(): Result<number, Err>;
-r = self.Run(true)
-return Ok(false)

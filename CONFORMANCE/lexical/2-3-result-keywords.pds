@@ -1,0 +1,6 @@
+// §2.3 — `Ok`/`Err`/`true`/`false` tokenise as keywords; `Result`, `number`,
+//        and `self` (no longer reserved, ADR-041) stay IDENT.
+
+Make(): Result<number, Err>;
+self = Ok(true)
+return Ok(false)

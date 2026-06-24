@@ -72,7 +72,7 @@ component DisputeService for disputes::Disputes {
   /// acknowledged but holds funds only once.
   #[http("POST /v1/network/disputes")]
   public open(event: disputes::DisputeEvent): Result<disputes::Acknowledged, disputes::DisputeError> {
-    verified = Result<void, DisputeError> from self.verify(event)
+    verified = Result<void, DisputeError> from verify(event)
     if (verified.isErr) {
       return Err(verified.error)
     }
@@ -90,11 +90,11 @@ component DisputeService for disputes::Disputes {
   /// The merchant contests a dispute with evidence: forward it to the network and
   /// move the dispute to `UnderReview`.
   public submitEvidence(merchant: shared::MerchantId, req: disputes::EvidenceSubmission): Result<disputes::Dispute, disputes::DisputeError> {
-    loaded = Result<Dispute, DisputeError> from self.getFor(merchant, req.dispute)
+    loaded = Result<Dispute, DisputeError> from getFor(merchant, req.dispute)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    open = Result<void, DisputeError> from self.contestable(loaded.value)
+    open = Result<void, DisputeError> from contestable(loaded.value)
     if (open.isErr) {
       return Err(open.error)
     }
@@ -102,7 +102,7 @@ component DisputeService for disputes::Disputes {
     if (sent.isErr) {
       return Err(disputes::DisputeError::NetworkUnreachable)
     }
-    reviewing = Dispute from self.mark(loaded.value, disputes::DisputeStatus::UnderReview)
+    reviewing = Dispute from mark(loaded.value, disputes::DisputeStatus::UnderReview)
     disputes::DisputeStore.save(reviewing)
     return Ok(reviewing)
   }
@@ -112,7 +112,7 @@ component DisputeService for disputes::Disputes {
   /// a replayed ruling settles once.
   #[http("POST /v1/network/dispute-outcomes")]
   public resolve(event: disputes::ResolutionEvent): Result<disputes::Acknowledged, disputes::DisputeError> {
-    verified = Result<void, DisputeError> from self.verifyResolution(event)
+    verified = Result<void, DisputeError> from verifyResolution(event)
     if (verified.isErr) {
       return Err(verified.error)
     }
@@ -120,9 +120,9 @@ component DisputeService for disputes::Disputes {
     if (seen.isOk) {
       return Ok(Acknowledged from { event.eventId })
     }
-    loaded = Result<Dispute, DisputeError> from self.get(event.dispute)
+    loaded = Result<Dispute, DisputeError> from get(event.dispute)
     if (loaded.isOk) {
-      self.applyRuling(loaded.value, event.ruling)
+      applyRuling(loaded.value, event.ruling)
     }
     disputes::CallbackLog.record(event.eventId)
     return Ok(Acknowledged from { event.eventId })
@@ -137,11 +137,11 @@ component DisputeService for disputes::Disputes {
   /// Forfeit a dispute the merchant never answered: mark it `Lost`. The funds
   /// were already held at open, so no further debit is needed.
   public forfeit(dispute: shared::DisputeId): void {
-    loaded = Result<Dispute, DisputeError> from self.get(dispute)
+    loaded = Result<Dispute, DisputeError> from get(dispute)
     if (loaded.isOk) {
-      open = Result<void, DisputeError> from self.contestable(loaded.value)
+      open = Result<void, DisputeError> from contestable(loaded.value)
       if (open.isOk) {
-        disputes::DisputeStore.save(self.mark(loaded.value, disputes::DisputeStatus::Lost))
+        disputes::DisputeStore.save(mark(loaded.value, disputes::DisputeStatus::Lost))
       }
     }
   }
@@ -149,23 +149,23 @@ component DisputeService for disputes::Disputes {
   /// Apply a ruling: a win records `Won` and raises `DisputeWon`; a loss records
   /// `Lost`.
   applyRuling(dispute: disputes::Dispute, ruling: disputes::DisputeRuling): void {
-    won = Result<void, DisputeError> from self.isWin(ruling)
+    won = Result<void, DisputeError> from isWin(ruling)
     if (won.isOk) {
-      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Won))
+      disputes::DisputeStore.save(mark(dispute, disputes::DisputeStatus::Won))
       disputes::Events.won(DisputeWon from { dispute.id, dispute.merchant, dispute.amount })
     } else {
-      disputes::DisputeStore.save(self.mark(dispute, disputes::DisputeStatus::Lost))
+      disputes::DisputeStore.save(mark(dispute, disputes::DisputeStatus::Lost))
     }
   }
 
   /// Read a dispute on behalf of `merchant`, refusing one that belongs to
   /// another merchant.
   public getFor(merchant: shared::MerchantId, dispute: shared::DisputeId): Result<disputes::Dispute, disputes::DisputeError> {
-    loaded = Result<Dispute, DisputeError> from self.get(dispute)
+    loaded = Result<Dispute, DisputeError> from get(dispute)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    owns = Result<void, DisputeError> from self.ownedBy(loaded.value, merchant)
+    owns = Result<void, DisputeError> from ownedBy(loaded.value, merchant)
     if (owns.isErr) {
       return Err(owns.error)
     }

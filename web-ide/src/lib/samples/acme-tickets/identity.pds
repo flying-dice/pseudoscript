@@ -79,7 +79,7 @@ component Sessions for identity::Identity {
     if (user.isNone) {
       return Err(identity::AuthError::BadCredentials)
     }
-    ok = Result<void, AuthError> from self.verify(creds, user.value)
+    ok = Result<void, AuthError> from verify(creds, user.value)
     if (ok.isErr) {
       return Err(identity::AuthError::BadCredentials)
     }
@@ -102,11 +102,11 @@ component Sessions for identity::Identity {
 
   /// Authenticate, then require the `Organizer` role.
   public requireOrganizer(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
-    user = Result<User, AuthError> from self.authenticate(token)
+    user = Result<User, AuthError> from authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }
-    allowed = Result<void, AuthError> from self.ensureOrganizer(user.value)
+    allowed = Result<void, AuthError> from ensureOrganizer(user.value)
     if (allowed.isErr) {
       return Err(allowed.error)
     }
@@ -115,11 +115,11 @@ component Sessions for identity::Identity {
 
   /// Authenticate, then require the `Support` role.
   public requireSupport(token: identity::SessionToken): Result<identity::User, identity::AuthError> {
-    user = Result<User, AuthError> from self.authenticate(token)
+    user = Result<User, AuthError> from authenticate(token)
     if (user.isErr) {
       return Err(user.error)
     }
-    allowed = Result<void, AuthError> from self.ensureSupport(user.value)
+    allowed = Result<void, AuthError> from ensureSupport(user.value)
     if (allowed.isErr) {
       return Err(allowed.error)
     }

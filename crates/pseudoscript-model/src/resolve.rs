@@ -43,8 +43,8 @@ pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Opt
     }
 
     // A member's own declaration name (a callable or field) resolves to itself;
-    // members live in the member index, not the symbol table, so this is the
-    // only bare-name form that reaches them (ADR-004: no bare member references).
+    // members live in the member index, not the symbol table. The other bare-name
+    // form that reaches a member is a same-node call, handled below (ADR-041).
     if let Some((owner, member)) = ws
         .module(from_fqn)
         .and_then(|entry| entry.model.member_at(clicked))
@@ -56,6 +56,33 @@ pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Opt
         return Some(Hit {
             clicked,
             ..member_hit(member, owner, &owner_fqn, from_fqn.to_owned())
+        });
+    }
+
+    // A bare same-node call `Name(args)` (§5.1, ADR-041): the clicked Ident is
+    // followed by `(` and is not a `::` path tail; it names a callable of the
+    // enclosing node. (A bare name in value position still does not reach a
+    // member — ADR-030; the declaration form is handled above.)
+    let prev_is_colon = idx >= 1 && tokens[idx - 1].kind == TokenKind::ColonColon;
+    if !prev_is_colon
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|t| t.kind == TokenKind::LParen)
+        && let Some(entry) = ws.module(from_fqn)
+        && let Some(node) = enclosing_node(&entry.ast, clicked.start)
+        && let Some(member) = entry
+            .model
+            .members(&node)
+            .iter()
+            .find(|m| m.name == tokens[idx].text && m.kind == crate::MemberKind::Callable)
+    {
+        let owner_fqn = entry
+            .model
+            .symbol(&node)
+            .map_or_else(|| node.clone(), |s| s.fqn.clone());
+        return Some(Hit {
+            clicked,
+            ..member_hit(member, &node, &owner_fqn, from_fqn.to_owned())
         });
     }
 
@@ -168,7 +195,7 @@ fn unique_symbol<'a>(ws: &'a Workspace, from_fqn: &str, name: &str) -> Option<&'
     matches.next().is_none().then_some(first)
 }
 
-/// Resolves `.member` after a `self` or node/data base — including a qualified,
+/// Resolves `.member` after a node/data base — including a qualified,
 /// cross-module base (`a::Svc.op`).
 fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) -> Option<Hit> {
     let member_name = tokens[idx].text.as_str();
@@ -177,10 +204,6 @@ fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) 
     let base = tokens.get(base_idx)?;
 
     let symbol = match base.kind {
-        TokenKind::KwSelf => {
-            let node = enclosing_node(&ws.module(from_fqn)?.ast, base.span.start)?;
-            ws.module(from_fqn)?.model.symbol(&node)?
-        }
         TokenKind::Ident => {
             let segments = path_segments(tokens, base_idx);
             resolve_node(ws, from_fqn, &segments)?
@@ -358,8 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn self_member_resolves_to_callable() {
-        let src = "//! m\n\nsystem S {\n  run(): void { self.helper() }\n  helper(): void {}\n}\n";
+    fn bare_same_node_call_resolves_to_callable() {
+        // §5.1, ADR-041: a bare same-node call `helper()` resolves to the
+        // enclosing node's callable — goto-definition lands on its declaration.
+        let src = "//! m\n\nsystem S {\n  run(): void { helper() }\n  helper(): void {}\n}\n";
         let mods = [("m", src)];
         let ws = workspace(&mods);
         let hit = hit_at(&ws, "m", src, "helper", 1);

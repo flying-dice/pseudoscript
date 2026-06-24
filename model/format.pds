@@ -44,8 +44,8 @@ component Formatter for format::Format {
   /// tree.
   public format(text: string): Result<string, format::FormatError> {
     parsed = Parsed from syntax::Syntax.parse(text)
-    if (self.hasErrors(parsed)) {
-      errors = string[] from self.collectErrors(parsed)
+    if (hasErrors(parsed)) {
+      errors = string[] from collectErrors(parsed)
       err = FormatError from { errors }
       return Err(err)
     }
@@ -84,8 +84,8 @@ component Printer for format::Format {
   /// the `//!` inner docs, a blank separator if items follow, then each item in
   /// source order.
   print(ast: syntax::Module): string {
-    state = PrinterState from self.writeModule(ast)
-    out = string from self.finish(state)
+    state = PrinterState from writeModule(ast)
+    out = string from finish(state)
     return out
   }
 
@@ -178,7 +178,8 @@ component Printer for format::Format {
   /// the segment is a call.
   writePostfixSeg(state: format::PrinterState, seg: syntax::PostfixSeg): format::PrinterState;
 
-  /// Emit a reference primary: the literal `self`, or a path.
+  /// Emit a reference primary: a path (the only `Reference` form since `self`
+  /// was dropped, ADR-041; a bare same-node call is the `OwnCall` primary).
   writeRef(state: format::PrinterState, reference: syntax::Reference): format::PrinterState;
 
   /// Emit a literal from its raw source text — strings keep their quotes,

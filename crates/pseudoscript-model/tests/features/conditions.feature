@@ -1,7 +1,7 @@
 Feature: `if`/`while` conditions are boolean (LANG.md §7)
 
   A condition whose type is statically determinable must be `bool`. Accessor and
-  call conditions (`r.isErr`, `self.ready()`) infer to `Unknown` and are not
+  call conditions (`r.isErr`, `ready()`) infer to `Unknown` and are not
   checked.
 
   Scenario: A non-bool `if` condition is rejected

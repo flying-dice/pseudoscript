@@ -51,7 +51,7 @@ component RefundService for refunds::Refunds {
     if (intent.isErr) {
       return Err(refunds::RefundError::IntentNotFound)
     }
-    ready = Result<void, RefundError> from self.refundable(intent.value)
+    ready = Result<void, RefundError> from refundable(intent.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
@@ -60,10 +60,10 @@ component RefundService for refunds::Refunds {
     refunds::RefundStore.save(pending)
     back = Result<context::NetworkRefund, ChargeError> from charges::Charges.refund(req.intent, req.amount)
     if (back.isErr) {
-      refunds::RefundStore.save(self.markFailed(pending, back.error))
-      return Err(self.declined(back.error))
+      refunds::RefundStore.save(markFailed(pending, back.error))
+      return Err(declined(back.error))
     }
-    done = Refund from self.markSucceeded(pending)
+    done = Refund from markSucceeded(pending)
     refunds::RefundStore.save(done)
     refunds::Events.refunded(RefundSucceeded from { done.id, done.merchant, done.amount })
     return Ok(done)

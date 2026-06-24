@@ -392,7 +392,10 @@ fn render_steps(steps: &[Step], indent: usize, out: &mut String) {
                 let _ = writeln!(out, "{pad}call {target_fqn}.{method}");
             }
             Step::SelfCall { method } => {
-                let _ = writeln!(out, "{pad}self.{method}");
+                let _ = writeln!(out, "{pad}{method}()");
+            }
+            Step::LocalCall { method } => {
+                let _ = writeln!(out, "{pad}.{method}()");
             }
             Step::Return { marker } if marker.is_empty() => {
                 let _ = writeln!(out, "{pad}return");

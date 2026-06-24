@@ -22,7 +22,7 @@ Read in full to see why `CtorExpr` became `ResultMarker` and how this reinforces
 
 ## [004 — Self/sibling calls via `self.`](004-self-calls.md)
 
-`self` refers to the enclosing node; same-node callables are invoked as `self.Name(args)`. Bare `Name(args)` does not resolve.
+`self` refers to the enclosing node; same-node callables are invoked as `self.Name(args)`. Bare `Name(args)` does not resolve. **Superseded by ADR-041** — `self.` is dropped; a same-node call is bare `Name(args)`.
 
 Read in full for the sequence-diagram rendering (self-message on the lifeline) and the `self`-only-in-body scoping rule.
 
@@ -178,7 +178,7 @@ Read in full for the `//! Configuration` shadowing bug that motivated it, and th
 
 ## [030 — A node, type, or variant reference is always its FQN](030-require-full-qualification.md)
 
-Every reference to a node, type, or union variant MUST be its FQN, including one in the same module; a bare leaf name resolves only to a parameter, a binding, or a `for` binding. `self`, member access, primitives, and `Result`/`Option` stay bare. The checker flags a bare same-module node/type/variant name and is gated to a named module — the path-less single-file check stays lenient.
+Every reference to a node, type, or union variant MUST be its FQN, including one in the same module; a bare leaf name resolves only to a parameter, a binding, or a `for` binding. Member access, primitives, and `Result`/`Option` stay bare. The checker flags a bare same-module node/type/variant name and is gated to a named module — the path-less single-file check stays lenient.
 
 Read in full for the four-meanings-per-bare-name ambiguity it removes, and the workspace-vs-anonymous gating.
 
@@ -241,3 +241,9 @@ Read in full for the value-namespace rule, the FQN-only resolution, and the reje
 Every callable MUST declare a return type; `F()` without one is rejected and `void` is the explicit nothing-spelling (`F(): void`, still composable as `Result<void, E>`). §10's `Callable` production requires `":" Type`; the parser recovers a missing type as `void` with a syntax diagnostic. Mandatory signatures make a call to any resolvable callable a determinable `return` operand, extending the §5.1 type-match clause cross-module without widening ADR-022's inference.
 
 Read in full for the Java/C#-precedent rationale and the rejected implicit-void and full-typing alternatives.
+
+## [041 — Same-node calls are bare; `self.` is dropped](041-drop-self-qualifier.md)
+
+`self.Name(args)` is removed; a same-node callable is invoked by a bare call `Name(args)`. A bare name in call position resolves to a callable on the enclosing node; `self` is not reserved — it is an ordinary identifier with no special meaning. The renderer follows a same-node call's body and emits its cross-boundary calls, ending the silent-drop trap (issue #71) ADR-004's collapsed self-message caused. **Supersedes ADR-004.**
+
+Read in full for the call-vs-construction non-ambiguity, the same-node-vs-local-value rendering split, and the rejected fix-renderer-only alternative.

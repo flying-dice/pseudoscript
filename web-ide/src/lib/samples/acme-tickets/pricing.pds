@@ -43,9 +43,9 @@ component Quotes for pricing::Pricing {
     if (base.isErr) {
       return Err(TierUnavailable from { tier })
     }
-    surge = SurgeFactor from self.surgeFor(event, tier)
-    unit = shared::Money from self.apply(base.value, surge)
-    total = shared::Money from self.lineTotal(unit, quantity)
+    surge = SurgeFactor from surgeFor(event, tier)
+    unit = shared::Money from apply(base.value, surge)
+    total = shared::Money from lineTotal(unit, quantity)
     return Ok(Quote from { event, tier, unit, surge, total })
   }
 
@@ -56,9 +56,9 @@ component Quotes for pricing::Pricing {
   surgeFor(event: shared::EventId, tier: shared::TierId): pricing::SurgeFactor {
     snap = Option<DemandSnapshot> from pricing::Demand.snapshot(event, tier)
     if (snap.isNone) {
-      return self.neutral()
+      return neutral()
     }
-    return self.curve(snap.value.pressure)
+    return curve(snap.value.pressure)
   }
 
   /// The no-surge factor (multiplier 1.0) used when demand is unknown.
@@ -100,7 +100,7 @@ public component Demand for pricing::Pricing {
   public onConfirmed(event: orders::OrderConfirmed): void {
     fresh = Option<shared::OrderId> from pricing::DemandLog.seen(event.order.id)
     if (fresh.isNone) {
-      self.record(event.order.event, event.order.tier, event.order.quantity)
+      record(event.order.event, event.order.tier, event.order.quantity)
       pricing::DemandLog.mark(event.order.id)
     }
   }

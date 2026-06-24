@@ -37,44 +37,44 @@ component Dispatcher for webhooks::Webhooks {
   /// Deliver `payment_intent.succeeded`.
   #[onevent(intents::PaymentSucceeded)]
   public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
-    self.dispatch(self.encodeSucceeded(event))
+    dispatch(encodeSucceeded(event))
   }
 
   /// Deliver `payment_intent.payment_failed`.
   #[onevent(intents::PaymentFailed)]
   public onPaymentFailed(event: intents::PaymentFailed): void {
-    self.dispatch(self.encodeFailed(event))
+    dispatch(encodeFailed(event))
   }
 
   /// Deliver `charge.refunded`.
   #[onevent(refunds::RefundSucceeded)]
   public onRefunded(event: refunds::RefundSucceeded): void {
-    self.dispatch(self.encodeRefunded(event))
+    dispatch(encodeRefunded(event))
   }
 
   /// Deliver `charge.dispute.created`.
   #[onevent(disputes::DisputeOpened)]
   public onDisputeOpened(event: disputes::DisputeOpened): void {
-    self.dispatch(self.encodeDisputeOpened(event))
+    dispatch(encodeDisputeOpened(event))
   }
 
   /// Deliver `payout.paid`.
   #[onevent(payouts::PayoutPaid)]
   public onPayoutPaid(event: payouts::PayoutPaid): void {
-    self.dispatch(self.encodePayoutPaid(event))
+    dispatch(encodePayoutPaid(event))
   }
 
   /// Deliver `payout.failed`.
   #[onevent(payouts::PayoutFailed)]
   public onPayoutFailed(event: payouts::PayoutFailed): void {
-    self.dispatch(self.encodePayoutFailed(event))
+    dispatch(encodePayoutFailed(event))
   }
 
   /// Retry deliveries whose backoff has elapsed (driven by the scheduled sweep).
   public redeliver(): void {
     due = Delivery[] from webhooks::DeliveryStore.due()
     for (delivery in due) {
-      self.attempt(delivery.event)
+      attempt(delivery.event)
     }
   }
 
@@ -84,7 +84,7 @@ component Dispatcher for webhooks::Webhooks {
     seen = Result<void, DeliveryError> from webhooks::DeliveryStore.seen(webhook.id)
     if (seen.isErr) {
       webhooks::DeliveryStore.record(webhook)
-      self.attempt(webhook.id)
+      attempt(webhook.id)
     }
   }
 
@@ -94,13 +94,13 @@ component Dispatcher for webhooks::Webhooks {
   attempt(event: string): void {
     deliverable = Option<Delivery> from webhooks::DeliveryStore.deliverable(event)
     if (deliverable.isSome) {
-      endpoint = string from self.endpointFor(deliverable.value.merchant)
-      signed = string from self.sign(deliverable.value)
+      endpoint = string from endpointFor(deliverable.value.merchant)
+      signed = string from sign(deliverable.value)
       sent = Result<void, DeliveryError> from context::MerchantEndpoint.deliver(endpoint, deliverable.value.payload, signed)
       if (sent.isErr) {
-        webhooks::DeliveryStore.save(self.onFailure(deliverable.value))
+        webhooks::DeliveryStore.save(onFailure(deliverable.value))
       } else {
-        webhooks::DeliveryStore.save(self.markDelivered(deliverable.value))
+        webhooks::DeliveryStore.save(markDelivered(deliverable.value))
       }
     }
   }

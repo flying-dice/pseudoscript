@@ -6,6 +6,6 @@
 public system S;
 
 public container C for S {
-  run(): void { self.add(1, 2, 3) }
+  run(): void { add(1, 2, 3) }
   add(a: number, b: number): number { return a }
 }

@@ -207,6 +207,11 @@ fn check_expr(expr: &Expr, env: &Bindings, out: &mut Vec<Diagnostic>) {
             check_expr(left, env, out);
             check_expr(right, env, out);
         }
+        ExprKind::OwnCall { args, .. } => {
+            for arg in args {
+                check_expr(arg, env, out);
+            }
+        }
         ExprKind::Ref(_) | ExprKind::Literal(_) => {}
     }
 }

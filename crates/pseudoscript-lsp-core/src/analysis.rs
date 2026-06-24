@@ -46,7 +46,7 @@ pub struct DefTarget {
 }
 
 /// Resolves the identifier at `position` in module `from_fqn` to its definition
-/// — across files and into `self.`/node members.
+/// — across files and into same-node calls / node members.
 #[must_use]
 pub fn definition(
     ws: &Workspace,

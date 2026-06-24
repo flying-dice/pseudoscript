@@ -23,12 +23,12 @@ Feature: LSP semantic tokens
     And the "id" token has type "property"
     And the "uuid" token has type "type"
 
-  Scenario: callables, parameters, types, self, and calls
+  Scenario: callables, parameters, types, and bare same-node calls
     Given the inline source:
       """
       system S {
         run(name: string): uuid {
-          return self.alloc(name)
+          return alloc(name)
         }
       }
       """
@@ -37,7 +37,6 @@ Feature: LSP semantic tokens
     And the "run" token is declared
     And the "name" token has type "parameter"
     And the "string" token has type "type"
-    And the "self" token has type "keyword"
     And the "alloc" token has type "method"
 
   Scenario: a macro invocation is one decorator span

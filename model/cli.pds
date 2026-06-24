@@ -55,7 +55,7 @@ public container Cli for context::Pseudoscript {
   /// Generate the documentation site for the workspace containing `path`, with no
   /// `--format` override so the manifest `[doc].format` or HTML decides.
   public runDoc(path: string): Result<void, cli::IoError> {
-    built = Result<string, IoError> from cli::DocCmd.run(path, self.noFormatOverride())
+    built = Result<string, IoError> from cli::DocCmd.run(path, noFormatOverride())
     if (built.isErr) {
       return Err(built.error)
     }
@@ -92,7 +92,7 @@ component Loader for cli::Cli {
   findRoot(start: string): Result<string, cli::IoError> {
     found = Result<string, project::IoError> from project::Project.findRoot(start)
     if (found.isErr) {
-      return Err(self.ioError(found.error))
+      return Err(ioError(found.error))
     }
     return Ok(found.value)
   }
@@ -101,15 +101,15 @@ component Loader for cli::Cli {
   /// resolve its declared dependency modules (§8.3) into the workspace. The
   /// resolved output directory is `<root>/<out>`, taken from the manifest.
   load(root: string): Result<cli::Workspace, cli::IoError> {
-    config = Result<Workspace, IoError> from self.loadManifest(root)
+    config = Result<Workspace, IoError> from loadManifest(root)
     if (config.isErr) {
       return Err(config.error)
     }
-    modules = Result<model::WorkspaceModule[], IoError> from self.loadModules(root)
+    modules = Result<model::WorkspaceModule[], IoError> from loadModules(root)
     if (modules.isErr) {
       return Err(modules.error)
     }
-    dependencies = Result<model::WorkspaceModule[], IoError> from self.loadDependencies(root)
+    dependencies = Result<model::WorkspaceModule[], IoError> from loadDependencies(root)
     if (dependencies.isErr) {
       return Err(dependencies.error)
     }
@@ -126,7 +126,7 @@ component Loader for cli::Cli {
   loadModules(root: string): Result<model::WorkspaceModule[], cli::IoError> {
     loaded = Result<model::WorkspaceModule[], project::IoError> from project::Project.load(root)
     if (loaded.isErr) {
-      return Err(self.ioError(loaded.error))
+      return Err(ioError(loaded.error))
     }
     return Ok(loaded.value)
   }
@@ -151,11 +151,11 @@ component Loader for cli::Cli {
 component InitCmd for cli::Cli {
   #[manual]
   public run(path: string, name: string): Result<void, cli::IoError> {
-    exists = Result<bool, IoError> from self.manifestExists(path)
+    exists = Result<bool, IoError> from manifestExists(path)
     if (exists.isErr) {
       return Err(exists.error)
     }
-    return self.writeFiles(path, name)
+    return writeFiles(path, name)
   }
 
   /// Whether `<path>/pds.toml` already exists — refuse to clobber a workspace.
@@ -190,21 +190,21 @@ component DocCmd for cli::Cli {
     if (project.isErr) {
       return Err(project.error)
     }
-    format = string from self.resolveFormat(cliFormat, project.value.format)
+    format = string from resolveFormat(cliFormat, project.value.format)
     perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(project.value.modules, project.value.dependencies)
-    self.reportModules(perModule)
+    reportModules(perModule)
     prepared = doc::DiagnosticInput[] from doc::Doc.prepareDiagnostics(project.value.modules, perModule)
     graph = Graph from model::Model.graph(project.value.modules)
-    site = Result<Site, IoError> from self.renderSite(graph, project.value.config, format, prepared)
+    site = Result<Site, IoError> from renderSite(graph, project.value.config, format, prepared)
     if (site.isErr) {
       return Err(site.error)
     }
-    written = Result<void, IoError> from self.write(site.value, project.value.outDir)
+    written = Result<void, IoError> from write(site.value, project.value.outDir)
     if (written.isErr) {
       return Err(written.error)
     }
-    if (self.isHtml(format)) {
-      self.copyLogo(root.value, project.value)
+    if (isHtml(format)) {
+      copyLogo(root.value, project.value)
     }
     return Ok(format)
   }
@@ -223,14 +223,14 @@ component DocCmd for cli::Cli {
   /// infallible flat-Markdown site. Both receive the prepared diagnostics so
   /// the health report ships in either format.
   renderSite(graph: model::Graph, config: doc::DocConfig, format: string, diagnostics: doc::DiagnosticInput[]): Result<doc::Site, cli::IoError> {
-    if (self.isHtml(format)) {
+    if (isHtml(format)) {
       html = Result<Site, RenderError> from doc::Doc.render(graph, config, diagnostics)
       if (html.isErr) {
-        return Err(self.renderError(html.error))
+        return Err(renderError(html.error))
       }
       return Ok(html.value)
     }
-    return Ok(self.renderMarkdown(graph, config, diagnostics))
+    return Ok(renderMarkdown(graph, config, diagnostics))
   }
 
   /// Whether the resolved format is HTML (the SSR site) rather than Markdown.
@@ -256,7 +256,7 @@ component DocCmd for cli::Cli {
     if (roots.isErr) {
       return Err(roots.error)
     }
-    return self.buildEach(roots.value, cliFormat)
+    return buildEach(roots.value, cliFormat)
   }
 
   /// Build each discovered workspace in order, collecting failures; errors after
@@ -270,14 +270,14 @@ component DocCmd for cli::Cli {
   /// returns after writing the site.
   #[manual]
   public serve(path: string, cliFormat: string, serve: bool, watch: bool, port: number): Result<void, cli::IoError> {
-    built = Result<string, IoError> from self.run(path, cliFormat)
+    built = Result<string, IoError> from run(path, cliFormat)
     if (built.isErr) {
       return Err(built.error)
     }
-    if (!self.isHtml(built.value)) {
+    if (!isHtml(built.value)) {
       return Ok
     }
-    if (!self.shouldServe(serve, watch)) {
+    if (!shouldServe(serve, watch)) {
       return Ok
     }
     if (watch) {
@@ -310,12 +310,12 @@ component CheckCmd for cli::Cli {
   public run(path: string): Result<void, cli::IoError> {
     root = Result<string, IoError> from cli::Loader.findRoot(path)
     if (root.isErr) {
-      if (self.isDirectory(path)) {
+      if (isDirectory(path)) {
         return Err(root.error)
       }
-      return self.checkRootless(path)
+      return checkRootless(path)
     }
-    return self.checkWorkspace(root.value)
+    return checkWorkspace(root.value)
   }
 
   /// Whether `path` is a directory — only a rootless file falls back to the
@@ -334,8 +334,8 @@ component CheckCmd for cli::Cli {
       return Err(project.error)
     }
     perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(project.value.modules, project.value.dependencies)
-    self.reportModules(perModule)
-    if (self.anyModuleError(perModule)) {
+    reportModules(perModule)
+    if (anyModuleError(perModule)) {
       err = IoError from { perModule }
       return Err(err)
     }
@@ -356,12 +356,12 @@ component CheckCmd for cli::Cli {
   /// The lenient path: a file outside any workspace is checked as one anonymous
   /// module, lenient about full qualification.
   checkRootless(path: string): Result<void, cli::IoError> {
-    text = Result<string, IoError> from self.readSource(path)
+    text = Result<string, IoError> from readSource(path)
     if (text.isErr) {
       return Err(text.error)
     }
     diagnostics = syntax::Diagnostic[] from model::Model.check(text.value)
-    if (self.anyError(diagnostics)) {
+    if (anyError(diagnostics)) {
       err = IoError from { diagnostics }
       return Err(err)
     }
@@ -383,7 +383,7 @@ component CheckCmd for cli::Cli {
     if (roots.isErr) {
       return Err(roots.error)
     }
-    return self.checkEach(roots.value)
+    return checkEach(roots.value)
   }
 
   /// Check each discovered workspace in order, collecting failures.
@@ -398,7 +398,7 @@ component EvalCmd for cli::Cli {
   #[manual]
   public run(text: string): Result<void, cli::IoError> {
     diagnostics = syntax::Diagnostic[] from model::Model.check(text)
-    if (self.anyError(diagnostics)) {
+    if (anyError(diagnostics)) {
       err = IoError from { diagnostics }
       return Err(err)
     }
@@ -420,9 +420,9 @@ component FmtCmd for cli::Cli {
       return Err(out.error)
     }
     if (write) {
-      self.overwrite(out.value)
+      overwrite(out.value)
     } else {
-      self.print(out.value)
+      print(out.value)
     }
     return Ok
   }
@@ -439,7 +439,7 @@ component TokensCmd for cli::Cli {
   #[manual]
   public run(text: string): Result<void, cli::IoError> {
     stream = string from syntax::Syntax.renderTokens(text)
-    self.print(stream)
+    print(stream)
     return Ok
   }
 
@@ -486,7 +486,7 @@ component OutlineCmd for cli::Cli {
       return Err(modules.error)
     }
     graph = Graph from model::Model.graph(modules.value)
-    self.print(self.render(graph))
+    print(render(graph))
     return Ok
   }
 
@@ -507,8 +507,8 @@ component OutlineCmd for cli::Cli {
 component SvgCmd for cli::Cli {
   #[manual]
   public run(path: string, symbol: string, view: string, target: string, theme: string): Result<void, cli::IoError> {
-    if (!self.isKnownTheme(theme)) {
-      return Err(self.unknownTheme(theme))
+    if (!isKnownTheme(theme)) {
+      return Err(unknownTheme(theme))
     }
     root = Result<string, IoError> from cli::Loader.findRoot(path)
     if (root.isErr) {
@@ -519,11 +519,11 @@ component SvgCmd for cli::Cli {
       return Err(modules.error)
     }
     graph = Graph from model::Model.graph(modules.value)
-    scene = Result<Scene, EmitError> from self.projectChosen(graph, symbol, view, target)
+    scene = Result<Scene, EmitError> from projectChosen(graph, symbol, view, target)
     if (scene.isErr) {
-      return Err(self.emitError(scene.error))
+      return Err(emitError(scene.error))
     }
-    self.print(self.renderThemed(scene.value, theme))
+    print(renderThemed(scene.value, theme))
     return Ok
   }
 

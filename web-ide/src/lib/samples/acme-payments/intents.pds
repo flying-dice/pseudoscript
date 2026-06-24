@@ -121,11 +121,11 @@ component PaymentIntents for intents::Intents {
   /// Secure requirement parks the intent in `RequiresAction` for the cardholder.
   /// #headline
   public confirm(merchant: shared::MerchantId, req: intents::ConfirmIntent): Result<intents::PaymentIntent, intents::IntentError> {
-    intent = Result<PaymentIntent, IntentError> from self.getFor(merchant, req.intent)
+    intent = Result<PaymentIntent, IntentError> from getFor(merchant, req.intent)
     if (intent.isErr) {
       return Err(intent.error)
     }
-    ready = Result<void, IntentError> from self.confirmable(intent.value)
+    ready = Result<void, IntentError> from confirmable(intent.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
@@ -137,59 +137,59 @@ component PaymentIntents for intents::Intents {
     outcome = RiskOutcome from risk::Risk.screen(input)
     blocked = Result<void, RiskError> from risk::Risk.isBlocked(outcome)
     if (blocked.isOk) {
-      return Err(self.reject(intent.value, outcome))
+      return Err(reject(intent.value, outcome))
     }
     review = Result<void, RiskError> from risk::Risk.isReview(outcome)
     if (review.isOk) {
       risk::Risk.flag(req.intent, "elevated risk")
     }
-    return self.proceed(intent.value, instrument.value)
+    return proceed(intent.value, instrument.value)
   }
 
   /// Complete a 3-D Secure challenge on an intent awaiting action, then resume
   /// the authorise-and-capture flow. Called by the cardholder, not the merchant.
   public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, intents::IntentError> {
-    loaded = Result<PaymentIntent, IntentError> from self.get(intent)
+    loaded = Result<PaymentIntent, IntentError> from get(intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    pending = Result<void, IntentError> from self.inAction(loaded.value)
+    pending = Result<void, IntentError> from inAction(loaded.value)
     if (pending.isErr) {
       return Err(pending.error)
     }
-    cleared = Result<AuthResult, ChargeError> from charges::Charges.completeAction(intent, self.challengeResult(outcome))
+    cleared = Result<AuthResult, ChargeError> from charges::Charges.completeAction(intent, challengeResult(outcome))
     if (cleared.isErr) {
-      return Err(self.afterChargeFailure(loaded.value, cleared.error))
+      return Err(afterChargeFailure(loaded.value, cleared.error))
     }
-    return self.afterAuthorized(loaded.value)
+    return afterAuthorized(loaded.value)
   }
 
   /// Capture a manually-captured intent the merchant has decided to settle.
   public capture(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
-    loaded = Result<PaymentIntent, IntentError> from self.getFor(merchant, intent)
+    loaded = Result<PaymentIntent, IntentError> from getFor(merchant, intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    ready = Result<void, IntentError> from self.capturable(loaded.value)
+    ready = Result<void, IntentError> from capturable(loaded.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
-    return self.finalize(loaded.value)
+    return finalize(loaded.value)
   }
 
   /// Cancel an intent before capture, voiding any authorised hold so the
   /// cardholder's funds are released promptly.
   public cancel(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
-    loaded = Result<PaymentIntent, IntentError> from self.getFor(merchant, intent)
+    loaded = Result<PaymentIntent, IntentError> from getFor(merchant, intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    cancelable = Result<void, IntentError> from self.cancelable(loaded.value)
+    cancelable = Result<void, IntentError> from cancelable(loaded.value)
     if (cancelable.isErr) {
       return Err(cancelable.error)
     }
     charges::Charges.release(intent)
-    canceled = PaymentIntent from self.mark(loaded.value, intents::IntentStatus::Canceled)
+    canceled = PaymentIntent from mark(loaded.value, intents::IntentStatus::Canceled)
     intents::IntentStore.save(canceled)
     intents::Events.canceled(PaymentCanceled from { canceled })
     return Ok(canceled)
@@ -202,16 +202,16 @@ component PaymentIntents for intents::Intents {
   /// outcome still unknown is left for the next sweep — the intent is never
   /// abandoned while its charge might be real. Every branch is idempotent.
   public resume(intent: shared::PaymentIntentId): void {
-    loaded = Result<PaymentIntent, IntentError> from self.get(intent)
+    loaded = Result<PaymentIntent, IntentError> from get(intent)
     if (loaded.isOk) {
       charges::Charges.reconcileCapture(intent)
       receipt = Option<Receipt> from charges::Charges.receiptFor(intent)
       if (receipt.isSome) {
-        self.complete(loaded.value, receipt.value)
+        complete(loaded.value, receipt.value)
       } else {
         failed = Result<void, ChargeError> from charges::Charges.definitelyFailed(intent)
         if (failed.isOk) {
-          self.abandon(loaded.value)
+          abandon(loaded.value)
         }
       }
     }
@@ -225,11 +225,11 @@ component PaymentIntents for intents::Intents {
   /// Read an intent on behalf of `merchant`, refusing one that belongs to
   /// another merchant.
   public getFor(merchant: shared::MerchantId, intent: shared::PaymentIntentId): Result<intents::PaymentIntent, intents::IntentError> {
-    loaded = Result<PaymentIntent, IntentError> from self.get(intent)
+    loaded = Result<PaymentIntent, IntentError> from get(intent)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    owns = Result<void, IntentError> from self.ownedBy(loaded.value, merchant)
+    owns = Result<void, IntentError> from ownedBy(loaded.value, merchant)
     if (owns.isErr) {
       return Err(owns.error)
     }
@@ -250,25 +250,25 @@ component PaymentIntents for intents::Intents {
   proceed(intent: intents::PaymentIntent, instrument: context::NetworkInstrument): Result<intents::PaymentIntent, intents::IntentError> {
     auth = Result<AuthResult, ChargeError> from charges::Charges.authorize(intent.id, intent.amount, instrument)
     if (auth.isErr) {
-      return Err(self.afterChargeFailure(intent, auth.error))
+      return Err(afterChargeFailure(intent, auth.error))
     }
-    action = Result<void, IntentError> from self.actionRequired(auth.value)
+    action = Result<void, IntentError> from actionRequired(auth.value)
     if (action.isOk) {
-      pending = PaymentIntent from self.mark(intent, intents::IntentStatus::RequiresAction)
+      pending = PaymentIntent from mark(intent, intents::IntentStatus::RequiresAction)
       intents::IntentStore.save(pending)
       return Ok(pending)
     }
-    return self.afterAuthorized(intent)
+    return afterAuthorized(intent)
   }
 
   /// With the hold in hand: capture now for automatic capture, or park in
   /// `RequiresCapture` for the merchant to capture later.
   afterAuthorized(intent: intents::PaymentIntent): Result<intents::PaymentIntent, intents::IntentError> {
-    auto = Result<void, IntentError> from self.isAutomatic(intent)
+    auto = Result<void, IntentError> from isAutomatic(intent)
     if (auto.isOk) {
-      return self.finalize(intent)
+      return finalize(intent)
     }
-    awaiting = PaymentIntent from self.mark(intent, intents::IntentStatus::RequiresCapture)
+    awaiting = PaymentIntent from mark(intent, intents::IntentStatus::RequiresCapture)
     intents::IntentStore.save(awaiting)
     return Ok(awaiting)
   }
@@ -277,9 +277,9 @@ component PaymentIntents for intents::Intents {
   finalize(intent: intents::PaymentIntent): Result<intents::PaymentIntent, intents::IntentError> {
     receipt = Result<Receipt, ChargeError> from charges::Charges.capture(intent.id)
     if (receipt.isErr) {
-      return Err(self.afterChargeFailure(intent, receipt.error))
+      return Err(afterChargeFailure(intent, receipt.error))
     }
-    done = PaymentIntent from self.mark(intent, intents::IntentStatus::Succeeded)
+    done = PaymentIntent from mark(intent, intents::IntentStatus::Succeeded)
     intents::IntentStore.save(done)
     intents::Events.succeeded(PaymentSucceeded from { done, receipt.value.charge })
     return Ok(done)
@@ -290,20 +290,20 @@ component PaymentIntents for intents::Intents {
   /// (a timeout — the money may have moved) parks it in `Processing` for the
   /// sweeper to reconcile, never failing it on uncertainty.
   afterChargeFailure(intent: intents::PaymentIntent, e: charges::ChargeError): intents::IntentError {
-    sure = Result<void, IntentError> from self.definite(e)
+    sure = Result<void, IntentError> from definite(e)
     if (sure.isErr) {
-      intents::IntentStore.save(self.mark(intent, intents::IntentStatus::Processing))
+      intents::IntentStore.save(mark(intent, intents::IntentStatus::Processing))
       return intents::IntentError::Uncertain
     }
-    reset = PaymentIntent from self.mark(intent, intents::IntentStatus::RequiresPaymentMethod)
+    reset = PaymentIntent from mark(intent, intents::IntentStatus::RequiresPaymentMethod)
     intents::IntentStore.save(reset)
     intents::Events.failed(PaymentFailed from { reset })
-    return self.declined(e)
+    return declined(e)
   }
 
   /// Drive a reconciled-as-captured intent to `Succeeded` idempotently.
   complete(intent: intents::PaymentIntent, receipt: charges::Receipt): void {
-    done = PaymentIntent from self.mark(intent, intents::IntentStatus::Succeeded)
+    done = PaymentIntent from mark(intent, intents::IntentStatus::Succeeded)
     intents::IntentStore.save(done)
     intents::Events.succeeded(PaymentSucceeded from { done, receipt.charge })
   }
@@ -311,7 +311,7 @@ component PaymentIntents for intents::Intents {
   /// Abandon an intent whose charge never completed: reset it for retry and
   /// raise `PaymentFailed`.
   abandon(intent: intents::PaymentIntent): void {
-    reset = PaymentIntent from self.mark(intent, intents::IntentStatus::RequiresPaymentMethod)
+    reset = PaymentIntent from mark(intent, intents::IntentStatus::RequiresPaymentMethod)
     intents::IntentStore.save(reset)
     intents::Events.failed(PaymentFailed from { reset })
   }

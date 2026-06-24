@@ -105,13 +105,13 @@ component Reservation for orders::Orders {
     if (sellable.isErr) {
       return Err(orders::ReserveError::NotOnSale)
     }
-    within = Result<void, ReserveError> from self.withinLimit(req.quantity)
+    within = Result<void, ReserveError> from withinLimit(req.quantity)
     if (within.isErr) {
       return Err(orders::ReserveError::ExceedsLimit)
     }
     held = Result<Hold, InventoryError> from inventory::Inventory.reserve(req.event, req.tier, req.quantity, buyer.value.id)
     if (held.isErr) {
-      return Err(self.unavailable(held.error))
+      return Err(unavailable(held.error))
     }
     quote = Result<Quote, PricingError> from pricing::Pricing.quote(req.event, req.tier, req.quantity)
     if (quote.isErr) {
@@ -170,9 +170,9 @@ component OrderService for orders::Orders {
     orders::OrderStore.save(order)
     charged = Result<Receipt, PaymentError> from payments::Payments.charge(id, locked.value.total, req.method)
     if (charged.isErr) {
-      return Err(self.afterChargeFailure(order, charged.error))
+      return Err(afterChargeFailure(order, charged.error))
     }
-    paid = Order from self.mark(order, orders::OrderStatus::Charged)
+    paid = Order from mark(order, orders::OrderStatus::Charged)
     orders::OrderStore.save(paid)
     allocated = Result<Allocation, InventoryError> from inventory::Inventory.confirm(req.hold)
     if (allocated.isErr) {
@@ -181,10 +181,10 @@ component OrderService for orders::Orders {
         return Err(RefundFailed from { id })
       }
       inventory::Inventory.release(req.hold)
-      orders::OrderStore.save(self.mark(order, orders::OrderStatus::Refunded))
+      orders::OrderStore.save(mark(order, orders::OrderStatus::Refunded))
       return Err(orders::CheckoutError::AllocationFailed)
     }
-    confirmed = Order from self.mark(paid, orders::OrderStatus::Confirmed)
+    confirmed = Order from mark(paid, orders::OrderStatus::Confirmed)
     orders::OrderStore.save(confirmed)
     done = OrderConfirmed from { confirmed, buyer.value.id, allocated.value }
     orders::Events.confirmed(done)
@@ -198,13 +198,13 @@ component OrderService for orders::Orders {
   /// real outcome against the provider rather than guessing. Treating a timeout as
   /// a decline is how a charged buyer loses their seat with no record.
   afterChargeFailure(order: orders::Order, e: payments::PaymentError): orders::CheckoutError {
-    sure = Result<void, CheckoutError> from self.definite(e)
+    sure = Result<void, CheckoutError> from definite(e)
     if (sure.isErr) {
       return orders::CheckoutError::PaymentUncertain
     }
     inventory::Inventory.release(order.hold)
-    orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
-    return self.declined(e)
+    orders::OrderStore.save(mark(order, orders::OrderStatus::Failed))
+    return declined(e)
   }
 
   /// Refund a confirmed order (support- or expiry-driven): reverse the charge,
@@ -212,11 +212,11 @@ component OrderService for orders::Orders {
   /// order is not marked refunded and the seats are not freed until the money
   /// is actually returned.
   public refund(id: shared::OrderId): Result<orders::Order, orders::CheckoutError> {
-    order = Result<Order, CheckoutError> from self.get(id)
+    order = Result<Order, CheckoutError> from get(id)
     if (order.isErr) {
       return Err(order.error)
     }
-    ready = Result<void, CheckoutError> from self.refundable(order.value)
+    ready = Result<void, CheckoutError> from refundable(order.value)
     if (ready.isErr) {
       return Err(ready.error)
     }
@@ -225,7 +225,7 @@ component OrderService for orders::Orders {
       return Err(RefundFailed from { id })
     }
     inventory::Inventory.releaseSold(order.value.hold)
-    refunded = Order from self.mark(order.value, orders::OrderStatus::Refunded)
+    refunded = Order from mark(order.value, orders::OrderStatus::Refunded)
     orders::OrderStore.save(refunded)
     event = OrderRefunded from { refunded }
     orders::Events.refunded(event)
@@ -239,7 +239,7 @@ component OrderService for orders::Orders {
   public onEventCancelled(event: catalog::EventCancelled): void {
     affected = Order[] from orders::OrderStore.confirmedFor(event.event)
     for (order in affected) {
-      self.refund(order.id)
+      refund(order.id)
     }
   }
 
@@ -252,16 +252,16 @@ component OrderService for orders::Orders {
   /// charge might be real, so a buyer is never failed after being charged. Every
   /// branch is idempotent.
   public resume(id: shared::OrderId): void {
-    order = Result<Order, CheckoutError> from self.get(id)
+    order = Result<Order, CheckoutError> from get(id)
     if (order.isOk) {
       payments::Payments.reconcileCharge(id)
       receipt = Option<Receipt> from payments::Payments.receiptFor(id)
       if (receipt.isSome) {
-        self.complete(order.value)
+        complete(order.value)
       } else {
         failed = Result<void, PaymentError> from payments::Payments.definitelyFailed(id)
         if (failed.isOk) {
-          self.abandon(order.value)
+          abandon(order.value)
         }
       }
     }
@@ -277,7 +277,7 @@ component OrderService for orders::Orders {
   complete(order: orders::Order): void {
     allocated = Result<Allocation, InventoryError> from inventory::Inventory.confirm(order.hold)
     if (allocated.isOk) {
-      confirmed = Order from self.mark(order, orders::OrderStatus::Confirmed)
+      confirmed = Order from mark(order, orders::OrderStatus::Confirmed)
       orders::OrderStore.save(confirmed)
       done = OrderConfirmed from { confirmed, confirmed.buyer, allocated.value }
       orders::Events.confirmed(done)
@@ -287,7 +287,7 @@ component OrderService for orders::Orders {
   /// Abandon an order whose charge never completed: release the hold, fail it.
   abandon(order: orders::Order): void {
     inventory::Inventory.release(order.hold)
-    orders::OrderStore.save(self.mark(order, orders::OrderStatus::Failed))
+    orders::OrderStore.save(mark(order, orders::OrderStatus::Failed))
   }
 
   /// Read an order, or `OrderNotFound`.
@@ -302,11 +302,11 @@ component OrderService for orders::Orders {
   /// Read an order on behalf of `owner`, refusing one that belongs to another
   /// user. A non-owner is told `OrderNotFound`, never that the order exists.
   public getFor(owner: shared::UserId, id: shared::OrderId): Result<orders::Order, orders::CheckoutError> {
-    order = Result<Order, CheckoutError> from self.get(id)
+    order = Result<Order, CheckoutError> from get(id)
     if (order.isErr) {
       return Err(order.error)
     }
-    owns = Result<void, CheckoutError> from self.ownedBy(order.value, owner)
+    owns = Result<void, CheckoutError> from ownedBy(order.value, owner)
     if (owns.isErr) {
       return Err(owns.error)
     }

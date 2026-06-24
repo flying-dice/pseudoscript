@@ -37,11 +37,11 @@ component Loader for project::Project {
   /// Load every `.pds` module under the workspace root into the `(fqn, source)`
   /// form the model resolves: find the visible files, then read each one.
   public load(root: string): Result<model::WorkspaceModule[], project::IoError> {
-    files = Result<string[], IoError> from self.findModules(root)
+    files = Result<string[], IoError> from findModules(root)
     if (files.isErr) {
       return Err(files.error)
     }
-    modules = Result<model::WorkspaceModule[], IoError> from self.readEach(root, files.value)
+    modules = Result<model::WorkspaceModule[], IoError> from readEach(root, files.value)
     if (modules.isErr) {
       return Err(modules.error)
     }

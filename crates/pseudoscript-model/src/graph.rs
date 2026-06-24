@@ -282,8 +282,16 @@ pub enum Step {
         /// The invoked method name.
         method: String,
     },
-    /// A `self.method(..)` call — a self-message (ADR-004).
+    /// A same-node call `method(..)` — a self-message whose callee body the
+    /// renderer follows, exactly as a direct call to a disclosed callee
+    /// (§5.1, §9.2, ADR-041).
     SelfCall {
+        /// The invoked callable, resolved on the enclosing node.
+        method: String,
+    },
+    /// A method on a local value or chain intermediate (`x.f()`) — a leaf
+    /// self-message; it names no node callable and has no body to follow.
+    LocalCall {
         /// The invoked method name.
         method: String,
     },
@@ -707,7 +715,7 @@ impl Builder<'_> {
                         for arg in args {
                             self.trace_expr(arg, owner_fqn, module, entry, out);
                         }
-                        self.emit_call(base.as_ref(), &base_target, seg, owner_fqn, out);
+                        self.emit_call(&base_target, seg, owner_fqn, out);
                     }
                 }
             }
@@ -729,6 +737,16 @@ impl Builder<'_> {
                         });
                     }
                 }
+            }
+            ExprKind::OwnCall { name, args } => {
+                // §9.2: a same-node call. Args trace left-to-right first, then
+                // the call itself; the renderer follows the callee's body.
+                for arg in args {
+                    self.trace_expr(arg, owner_fqn, module, entry, out);
+                }
+                out.push(Step::SelfCall {
+                    method: name.name.clone(),
+                });
             }
             ExprKind::Marker { payload, .. } => {
                 if let Some(payload) = payload {
@@ -756,15 +774,14 @@ impl Builder<'_> {
         entry: &ModuleEntry,
         out: &mut Vec<Step>,
     ) -> CallTarget {
-        match &base.kind {
-            ExprKind::Ref(Ref::SelfNode(_)) => CallTarget::SelfNode,
-            ExprKind::Ref(Ref::Path(path)) => {
-                CallTarget::Node(self.canonicalize(&path_str(path), module))
-            }
-            _ => {
-                self.trace_expr(base, owner_fqn, module, entry, out);
-                CallTarget::Local
-            }
+        // A local value, a chain intermediate, or a same-node call result:
+        // trace the base (a same-node call emits its own step) and treat any
+        // `.method(..)` over it as local.
+        if let ExprKind::Ref(Ref::Path(path)) = &base.kind {
+            CallTarget::Node(self.canonicalize(&path_str(path), module))
+        } else {
+            self.trace_expr(base, owner_fqn, module, entry, out);
+            CallTarget::Local
         }
     }
 
@@ -772,7 +789,6 @@ impl Builder<'_> {
     /// `.method(args)` segment over a resolved base.
     fn emit_call(
         &mut self,
-        base: &Expr,
         base_target: &CallTarget,
         seg: &PostfixSeg,
         owner_fqn: &str,
@@ -780,9 +796,6 @@ impl Builder<'_> {
     ) {
         let method = seg.name.name.clone();
         match base_target {
-            CallTarget::SelfNode if is_self(base) => {
-                out.push(Step::SelfCall { method });
-            }
             CallTarget::Node(target_fqn) => {
                 out.push(Step::Call {
                     target_fqn: target_fqn.clone(),
@@ -801,8 +814,8 @@ impl Builder<'_> {
                 }
             }
             // A method on a local value / intermediate result (`x.f()`,
-            // `a.b().c()`): a self-message on the owner — local to the body.
-            _ => out.push(Step::SelfCall { method }),
+            // `a.b().c()`): a leaf self-message on the owner — local to the body.
+            CallTarget::Local => out.push(Step::LocalCall { method }),
         }
     }
 
@@ -856,8 +869,6 @@ impl Builder<'_> {
 
 /// How a postfix chain's base resolves for call-edge purposes.
 enum CallTarget {
-    /// `self` — calls are self-messages on the owner.
-    SelfNode,
     /// A named node, resolved to this FQN.
     Node(String),
     /// A local value or an intermediate result of an earlier call.
@@ -877,7 +888,7 @@ fn resolve_path(path: &Path, module: &str) -> String {
 /// call whose leading target is a node (`Web.lookup()` → `Web`), or `self`. A
 /// bare binding reference (`a`) does not name a node, so it yields `None`: only
 /// a call's *receiver* is a node, a lone identifier is a local binding.
-fn expr_node_fqn(expr: &Expr, owner_fqn: &str, _module: &str) -> Option<String> {
+fn expr_node_fqn(expr: &Expr, _owner_fqn: &str, _module: &str) -> Option<String> {
     let ExprKind::Postfix { base, segments } = &expr.kind else {
         return None;
     };
@@ -888,7 +899,6 @@ fn expr_node_fqn(expr: &Expr, owner_fqn: &str, _module: &str) -> Option<String> 
     }
     match &base.kind {
         ExprKind::Ref(Ref::Path(path)) => Some(path_str(path)),
-        ExprKind::Ref(Ref::SelfNode(_)) => Some(owner_fqn.to_owned()),
         _ => None,
     }
 }
@@ -1019,11 +1029,6 @@ fn path_str(path: &Path) -> String {
         .join("::")
 }
 
-/// Whether an expression is exactly `self`.
-fn is_self(expr: &Expr) -> bool {
-    matches!(&expr.kind, ExprKind::Ref(Ref::SelfNode(_)))
-}
-
 /// The `Ok`/`Err`/`Some`/`None` marker of a returned expression, or empty if it
 /// is none of them.
 fn return_marker(expr: Option<&Expr>) -> String {
@@ -1049,7 +1054,7 @@ fn expr_label(expr: &Expr) -> String {
             }
             label
         }
-        ExprKind::Ref(Ref::SelfNode(_)) => "self".to_owned(),
+        ExprKind::OwnCall { name, .. } => format!("{}()", name.name),
         ExprKind::Ref(Ref::Path(path)) => path_str(path),
         ExprKind::Unary { op, expr, .. } => format!("{}{}", op.spelling(), expr_label(expr)),
         // §7.5: a binary condition renders through the same labeller, so an

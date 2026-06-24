@@ -120,7 +120,6 @@ fn is_keyword(kind: TokenKind) -> bool {
             | TokenKind::KwFor
             | TokenKind::KwFrom
             | TokenKind::KwPublic
-            | TokenKind::KwSelf
             | TokenKind::KwReturn
             | TokenKind::KwOk
             | TokenKind::KwErr
@@ -311,8 +310,15 @@ fn expr_tokens(expr: &ast::Expr, out: &mut Vec<SemToken>) {
             }
         }
         ast::ExprKind::Ref(ast::Ref::Path(path)) => ref_path(path, out),
-        // `self` is a keyword and literals are coloured by the token pass.
-        ast::ExprKind::Ref(ast::Ref::SelfNode(_)) | ast::ExprKind::Literal(_) => {}
+        // A bare same-node call: the callee name colours as a method (§5.1).
+        ast::ExprKind::OwnCall { name, args } => {
+            push(out, name.span, SemKind::Method, false);
+            for arg in args {
+                expr_tokens(arg, out);
+            }
+        }
+        // Literals are coloured by the token pass.
+        ast::ExprKind::Literal(_) => {}
         ast::ExprKind::Unary { expr, .. } => expr_tokens(expr, out),
         ast::ExprKind::Binary { left, right, .. } => {
             expr_tokens(left, out);
@@ -444,12 +450,12 @@ mod tests {
 
     #[test]
     fn callable_param_type_and_calls() {
-        let src = "//! m\n\nsystem S {\n  run(name: string): uuid {\n    return self.alloc(name)\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(name: string): uuid {\n    return alloc(name)\n  }\n  alloc(n: string): uuid;\n}\n";
         let tokens = semantic_tokens(src);
         assert_eq!(at(&tokens, src, "run").kind, SemKind::Method);
         assert_eq!(at(&tokens, src, "name").kind, SemKind::Parameter);
         assert_eq!(at(&tokens, src, "string").kind, SemKind::Type);
-        assert_eq!(at(&tokens, src, "self").kind, SemKind::Keyword);
+        // A bare same-node call (ADR-041) colours as a method invocation.
         assert_eq!(at(&tokens, src, "alloc").kind, SemKind::Method);
     }
 

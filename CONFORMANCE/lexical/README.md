@@ -90,5 +90,5 @@ marker); a `?` in type position is a parse error, not a lexical one.
 | `2-1-comments-and-docs` | §2.1 — `//`/`/* */` discarded; `//!` → `INNER_DOC`; `///` → `DOC`. |
 | `2-2-paths-colon-vs-dot` | §2.2 — `::` (`COLONCOLON`) walks a path; `.` (`DOT`) accesses/invokes. |
 | `2-3-keywords-vs-idents` | §2.3 — keywords vs. greedily-matched identifiers that merely contain a keyword. |
-| `2-3-result-self-keywords` | §2.3 — `self`/`Ok`/`Err`/`true`/`false` as keywords; `Result` and primitives as `IDENT`. |
+| `2-3-result-keywords` | §2.3 — `Ok`/`Err`/`true`/`false` as keywords; `Result`, primitives, and `self` (freed by ADR-041) as `IDENT`. |
 | `2-4-hash-disambiguation` | §2.4 — `#name` tag in a doc, `#[` macro open, and a literal `#` inside a string. |

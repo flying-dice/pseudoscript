@@ -202,21 +202,21 @@ component Projector for emit::Emit {
   /// `of` node's kind first.
   public project(graph: model::Graph, view: emit::View): Result<emit::Scene, emit::EmitError> {
     if (view.isContext) {
-      return Ok(self.projectContext(graph))
+      return Ok(projectContext(graph))
     }
     if (view.isContainer) {
-      return self.projectBoundary(graph, view.of, "system", "container")
+      return projectBoundary(graph, view.of, "system", "container")
     }
     if (view.isComponent) {
-      return self.projectBoundary(graph, view.of, "container", "component")
+      return projectBoundary(graph, view.of, "container", "component")
     }
     if (view.isData) {
-      return self.projectData(graph, view.of)
+      return projectData(graph, view.of)
     }
     if (view.isFeature) {
-      return self.projectFeature(graph, view.of)
+      return projectFeature(graph, view.of)
     }
-    return self.projectSequence(graph, view.entry)
+    return projectSequence(graph, view.entry)
   }
 
   /// Project the diagram that best explains a single symbol, picking the view
@@ -247,7 +247,7 @@ component Projector for emit::Emit {
   /// The context view: every person and system, with inter-system edges and
   /// triggers. A cross-container call bubbles to a single system → system edge.
   projectContext(graph: model::Graph): emit::Scene {
-    nodes = PlacedNode[] from self.collectKinds(graph, "person", "system")
+    nodes = PlacedNode[] from collectKinds(graph, "person", "system")
     edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
     return emit::Layout.solveC4(C4Scene from { nodes, edges })
   }
@@ -269,15 +269,15 @@ component Projector for emit::Emit {
   /// Edges among the resulting node set are lifted to the contained child.
   /// Errors when `of` is missing or not of `boundary` kind.
   projectBoundary(graph: model::Graph, of: string, boundary: string, child: string): Result<emit::Scene, emit::EmitError> {
-    anchor = Result<string, EmitError> from self.requireKind(graph, of, boundary)
+    anchor = Result<string, EmitError> from requireKind(graph, of, boundary)
     if (anchor.isErr) {
       return Err(anchor.error)
     }
-    outer = Option<string> from self.outerFrameOf(graph, of)
-    inside = PlacedNode[] from self.childrenOf(graph, of, child, outer)
-    framed = PlacedNode[] from self.withOuterFrame(graph, inside, outer)
-    actors = PlacedNode[] from self.externalActors(graph, of, child, inside)
-    nested = PlacedNode[] from self.nestSiblings(graph, actors, outer)
+    outer = Option<string> from outerFrameOf(graph, of)
+    inside = PlacedNode[] from childrenOf(graph, of, child, outer)
+    framed = PlacedNode[] from withOuterFrame(graph, inside, outer)
+    actors = PlacedNode[] from externalActors(graph, of, child, inside)
+    nested = PlacedNode[] from nestSiblings(graph, actors, outer)
     nodes = PlacedNode[] from { framed, nested }
     edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
     return Ok(emit::Layout.solveC4(C4Scene from { of, nodes, edges }))
@@ -289,11 +289,11 @@ component Projector for emit::Emit {
   /// time, not here. Errors when the entry is not a callable, or has no
   /// disclosed body to trace.
   projectSequence(graph: model::Graph, entry: string): Result<emit::Scene, emit::EmitError> {
-    node = Result<string, EmitError> from self.requireKind(graph, entry, "callable")
+    node = Result<string, EmitError> from requireKind(graph, entry, "callable")
     if (node.isErr) {
       return Err(node.error)
     }
-    disclosed = Option<model::Step[]> from self.bodyOf(graph, entry)
+    disclosed = Option<model::Step[]> from bodyOf(graph, entry)
     if (disclosed.isNone) {
       return Ok(emit::Trace.blackBox(graph, entry))
     }
@@ -303,11 +303,11 @@ component Projector for emit::Emit {
   /// Looks a node up and asserts its C4 kind, mapping a miss to `UnknownNode`
   /// and a mismatch to `WrongKind`. Reads the kind off the graph's nodes.
   requireKind(graph: model::Graph, fqn: string, expected: string): Result<string, emit::EmitError> {
-    found = Result<string, EmitError> from self.kindOf(graph, fqn)
+    found = Result<string, EmitError> from kindOf(graph, fqn)
     if (found.isErr) {
       return Err(UnknownNode from { fqn })
     }
-    if (self.kindMatches(found.value, expected)) {
+    if (kindMatches(found.value, expected)) {
       return Ok(found.value)
     }
     return Err(WrongKind from { fqn, expected, found.value })
@@ -370,8 +370,8 @@ component Projector for emit::Emit {
 component Edges for emit::Emit {
   /// Collect the in-view routed edges for the nodes already placed in a scene.
   collect(graph: model::Graph, inView: emit::PlacedNode[]): emit::RoutedEdge[] {
-    routed = RoutedEdge[] from self.route(graph, inView)
-    return self.sortDedup(routed)
+    routed = RoutedEdge[] from route(graph, inView)
+    return sortDedup(routed)
   }
 
   /// Walk the graph's edges, keeping each whose endpoints both resolve in view.
@@ -395,7 +395,8 @@ component Edges for emit::Emit {
 /// participant on first appearance (LANG.md §9.2, §7). A real trigger's
 /// initiator leads as the first lifeline with a synthesised inbound call;
 /// absent a trigger the owner leads. A `call` is a message to the target; a
-/// disclosed callee expands inline; a `self.` call is a self-message; a return
+/// disclosed callee expands inline; a same-node call is a self-message that
+/// expands its disclosed body inline too; a return
 /// marks `Ok`/`Err`; `if`/`else` nests an `alt` frame, `for`/`while` a `loop`
 /// frame.
 component Trace for emit::Emit {
@@ -406,16 +407,16 @@ component Trace for emit::Emit {
   /// land on the initiator. The call stack starts at the entry, guarding
   /// against re-expanding a callable already in flight.
   walk(graph: model::Graph, entry: string, body: model::Step[]): emit::Scene {
-    owner = string from self.ownerOf(graph, entry)
-    actor = Option<string> from self.triggerActorOf(graph, entry)
-    stack = string[] from self.entryStack(entry)
+    owner = string from ownerOf(graph, entry)
+    actor = Option<string> from triggerActorOf(graph, entry)
+    stack = string[] from entryStack(entry)
     if (actor.isNone) {
-      return self.untriggered(graph, entry, body, owner, stack)
+      return untriggered(graph, entry, body, owner, stack)
     }
-    inbound = SeqItem from self.inboundCall(graph, actor.value, owner, entry)
-    rest = SeqItem[] from self.traceItems(graph, body, owner, actor.value, stack)
-    items = SeqItem[] from self.prependItem(inbound, rest)
-    participants = Lifeline[] from self.participantsOf(graph, actor.value, items)
+    inbound = SeqItem from inboundCall(graph, actor.value, owner, entry)
+    rest = SeqItem[] from traceItems(graph, body, owner, actor.value, stack)
+    items = SeqItem[] from prependItem(inbound, rest)
+    participants = Lifeline[] from participantsOf(graph, actor.value, items)
     return SequenceScene from { entry, participants, items }
   }
 
@@ -425,8 +426,8 @@ component Trace for emit::Emit {
   /// make sense once a real incoming trigger exists. Inner expanded callees
   /// still return to their callers.
   untriggered(graph: model::Graph, entry: string, body: model::Step[], owner: string, stack: string[]): emit::Scene {
-    items = SeqItem[] from self.traceItems(graph, body, owner, self.noCaller(), stack)
-    participants = Lifeline[] from self.participantsOf(graph, owner, items)
+    items = SeqItem[] from traceItems(graph, body, owner, noCaller(), stack)
+    participants = Lifeline[] from participantsOf(graph, owner, items)
     return SequenceScene from { entry, participants, items }
   }
 
@@ -444,13 +445,13 @@ component Trace for emit::Emit {
   /// mutual recursion), closes with a synthesised return of its declared type,
   /// so every call has its reply.
   traceCall(graph: model::Graph, target: string, method: string, active: string, stack: string[]): emit::SeqItem[] {
-    msg = SeqItem from self.callMessage(graph, active, target, method)
-    disclosed = Option<model::Step[]> from self.expandableBody(graph, target, method, stack)
+    msg = SeqItem from callMessage(graph, active, target, method)
+    disclosed = Option<model::Step[]> from expandableBody(graph, target, method, stack)
     if (disclosed.isNone) {
-      reply = SeqItem from self.syntheticReturn(graph, target, method, active)
+      reply = SeqItem from syntheticReturn(graph, target, method, active)
       return SeqItem[] from { msg, reply }
     }
-    inner = SeqItem[] from self.traceItems(graph, disclosed.value, target, active, self.pushCall(stack, target, method))
+    inner = SeqItem[] from traceItems(graph, disclosed.value, target, active, pushCall(stack, target, method))
     return SeqItem[] from { msg, inner }
   }
 
@@ -475,12 +476,12 @@ component Trace for emit::Emit {
   /// exactly one request and its reply — unlike a disclosed trace, which
   /// suppresses the triggerless caller (§9.2).
   blackBox(graph: model::Graph, entry: string): emit::Scene {
-    owner = string from self.ownerOf(graph, entry)
-    actor = string from self.blackBoxActor(graph, entry)
-    inbound = SeqItem from self.inboundCall(graph, actor, owner, entry)
-    reply = SeqItem from self.returnItem(graph, owner, actor, entry)
+    owner = string from ownerOf(graph, entry)
+    actor = string from blackBoxActor(graph, entry)
+    inbound = SeqItem from inboundCall(graph, actor, owner, entry)
+    reply = SeqItem from returnItem(graph, owner, actor, entry)
     items = SeqItem[] from { inbound, reply }
-    participants = Lifeline[] from self.participantsOf(graph, actor, items)
+    participants = Lifeline[] from participantsOf(graph, actor, items)
     return SequenceScene from { entry, participants, items }
   }
 
@@ -510,7 +511,8 @@ component Trace for emit::Emit {
   prependItem(head: emit::SeqItem, rest: emit::SeqItem[]): emit::SeqItem[];
 
   /// Walk a step list for `active` into sequence items: each cross-node call
-  /// through `traceCall`, each `self.` call as a self-message, each `return` as
+  /// through `traceCall`, each same-node call as a self-message whose disclosed
+  /// body expands inline, each local-value method as a leaf self-message, each `return` as
   /// a message back to `caller` (suppressed when `caller` is the empty marker),
   /// and `Alt`/`Loop` frames recursing into their bodies with the same caller
   /// and stack.
@@ -539,7 +541,7 @@ component Layout for emit::Emit {
 
   /// Place a C4 scene by the `dot` engine with default tweaks and no pins.
   layoutC4Default(scene: emit::Scene): emit::C4Layout {
-    return self.layoutC4(scene, self.defaultTweaks(), self.noPins())
+    return layoutC4(scene, defaultTweaks(), noPins())
   }
 
   /// Place a C4 scene under `tweaks` into a `C4Layout`, with `pins` fixing
@@ -549,8 +551,8 @@ component Layout for emit::Emit {
   /// framed boundary) falls back to the scene's own simple coordinates; the
   /// engine itself never panics.
   layoutC4(scene: emit::Scene, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): emit::C4Layout {
-    g = dot::Graph from self.toDotGraph(scene, tweaks)
-    return self.readBack(scene, self.place(g, tweaks, pins))
+    g = dot::Graph from toDotGraph(scene, tweaks)
+    return readBack(scene, place(g, tweaks, pins))
   }
 
   /// Run the placement the tweaks select: the experimental grid placer
@@ -558,9 +560,9 @@ component Layout for emit::Emit {
   /// layered pipeline, folded through the pass list the tweaks select.
   place(g: dot::Graph, tweaks: emit::C4Tweaks, pins: emit::GridPin[]): dot::Layout {
     if (tweaks.experimentalGrid) {
-      return dot::Dot.gridLayout(g, self.gridParams(tweaks), self.dotPins(pins))
+      return dot::Dot.gridLayout(g, gridParams(tweaks), dotPins(pins))
     }
-    return dot::Dot.runPipeline(g, self.layoutPasses(tweaks))
+    return dot::Dot.runPipeline(g, layoutPasses(tweaks))
   }
 
   /// The pipeline passes the tweaks select: `ShortenLongEdges` when
@@ -590,9 +592,9 @@ component Layout for emit::Emit {
   /// x-positions in first-appearance order, message rows stacked by evaluation
   /// order, frames sized to their body.
   solveSequence(scene: emit::Scene): emit::Scene {
-    metrics = layout::Metrics from self.sequenceMetrics()
-    placed = layout::SequenceLayout from layout::Layout.layout(self.toSequenceDiagram(scene), metrics)
-    return self.fromSequenceLayout(scene, placed)
+    metrics = layout::Metrics from sequenceMetrics()
+    placed = layout::SequenceLayout from layout::Layout.layout(toSequenceDiagram(scene), metrics)
+    return fromSequenceLayout(scene, placed)
   }
 
   /// The sequence engine's default metrics — the one source of truth for the
@@ -621,15 +623,15 @@ component SvgRenderer for emit::Emit {
   /// scene variant.
   public render(scene: emit::Scene): string {
     if (scene.isC4Scene) {
-      return self.renderC4(scene)
+      return renderC4(scene)
     }
     if (scene.isSequenceScene) {
-      return self.renderSequence(scene)
+      return renderSequence(scene)
     }
     if (scene.isDataScene) {
-      return self.renderData(scene)
+      return renderData(scene)
     }
-    return self.renderFeature(scene)
+    return renderFeature(scene)
   }
 
   /// Render any scene to SVG under a chosen colour theme. `light` and `dark`
@@ -647,10 +649,10 @@ component SvgRenderer for emit::Emit {
   /// kind eyebrow, bold title, dimmed wrapped description) and routed edges;
   /// frames the boundary children when the view has an `of`.
   renderC4(scene: emit::Scene): string {
-    if (self.layoutFailed(scene)) {
-      return self.fallbackSvg(scene)
+    if (layoutFailed(scene)) {
+      return fallbackSvg(scene)
     }
-    return self.emitSvg(scene)
+    return emitSvg(scene)
   }
 
   /// Draw the sequence: lifeline-head cards with dropping dashed lifelines,
@@ -795,12 +797,12 @@ feature ControlFlowBecomesFrames for emit::Trace {
   and "a for/while becomes a loop frame over its body"
 }
 
-/// Body calls become left-to-right messages; self-calls loop on the owner.
+/// Body calls become left-to-right messages; same-node calls loop on the owner.
 feature CallsBecomeMessages for emit::Trace {
-  given "a callable body with calls to other nodes and self-calls"
+  given "a callable body with calls to other nodes and same-node calls"
   when "the body is traced"
   then "each call to another node is a left-to-right message to that lifeline"
-  and "each self. call is a self-message on the owner's own lifeline"
+  and "each same-node call is a self-message that expands its disclosed body on the owner's own lifeline"
   and "every target is registered as a participant on first appearance"
 }
 

@@ -48,7 +48,7 @@ public container Web for Shop {
         return Err(line.error)
       }
     }
-    r = Result<Receipt, OrderError> from self.finalize(cart)
+    r = Result<Receipt, OrderError> from finalize(cart)
     return Ok(r.value)
   }
 

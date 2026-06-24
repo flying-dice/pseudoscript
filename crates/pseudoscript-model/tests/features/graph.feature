@@ -69,7 +69,7 @@ Feature: Resolved relationship graph (LANG.md §9)
       public system Shop;
       public container Web for shop::Shop {
         public checkout(): void {
-          a = number from self.price()
+          a = number from price()
           cart = shop::Cart from { Web.lookup() }
         }
         price(): number { return 0 }
@@ -78,7 +78,7 @@ Feature: Resolved relationship graph (LANG.md §9)
       """
     Then the trace of "shop::Web::checkout" is:
       """
-      self.price
+      price()
       call shop::Web.lookup
       """
     And there is a "provenance" edge from "shop::Web" to "shop::Cart"
@@ -92,7 +92,7 @@ Feature: Resolved relationship graph (LANG.md §9)
       public container Web for shop::Shop {
         public each(items: shop::Item[]): void {
           for (it in items) {
-            self.handle()
+            handle()
           }
         }
         handle(): void { }
@@ -101,7 +101,7 @@ Feature: Resolved relationship graph (LANG.md §9)
     Then the trace of "shop::Web::each" is:
       """
       loop (items)
-        self.handle
+        handle()
       """
 
   Scenario: a binary condition renders in the alt frame label (§7.5)
@@ -113,7 +113,7 @@ Feature: Resolved relationship graph (LANG.md §9)
       public container Web for shop::Shop {
         public guard(x: number): void {
           if (x > shop::LIMIT && x >= 0) {
-            self.handle()
+            handle()
           }
         }
         handle(): void { }
@@ -122,5 +122,5 @@ Feature: Resolved relationship graph (LANG.md §9)
     Then the trace of "shop::Web::guard" is:
       """
       alt (x > shop::LIMIT && x >= 0)
-        self.handle
+        handle()
       """

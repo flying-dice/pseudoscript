@@ -1027,7 +1027,6 @@ impl Parser {
                     | TokenKind::KwErr
                     | TokenKind::KwSome
                     | TokenKind::KwNone
-                    | TokenKind::KwSelf
                     | TokenKind::Ident
                     | TokenKind::String
                     | TokenKind::Number
@@ -1258,13 +1257,6 @@ impl Parser {
                     kind: ExprKind::Literal(lit),
                 }
             }
-            Some(TokenKind::KwSelf) => {
-                let token = self.bump().expect("peeked self");
-                Expr {
-                    kind: ExprKind::Ref(Ref::SelfNode(token.span)),
-                    span: token.span,
-                }
-            }
             Some(TokenKind::LParen) => {
                 let open = self.bump().expect("peeked `(`");
                 let inner = self.parse_expr();
@@ -1282,9 +1274,22 @@ impl Parser {
                 // plain value reference; a following `<` is the less-than
                 // operator (§7.5), left for the precedence cascade.
                 let path = self.parse_path();
-                Expr {
-                    span: path.span,
-                    kind: ExprKind::Ref(Ref::Path(path)),
+                // A single-segment path immediately followed by `(` is a bare
+                // same-node call `Name(args)` (§5.1, ADR-041); a longer path or
+                // no `(` is a value reference, any `.method(…)` left to postfix.
+                if path.segments.len() == 1 && self.at(TokenKind::LParen) {
+                    let start = path.span.start;
+                    let name = path.segments.into_iter().next().expect("len == 1");
+                    let (args, end) = self.parse_call_args();
+                    Expr {
+                        span: Span::new(start, end),
+                        kind: ExprKind::OwnCall { name, args },
+                    }
+                } else {
+                    Expr {
+                        span: path.span,
+                        kind: ExprKind::Ref(Ref::Path(path)),
+                    }
                 }
             }
             _ => {
@@ -1405,20 +1410,11 @@ impl Parser {
         while self.at(TokenKind::Dot) {
             let dot = self.bump().expect("peeked `.`");
             let name = self.expect_ident("member name");
-            let mut end = name.span.end;
-            let call_args = if self.at(TokenKind::LParen) {
-                self.bump();
-                let mut args = Vec::new();
-                while !self.is_eof() && !self.at(TokenKind::RParen) {
-                    args.push(self.parse_expr());
-                    if self.eat(TokenKind::Comma).is_none() {
-                        break;
-                    }
-                }
-                end = self.eat(TokenKind::RParen).map_or(end, |t| t.span.end);
-                Some(args)
+            let (call_args, end) = if self.at(TokenKind::LParen) {
+                let (args, end) = self.parse_call_args();
+                (Some(args), end)
             } else {
-                None
+                (None, name.span.end)
             };
             segments.push(PostfixSeg {
                 span: Span::new(dot.span.start, end),
@@ -1434,6 +1430,24 @@ impl Parser {
             },
             span: Span::new(start, end),
         }
+    }
+
+    /// Parses a call argument list `"(" [ Expr { "," Expr } ] ")"`, the current
+    /// token being the open paren. Returns the arguments and the end position
+    /// (the open paren's end when the list is unterminated).
+    fn parse_call_args(&mut self) -> (Vec<Expr>, u32) {
+        let open = self.bump().expect("peeked `(`");
+        let mut args = Vec::new();
+        while !self.is_eof() && !self.at(TokenKind::RParen) {
+            args.push(self.parse_expr());
+            if self.eat(TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        let end = self
+            .eat(TokenKind::RParen)
+            .map_or(open.span.end, |t| t.span.end);
+        (args, end)
     }
 
     fn parse_literal(&mut self) -> Option<Literal> {
@@ -1527,7 +1541,6 @@ impl Parser {
                 | TokenKind::KwFor
                 | TokenKind::KwFrom
                 | TokenKind::KwPublic
-                | TokenKind::KwSelf
                 | TokenKind::KwReturn
                 | TokenKind::KwOk
                 | TokenKind::KwErr

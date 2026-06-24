@@ -34,16 +34,16 @@ component Tokenizer for vault::Vault {
   /// Tokenise a card: validate it, exchange it with the network for an
   /// instrument token, store only the token plus a safe display form.
   public tokenize(merchant: shared::MerchantId, card: vault::CardEntry): Result<vault::PaymentMethod, vault::TokenizeError> {
-    valid = Result<void, TokenizeError> from self.validate(card)
+    valid = Result<void, TokenizeError> from validate(card)
     if (valid.isErr) {
       return Err(valid.error)
     }
-    instrument = Result<context::NetworkInstrument, TokenizeError> from self.exchange(card)
+    instrument = Result<context::NetworkInstrument, TokenizeError> from exchange(card)
     if (instrument.isErr) {
       return Err(instrument.error)
     }
     id = shared::PaymentMethodId from vault::TokenStore.nextId()
-    method = PaymentMethod from self.represent(id, card)
+    method = PaymentMethod from represent(id, card)
     vault::TokenStore.save(merchant, method, instrument.value)
     return Ok(method)
   }

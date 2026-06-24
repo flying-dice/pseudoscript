@@ -103,7 +103,7 @@ fn type_position_offers_types_only() {
 #[test]
 fn generic_argument_position_offers_types_only() {
     let l = labels(
-        "//! m\npublic data Money { amount: number }\npublic system A {\n  find(): Result<~ > { return self.find() }\n}\n",
+        "//! m\npublic data Money { amount: number }\npublic system A {\n  find(): Result<~ > { return find() }\n}\n",
     );
     assert!(has(&l, "Money") || has(&l, "number"), "{l:?}");
     assert_none(&l, &["public", "container", "feature", "Ok", "Err"]);
@@ -170,15 +170,6 @@ fn binding_type_annotation_offers_types_only() {
 }
 
 // --- member `.` : only the receiver's members ----------------------------
-
-#[test]
-fn self_member_offers_own_members_not_other_nodes() {
-    let l = labels(
-        "//! m\npublic system A {\n  alpha(): void;\n}\npublic container C for m::A {\n  beta(): void {\n    self.~\n  }\n}\n",
-    );
-    assert!(has(&l, "beta"), "own member missing: {l:?}");
-    assert_none(&l, &["alpha"]); // A's member must not leak onto C
-}
 
 #[test]
 fn cross_module_member_offers_public_only() {

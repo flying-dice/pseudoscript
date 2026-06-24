@@ -60,3 +60,28 @@ Feature: SVG rendering smoke
     And the rendered SVG contains "Place"
     And the rendered SVG contains "Inventory"
     And the rendered SVG contains "reserve"
+
+  Scenario: a same-node call's downstream cross-node call reaches the sequence (issue #71, ADR-041)
+    Given the model:
+      """
+      //! chat
+      public data Event { id: number }
+      public system Chat;
+      public container Topic for Chat {
+        produce(event: chat::Event): void;
+      }
+      public container Guest for Chat {
+        #[manual]
+        public postMessage(event: chat::Event): void {
+          sendEvent(event)
+        }
+        sendEvent(event: chat::Event): void {
+          Topic.produce(event)
+        }
+      }
+      """
+    When I project the "sequence" view of "chat::Guest::postMessage"
+    Then the rendered SVG is well-formed
+    And the rendered SVG contains "sendEvent"
+    And the rendered SVG contains "Topic"
+    And the rendered SVG contains "produce"

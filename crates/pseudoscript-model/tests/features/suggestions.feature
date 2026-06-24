@@ -33,11 +33,11 @@ Feature: "Did you mean" suggestions (Levenshtein)
       //! example
       public system S;
       public container C for S {
-        run(): void { self.helpr() }
+        run(): void { helpr() }
         helper(): void { }
       }
       """
-    Then the diagnostics include "`self.helpr` does not name a callable of `C`; did you mean `helper`?"
+    Then the diagnostics include "`helpr` does not name a callable of `C`; did you mean `helper`?"
 
   Scenario: A distant typo gets no suggestion
     Given the model file:

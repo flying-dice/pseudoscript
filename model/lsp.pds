@@ -60,14 +60,14 @@ component Server for lsp::Lsp {
   /// causes it. Driven by the editor (`context::Editor.openDocument`).
   public onChange(doc: model::WorkspaceModule): void {
     lsp::Store.change(doc)
-    self.publishAll()
+    publishAll()
   }
 
   /// `didClose`: drop the unsaved overlay and re-sync to disk so other files stop
   /// seeing the closed buffer's edits, then republish.
   onClose(uri: string): void {
     lsp::Store.close(uri)
-    self.publishAll()
+    publishAll()
   }
 
   /// Recompute diagnostics for the whole workspace and push each module's set to
@@ -76,7 +76,7 @@ component Server for lsp::Lsp {
     payloads = model::ModuleDiagnostics[] from lsp::Store.diagnostics()
     for (p in payloads) {
       uri = string from lsp::Store.uriOf(p.fqn)
-      self.publish(uri, p.diagnostics)
+      publish(uri, p.diagnostics)
     }
   }
 
@@ -103,7 +103,7 @@ component Server for lsp::Lsp {
       return None
     }
     target = lsp::DefTarget from found.value
-    return Some(self.locate(target))
+    return Some(locate(target))
   }
 
   /// Whole-document formatting edit; none when the buffer is already canonical
@@ -119,7 +119,7 @@ component Server for lsp::Lsp {
   locate(target: lsp::DefTarget): lsp::Occurrence {
     uri = string from lsp::Store.uriOf(target.fqn)
     targetText = string from lsp::Store.source(uri)
-    range = lsp_core::Range from self.rangeIn(targetText, target.span)
+    range = lsp_core::Range from rangeIn(targetText, target.span)
     return Occurrence from { uri, range }
   }
 
@@ -140,9 +140,9 @@ component Store for lsp::Lsp {
   /// under it; a path with no `pds.toml` on the way to the filesystem root leaves
   /// the store empty (standalone files are then added as they open).
   discover(rootUri: string): void {
-    found = bool from self.findRoot(rootUri)
+    found = bool from findRoot(rootUri)
     if (found) {
-      self.loadRoot()
+      loadRoot()
     }
   }
 
@@ -174,8 +174,8 @@ component Store for lsp::Lsp {
   /// dependency externals (§8.3): ensure those are loaded, then build the
   /// resolved workspace from the cached local parses with the externals bound.
   workspace(): model::Workspace {
-    external = model::WorkspaceModule[] from self.ensureExternals()
-    return self.buildWithExternals(self.modules(), external)
+    external = model::WorkspaceModule[] from ensureExternals()
+    return buildWithExternals(modules(), external)
   }
 
   /// Ensure the workspace's direct-dependency modules (§8.3) are loaded as
@@ -201,8 +201,8 @@ component Store for lsp::Lsp {
   /// workspace, not a fresh externals-blind re-check, keeps a cross-dependency
   /// reference resolving rather than falsely diagnosing it.
   diagnostics(): model::ModuleDiagnostics[] {
-    ws = model::Workspace from self.workspace()
-    return self.collectDiagnostics(ws)
+    ws = model::Workspace from workspace()
+    return collectDiagnostics(ws)
   }
 
   /// Assemble each module's `ModuleDiagnostics` from its cached parse errors and

@@ -30,7 +30,7 @@ const GRAMMAR_PRIMER = `// PseudoScript (.pds) — a C4 architecture-modeling la
 //   statements      x = Type from expr      x = Type from { partA, partB }
 //                   if (expr) { … } else { … }      for (x in xs) { … }      while (expr) { … }
 //                   return expr      Ok(x)  Err(e)  Some(x)  None
-//   calls           module::Node.method(args)   self.method(args)   — references are flat FQNs
+//   calls           module::Node.method(args)   Name(args)   — references are flat FQNs; a bare call is same-node
 //   triggers        #[http("POST /path")]  #[onevent(Event)]  #[schedule = "cron"]  #[manual]
 //   behaviour       feature Name for module::Node { given "…" when "…" then "…" and "…" but "…" }
 // Example:

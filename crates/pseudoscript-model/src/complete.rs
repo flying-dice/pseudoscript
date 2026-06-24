@@ -82,7 +82,7 @@ pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec
         // A `container`'s parent must be a `system`, a `component`'s a `container`
         // (§4); only those kinds are offered. A feature target is any node.
         Some((i, TokenKind::KwFor)) => node_items(ws, from_fqn, parent_kind(&tokens, i)),
-        _ => general_items(ws, from_fqn),
+        _ => general_items(ws, from_fqn, offset),
     }
 }
 
@@ -179,7 +179,7 @@ fn member_items(
     tokens: &[Token],
     dot: usize,
 ) -> Vec<CompletionItem> {
-    // The token-based path covers `self.`, `Module::Node.`, and a bare binding.
+    // The token-based path covers `Module::Node.` and a bare binding.
     // A multi-step chain (`Repo.fetch(id).value.`) has no single base token, so
     // fall back to typing the receiver expression at the cursor via the AST.
     let owner = owner_before(ws, from_fqn, tokens, dot)
@@ -208,8 +208,8 @@ fn member_items(
 }
 
 /// The `(module, node-name)` the base token before `tokens[dot]` denotes:
-/// `self`'s enclosing node, a `::`-qualified node in another module
-/// (`identity::sessions.`), or an in-scope node name in this module.
+/// a `::`-qualified node in another module (`identity::sessions.`), or an
+/// in-scope node name in this module.
 fn owner_before(
     ws: &Workspace,
     from_fqn: &str,
@@ -218,10 +218,6 @@ fn owner_before(
 ) -> Option<(String, String)> {
     let base = tokens.get(dot.checked_sub(1)?)?;
     match base.kind {
-        TokenKind::KwSelf => {
-            let node = enclosing_node(&ws.module(from_fqn)?.ast, base.span.start)?;
-            Some((from_fqn.to_owned(), node))
-        }
         // `a::b::Node.` — the base is qualified, so it names a symbol in the
         // module its qualifiers spell, not this one. Offered only when public
         // (or in this module), mirroring `::` path resolution (§8.2).
@@ -323,10 +319,11 @@ fn type_items(ws: &Workspace) -> Vec<CompletionItem> {
     primitives.chain(declared).collect()
 }
 
-/// Keywords, this module's own symbols, and the other modules in the workspace
-/// (so a cross-module reference can be started — pick the module, then `::`
-/// drills into its public symbols).
-fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
+/// Keywords, this module's own symbols, the enclosing node's callables (bare
+/// same-node calls, §5.1, ADR-041), and the other modules in the workspace (so a
+/// cross-module reference can be started — pick the module, then `::` drills into
+/// its public symbols).
+fn general_items(ws: &Workspace, from_fqn: &str, offset: u32) -> Vec<CompletionItem> {
     let keywords = TokenKind::KEYWORDS
         .iter()
         .map(|k| item(k, CompletionKind::Keyword, "keyword"));
@@ -338,7 +335,24 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
         .model
         .symbols()
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
-    keywords.chain(symbols).chain(modules).collect()
+    // Inside a node body, the enclosing node's own callables are reachable as
+    // bare same-node calls `Name(args)` — private siblings included (same node).
+    let own_calls: Vec<CompletionItem> = enclosing_node(&entry.ast, offset)
+        .map(|node| {
+            entry
+                .model
+                .members(&node)
+                .iter()
+                .filter(|m| m.kind == MemberKind::Callable)
+                .map(|m| item(&m.name, CompletionKind::Method, &m.detail))
+                .collect()
+        })
+        .unwrap_or_default();
+    keywords
+        .chain(symbols)
+        .chain(own_calls)
+        .chain(modules)
+        .collect()
 }
 
 /// The completion kind for a declared symbol.
@@ -482,11 +496,13 @@ mod tests {
     }
 
     #[test]
-    fn members_after_self_dot() {
+    fn siblings_complete_as_bare_calls() {
+        // §5.1, ADR-041: inside a node body a sibling callable completes as a
+        // bare same-node call `Name(args)` — no `self.` qualifier.
         let src =
-            "//! m\n\nsystem S {\n  run(): void {\n    self.\n  }\n  helper(x: number): uuid;\n}\n";
+            "//! m\n\nsystem S {\n  run(): void {\n    he\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
-        let offset = (src.find("self.").unwrap() + "self.".len()) as u32;
+        let offset = (src.find("    he").unwrap() + "    he".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);
         assert!(labels.contains(&"helper".to_owned()), "{labels:?}");
         assert!(labels.contains(&"run".to_owned()), "{labels:?}");
@@ -586,20 +602,6 @@ mod tests {
     // With a prefix typed, the caret sits at the end of a partial identifier.
     // Each narrowing context must stay scoped — the trigger before the prefix
     // governs — and must not leak the general keyword set.
-
-    #[test]
-    fn members_after_self_dot_with_prefix() {
-        let src = "//! m\n\nsystem S {\n  run(): void {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
-        let ws = workspace(&[("m", src)]);
-        let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;
-        let labels = labels_at(&ws, "m", src, offset);
-        assert!(labels.contains(&"helper".to_owned()), "{labels:?}");
-        assert!(labels.contains(&"run".to_owned()), "{labels:?}");
-        assert!(
-            !labels.contains(&"system".to_owned()),
-            "general scope leaked: {labels:?}"
-        );
-    }
 
     #[test]
     fn types_after_colon_with_prefix() {

@@ -123,6 +123,11 @@ fn expr_type(ws: &Workspace, from_fqn: &str, expr: &ast::Expr) -> Option<String>
         // `T from …` produces a value of the target type (ADR-035).
         ast::ExprKind::From { ty, .. } => Some(crate::model::render_type(ty)),
         ast::ExprKind::Postfix { base, segments } => postfix_type(ws, from_fqn, base, segments),
+        // §5.1: a bare same-node call resolves to a callable on the enclosing
+        // node; its type is that callable's declared return type (ADR-041).
+        ast::ExprKind::OwnCall { name, .. } => {
+            own_call_type(ws, from_fqn, expr.span.start, &name.name)
+        }
         // §7.5: arithmetic yields `number`, every other operator yields `bool`.
         ast::ExprKind::Binary { op, .. } => Some(
             match op {
@@ -187,13 +192,27 @@ fn postfix_type(
     result
 }
 
-/// The node/data owner a postfix base denotes: `self`'s enclosing node, or the
-/// node/data a path names.
+/// The declared return type of a bare same-node call (`Name(args)`, ADR-041):
+/// find the callable named `name` on the node enclosing byte `at`, return its
+/// declared type. Shared by `expr_type` (the direct result) and `base_owner`
+/// (a postfix chain rooted on that result).
+fn own_call_type(ws: &Workspace, from_fqn: &str, at: u32, name: &str) -> Option<String> {
+    let node = enclosing_node(&ws.module(from_fqn)?.ast, at)?;
+    ws.module_model(from_fqn)?
+        .members(&node)
+        .iter()
+        .find(|m| m.name == name && m.kind == crate::MemberKind::Callable)
+        .map(|m| m.ty.clone())
+}
+
+/// The node/data owner a postfix base denotes: the node/data a path names.
 fn base_owner(ws: &Workspace, from_fqn: &str, base: &ast::Expr) -> Option<(String, String)> {
     match &base.kind {
-        ast::ExprKind::Ref(ast::Ref::SelfNode(span)) => {
-            let node = enclosing_node(&ws.module(from_fqn)?.ast, span.start)?;
-            Some((from_fqn.to_owned(), node))
+        // A chain rooted at a bare same-node call: `Pick().first()` — resolve
+        // the call's return type, then the node/data that type names (ADR-041).
+        ast::ExprKind::OwnCall { name, .. } => {
+            let ty = own_call_type(ws, from_fqn, base.span.start, &name.name)?;
+            type_owner(ws, from_fqn, &ty)
         }
         ast::ExprKind::Ref(ast::Ref::Path(path)) => {
             let segments: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
@@ -400,6 +419,24 @@ mod tests {
         let dot = (SYNTAX.find("tokens.kind").unwrap() + "tokens".len()) as u32;
         let owner = owner_at_dot(&workspace, "syntax", SYNTAX, dot).expect("typed receiver");
         assert_eq!(owner, ("syntax".to_owned(), "Token".to_owned()));
+    }
+
+    #[test]
+    fn owner_at_dot_types_a_chain_rooted_at_a_bare_same_node_call() {
+        // Regression (#71/#73): a postfix chain rooted at a bare same-node call —
+        // `pick().kind` — must type. `pick()` returns `Token`, so the `.` after
+        // the call resolves to the `Token` owner for member completion. Before
+        // the `OwnCall` arm in `base_owner`, the chain fell to `None` (ADR-041).
+        let src = "//! m\n\n\
+            public data Token { kind: string }\n\n\
+            public component Picker for M {\n  \
+            pick(): Token;\n  \
+            public run(): string {\n    \
+            return pick().kind\n  }\n}\n";
+        let workspace = ws(&[("m", src)]);
+        let dot = (src.find("pick().kind").unwrap() + "pick()".len()) as u32;
+        let owner = owner_at_dot(&workspace, "m", src, dot).expect("typed chain receiver");
+        assert_eq!(owner, ("m".to_owned(), "Token".to_owned()));
     }
 
     #[test]

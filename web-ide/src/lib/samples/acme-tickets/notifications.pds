@@ -9,19 +9,19 @@ public component Notifier for notifications::Notifications {
   /// Alert a queued attendee that they have been admitted to buy.
   #[onevent(waitingroom::Admitted)]
   public onAdmitted(event: waitingroom::Admitted): void {
-    context::NotificationProvider.sms(self.contactFor(event.token), "You're in — you have a few minutes to buy.")
+    context::NotificationProvider.sms(contactFor(event.token), "You're in — you have a few minutes to buy.")
   }
 
   /// Confirm a completed purchase and its tickets.
   #[onevent(orders::OrderConfirmed)]
   public onConfirmed(event: orders::OrderConfirmed): void {
-    context::NotificationProvider.email(self.recipient(event.buyer), "Your tickets", "Your tickets are in your wallet.")
+    context::NotificationProvider.email(recipient(event.buyer), "Your tickets", "Your tickets are in your wallet.")
   }
 
   /// Notify the buyer that their order was refunded.
   #[onevent(orders::OrderRefunded)]
   public onRefunded(event: orders::OrderRefunded): void {
-    context::NotificationProvider.email(self.recipient(event.order.buyer), "Refund processed", "Your refund is on its way.")
+    context::NotificationProvider.email(recipient(event.order.buyer), "Refund processed", "Your refund is on its way.")
   }
 
   /// The contact for an admission token's attendee.

@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn every_diagram_is_adaptive_inline_svg() {
-        let src = "//! m\n/// Sys.\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    self.Step()\n  }\n  Step();\n}\n";
+        let src = "//! m\n/// Sys.\npublic system S;\npublic container C for m::S {\n  #[manual]\n  public Run() {\n    Step()\n  }\n  Step();\n}\n";
         let g = graph(&[WorkspaceModule::new("m", src)]);
         let pages = build_pages(
             &g,

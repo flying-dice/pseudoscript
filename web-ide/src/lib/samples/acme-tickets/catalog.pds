@@ -106,7 +106,7 @@ component Events for catalog::Catalog {
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    live = Event from self.transition(found.value, catalog::EventStatus::OnSale)
+    live = Event from transition(found.value, catalog::EventStatus::OnSale)
     catalog::EventStore.save(live)
     return Ok(live)
   }
@@ -118,7 +118,7 @@ component Events for catalog::Catalog {
     if (found.isNone) {
       return Err(EventNotFound from { id })
     }
-    dead = Event from self.transition(found.value, catalog::EventStatus::Cancelled)
+    dead = Event from transition(found.value, catalog::EventStatus::Cancelled)
     catalog::EventStore.save(dead)
     catalog::Signals.cancelled(EventCancelled from { id })
     return Ok(dead)
@@ -129,7 +129,7 @@ component Events for catalog::Catalog {
   public settle(id: shared::EventId): void {
     found = Option<Event> from catalog::EventStore.fetch(id)
     if (found.isSome) {
-      next = Option<Event> from self.lifecycle(found.value)
+      next = Option<Event> from lifecycle(found.value)
       if (next.isSome) {
         catalog::EventStore.save(next.value)
       }

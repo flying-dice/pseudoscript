@@ -47,7 +47,7 @@ component Issuer for tickets::Tickets {
   /// loop silently.
   #[onevent(orders::OrderConfirmed)]
   public onConfirmed(event: orders::OrderConfirmed): void {
-    issued = Result<Ticket[], IssueError> from self.issue(event.order, event.allocation)
+    issued = Result<Ticket[], IssueError> from issue(event.order, event.allocation)
     if (issued.isErr) {
       tickets::Quarantine.stranded(event.order.id)
     }
@@ -57,14 +57,14 @@ component Issuer for tickets::Tickets {
   /// cannot be redeemed at the gate (no paid-then-refunded double entry).
   #[onevent(orders::OrderRefunded)]
   public onRefunded(event: orders::OrderRefunded): void {
-    self.revoke(event.order.id)
+    revoke(event.order.id)
   }
 
   /// Mint the tickets for an order's allocation and deliver them to the buyer.
   /// Mints exactly the ticket ids the inventory allocation named, so credentials
   /// match the seats that left the pool.
   public issue(order: orders::Order, allocation: inventory::Allocation): Result<tickets::Ticket[], tickets::IssueError> {
-    minted = Ticket[] from self.mint(order, allocation)
+    minted = Ticket[] from mint(order, allocation)
     tickets::TicketStore.saveAll(minted)
     tickets::Delivery.deliver(order.buyer, minted)
     return Ok(minted)
@@ -79,7 +79,7 @@ component Issuer for tickets::Tickets {
   revoke(order: shared::OrderId): void {
     held = Ticket[] from tickets::TicketStore.forOrder(order)
     for (ticket in held) {
-      tickets::TicketStore.save(self.markRevoked(ticket))
+      tickets::TicketStore.save(markRevoked(ticket))
     }
   }
 
@@ -98,11 +98,11 @@ component Redemption for tickets::Tickets {
     if (found.isNone) {
       return Err(tickets::RedeemError::TicketNotFound)
     }
-    admit = Result<void, RedeemError> from self.admissible(found.value)
+    admit = Result<void, RedeemError> from admissible(found.value)
     if (admit.isErr) {
       return Err(admit.error)
     }
-    redeemed = Ticket from self.markRedeemed(found.value)
+    redeemed = Ticket from markRedeemed(found.value)
     tickets::TicketStore.save(redeemed)
     return Ok(redeemed)
   }
