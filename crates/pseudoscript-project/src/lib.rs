@@ -19,4 +19,7 @@ pub const LOCKFILE: &str = "pds.lock";
 pub const VENDOR_DIR: &str = "pds_modules";
 
 pub use deps::{dependency_modules, resolve_local, workspace_manifest};
-pub use fs::{find_root, is_pds_file, is_visible, load_modules, module_fqn, normalize_segment};
+pub use fs::{
+    LoadedModule, find_root, is_pds_file, is_visible, load_modules, load_modules_with_paths,
+    module_fqn, normalize_segment,
+};

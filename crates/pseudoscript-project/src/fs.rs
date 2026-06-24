@@ -43,6 +43,22 @@ pub fn find_root(start: &Path) -> Result<PathBuf> {
     );
 }
 
+/// A loaded module paired with the workspace-relative path it was read from.
+///
+/// [`WorkspaceModule`] is pure `(fqn, source)`; the path is dropped there
+/// because the model never touches disk. A tool that *does* know the disk layout
+/// (`pds check`, the doc build) keeps this pairing so it can report diagnostics
+/// against the real file — the FQN does not round-trip to the path, since a
+/// hyphenated segment normalises to `_` (ADR-031: `web-ide/x.pds` →
+/// `web_ide::x`).
+#[derive(Debug)]
+pub struct LoadedModule {
+    /// The module's path relative to the workspace root (`pkg/svc.pds`).
+    pub relative_path: PathBuf,
+    /// The parsed `(fqn, source)` module.
+    pub module: WorkspaceModule,
+}
+
 /// Walks `root` recursively for `*.pds` files (skipping `target/`,
 /// `pds_modules/`, and hidden directories), reading each and deriving its FQN
 /// from its path relative to `root`. The result is sorted by FQN for
@@ -52,7 +68,21 @@ pub fn find_root(start: &Path) -> Result<PathBuf> {
 ///
 /// Returns an error if the tree cannot be walked or a `.pds` file read.
 pub fn load_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
-    let mut modules = Vec::new();
+    Ok(load_modules_with_paths(root)?
+        .into_iter()
+        .map(|loaded| loaded.module)
+        .collect())
+}
+
+/// Like [`load_modules`], but keeps each module's workspace-relative path so a
+/// caller can attribute diagnostics to the real file. Sorted by FQN, matching
+/// [`load_modules`].
+///
+/// # Errors
+///
+/// Returns an error if the tree cannot be walked or a `.pds` file read.
+pub fn load_modules_with_paths(root: &Path) -> Result<Vec<LoadedModule>> {
+    let mut loaded = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_entry(is_visible) {
         let entry = entry.with_context(|| format!("walking `{}`", root.display()))?;
         let path = entry.path();
@@ -67,10 +97,13 @@ pub fn load_modules(root: &Path) -> Result<Vec<WorkspaceModule>> {
         };
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading `{}`", path.display()))?;
-        modules.push(WorkspaceModule::new(fqn, source));
+        loaded.push(LoadedModule {
+            relative_path: relative.to_path_buf(),
+            module: WorkspaceModule::new(fqn, source),
+        });
     }
-    modules.sort_by(|a, b| a.fqn.cmp(&b.fqn));
-    Ok(modules)
+    loaded.sort_by(|a, b| a.module.fqn.cmp(&b.module.fqn));
+    Ok(loaded)
 }
 
 /// Whether `entry` should be descended into / kept: skips the `target` and
@@ -210,5 +243,26 @@ mod tests {
             .collect();
         assert_eq!(fqns, ["app"]);
         assert!(!fqns.iter().any(|f| f.contains("pds_modules")));
+    }
+
+    #[test]
+    fn load_modules_with_paths_keeps_the_real_relative_path() {
+        // The path must be the on-disk one, not reconstructed from the FQN: a
+        // kebab segment normalises to `_` in the FQN (ADR-031) but the file is
+        // still `web-ide/file-tree.pds`. A diagnostic must point at the real file
+        // (issue #68).
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("web-ide");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("file-tree.pds"), "//! ft\npublic system T;\n").unwrap();
+
+        let loaded = load_modules_with_paths(dir.path()).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].module.fqn, "web_ide::file_tree");
+        assert_eq!(
+            loaded[0].relative_path,
+            Path::new("web-ide").join("file-tree.pds")
+        );
     }
 }
