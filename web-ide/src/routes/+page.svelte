@@ -1316,6 +1316,16 @@
   const docPathSet = () => ops.docPathSet(docGroups);
   const validateNewDoc = (title: string) => ops.validateNewDoc(title, docPathSet());
 
+  // Re-serialise pds.toml after mutating its `[[doc.sidebar]]` groups. `transform`
+  // gets the groups (items normalised to a fresh array) and returns the new shape;
+  // throws on a malformed manifest, which each caller surfaces.
+  type SidebarGroups = { title: string; items: { title: string; path: string }[] }[];
+  function rewriteDocSidebar(manifestToml: string, transform: (groups: SidebarGroups) => SidebarGroups): string {
+    const manifest = docManifest(manifestToml);
+    const groups: SidebarGroups = (manifest.sidebar ?? []).map((g) => ({ title: g.title, items: [...(g.items ?? [])] }));
+    return serializeManifest(manifestToml, { ...manifest, sidebar: transform(groups) });
+  }
+
   function startNewDoc() {
     if (!workspace) return;
     ui.dialog = {
@@ -1347,15 +1357,14 @@
     }
 
     // Register in the manifest: append to the first sidebar group, or a new
-    // "Docs" group when none exist. Reuse the wasm manifest model, then
-    // serialise back to TOML.
+    // "Docs" group when none exist.
     let toml: string;
     try {
-      const manifest = docManifest(ws.manifestToml ?? "");
-      const sidebar = (manifest.sidebar ?? []).map((g) => ({ title: g.title, items: [...(g.items ?? [])] }));
-      if (sidebar.length === 0) sidebar.push({ title: "Docs", items: [] });
-      sidebar[0].items.push({ title, path });
-      toml = serializeManifest(ws.manifestToml ?? "", { ...manifest, sidebar });
+      toml = rewriteDocSidebar(ws.manifestToml ?? "", (groups) => {
+        if (groups.length === 0) groups.push({ title: "Docs", items: [] });
+        groups[0].items.push({ title, path });
+        return groups;
+      });
     } catch (e) {
       if (handle && ws.root) {
         try {
@@ -1381,6 +1390,111 @@
     }
     openDoc(item);
     notify("success", `Created ${path}`);
+  }
+
+  // Retitle a doc: the sidebar label changes, the `.md` file stays put (the path
+  // is the page's identity; inbound links are unaffected).
+  function startRenameDoc(path: string) {
+    const item = workspace && docs.findDocByPath(docGroups, path);
+    if (!item) return;
+    ui.dialog = {
+      title: "Rename doc page",
+      label: "Page title",
+      placeholder: "Release Notes",
+      value: item.title,
+      confirmLabel: "Rename",
+      hint: "Renames the sidebar title; the file path is unchanged.",
+      validate: (title: string) => (title.trim() ? null : "Title can't be empty."),
+      run: (title: string) => renameDoc(path, title.trim()),
+    };
+  }
+
+  async function renameDoc(path: string, title: string) {
+    const ws = workspace;
+    if (!ws) return;
+    let toml: string;
+    try {
+      toml = rewriteDocSidebar(ws.manifestToml ?? "", (groups) =>
+        groups.map((g) => ({ ...g, items: g.items.map((it) => (it.path === path ? { title, path: it.path } : it)) })),
+      );
+    } catch (e) {
+      notify("error", "Couldn't rename doc", String((e as Error)?.message ?? e));
+      return;
+    }
+    wsStore.docGroups = docs.retitleDoc(docGroups, path, title);
+    // The tab strip labels docs from their own `openTabs` entry (not `openFile`),
+    // and rename leaves the path unchanged, so no prune effect re-syncs it — retitle
+    // the matching tab and the active file in lock-step.
+    wsStore.openTabs = openTabs.map((t) => (t.isDoc && t.path === path ? { ...t, title } : t));
+    if (openFile?.isDoc && openFile.path === path) wsStore.openFile = { ...openFile, title };
+    try {
+      await persistManifest(toml);
+    } catch (e) {
+      notify("error", "Renamed in the sidebar, but couldn't write pds.toml", String((e as Error)?.message ?? e));
+    }
+    notify("success", `Renamed to ${title}`);
+  }
+
+  function requestDeleteDoc(path: string) {
+    const item = workspace && docs.findDocByPath(docGroups, path);
+    if (!item) return;
+    ui.confirmDialog = {
+      title: "Delete doc page",
+      message: `Delete ${item.title}? This removes the page from disk and the sidebar.`,
+      confirmLabel: "Delete",
+      run: () => deleteDoc(path),
+    };
+  }
+
+  async function deleteDoc(path: string) {
+    const ws = workspace;
+    if (!ws) return;
+    // Serialise the manifest *before* the destructive disk delete: a malformed
+    // manifest aborts with nothing removed, so live state and disk never diverge.
+    let toml: string;
+    try {
+      toml = rewriteDocSidebar(ws.manifestToml ?? "", (groups) =>
+        groups.map((g) => ({ ...g, items: g.items.filter((it) => it.path !== path) })).filter((g) => g.items.length > 0),
+      );
+    } catch (e) {
+      notify("error", "Couldn't update pds.toml", String((e as Error)?.message ?? e));
+      return;
+    }
+    if (ws.root) {
+      try {
+        await deletePath(ws.root, withBase(path));
+      } catch (e) {
+        notify("error", "Couldn't delete doc", String((e as Error)?.message ?? e));
+        return;
+      }
+    }
+    // Live: drop the page from the sidebar + buffer, and clear its baseline so it
+    // leaves no dirty residue. A folder-backed `.md` is also walked into `others`
+    // (the companion list) — strip it there too, or it resurfaces as a plain file.
+    const nextGroups = docs.removeDoc(docGroups, path);
+    wsStore.docGroups = nextGroups;
+    wsStore.workspace = { ...ws, others: (ws.others ?? []).filter((o) => o.path !== withBase(path)) };
+    const sources = { ...docSources };
+    delete sources[path];
+    wsStore.docSources = sources;
+    const others = { ...otherSources };
+    delete others[path];
+    wsStore.otherSources = others;
+    const baseline = { ...persisted };
+    delete baseline[path];
+    saveStore.persisted = baseline;
+    // The open page is gone — fall back to another doc, or clear the editor.
+    if (openFile?.isDoc && openFile.path === path) {
+      const next = nextGroups.flatMap((g) => g.items)[0];
+      if (next) openDoc(next);
+      else wsStore.openFile = null;
+    }
+    try {
+      await persistManifest(toml);
+    } catch (e) {
+      notify("error", "Deleted the page, but couldn't write pds.toml", String((e as Error)?.message ?? e));
+    }
+    notify("success", `Deleted ${path}`);
   }
 
   // ---- T11: rename / move / delete .pds ------------------------------------
@@ -2774,6 +2888,8 @@
             const f = moduleByFqn(fqn);
             if (f) requestDeleteFile(f);
           }}
+          onrenamedoc={startRenameDoc}
+          ondeletedoc={requestDeleteDoc}
           onrefresh={reloadExternalChanges}
         />
       </section>

@@ -25,6 +25,9 @@
     ondeletefolder?: (path: string) => void;
     onrenamefile?: (fqn: string) => void;
     ondeletefile?: (fqn: string) => void;
+    // Authored docs carry no FQN; their actions key off the workspace path.
+    onrenamedoc?: (path: string) => void;
+    ondeletedoc?: (path: string) => void;
     onmovefile?: (payload: { fqn: string; destDir: string }) => void;
     // Re-read the workspace from disk (manual refresh of the external watcher).
     onrefresh?: () => void;
@@ -43,6 +46,8 @@
     onrenamefolder,
     ondeletefolder,
     onrenamefile,
+    onrenamedoc,
+    ondeletedoc,
     onmovefile,
     ondeletefile,
     onrefresh,
@@ -188,7 +193,7 @@
             class:active={e.key === openKey}
             class:has-error={errorKeys.has(e.key)}
             class:is-dirty={!errorKeys.has(e.key) && dirtyKeys.has(e.key)}
-            data-testid={e.fqn ? `file-${e.fqn}` : undefined}
+            data-testid={e.fqn ? `file-${e.fqn}` : `file-${e.relPath}`}
             style="--depth: {depth}"
             draggable={e.kind === "module" && !!onmovefile}
             ondragstart={() => (dragFqn = e.fqn ?? null)}
@@ -214,6 +219,12 @@
             {#if ondeletefile}
               <ContextMenu.Separator />
               <ContextMenu.Item variant="destructive" onSelect={() => ondeletefile?.(e.fqn!)}>Delete</ContextMenu.Item>
+            {/if}
+          {:else if e.kind === "doc"}
+            {#if onrenamedoc}<ContextMenu.Item onSelect={() => onrenamedoc?.(e.key)}>Rename…</ContextMenu.Item>{/if}
+            {#if ondeletedoc}
+              <ContextMenu.Separator />
+              <ContextMenu.Item variant="destructive" onSelect={() => ondeletedoc?.(e.key)}>Delete</ContextMenu.Item>
             {/if}
           {/if}
         </ContextMenu.Content>
