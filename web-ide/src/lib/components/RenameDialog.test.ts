@@ -8,7 +8,7 @@ import RenameDialog from "./RenameDialog.svelte";
 
 const occurrences = [
   { fqn: "orders", line: 3, col: 10, text: "public Place(): void", match_start: 7, match_end: 12, decl: true },
-  { fqn: "orders", line: 9, col: 4, text: "self.Place()", match_start: 5, match_end: 10, decl: false },
+  { fqn: "orders", line: 9, col: 4, text: "Place()", match_start: 0, match_end: 5, decl: false },
 ] as never;
 
 describe("RenameDialog", () => {

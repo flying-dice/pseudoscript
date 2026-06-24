@@ -221,23 +221,23 @@ component SiteBuilder for doc::Doc {
   public render(graph: model::Graph, config: doc::DocConfig, diagnostics: doc::DiagnosticInput[]): Result<doc::Site, doc::RenderError> {
     doc::Urls.build(graph)
     modules = string[] from doc::Pages.sortedModules(graph)
-    index = Result<SiteFile, RenderError> from self.emitPage("index.html", doc::Pages.index(graph, config, modules, diagnostics))
+    index = Result<SiteFile, RenderError> from emitPage("index.html", doc::Pages.index(graph, config, modules, diagnostics))
     if (index.isErr) {
       return Err(index.error)
     }
-    docPages = Result<SiteFile[], RenderError> from self.emitDocPages(config, diagnostics)
+    docPages = Result<SiteFile[], RenderError> from emitDocPages(config, diagnostics)
     if (docPages.isErr) {
       return Err(docPages.error)
     }
-    modulePages = Result<SiteFile[], RenderError> from self.emitModulePages(graph, config, modules, diagnostics)
+    modulePages = Result<SiteFile[], RenderError> from emitModulePages(graph, config, modules, diagnostics)
     if (modulePages.isErr) {
       return Err(modulePages.error)
     }
-    universe = Result<SiteFile, RenderError> from self.emitPage("universe.html", doc::Pages.universePage(graph, config, modules, diagnostics))
+    universe = Result<SiteFile, RenderError> from emitPage("universe.html", doc::Pages.universePage(graph, config, modules, diagnostics))
     if (universe.isErr) {
       return Err(universe.error)
     }
-    health = Result<SiteFile, RenderError> from self.emitPage("health.html", doc::Pages.healthPage(graph, config, modules, diagnostics))
+    health = Result<SiteFile, RenderError> from emitPage("health.html", doc::Pages.healthPage(graph, config, modules, diagnostics))
     if (health.isErr) {
       return Err(health.error)
     }
@@ -273,13 +273,13 @@ component Pages for doc::Doc {
   /// The index props: the shared chrome, a card per module, the system-context
   /// diagram, and the stats strip summarising the model and its findings.
   index(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
-    docGroups = SidebarDocGroup[] from self.docGroups(config, "")
-    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
-    nav = NavLink[] from self.navLinks(diagnostics, "")
-    crumbs = Crumb[] from self.crumbsOf("index.html")
-    cards = ModuleCard[] from self.moduleCards(graph, modules)
+    docGroups = SidebarDocGroup[] from docGroups(config, "")
+    sidebar = SidebarModule[] from sidebar(graph, modules, "")
+    nav = NavLink[] from navLinks(diagnostics, "")
+    crumbs = Crumb[] from crumbsOf("index.html")
+    cards = ModuleCard[] from moduleCards(graph, modules)
     context = Diagram from doc::Diagrams.context(graph)
-    stats = SiteStats from self.stats(graph, diagnostics)
+    stats = SiteStats from stats(graph, diagnostics)
     body = IndexPage from { config, context, cards, stats }
     return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
@@ -287,13 +287,13 @@ component Pages for doc::Doc {
   /// The universe page's props: the flat snapshot, the traced flows, and each
   /// placed node's documentation href — everything the 3D island draws.
   universePage(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
-    docGroups = SidebarDocGroup[] from self.docGroups(config, "")
-    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
-    nav = NavLink[] from self.navLinks(diagnostics, "")
-    crumbs = Crumb[] from self.crumbsOf("universe.html")
+    docGroups = SidebarDocGroup[] from docGroups(config, "")
+    sidebar = SidebarModule[] from sidebar(graph, modules, "")
+    nav = NavLink[] from navLinks(diagnostics, "")
+    crumbs = Crumb[] from crumbsOf("universe.html")
     snapshot = universe::Snapshot from universe::Universe.snapshot(universe::Universe.fromModel(graph))
     flows = universe::FlowDef[] from universe::Universe.flows(graph)
-    hrefs = NodeHref[] from self.nodeHrefs(snapshot)
+    hrefs = NodeHref[] from nodeHrefs(snapshot)
     body = UniversePage from { snapshot, flows, hrefs }
     return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
@@ -301,10 +301,10 @@ component Pages for doc::Doc {
   /// The health page's props: every prepared diagnostic attributed to its node,
   /// sorted by severity, module, then line, with the error/warning counts.
   healthPage(graph: model::Graph, config: doc::DocConfig, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
-    docGroups = SidebarDocGroup[] from self.docGroups(config, "")
-    sidebar = SidebarModule[] from self.sidebar(graph, modules, "")
-    nav = NavLink[] from self.navLinks(diagnostics, "")
-    crumbs = Crumb[] from self.crumbsOf("health.html")
+    docGroups = SidebarDocGroup[] from docGroups(config, "")
+    sidebar = SidebarModule[] from sidebar(graph, modules, "")
+    nav = NavLink[] from navLinks(diagnostics, "")
+    crumbs = Crumb[] from crumbsOf("health.html")
     body = PageBody from doc::Health.page(graph, diagnostics)
     return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
@@ -328,10 +328,10 @@ component Pages for doc::Doc {
   /// directory deep (`docs/<slug>.html`), so the `../` depth prefix is used for
   /// the shared chrome.
   docPage(config: doc::DocConfig, page: doc::DocPage, diagnostics: doc::DiagnosticInput[]): doc::PageProps {
-    docGroups = SidebarDocGroup[] from self.docGroups(config, "../")
-    sidebar = SidebarModule[] from self.emptySidebar()
-    nav = NavLink[] from self.navLinks(diagnostics, "../")
-    crumbs = Crumb[] from self.crumbsOf(page.path)
+    docGroups = SidebarDocGroup[] from docGroups(config, "../")
+    sidebar = SidebarModule[] from emptySidebar()
+    nav = NavLink[] from navLinks(diagnostics, "../")
+    crumbs = Crumb[] from crumbsOf(page.path)
     html = string from doc::Markdown.render(page.markdown)
     body = DocBody from { page, html }
     return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
@@ -353,12 +353,12 @@ component Pages for doc::Doc {
   /// One module page's props: the chrome (prefixed `../` for the page's depth) and
   /// a section per non-callable node declared in the module, sorted by FQN.
   modulePage(graph: model::Graph, config: doc::DocConfig, module: string, modules: string[], diagnostics: doc::DiagnosticInput[]): doc::PageProps {
-    docGroups = SidebarDocGroup[] from self.docGroups(config, "../")
-    sidebar = SidebarModule[] from self.sidebar(graph, modules, "../")
-    nav = NavLink[] from self.navLinks(diagnostics, "../")
-    crumbs = Crumb[] from self.crumbsOf(module)
-    nodes = model::GraphNode[] from self.moduleNodes(graph, module)
-    sections = NodeSection[] from self.sections(graph, nodes, diagnostics)
+    docGroups = SidebarDocGroup[] from docGroups(config, "../")
+    sidebar = SidebarModule[] from sidebar(graph, modules, "../")
+    nav = NavLink[] from navLinks(diagnostics, "../")
+    crumbs = Crumb[] from crumbsOf(module)
+    nodes = model::GraphNode[] from moduleNodes(graph, module)
+    sections = NodeSection[] from sections(graph, nodes, diagnostics)
     body = ModulePage from { module, sections }
     return PageProps from { config, docGroups, sidebar, nav, crumbs, body }
   }
@@ -430,7 +430,7 @@ component Shell for doc::Doc {
   /// #app
   wrap(path: string, props: doc::PageProps, rendered: doc::RenderedPage): string {
     title = string from doc::Escape.text(props.site.name)
-    return self.document(path, title, props, rendered)
+    return document(path, title, props, rendered)
   }
 
   /// Assemble the document string from its escaped title, the rendered
@@ -446,10 +446,10 @@ component Relationships for doc::Doc {
   /// The relationship groups for `node`: parent, inbound, then outbound. Empty when
   /// the node has no parent and no edges.
   groups(graph: model::Graph, node: model::GraphNode): doc::RelGroup[] {
-    parent = RelGroup[] from self.parentGroup(graph, node)
-    inbound = RelGroup[] from self.inboundGroup(graph, node)
-    outbound = RelGroup[] from self.outboundGroup(graph, node)
-    return self.collect(parent, inbound, outbound)
+    parent = RelGroup[] from parentGroup(graph, node)
+    inbound = RelGroup[] from inboundGroup(graph, node)
+    outbound = RelGroup[] from outboundGroup(graph, node)
+    return collect(parent, inbound, outbound)
   }
 
   /// The parent group: a `for` link for a container/component, an `in` link
@@ -470,7 +470,7 @@ component Relationships for doc::Doc {
   /// A `RelItem` for `fqn`: a resolved href when it names a node, absent (rendering
   /// plain text) otherwise (LANG.md §9.3).
   item(fqn: string, kind: model::EdgeKind, arrow: bool, label: string): doc::RelItem {
-    edgeKind = string from self.edgeKindLabel(kind)
+    edgeKind = string from edgeKindLabel(kind)
     href = Result<string, void> from doc::Urls.hrefTo(fqn)
     if (href.isErr) {
       return RelItem from { fqn, edgeKind, arrow, label }
@@ -490,9 +490,9 @@ component Scenarios for doc::Doc {
   /// docs, tags, ordered steps, and its flow figure. Empty when the node has no
   /// scenarios.
   cards(graph: model::Graph, node: model::GraphNode): doc::ScenarioCard[] {
-    scenarios = model::Scenario[] from self.scenariosOf(graph, node)
+    scenarios = model::Scenario[] from scenariosOf(graph, node)
     flows = doc::Diagram[] from doc::Diagrams.flows(graph, scenarios)
-    return self.toCards(scenarios, flows)
+    return toCards(scenarios, flows)
   }
 
   /// The scenarios in the graph whose target FQN is this node.
@@ -514,22 +514,22 @@ component Diagrams for doc::Doc {
   /// diagram on a `container`, an entity diagram on a `data` (LANG.md §9.4), plus a
   /// sequence diagram per triggered callable it owns. Other kinds embed nothing.
   forNode(graph: model::Graph, node: model::GraphNode): doc::Diagram[] {
-    return self.collect(self.boundary(graph, node), self.sequences(graph, node))
+    return collect(boundary(graph, node), sequences(graph, node))
   }
 
   /// The boundary diagram for a node: a container view for a `system`, a component
   /// view for a `container`, an entity view for a `data`, none for any other kind.
   boundary(graph: model::Graph, node: model::GraphNode): doc::Diagram[] {
-    if (self.isSystem(node)) {
-      return self.one(self.figure(graph, self.containerView(node.fqn), "Containers", "Container diagram"))
+    if (isSystem(node)) {
+      return one(figure(graph, containerView(node.fqn), "Containers", "Container diagram"))
     }
-    if (self.isContainer(node)) {
-      return self.one(self.figure(graph, self.componentView(node.fqn), "Components", "Component diagram"))
+    if (isContainer(node)) {
+      return one(figure(graph, componentView(node.fqn), "Components", "Component diagram"))
     }
-    if (self.isData(node)) {
-      return self.one(self.figure(graph, self.dataView(node.fqn), "Entities", "Entity diagram"))
+    if (isData(node)) {
+      return one(figure(graph, dataView(node.fqn), "Entities", "Entity diagram"))
     }
-    return self.none()
+    return none()
   }
 
   /// One flow figure per scenario: its feature view (LANG.md §9.5), in source order.
@@ -537,7 +537,7 @@ component Diagrams for doc::Doc {
 
   /// The context diagram for the index page (persons and systems).
   context(graph: model::Graph): doc::Diagram {
-    return self.figure(graph, self.contextView(), "Context", "System context")
+    return figure(graph, contextView(), "Context", "System context")
   }
 
   /// Project `view` into a `Diagram`: render the scene to SVG on success, or an
@@ -548,14 +548,14 @@ component Diagrams for doc::Doc {
     if (scene.isErr) {
       return Empty from { caption, eyebrow }
     }
-    return self.embed(scene.value, caption, eyebrow)
+    return embed(scene.value, caption, eyebrow)
   }
 
   /// Wrap a laid-out scene in its figure: every variant — C4, sequence, data,
   /// feature — renders through the emit face under the adaptive palette and
   /// ships as an `Svg` figure tagged with its view kind.
   embed(scene: emit::Scene, caption: string, eyebrow: string): doc::Diagram {
-    return self.svgFigure(scene, caption, eyebrow)
+    return svgFigure(scene, caption, eyebrow)
   }
 
   /// Render a scene to adaptive-palette SVG through the emit face and wrap it
@@ -612,9 +612,9 @@ component Health for doc::Doc {
   /// The health page body: every finding attributed and sorted by severity,
   /// module, then line, with the error and warning counts.
   page(graph: model::Graph, diagnostics: doc::DiagnosticInput[]): doc::PageBody {
-    entries = HealthEntry[] from self.attributeAll(graph, diagnostics)
-    errorCount = number from self.countOf(entries, "error")
-    warningCount = number from self.countOf(entries, "warning")
+    entries = HealthEntry[] from attributeAll(graph, diagnostics)
+    errorCount = number from countOf(entries, "error")
+    warningCount = number from countOf(entries, "warning")
     return HealthPage from { entries, errorCount, warningCount }
   }
 
@@ -638,7 +638,7 @@ component SearchIndex for doc::Doc {
   /// The index file: every entry sorted by href then FQN, serialised as a JS
   /// assignment of the entry array.
   public build(graph: model::Graph, config: doc::DocConfig): doc::SiteFile {
-    entries = SearchEntry[] from self.entries(graph, config)
+    entries = SearchEntry[] from entries(graph, config)
     return SiteFile from { entries }
   }
 
@@ -658,10 +658,10 @@ component Highlight for doc::Doc {
   /// Highlight `source` as `lang` into class-based HTML spans: `pds` through
   /// the syntax lexer's token kinds, anything else escaped verbatim.
   public code(lang: string, source: string): string {
-    if (self.isPds(lang)) {
-      return self.pdsTokens(source)
+    if (isPds(lang)) {
+      return pdsTokens(source)
     }
-    return self.escaped(source)
+    return escaped(source)
   }
 
   /// Whether the language word names PseudoScript (`pds`, `pseudoscript`).
@@ -690,11 +690,11 @@ component Urls for doc::Doc {
   /// The module-page-relative `href` to `fqn` (`<file>.html#<anchor>`), or an error
   /// when `fqn` resolves to no node.
   hrefTo(fqn: string): Result<string, void> {
-    url = Result<NodeUrl, void> from self.get(fqn)
+    url = Result<NodeUrl, void> from get(fqn)
     if (url.isErr) {
       return Err(url.error)
     }
-    return Ok(self.hrefFromModulePage(url.value))
+    return Ok(hrefFromModulePage(url.value))
   }
 
   /// The page path for a module FQN: `module/<dotted-fqn>.html`.

@@ -801,6 +801,53 @@ fn project_black_box(graph: &Graph, node: &GraphNode, entry: &str) -> SequenceSc
     }
 }
 
+/// A self-message on `active`'s lifeline (from and to itself).
+fn self_message(active: &str, method: &str, detail: String) -> SeqItem {
+    SeqItem::Message(Message {
+        from: active.to_owned(),
+        to: active.to_owned(),
+        kind: MessageKind::SelfMsg,
+        label: method.to_owned(),
+        detail,
+    })
+}
+
+/// A same-node call (`LANG.md` §9.2, ADR-041): the self-message, then the
+/// callee's disclosed body expanded inline on the same lifeline (stack-guarded
+/// against recursion), so its cross-boundary calls reach the diagram. A leaf
+/// (black-box or in-flight) call needs no synthesised return — the self-message
+/// is its own round trip.
+fn trace_self_call(
+    graph: &Graph,
+    active: &str,
+    method: &str,
+    order: &mut Vec<String>,
+    stack: &mut Vec<String>,
+) -> Vec<SeqItem> {
+    let invoked = format!("{active}::{method}");
+    let sig = graph.node(&invoked).and_then(|n| n.signature.as_ref());
+    let mut items = vec![self_message(
+        active,
+        method,
+        sig.map(call_detail).unwrap_or_default(),
+    )];
+    if let Some(invoked_body) = graph.body(&invoked)
+        && !stack.iter().any(|f| f == &invoked)
+    {
+        stack.push(invoked.clone());
+        items.extend(trace_body(
+            graph,
+            active,
+            active,
+            invoked_body,
+            order,
+            stack,
+        ));
+        stack.pop();
+    }
+    items
+}
+
 /// Traces the body of `active` (the executing node) into ordered items. `caller`
 /// is the lifeline `active`'s `return`s land on; `stack` is the callables in
 /// flight. Disclosed callees expand inline (the active lifeline switches to the
@@ -857,13 +904,12 @@ fn trace_body(
                 }
             }
             Step::SelfCall { method } => {
-                items.push(SeqItem::Message(Message {
-                    from: active.to_owned(),
-                    to: active.to_owned(),
-                    kind: MessageKind::SelfMsg,
-                    label: method.clone(),
-                    detail: String::new(),
-                }));
+                items.extend(trace_self_call(graph, active, method, order, stack));
+            }
+            Step::LocalCall { method } => {
+                // A method on a local value or chain intermediate: a leaf
+                // self-message — it names no node callable, no body to follow.
+                items.push(self_message(active, method, String::new()));
             }
             Step::Return { marker } => {
                 // An empty `caller` is the suppressed generic caller (a triggerless

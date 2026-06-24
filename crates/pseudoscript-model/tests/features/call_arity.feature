@@ -1,6 +1,6 @@
 Feature: Call arity matches the callable's parameters (LANG.md §5.1)
 
-  A call to a resolvable same-module callable — via `self.` or a node — must
+  A call to a resolvable same-module callable — a bare same-node call or a node — must
   pass as many arguments as the callable declares. Cross-module callees are not
   visible here and are not checked.
 
@@ -10,7 +10,7 @@ Feature: Call arity matches the callable's parameters (LANG.md §5.1)
       //! example
       public system S;
       public container C for S {
-        run(): void { self.add(1, 2, 3) }
+        run(): void { add(1, 2, 3) }
         add(a: number, b: number): number { return a }
       }
       """
@@ -38,7 +38,7 @@ Feature: Call arity matches the callable's parameters (LANG.md §5.1)
       //! example
       public system S;
       public container C for S {
-        run(): number { return self.add(1, 2) }
+        run(): number { return add(1, 2) }
         add(a: number, b: number): number { return a }
       }
       """

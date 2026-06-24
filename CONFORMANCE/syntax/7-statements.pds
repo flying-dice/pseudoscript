@@ -17,10 +17,10 @@ public container Mainframe for Banking {
       x = BankingInfo from a.value
     }
     while (cond) {
-      self.step()
+      step()
     }
     for (item in items) {
-      self.handle(item)
+      handle(item)
     }
   }
 }

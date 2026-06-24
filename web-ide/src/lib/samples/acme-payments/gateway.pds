@@ -115,7 +115,7 @@ component TokenApi for gateway::Gateway {
     }
     method = Result<PaymentMethod, TokenizeError> from vault::Vault.tokenize(merchant.value.id, card)
     if (method.isErr) {
-      return Err(self.rejectTokenize(method.error))
+      return Err(rejectTokenize(method.error))
     }
     return Ok(method.value)
   }
@@ -140,10 +140,10 @@ component IntentApi for gateway::Gateway {
       return Err(guard.error)
     }
     if (guard.value.isSome) {
-      return self.reloadIntent(guard.value.value)
+      return reloadIntent(guard.value.value)
     }
     created = PaymentIntent from intents::Intents.create(merchant.value.id, req)
-    gateway::Idempotency.record(idem, self.intentId(created))
+    gateway::Idempotency.record(idem, intentId(created))
     return Ok(created)
   }
 
@@ -155,7 +155,7 @@ component IntentApi for gateway::Gateway {
     }
     done = Result<PaymentIntent, IntentError> from intents::Intents.confirm(merchant.value.id, req)
     if (done.isErr) {
-      return Err(self.rejectIntent(done.error))
+      return Err(rejectIntent(done.error))
     }
     return Ok(done.value)
   }
@@ -165,7 +165,7 @@ component IntentApi for gateway::Gateway {
   public confirmAction(intent: shared::PaymentIntentId, outcome: intents::ChallengeOutcome): Result<intents::PaymentIntent, gateway::ApiError> {
     done = Result<PaymentIntent, IntentError> from intents::Intents.confirmAction(intent, outcome)
     if (done.isErr) {
-      return Err(self.rejectIntent(done.error))
+      return Err(rejectIntent(done.error))
     }
     return Ok(done.value)
   }
@@ -178,7 +178,7 @@ component IntentApi for gateway::Gateway {
     }
     done = Result<PaymentIntent, IntentError> from intents::Intents.capture(merchant.value.id, intent)
     if (done.isErr) {
-      return Err(self.rejectIntent(done.error))
+      return Err(rejectIntent(done.error))
     }
     return Ok(done.value)
   }
@@ -192,7 +192,7 @@ component IntentApi for gateway::Gateway {
     }
     done = Result<PaymentIntent, IntentError> from intents::Intents.cancel(merchant.value.id, intent)
     if (done.isErr) {
-      return Err(self.rejectIntent(done.error))
+      return Err(rejectIntent(done.error))
     }
     return Ok(done.value)
   }
@@ -219,13 +219,13 @@ component RefundApi for gateway::Gateway {
       return Err(guard.error)
     }
     if (guard.value.isSome) {
-      return self.reloadRefund(guard.value.value)
+      return reloadRefund(guard.value.value)
     }
     done = Result<Refund, RefundError> from refunds::Refunds.create(merchant.value.id, req)
     if (done.isErr) {
-      return Err(self.rejectRefund(done.error))
+      return Err(rejectRefund(done.error))
     }
-    gateway::Idempotency.record(idem, self.refundId(done.value))
+    gateway::Idempotency.record(idem, refundId(done.value))
     return Ok(done.value)
   }
 
@@ -247,7 +247,7 @@ component DisputeApi for gateway::Gateway {
     }
     done = Result<Dispute, DisputeError> from disputes::Disputes.submitEvidence(merchant.value.id, req)
     if (done.isErr) {
-      return Err(self.rejectDispute(done.error))
+      return Err(rejectDispute(done.error))
     }
     return Ok(done.value)
   }

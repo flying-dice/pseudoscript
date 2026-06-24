@@ -53,7 +53,7 @@ component Queue for waitingroom::WaitingRoom {
   /// Join the queue for an event. Refuses with `QueueClosed` when the queue is
   /// shedding load — the backpressure valve for a surge that outruns capacity.
   public join(event: shared::EventId, user: shared::UserId): Result<waitingroom::QueueTicket, waitingroom::WaitingError> {
-    open = Result<void, WaitingError> from self.accepting(event)
+    open = Result<void, WaitingError> from accepting(event)
     if (open.isErr) {
       return Err(open.error)
     }
@@ -65,7 +65,7 @@ component Queue for waitingroom::WaitingRoom {
   /// position polls during a hot on-sale never hit the enqueue path.
   public position(ticket: waitingroom::QueueTicket): waitingroom::Position {
     snap = Option<QueueSnapshot> from waitingroom::QueueStore.snapshot(ticket.event)
-    return self.estimate(ticket, snap)
+    return estimate(ticket, snap)
   }
 
   /// `Err(QueueClosed)` when the queue is shedding load.
@@ -84,7 +84,7 @@ component Admission for waitingroom::WaitingRoom {
     if (found.isNone) {
       return Err(waitingroom::WaitingError::AdmissionInvalid)
     }
-    return self.unexpired(found.value)
+    return unexpired(found.value)
   }
 
   /// `Err(AdmissionExpired)` if the token's window has closed.
@@ -100,7 +100,7 @@ component Gatekeeper for waitingroom::WaitingRoom {
   /// of remaining inventory and in-flight checkouts, so admission never outruns
   /// what the inventory and payment paths can serve.
   public admitNext(event: shared::EventId): void {
-    room = number from self.headroom(event)
+    room = number from headroom(event)
     due = QueueTicket[] from waitingroom::QueueStore.dequeue(event, room)
     for (ticket in due) {
       token = AdmissionToken from waitingroom::AdmissionStore.grant(ticket)
@@ -118,10 +118,10 @@ component Gatekeeper for waitingroom::WaitingRoom {
   headroom(event: shared::EventId): number {
     seats = Option<CapacitySnapshot> from inventory::Inventory.snapshot(event)
     if (seats.isNone) {
-      return self.budget(0, 0)
+      return budget(0, 0)
     }
     inflight = number from waitingroom::AdmissionStore.outstandingAsOf(event, seats.value.version)
-    return self.budget(seats.value.available, inflight)
+    return budget(seats.value.available, inflight)
   }
 
   /// `max(0, seats - outstanding)` — the admission budget left.

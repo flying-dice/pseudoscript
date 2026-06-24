@@ -179,13 +179,14 @@ public data Expr { kind: syntax::ExprKind, span: syntax::Span }
 /// The expression forms (§10). `Marker` is a built-in generic constructor —
 /// `Ok`/`Err` (`Result`) or `Some`/`None` (`Option`); `From` names a target
 /// type and its `source`, whose `FromSource` form is the §7.2 vs §7.4 split;
-/// `Postfix` is a `.name`/`.name(..)` access chain (ADR-007); `Unary`/`Binary`
-/// are the §7.5 operator forms. A `Marker` or `From` head is never a binary
-/// operand (§7.5).
+/// `Postfix` is a `.name`/`.name(..)` access chain (ADR-007); `OwnCall` is a
+/// bare same-node call `Name(args)` (§5.1, ADR-041); `Unary`/`Binary` are the
+/// §7.5 operator forms. A `Marker` or `From` head is never a binary operand (§7.5).
 public data ExprKind =
   | Marker { kind: syntax::MarkerKind, payload: syntax::Expr }
   | From { ty: syntax::Type, source: syntax::FromSource }
   | Postfix { base: syntax::Expr, segments: syntax::PostfixSeg[] }
+  | OwnCall { name: string, args: syntax::Expr[] }
   | Ref { target: syntax::Reference }
   | Lit { value: syntax::Literal }
   | Unary { op: syntax::UnaryOp, opSpan: syntax::Span, expr: syntax::Expr }
@@ -235,9 +236,9 @@ public data MarkerKind =
 /// present marks a call; absent marks field access.
 public data PostfixSeg { name: string, callArgs: syntax::Expr[], span: syntax::Span }
 
-/// A reference primary (§10 `Ref`): `self` or an FQN.
+/// A reference primary (§10 `Ref`): an FQN. `self` was dropped (ADR-041); a
+/// same-node call is the bare `OwnCall` primary, not a reference.
 public data Reference =
-  | SelfNode { span: syntax::Span }
   | PathRef { path: syntax::Path }
 
 /// A literal value (ADR-013). `raw` carries the source text (string literals
@@ -310,7 +311,7 @@ public container Syntax for context::Pseudoscript {
 component Lexer for syntax::Syntax {
   /// The conformance token stream (LANG.md §2).
   tokenize(text: string): syntax::Token[] {
-    lexed = Lexed from self.lex(text)
+    lexed = Lexed from lex(text)
     return lexed.tokens
   }
 
@@ -344,9 +345,9 @@ component Lexer for syntax::Syntax {
   /// The conformance rendering: one `KIND@line:col "lexeme"` line per token,
   /// line/col resolved via `LineIndex`, interior `\` and `"` escaped.
   public renderTokens(text: string): string {
-    tokens = Token[] from self.tokenize(text)
+    tokens = Token[] from tokenize(text)
     syntax::LineIndex.build(text)
-    return self.renderStream(tokens)
+    return renderStream(tokens)
   }
 
   /// Formats a token stream into the conformance text, one
@@ -377,8 +378,8 @@ component Parser for syntax::Syntax {
   /// the trivia stream.
   public parse(text: string): syntax::Parsed {
     lexed = Lexed from syntax::Lexer.lex(text)
-    ast = Module from self.parseModule(lexed)
-    diagnostics = Diagnostic[] from self.diagnostics()
+    ast = Module from parseModule(lexed)
+    diagnostics = Diagnostic[] from diagnostics()
     return Parsed from { ast, diagnostics }
   }
 
@@ -453,9 +454,10 @@ component Parser for syntax::Syntax {
   /// so `Result<A,B> from ..` is told apart from a comparison `a < b`.
   atFromHead(): bool;
 
-  /// A primary: a literal, `self`, a `( group )`, or a path reference. Markers
-  /// and `from` heads never reach here — `parseExpr` dispatches them first — so
-  /// a `<` after a path here is the less-than operator (§7.5).
+  /// A primary: a literal, a bare same-node call `Name(args)`, a `( group )`, or
+  /// a path reference. Markers and `from` heads never reach here — `parseExpr`
+  /// dispatches them first — so a `<` after a path here is the less-than
+  /// operator (§7.5).
   parsePrimary(): syntax::Expr;
 
   /// A run of `Doc`/`Tag` tokens into a `DocBlock`, splitting summary from

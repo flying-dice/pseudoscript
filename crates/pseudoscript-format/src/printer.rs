@@ -480,6 +480,11 @@ impl Printer {
                     self.write_postfix_seg(seg);
                 }
             }
+            // §5.1, ADR-041: a bare same-node call `Name(args)`.
+            ExprKind::OwnCall { name, args } => {
+                self.push(&name.name);
+                self.write_args(args);
+            }
             ExprKind::Ref(r) => self.write_ref(r),
             ExprKind::Literal(lit) => self.write_literal(lit),
             ExprKind::Unary { op, expr, .. } => {
@@ -510,20 +515,24 @@ impl Printer {
         self.push(".");
         self.push(&seg.name.name);
         if let Some(args) = &seg.call_args {
-            self.push("(");
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    self.push(", ");
-                }
-                self.write_expr(arg);
-            }
-            self.push(")");
+            self.write_args(args);
         }
+    }
+
+    /// Writes a parenthesised, comma-separated argument list `(a, b)`.
+    fn write_args(&mut self, args: &[Expr]) {
+        self.push("(");
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                self.push(", ");
+            }
+            self.write_expr(arg);
+        }
+        self.push(")");
     }
 
     fn write_ref(&mut self, r: &Ref) {
         match r {
-            Ref::SelfNode(_) => self.push("self"),
             Ref::Path(path) => self.write_path(path),
         }
     }

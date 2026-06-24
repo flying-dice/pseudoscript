@@ -197,7 +197,13 @@ impl Ctx<'_> {
                 self.check_expr(right);
             }
             ExprKind::Ref(Ref::Path(path)) => self.check_value_ref(path),
-            ExprKind::Ref(Ref::SelfNode(_)) | ExprKind::Literal(_) => {}
+            // A same-node call is in-module; only its args can cross a boundary.
+            ExprKind::OwnCall { args, .. } => {
+                for arg in args {
+                    self.check_expr(arg);
+                }
+            }
+            ExprKind::Literal(_) => {}
         }
     }
 

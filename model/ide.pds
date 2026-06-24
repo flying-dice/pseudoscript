@@ -183,7 +183,7 @@ public component LanguageSession for ide::IdeSession {
   /// checked against the dependency externals (§8.3) — what the editor adapter
   /// marks in the gutter after every edit.
   public diagnostics(): model::ModuleDiagnostics[] {
-    return self.checkAgainstExternals(self.heldModules(), self.heldExternals())
+    return checkAgainstExternals(heldModules(), heldExternals())
   }
   /// Check every module with the dependency modules bound as externals (§8.3), so
   /// a `dep::module::Node` reference resolves — the externals-aware counterpart of
@@ -262,9 +262,9 @@ public component Docs for ide::IdeSession {
   /// unchanged — diagnostics never cross the boundary). SSR crosses to the
   /// host's render callback.
   render(config: ide::DocConfig): ide::RenderedFile[] {
-    perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(self.heldDocModules(), self.heldExternals())
-    prepared = doc::DiagnosticInput[] from doc::Doc.prepareDiagnostics(self.heldDocModules(), perModule)
-    return self.renderWith(config, prepared)
+    perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(heldDocModules(), heldExternals())
+    prepared = doc::DiagnosticInput[] from doc::Doc.prepareDiagnostics(heldDocModules(), perModule)
+    return renderWith(config, prepared)
   }
 
   /// The held workspace's own modules, the check input.
@@ -291,15 +291,15 @@ public component Universe for ide::IdeSession {
   /// The 3D-view snapshot of the held workspace: structural nodes with
   /// containment and directed traffic-weighted relationships, no positions.
   universe(): ide::UniverseSnapshot {
-    graph = universe::SoftwareGraph from universe::Universe.build(self.heldModules())
-    return self.toSnapshot(universe::Universe.snapshot(graph))
+    graph = universe::SoftwareGraph from universe::Universe.build(heldModules())
+    return toSnapshot(universe::Universe.snapshot(graph))
   }
 
   /// The entry-point flows of the held workspace, traced and lifted by the
   /// universe crate — the filaments the ForceGraph animates. Replaces the IDE's
   /// former client-side sequence-walking, so doc site and IDE share one tracer.
   universeFlows(): universe::FlowDef[] {
-    graph = model::Graph from model::Model.graph(self.heldModules())
+    graph = model::Graph from model::Model.graph(heldModules())
     return universe::Universe.flows(graph)
   }
 
@@ -346,9 +346,9 @@ public component FsAccessAdapter for ide::WebIde {
   /// module's FQN from its path, LANG.md §8.1), then resolve externals via the
   /// session.
   readDependencies(): model::WorkspaceModule[] {
-    lock = string from self.readLock()
-    vendored = ide::VendoredInput[] from self.readVendored()
-    local = ide::LocalInput[] from self.noLocalSources()
+    lock = string from readLock()
+    vendored = ide::VendoredInput[] from readVendored()
+    local = ide::LocalInput[] from noLocalSources()
     return ide::Workspace.dependencyModules(lock, vendored, local)
   }
   /// The consumer's `pds.lock` text, blank when absent.
@@ -375,7 +375,7 @@ public component CodeMirrorAdapter for ide::WebIde {
   onEdit(fqn: string, text: string): void {
     ide::IdeSession.setSource(fqn, text)
     diags = model::ModuleDiagnostics[] from ide::LanguageSession.diagnostics()
-    self.markProblems(diags)
+    markProblems(diags)
   }
   /// The completion source: ask the session for items at the caret. A `.`/`::`
   /// boundary opens the popup with no prefix typed.
@@ -388,7 +388,7 @@ public component CodeMirrorAdapter for ide::WebIde {
     if (result.isNone) {
       return
     }
-    self.showTooltip(result.value.contents)
+    showTooltip(result.value.contents)
   }
   /// Mark the problems CodeMirror shows in its gutter.
   markProblems(diags: model::ModuleDiagnostics[]): void;
@@ -414,8 +414,8 @@ component LlmSettingsStore for ide::WebIde {
   /// Apply a provider preset: its pinned endpoint, wire shape, and default
   /// model become the active settings in one edit.
   applyPreset(provider: string): void {
-    preset = ide::LlmSettings from self.presetFor(provider)
-    self.save(preset)
+    preset = ide::LlmSettings from presetFor(provider)
+    save(preset)
   }
   /// The pinned settings for a preset id: `ollama` → the local daemon over
   /// chat with no key; `openai` → the hosted endpoint over chat, key required;
@@ -446,7 +446,7 @@ component FimClient for ide::WebIde {
   /// Route the prompt by the configured wire shape: a native fill-in-the-middle
   /// route when the provider has one, else a FIM-shaped chat request.
   complete(prompt: ide::FimPrompt, settings: ide::LlmSettings): Result<string, ide::ProviderError> {
-    fim = bool from self.usesNativeFim(settings)
+    fim = bool from usesNativeFim(settings)
     if (fim) {
       return ide::LlmProvider.fimComplete(prompt, settings.model)
     }
@@ -463,12 +463,12 @@ component FimClient for ide::WebIde {
   /// models, then ask for a one-token completion — the first failure comes
   /// back classified, with its fix hint, instead of a silent bail.
   testConnection(settings: ide::LlmSettings): Result<string[], ide::ProviderError> {
-    models = Result<string[], ide::ProviderError> from self.listModels(settings)
+    models = Result<string[], ide::ProviderError> from listModels(settings)
     if (models.isErr) {
       return Err(models.error)
     }
-    probe = ide::FimPrompt from self.probePrompt()
-    answer = Result<string, ide::ProviderError> from self.complete(probe, settings)
+    probe = ide::FimPrompt from probePrompt()
+    answer = Result<string, ide::ProviderError> from complete(probe, settings)
     if (answer.isErr) {
       return Err(answer.error)
     }
@@ -496,27 +496,27 @@ component GhostText for ide::WebIde {
       return
     }
     settings = ide::LlmSettings from ide::LlmSettingsStore.current()
-    prompt = ide::FimPrompt from self.assemble(moduleFqn, offset)
+    prompt = ide::FimPrompt from assemble(moduleFqn, offset)
     raw = Result<string, ide::ProviderError> from ide::FimClient.complete(prompt, settings)
     if (raw.isErr) {
       ide::LlmSettingsStore.reportFailure(raw.error)
       return
     }
     ide::LlmSettingsStore.clearFailure()
-    blank = bool from self.isBlank(raw.value)
+    blank = bool from isBlank(raw.value)
     if (blank) {
       ide::LlmSettingsStore.noteDrop("empty")
       return
     }
     ide::LlmSettingsStore.clearDrop()
-    self.show(raw.value)
+    show(raw.value)
   }
   /// The provider context: the windowed buffer around the caret plus the cached
   /// grammar primer.
   assemble(moduleFqn: string, offset: number): ide::FimPrompt {
-    window = string from self.windowAround(moduleFqn, offset)
+    window = string from windowAround(moduleFqn, offset)
     symbols = ide::OutlineNode[] from ide::LanguageSession.outline()
-    primer = string from self.grammarPrimer()
+    primer = string from grammarPrimer()
     return ide::FimPrompt from { window, symbols, primer }
   }
   /// The capped prefix/suffix slice of the buffer around the caret.
@@ -571,7 +571,7 @@ public component DiagramCanvas for ide::WebIde {
 public component Bootstrap for ide::WebIde {
   /// Restore from the hash when it carries a workspace; else show the launcher.
   start(): void {
-    restored = bool from self.restoreFromHash()
+    restored = bool from restoreFromHash()
     if (!restored) {
       ide::Launcher.show()
     }
@@ -617,7 +617,7 @@ public component Launcher for ide::WebIde {
   openFolder(): void {
     picked = Result<bool, ide::PickError> from ide::FsAccessAdapter.pickFolder()
     if (picked.isErr) {
-      self.showPickError(picked.error)
+      showPickError(picked.error)
       return
     }
     if (!picked.value) {

@@ -10,8 +10,8 @@ public system Zoo;
 
 public container Pen for Zoo {
   Make(): Cat {
-    c = Cat from self.fetch()
-    cats = Cat[] from self.fetchMany()
+    c = Cat from fetch()
+    cats = Cat[] from fetchMany()
     return c
   }
   fetch(): Cat;

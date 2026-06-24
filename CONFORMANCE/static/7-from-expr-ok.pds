@@ -8,6 +8,6 @@ public data Cat;
 public system Zoo;
 
 public container Pen for Zoo {
-  AdoptCat(): Cat { return Cat from self.MakeCat() }
+  AdoptCat(): Cat { return Cat from MakeCat() }
   MakeCat(): Cat;
 }

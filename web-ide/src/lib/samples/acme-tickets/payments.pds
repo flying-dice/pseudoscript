@@ -89,24 +89,24 @@ component PaymentService for payments::Payments {
   /// calling the provider again.
   /// #headline
   public charge(order: shared::OrderId, amount: shared::Money, method: payments::PaymentMethod): Result<payments::Receipt, payments::PaymentError> {
-    existing = Option<Receipt> from self.receiptFor(order)
+    existing = Option<Receipt> from receiptFor(order)
     if (existing.isSome) {
       return Ok(existing.value)
     }
-    key = IdempotencyKey from self.keyFor(order, "charge")
+    key = IdempotencyKey from keyFor(order, "charge")
     payment = Payment from { order, amount, payments::PaymentStatus::Charging }
     payments::PaymentStore.save(payment)
     held = Result<context::ProviderAuth, PaymentError> from payments::Gateway.authorize(amount, method, key)
     if (held.isErr) {
-      self.onChargeError(payment, held.error)
+      onChargeError(payment, held.error)
       return Err(held.error)
     }
     taken = Result<context::ProviderCapture, PaymentError> from payments::Gateway.capture(held.value.ref, amount, key)
     if (taken.isErr) {
-      self.onCaptureError(payment, held.value.ref, key, taken.error)
+      onCaptureError(payment, held.value.ref, key, taken.error)
       return Err(taken.error)
     }
-    charged = Payment from self.markCharged(payment, held.value, taken.value)
+    charged = Payment from markCharged(payment, held.value, taken.value)
     payments::PaymentStore.save(charged)
     return Ok(Receipt from { charged.id, taken.value.ref })
   }
@@ -118,16 +118,16 @@ component PaymentService for payments::Payments {
   /// is a deliberate scope cut, not an oversight — refunds are off the surge hot
   /// path and rarely contended.
   public refund(order: shared::OrderId): Result<payments::Payment, payments::PaymentError> {
-    loaded = Result<ChargedPayment, PaymentError> from self.loadCharged(order)
+    loaded = Result<ChargedPayment, PaymentError> from loadCharged(order)
     if (loaded.isErr) {
       return Err(loaded.error)
     }
-    key = IdempotencyKey from self.keyFor(order, "refund")
+    key = IdempotencyKey from keyFor(order, "refund")
     back = Result<context::ProviderRefund, PaymentError> from payments::Gateway.refund(loaded.value.capture, loaded.value.amount, key)
     if (back.isErr) {
       return Err(back.error)
     }
-    refunded = Payment from self.recordRefund(order)
+    refunded = Payment from recordRefund(order)
     payments::PaymentStore.save(refunded)
     return Ok(refunded)
   }
@@ -139,9 +139,9 @@ component PaymentService for payments::Payments {
   public settle(order: shared::OrderId, ref: context::ProviderCaptureRef): void {
     payment = Option<Payment> from payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
-      awaiting = Result<void, PaymentError> from self.awaitingSettlement(payment.value)
+      awaiting = Result<void, PaymentError> from awaitingSettlement(payment.value)
       if (awaiting.isOk) {
-        payments::PaymentStore.save(self.applySettlement(payment.value, ref))
+        payments::PaymentStore.save(applySettlement(payment.value, ref))
       }
     }
   }
@@ -153,11 +153,11 @@ component PaymentService for payments::Payments {
   public reconcile(order: shared::OrderId): void {
     payment = Option<Payment> from payments::PaymentStore.byOrder(order)
     if (payment.isSome) {
-      awaiting = Result<void, PaymentError> from self.awaitingSettlement(payment.value)
+      awaiting = Result<void, PaymentError> from awaitingSettlement(payment.value)
       if (awaiting.isOk) {
         truth = Option<context::ProviderCaptureRef> from payments::Gateway.lookup(order)
         if (truth.isSome) {
-          payments::PaymentStore.save(self.applySettlement(payment.value, truth.value))
+          payments::PaymentStore.save(applySettlement(payment.value, truth.value))
         }
       }
     }
@@ -170,15 +170,15 @@ component PaymentService for payments::Payments {
   /// outcome still unknown is left for a later sweep. This is what lets the order
   /// saga recover a timed-out checkout instead of guessing.
   public reconcileCharge(order: shared::OrderId): void {
-    done = Option<Receipt> from self.receiptFor(order)
+    done = Option<Receipt> from receiptFor(order)
     if (done.isNone) {
       truth = Option<Receipt> from payments::Gateway.lookupCharge(order)
       if (truth.isSome) {
-        payments::PaymentStore.save(self.recordCharge(order, truth.value))
+        payments::PaymentStore.save(recordCharge(order, truth.value))
       } else {
         gone = Result<void, PaymentError> from payments::Gateway.chargeDefinitelyMissing(order)
         if (gone.isOk) {
-          payments::PaymentStore.save(self.recordChargeFailed(order))
+          payments::PaymentStore.save(recordChargeFailed(order))
         }
       }
     }
@@ -195,9 +195,9 @@ component PaymentService for payments::Payments {
   /// On an authorise failure: a DEFINITE decline marks the payment `Failed`; an
   /// INDETERMINATE outcome leaves it `Charging` for `reconcileCharge` to resolve.
   onChargeError(payment: payments::Payment, e: payments::PaymentError): void {
-    sure = Result<void, PaymentError> from self.isDefinite(e)
+    sure = Result<void, PaymentError> from isDefinite(e)
     if (sure.isOk) {
-      payments::PaymentStore.save(self.markFailed(payment, e))
+      payments::PaymentStore.save(markFailed(payment, e))
     }
   }
 
@@ -205,10 +205,10 @@ component PaymentService for payments::Payments {
   /// the payment `Failed`; an INDETERMINATE outcome leaves both intact and the
   /// payment `Charging`, because the capture may actually have settled.
   onCaptureError(payment: payments::Payment, auth: context::ProviderAuthRef, key: payments::IdempotencyKey, e: payments::PaymentError): void {
-    sure = Result<void, PaymentError> from self.isDefinite(e)
+    sure = Result<void, PaymentError> from isDefinite(e)
     if (sure.isOk) {
       payments::Gateway.cancelAuth(auth, key)
-      payments::PaymentStore.save(self.markFailed(payment, e))
+      payments::PaymentStore.save(markFailed(payment, e))
     }
   }
 
@@ -245,7 +245,7 @@ public component Gateway for payments::Payments {
   public authorize(amount: shared::Money, method: payments::PaymentMethod, key: payments::IdempotencyKey): Result<context::ProviderAuth, payments::PaymentError> {
     held = Result<ProviderAuth, ProviderError> from context::PaymentProvider.authorize(amount, method, key)
     if (held.isErr) {
-      return Err(self.translate(held.error))
+      return Err(translate(held.error))
     }
     return Ok(held.value)
   }
@@ -254,7 +254,7 @@ public component Gateway for payments::Payments {
   public capture(auth: context::ProviderAuthRef, amount: shared::Money, key: payments::IdempotencyKey): Result<context::ProviderCapture, payments::PaymentError> {
     taken = Result<ProviderCapture, ProviderError> from context::PaymentProvider.capture(auth, amount, key)
     if (taken.isErr) {
-      return Err(self.translate(taken.error))
+      return Err(translate(taken.error))
     }
     return Ok(taken.value)
   }
@@ -263,7 +263,7 @@ public component Gateway for payments::Payments {
   public refund(capture: context::ProviderCaptureRef, amount: shared::Money, key: payments::IdempotencyKey): Result<context::ProviderRefund, payments::PaymentError> {
     back = Result<ProviderRefund, ProviderError> from context::PaymentProvider.refund(capture, amount, key)
     if (back.isErr) {
-      return Err(self.translate(back.error))
+      return Err(translate(back.error))
     }
     return Ok(back.value)
   }
@@ -298,7 +298,7 @@ public component WebhookHandler for payments::Payments {
   /// replayed webhook is acknowledged but changes nothing.
   #[http("POST /webhooks/payments")]
   public handle(event: payments::SettlementEvent): Result<payments::Acknowledged, payments::WebhookError> {
-    verified = Result<void, WebhookError> from self.verify(event)
+    verified = Result<void, WebhookError> from verify(event)
     if (verified.isErr) {
       return Err(verified.error)
     }

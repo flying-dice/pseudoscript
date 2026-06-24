@@ -82,7 +82,7 @@ pub fn completion(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Vec
         // A `container`'s parent must be a `system`, a `component`'s a `container`
         // (§4); only those kinds are offered. A feature target is any node.
         Some((i, TokenKind::KwFor)) => node_items(ws, from_fqn, parent_kind(&tokens, i)),
-        _ => general_items(ws, from_fqn),
+        _ => general_items(ws, from_fqn, offset),
     }
 }
 
@@ -323,12 +323,16 @@ fn type_items(ws: &Workspace) -> Vec<CompletionItem> {
     primitives.chain(declared).collect()
 }
 
-/// Keywords, this module's own symbols, and the other modules in the workspace
-/// (so a cross-module reference can be started — pick the module, then `::`
-/// drills into its public symbols).
-fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
+/// Keywords, this module's own symbols, the enclosing node's callables (bare
+/// same-node calls, §5.1, ADR-041), and the other modules in the workspace (so a
+/// cross-module reference can be started — pick the module, then `::` drills into
+/// its public symbols).
+fn general_items(ws: &Workspace, from_fqn: &str, offset: u32) -> Vec<CompletionItem> {
+    // `self` stays a reserved word only to diagnose the removed `self.` form
+    // (ADR-041); it MUST NOT appear in a model, so never offer it.
     let keywords = TokenKind::KEYWORDS
         .iter()
+        .filter(|k| **k != "self")
         .map(|k| item(k, CompletionKind::Keyword, "keyword"));
     let modules = other_modules(ws, from_fqn);
     let Some(entry) = ws.module(from_fqn) else {
@@ -338,7 +342,24 @@ fn general_items(ws: &Workspace, from_fqn: &str) -> Vec<CompletionItem> {
         .model
         .symbols()
         .map(|s| item(&s.name, symbol_kind(s.kind), &s.fqn));
-    keywords.chain(symbols).chain(modules).collect()
+    // Inside a node body, the enclosing node's own callables are reachable as
+    // bare same-node calls `Name(args)` — private siblings included (same node).
+    let own_calls: Vec<CompletionItem> = enclosing_node(&entry.ast, offset)
+        .map(|node| {
+            entry
+                .model
+                .members(&node)
+                .iter()
+                .filter(|m| m.kind == MemberKind::Callable)
+                .map(|m| item(&m.name, CompletionKind::Method, &m.detail))
+                .collect()
+        })
+        .unwrap_or_default();
+    keywords
+        .chain(symbols)
+        .chain(own_calls)
+        .chain(modules)
+        .collect()
 }
 
 /// The completion kind for a declared symbol.
@@ -482,11 +503,13 @@ mod tests {
     }
 
     #[test]
-    fn members_after_self_dot() {
+    fn siblings_complete_as_bare_calls() {
+        // §5.1, ADR-041: inside a node body a sibling callable completes as a
+        // bare same-node call `Name(args)` — no `self.` qualifier.
         let src =
-            "//! m\n\nsystem S {\n  run(): void {\n    self.\n  }\n  helper(x: number): uuid;\n}\n";
+            "//! m\n\nsystem S {\n  run(): void {\n    he\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
-        let offset = (src.find("self.").unwrap() + "self.".len()) as u32;
+        let offset = (src.find("    he").unwrap() + "    he".len()) as u32;
         let labels = labels_at(&ws, "m", src, offset);
         assert!(labels.contains(&"helper".to_owned()), "{labels:?}");
         assert!(labels.contains(&"run".to_owned()), "{labels:?}");
@@ -588,7 +611,10 @@ mod tests {
     // governs — and must not leak the general keyword set.
 
     #[test]
-    fn members_after_self_dot_with_prefix() {
+    fn legacy_self_dot_still_completes_members() {
+        // `self.` is removed syntax (ADR-041), but the token-based member
+        // completion still resolves it gracefully so a user mid-migration is
+        // not stranded; the `.` narrowing scope must not leak the keyword set.
         let src = "//! m\n\nsystem S {\n  run(): void {\n    self.he\n  }\n  helper(x: number): uuid;\n}\n";
         let ws = workspace(&[("m", src)]);
         let offset = (src.find("self.he").unwrap() + "self.he".len()) as u32;

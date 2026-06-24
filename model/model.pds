@@ -276,7 +276,7 @@ public component Resolver for model::Model {
   /// feature adds nothing to this table — its name lives in a separate
   /// namespace.
   public build(ast: syntax::Module): model::SymbolTable {
-    return self.buildWithPath(ast, "")
+    return buildWithPath(ast, "")
   }
 
   /// Builds the table with a caller-supplied module FQN — the path the workspace
@@ -306,7 +306,7 @@ public component Workspace for model::Model {
   /// graph-projection path. Resolves each module with its caller-supplied FQN so
   /// the global index keys on the correct cross-module names.
   public build(modules: model::WorkspaceModule[]): model::ModuleEntry[] {
-    return self.buildWithExternals(modules, self.noExternals())
+    return buildWithExternals(modules, noExternals())
   }
 
   /// Builds the table with the workspace's §8.3 dependency modules bound as
@@ -315,9 +315,9 @@ public component Workspace for model::Model {
   /// a private external reports `Private`, not a dangling FQN (§8.3). The checks
   /// path the CLI, the LSP store, and the IDE all route through.
   public buildWithExternals(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): model::ModuleEntry[] {
-    local = ModuleEntry[] from self.resolveEach(modules)
-    external = ModuleEntry[] from self.resolveEach(externals)
-    return self.index(local, external)
+    local = ModuleEntry[] from resolveEach(modules)
+    external = ModuleEntry[] from resolveEach(externals)
+    return index(local, external)
   }
 
   /// Parse and resolve each module into a `ModuleEntry` — its FQN, its AST, and
@@ -343,12 +343,12 @@ public component Workspace for model::Model {
   /// §8.2 visibility rule: a same-module target resolves regardless of
   /// visibility; a cross-module target resolves only if it is `public`.
   public resolveQualified(fromModule: string, fqn: string): model::Resolution {
-    found = Option<model::Symbol> from self.lookup(fqn)
+    found = Option<model::Symbol> from lookup(fqn)
     if (found.isNone) {
       return model::Resolution::Missing
     }
     sym = Symbol from found.value
-    if (self.sameModule(fromModule, fqn)) {
+    if (sameModule(fromModule, fqn)) {
       return Public from { sym }
     }
     if (sym.isPublic) {
@@ -371,7 +371,7 @@ component Checks for model::Model {
   /// the static-analysis errors. The CLI's `pds check` driver.
   public check(text: string): syntax::Diagnostic[] {
     parsed = Parsed from syntax::Syntax.parse(text)
-    static = syntax::Diagnostic[] from self.analyze(parsed.ast)
+    static = syntax::Diagnostic[] from analyze(parsed.ast)
     return syntax::Diagnostic[] from { parsed.diagnostics, static }
   }
 
@@ -380,7 +380,7 @@ component Checks for model::Model {
   /// diagnostics; the caller supplies the parse diagnostics.
   public analyze(ast: syntax::Module): syntax::Diagnostic[] {
     model = SymbolTable from model::Resolver.build(ast)
-    return self.run(ast, model)
+    return run(ast, model)
   }
 
   /// Check a multi-module workspace with its §8.3 dependency modules bound as
@@ -390,9 +390,9 @@ component Checks for model::Model {
   /// parse errors come first because the `ModuleEntry` the workspace pass walks
   /// keeps only the recovered AST and drops each module's parse diagnostics.
   public checkWorkspace(modules: model::WorkspaceModule[], externals: model::WorkspaceModule[]): syntax::Diagnostic[] {
-    parse = syntax::Diagnostic[] from self.parseErrors(modules)
+    parse = syntax::Diagnostic[] from parseErrors(modules)
     entries = ModuleEntry[] from model::Workspace.buildWithExternals(modules, externals)
-    workspace = syntax::Diagnostic[] from self.runWorkspace(entries)
+    workspace = syntax::Diagnostic[] from runWorkspace(entries)
     return syntax::Diagnostic[] from { parse, workspace }
   }
 
@@ -415,10 +415,10 @@ component Checks for model::Model {
   run(ast: syntax::Module, model: model::SymbolTable): syntax::Diagnostic[] {
     variants = syntax::Diagnostic[] from model::VariantCollision.check(ast)
     features = syntax::Diagnostic[] from model::FeatureCheck.check(ast, model)
-    constants = syntax::Diagnostic[] from self.checkConstantCollisions(ast)
+    constants = syntax::Diagnostic[] from checkConstantCollisions(ast)
     reserved = syntax::Diagnostic[] from model::ReservedNames.check(ast)
     typeRefs = syntax::Diagnostic[] from model::TypeRefs.check(ast, model)
-    items = syntax::Diagnostic[] from self.checkItems(ast)
+    items = syntax::Diagnostic[] from checkItems(ast)
     return syntax::Diagnostic[] from { variants, features, constants, reserved, typeRefs, items }
   }
 
@@ -430,10 +430,10 @@ component Checks for model::Model {
   /// macro targeting (§2.4), single-assignment rebinds (§7.1), return coverage
   /// (ADR-016), `Result`/`Option` accessor narrowing (§6), return-type and `from`
   /// source/target matching — a `return` or `from` source call whose callee
-  /// resolves in-module (`self.` or a same-module node) carries the callee's
+  /// resolves in-module (a same-node call or a same-module node) carries the callee's
   /// declared return type (§5.1, §7.2 — ADR-035, ADR-040), `for` iterates an array
-  /// (§7.3 — ADR-014), `self.` calls and bare references resolve (§5.1, §8 —
-  /// ADR-004), `.field` reads name a declared field (§2.2, §3.4), call arity and
+  /// (§7.3 — ADR-014), same-node calls and bare references resolve (§5.1, §8 —
+  /// ADR-041), `.field` reads name a declared field (§2.2, §3.4), call arity and
   /// argument types match (§5.1 — ADR-022), `.method(args)` calls name a callable
   /// of the receiver's type (§6 — ADR-022), and `if`/`while` conditions are `bool`
   /// (§7 — ADR-023). Plus, on each structural declaration, the macro-target check
@@ -447,7 +447,7 @@ component Checks for model::Model {
   /// errors, and the architectural warnings. The graph is projected once from the
   /// resolved entries and handed to `Architecture`, which never holds source.
   runWorkspace(entries: model::ModuleEntry[]): syntax::Diagnostic[] {
-    perModule = syntax::Diagnostic[] from self.runEach(entries)
+    perModule = syntax::Diagnostic[] from runEach(entries)
     cross = syntax::Diagnostic[] from model::CrossModule.check(entries)
     graph = model::Graph from model::Builder.graphOf(entries)
     arch = syntax::Diagnostic[] from model::Architecture.check(graph)
@@ -495,9 +495,9 @@ component Architecture for model::Model {
   /// bypass (PDS-ARCH-001), cyclic dependency (PDS-ARCH-002), and system-boundary
   /// bypass (PDS-ARCH-003).
   public check(graph: model::Graph): syntax::Diagnostic[] {
-    backdoor = syntax::Diagnostic[] from self.checkBackdoor(graph)
-    cycles = syntax::Diagnostic[] from self.checkCycles(graph)
-    boundary = syntax::Diagnostic[] from self.checkSystemBoundary(graph)
+    backdoor = syntax::Diagnostic[] from checkBackdoor(graph)
+    cycles = syntax::Diagnostic[] from checkCycles(graph)
+    boundary = syntax::Diagnostic[] from checkSystemBoundary(graph)
     return syntax::Diagnostic[] from { backdoor, cycles, boundary }
   }
 
@@ -567,7 +567,7 @@ public component ResultFlow for model::Model {
 public component ReturnCoverage for model::Model {
   /// Whether a block returns on every path: any statement diverges.
   public blockReturns(body: syntax::Module): bool {
-    return self.stmtReturns(body)
+    return stmtReturns(body)
   }
 
   /// Whether one statement guarantees a return: a `return`, or an `if`/`else`
@@ -651,7 +651,7 @@ component Builder for model::Model {
   /// then project. The entry point for callers that hold only source.
   public graph(modules: model::WorkspaceModule[]): model::Graph {
     entries = ModuleEntry[] from model::Workspace.build(modules)
-    return Graph from self.graphOf(entries)
+    return Graph from graphOf(entries)
   }
 
   /// Projects an already-resolved workspace into the graph: collect every node,
@@ -661,7 +661,7 @@ component Builder for model::Model {
   /// so the architectural lints run without re-resolving.
   public graphOf(entries: model::ModuleEntry[]): model::Graph {
     for (e in entries) {
-      self.collectModule(e)
+      collectModule(e)
     }
     return Graph from { entries }
   }
@@ -719,7 +719,7 @@ public data ResolveHit { clicked: syntax::Span, targetModule: string, targetSpan
 /// Caret resolution — the engine every cursor feature shares (`lsp_core` hover,
 /// definition, references, rename; the IDE's symbol actions). Tokenizes the
 /// active source, finds the identifier under the offset, and resolves it across
-/// the workspace and its externals: a node or data FQN, a `self.`/member access,
+/// the workspace and its externals: a node or data FQN, a same-node call or member access,
 /// or a local reference. Token-level, so it survives a partial parse.
 public component CaretResolve for model::Model {
   /// Resolve the identifier under `offset` in module `fromFqn`'s source; none

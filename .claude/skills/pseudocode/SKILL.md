@@ -257,7 +257,7 @@ public container Checkout for shop::Shop {
     if (reserved.isErr) {
       return Err(reserved.error)
     }
-    quote = number from self.Quote(cmd.sku, cmd.qty)
+    quote = number from Quote(cmd.sku, cmd.qty)
     order = shop::Order from { cmd, quote }
     paid = Result<void, shop::Declined> from shop::Payments.charge(order)
     if (paid.isErr) {

@@ -8,6 +8,6 @@ data Info { owner: string }
 public container Mainframe for Banking {
   Run(): void {
     a = string from Store::Repo.fetch(1).value.owner
-    b = string from self.Pick().first().tag
+    b = string from Pick().first().tag
   }
 }

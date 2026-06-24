@@ -97,7 +97,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Mainframe for Banking {
         Get(): Result<Info, Missing> {
-          r = Result<Info, Missing> from self.Fetch()
+          r = Result<Info, Missing> from Fetch()
           if (r.isErr) {
             return Err(r.error)
           }
@@ -116,7 +116,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Mainframe for Banking {
         Run(): void {
-          self.Make()
+          Make()
         }
         Make(): Info;
       }
@@ -131,8 +131,8 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Mainframe for Banking {
         Run(): void {
-          r = Info from self.Make()
-          r = Info from self.Make()
+          r = Info from Make()
+          r = Info from Make()
         }
         Make(): Info;
       }
@@ -173,7 +173,7 @@ Feature: Static rules, one scenario each (LANG.md §2.4, §3.5, §4, §5.1, §6,
       public system Banking;
       public container Mainframe for Banking {
         Get(): Result<Info, Bad> {
-          r = Result<Info, Bad> from self.Fetch()
+          r = Result<Info, Bad> from Fetch()
           if (r.isOk) {
             return Ok(r.error)
           }

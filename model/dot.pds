@@ -131,7 +131,7 @@ component Engine for dot::Dot {
     placed = NodePos[] from dot::Position.assignCoords(graph, ordered)
     routed = EdgeRoute[] from dot::Splines.route(graph, ordered, placed)
     framed = ClusterBox[] from dot::Clusters.boxes(graph, placed)
-    return self.finish(placed, routed, framed)
+    return finish(placed, routed, framed)
   }
 
   /// Translate the assembled layout so its minimum corner is the origin and
@@ -200,8 +200,8 @@ public component Pipeline for dot::Dot {
   /// Fold the base state through `passes` in order; the last state's placement
   /// is the result.
   run(graph: dot::Graph, passes: dot::Pass[]): dot::Layout {
-    state = dot::LayoutState from self.base(graph)
-    folded = dot::LayoutState from self.fold(state, passes)
+    state = dot::LayoutState from base(graph)
+    folded = dot::LayoutState from fold(state, passes)
     return folded.layout
   }
 

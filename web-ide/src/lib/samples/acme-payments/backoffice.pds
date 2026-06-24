@@ -46,14 +46,14 @@ component Console for backoffice::Backoffice {
     if (owned.isErr) {
       return Err(backoffice::ConsoleError::NotFound)
     }
-    keep = Result<void, ConsoleError> from self.approves(decision.verdict)
+    keep = Result<void, ConsoleError> from approves(decision.verdict)
     if (keep.isOk) {
       risk::Risk.clear(decision.intent)
       return Ok
     }
     refunded = Result<Refund, RefundError> from refunds::Refunds.create(merchant.value.id, RefundRequest from { decision.intent, owned.value.amount })
     if (refunded.isErr) {
-      return Err(self.refundRejected(refunded.error))
+      return Err(refundRejected(refunded.error))
     }
     risk::Risk.clear(decision.intent)
     return Ok
@@ -68,7 +68,7 @@ component Console for backoffice::Backoffice {
     }
     done = Result<Refund, RefundError> from refunds::Refunds.create(merchant.value.id, req)
     if (done.isErr) {
-      return Err(self.refundRejected(done.error))
+      return Err(refundRejected(done.error))
     }
     return Ok(done.value)
   }

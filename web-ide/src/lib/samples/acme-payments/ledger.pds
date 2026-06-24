@@ -65,14 +65,14 @@ component BalanceService for ledger::Ledger {
   /// time alone.
   #[onevent(intents::PaymentSucceeded)]
   public onPaymentSucceeded(event: intents::PaymentSucceeded): void {
-    entry = BalanceTransaction from self.creditFor(event)
+    entry = BalanceTransaction from creditFor(event)
     ledger::EntryLog.appendOnce(entry)
   }
 
   /// A successful refund debits available, immediately.
   #[onevent(refunds::RefundSucceeded)]
   public onRefund(event: refunds::RefundSucceeded): void {
-    entry = BalanceTransaction from self.refundDebit(event)
+    entry = BalanceTransaction from refundDebit(event)
     ledger::EntryLog.appendOnce(entry)
   }
 
@@ -80,14 +80,14 @@ component BalanceService for ledger::Ledger {
   /// available, held until the dispute resolves.
   #[onevent(disputes::DisputeOpened)]
   public onDisputeOpened(event: disputes::DisputeOpened): void {
-    entry = BalanceTransaction from self.disputeDebit(event)
+    entry = BalanceTransaction from disputeDebit(event)
     ledger::EntryLog.appendOnce(entry)
   }
 
   /// A won dispute reverses the hold, returning the disputed amount to available.
   #[onevent(disputes::DisputeWon)]
   public onDisputeWon(event: disputes::DisputeWon): void {
-    entry = BalanceTransaction from self.disputeReversal(event)
+    entry = BalanceTransaction from disputeReversal(event)
     ledger::EntryLog.appendOnce(entry)
   }
 
@@ -102,14 +102,14 @@ component BalanceService for ledger::Ledger {
   /// so two concurrent payouts cannot both draw the same funds, and the balance
   /// can never go negative from a payout.
   public withdraw(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): Result<ledger::BalanceTransaction, ledger::LedgerError> {
-    debit = BalanceTransaction from self.payoutDebit(merchant, payout, amount)
+    debit = BalanceTransaction from payoutDebit(merchant, payout, amount)
     return ledger::EntryLog.appendIfAvailable(merchant, debit, amount)
   }
 
   /// Return drawn funds to available when a payout fails to leave the bank, by
   /// appending a `PayoutReversal` (idempotent on the payout).
   public restore(merchant: shared::MerchantId, payout: shared::PayoutId, amount: shared::Money): void {
-    ledger::EntryLog.appendOnce(self.payoutReversal(merchant, payout, amount))
+    ledger::EntryLog.appendOnce(payoutReversal(merchant, payout, amount))
   }
 
   /// Build a pending `ChargeCredit` from a payment-succeeded event: net of fee,

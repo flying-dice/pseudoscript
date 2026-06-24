@@ -7,6 +7,6 @@
 public system S;
 
 public container C for S {
-  ping(): Ghost { return self.pong() }
+  ping(): Ghost { return pong() }
   pong(): number { return 1 }
 }

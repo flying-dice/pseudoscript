@@ -103,7 +103,7 @@ fn type_position_offers_types_only() {
 #[test]
 fn generic_argument_position_offers_types_only() {
     let l = labels(
-        "//! m\npublic data Money { amount: number }\npublic system A {\n  find(): Result<~ > { return self.find() }\n}\n",
+        "//! m\npublic data Money { amount: number }\npublic system A {\n  find(): Result<~ > { return find() }\n}\n",
     );
     assert!(has(&l, "Money") || has(&l, "number"), "{l:?}");
     assert_none(&l, &["public", "container", "feature", "Ok", "Err"]);

@@ -11,7 +11,7 @@ Feature: Call argument types (LANG.md §5.1)
       //! example
       public system S;
       public container C for S {
-        run(): void { self.take("x") }
+        run(): void { take("x") }
         take(n: number): void { }
       }
       """
@@ -24,7 +24,7 @@ Feature: Call argument types (LANG.md §5.1)
       //! example
       public system S;
       public container C for S {
-        run(): void { self.take(5) }
+        run(): void { take(5) }
         take(n: number): void { }
       }
       """
@@ -37,7 +37,7 @@ Feature: Call argument types (LANG.md §5.1)
       public data Item { id: number }
       public system S;
       public container C for S {
-        run(a: Item, b: Item): void { self.take(Item[] from { a, b }) }
+        run(a: Item, b: Item): void { take(Item[] from { a, b }) }
         take(xs: Item[]): void { }
       }
       """

@@ -27,7 +27,7 @@ public system S;\n\
 public data Money;\n\
 \n\
 public container C for S {\n\
-  run(): void { self.charge(\"free\") }\n\
+  run(): void { charge(\"free\") }\n\
   charge(amt: Money): void { }\n\
 }\n";
     let output = pds_eval().write_stdin(src).output().expect("run pds eval");

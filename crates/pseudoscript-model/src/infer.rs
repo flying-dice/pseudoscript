@@ -123,6 +123,16 @@ fn expr_type(ws: &Workspace, from_fqn: &str, expr: &ast::Expr) -> Option<String>
         // `T from …` produces a value of the target type (ADR-035).
         ast::ExprKind::From { ty, .. } => Some(crate::model::render_type(ty)),
         ast::ExprKind::Postfix { base, segments } => postfix_type(ws, from_fqn, base, segments),
+        // §5.1: a bare same-node call resolves to a callable on the enclosing
+        // node; its type is that callable's declared return type (ADR-041).
+        ast::ExprKind::OwnCall { name, .. } => {
+            let node = enclosing_node(&ws.module(from_fqn)?.ast, expr.span.start)?;
+            ws.module_model(from_fqn)?
+                .members(&node)
+                .iter()
+                .find(|m| m.name == name.name && m.kind == crate::MemberKind::Callable)
+                .map(|m| m.ty.clone())
+        }
         // §7.5: arithmetic yields `number`, every other operator yields `bool`.
         ast::ExprKind::Binary { op, .. } => Some(
             match op {
@@ -187,14 +197,9 @@ fn postfix_type(
     result
 }
 
-/// The node/data owner a postfix base denotes: `self`'s enclosing node, or the
-/// node/data a path names.
+/// The node/data owner a postfix base denotes: the node/data a path names.
 fn base_owner(ws: &Workspace, from_fqn: &str, base: &ast::Expr) -> Option<(String, String)> {
     match &base.kind {
-        ast::ExprKind::Ref(ast::Ref::SelfNode(span)) => {
-            let node = enclosing_node(&ws.module(from_fqn)?.ast, span.start)?;
-            Some((from_fqn.to_owned(), node))
-        }
         ast::ExprKind::Ref(ast::Ref::Path(path)) => {
             let segments: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
             resolve_owner(ws, from_fqn, &segments).or_else(|| {

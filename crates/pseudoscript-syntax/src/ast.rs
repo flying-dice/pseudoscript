@@ -409,7 +409,15 @@ pub enum ExprKind {
         base: Box<Expr>,
         segments: Vec<PostfixSeg>,
     },
-    /// `self` or an FQN (§10 `Ref`).
+    /// A bare same-node call `Name(args)` — a sibling callable, or the enclosing
+    /// callable itself for recursion (§5.1, §10 `Call`, ADR-041).
+    OwnCall {
+        /// The invoked callable's name; resolves on the enclosing node.
+        name: Ident,
+        /// The call arguments.
+        args: Vec<Expr>,
+    },
+    /// An FQN (§10 `Ref`).
     Ref(Ref),
     /// A string / number / bool literal (ADR-013).
     Literal(Literal),
@@ -545,8 +553,6 @@ pub struct PostfixSeg {
 /// A reference primary (§10 `Ref`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ref {
-    /// `self` — the enclosing node (ADR-004).
-    SelfNode(Span),
     /// An identifier or `::`-separated path (a node FQN).
     Path(Path),
 }

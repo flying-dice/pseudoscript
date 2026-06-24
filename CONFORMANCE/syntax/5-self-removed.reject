@@ -1,0 +1,11 @@
+// LANG.md §5.1 (ADR-041): the `self.` qualifier was removed. A same-node call
+// is bare `Name(args)`; `self.Name(args)` no longer parses.
+
+public system Banking;
+
+public container Mainframe for Banking {
+  A(): void {
+    self.B()
+  }
+  B(): void;
+}

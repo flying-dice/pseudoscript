@@ -106,7 +106,7 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
     Given the workspace modules:
       | fqn   | source                                                                                                     |
       | a     | //! a\npublic data Money { amount: number }                                                                 |
-      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return self.total() }\n} |
+      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return total() }\n} |
     When I check the workspace
     Then the workspace has no errors
 
@@ -114,7 +114,7 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
     Given the workspace modules:
       | fqn   | source                                                                                          |
       | a     | //! a\ndata Money { amount: number }                                                                        |
-      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return self.total() }\n} |
+      | b     | //! b\npublic system Sys;\npublic container Box for b::Sys {\n  total(): a::Money { return total() }\n} |
     When I check the workspace
     Then the workspace diagnostics include "type `a::Money` is private to its module"
 
@@ -130,6 +130,6 @@ Feature: Cross-module visibility resolution (LANG.md §8.2, ADR-010)
     Given the workspace modules:
       | fqn   | source                                                                                                       |
       | a     | //! a\npublic system Sys;                                                                                     |
-      | b     | //! b\npublic system Other;\npublic container Box for b::Other {\n  find(): Option<a::Missing> { return self.find() }\n} |
+      | b     | //! b\npublic system Other;\npublic container Box for b::Other {\n  find(): Option<a::Missing> { return find() }\n} |
     When I check the workspace
     Then the workspace diagnostics include "dangling cross-module reference `a::Missing`: target does not resolve"

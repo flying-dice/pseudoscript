@@ -86,7 +86,7 @@ component Keys for identity::Identity {
     if (merchant.isNone) {
       return Err(identity::ApiKeyError::InvalidKey)
     }
-    granted = Result<void, ApiKeyError> from self.permits(key, need)
+    granted = Result<void, ApiKeyError> from permits(key, need)
     if (granted.isErr) {
       return Err(identity::ApiKeyError::InsufficientScope)
     }

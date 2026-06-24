@@ -66,7 +66,7 @@ component Console for backoffice::Backoffice {
     }
     live = Result<Event, EventNotFound> from catalog::Catalog.putOnSale(event)
     if (live.isErr) {
-      return Err(self.notFound(live.error))
+      return Err(notFound(live.error))
     }
     return Ok(live.value)
   }
@@ -79,7 +79,7 @@ component Console for backoffice::Backoffice {
     }
     dead = Result<Event, EventNotFound> from catalog::Catalog.cancel(event)
     if (dead.isErr) {
-      return Err(self.notFound(dead.error))
+      return Err(notFound(dead.error))
     }
     return Ok(dead.value)
   }
@@ -92,7 +92,7 @@ component Console for backoffice::Backoffice {
     }
     refunded = Result<Order, CheckoutError> from orders::Orders.refund(order)
     if (refunded.isErr) {
-      return Err(self.refundRejected(refunded.error))
+      return Err(refundRejected(refunded.error))
     }
     return Ok(refunded.value)
   }

@@ -618,22 +618,43 @@ impl Checker<'_> {
         for_each_expr(block, &mut |expr| self.check_call_at(expr, owner, vars));
     }
 
-    /// Checks one call's arity and argument types when its receiver resolves to a
-    /// same-module callable. Only the first segment is the call on the receiver.
+    /// Checks one call's arity and argument types when it resolves to a
+    /// same-module callable: a bare same-node call `Name(args)` (§5.1) on the
+    /// enclosing node, or a `receiver.method(args)` whose first segment resolves
+    /// to a same-module node.
     fn check_call_at(&mut self, expr: &Expr, owner: &str, vars: &FxHashMap<String, Ty>) {
-        let ExprKind::Postfix { base, segments } = &expr.kind else {
-            return;
-        };
-        let Some(seg) = segments.first() else { return };
-        let Some(args) = &seg.call_args else { return };
-        let Some(node) = self.call_receiver_node(base, owner) else {
-            return;
-        };
+        match &expr.kind {
+            ExprKind::OwnCall { name, args } => {
+                self.check_call_signature(owner, &name.name, name.span, args, vars);
+            }
+            ExprKind::Postfix { base, segments } => {
+                let Some(seg) = segments.first() else { return };
+                let Some(args) = &seg.call_args else { return };
+                let Some(node) = self.call_receiver_node(base) else {
+                    return;
+                };
+                self.check_call_signature(&node, &seg.name.name, seg.span, args, vars);
+            }
+            _ => {}
+        }
+    }
+
+    /// Checks a resolved call's arity against `node`'s callable `method`, then
+    /// its argument types. A name not naming a callable of `node` is left to the
+    /// existence checks (`check_self_call_at` / cross-module resolution).
+    fn check_call_signature(
+        &mut self,
+        node: &str,
+        method: &str,
+        span: Span,
+        args: &[Expr],
+        vars: &FxHashMap<String, Ty>,
+    ) {
         let Some(params) = self
             .model
-            .members(&node)
+            .members(node)
             .iter()
-            .find(|m| m.kind == MemberKind::Callable && m.name == seg.name.name)
+            .find(|m| m.kind == MemberKind::Callable && m.name == method)
             .map(|m| m.param_types.clone())
         else {
             return;
@@ -642,10 +663,9 @@ impl Checker<'_> {
             self.check_arg_types(args, &params, vars);
         } else {
             self.error(
-                seg.span,
+                span,
                 format!(
-                    "callable `{}` expects {} argument(s), got {}",
-                    seg.name.name,
+                    "callable `{method}` expects {} argument(s), got {}",
                     params.len(),
                     args.len()
                 ),
@@ -674,14 +694,14 @@ impl Checker<'_> {
         }
     }
 
-    /// The same-module node a call's receiver resolves to: the enclosing node for
-    /// `self`, or a node named by the receiver path's leaf. `None` for a value
-    /// receiver, a name that is not a node, or a qualified path into another
-    /// module — a cross-module node's members are not in this single-module
-    /// model (ADR-022), and a leaf-only match would land on the wrong node.
-    fn call_receiver_node(&self, base: &Expr, owner: &str) -> Option<String> {
+    /// The same-module node a `receiver.method` call's receiver resolves to: a
+    /// node named by the receiver path's leaf. `None` for a value receiver, a
+    /// name that is not a node, or a qualified path into another module — a
+    /// cross-module node's members are not in this single-module model (ADR-022),
+    /// and a leaf-only match would land on the wrong node. A bare same-node call
+    /// `Name(args)` resolves directly on the enclosing node, not here (§5.1).
+    fn call_receiver_node(&self, base: &Expr) -> Option<String> {
         match &base.kind {
-            ExprKind::Ref(Ref::SelfNode(_)) => Some(owner.to_owned()),
             ExprKind::Ref(Ref::Path(path)) => {
                 if path.segments.len() > 1 && !self.model.module_path.is_empty() {
                     let module = &path.segments[..path.segments.len() - 1];
@@ -902,23 +922,19 @@ impl Checker<'_> {
         }
     }
 
-    /// §5.1 / ADR-004: `self.Name(args)` MUST name a callable of the enclosing
-    /// node `owner`.
+    /// §5.1 / ADR-041: a bare same-node call `Name(args)` MUST name a callable of
+    /// the enclosing node `owner`.
     fn check_self_calls(&mut self, block: &Block, owner: &str) {
         for_each_expr(block, &mut |expr| self.check_self_call_at(expr, owner));
     }
 
-    /// Checks one `self.Method(args)` call: the first segment, when a call
-    /// directly on `self`, must name a callable of the enclosing node.
+    /// Checks one bare same-node call `Name(args)`: `Name` must name a callable
+    /// of the enclosing node.
     fn check_self_call_at(&mut self, expr: &Expr, owner: &str) {
-        let ExprKind::Postfix { base, segments } = &expr.kind else {
+        let ExprKind::OwnCall { name, .. } = &expr.kind else {
             return;
         };
-        if matches!(&base.kind, ExprKind::Ref(Ref::SelfNode(_)))
-            && let Some(seg) = segments.first()
-            && seg.call_args.is_some()
-            && !self.owner_has_callable(owner, &seg.name.name)
-        {
+        if !self.owner_has_callable(owner, &name.name) {
             let hint = {
                 let cands: Vec<&str> = self
                     .model
@@ -927,13 +943,13 @@ impl Checker<'_> {
                     .filter(|m| m.kind == MemberKind::Callable)
                     .map(|m| m.name.as_str())
                     .collect();
-                suggest(&seg.name.name, &cands)
+                suggest(&name.name, &cands)
             };
             self.error(
-                seg.span,
+                name.span,
                 format!(
-                    "`self.{}` does not name a callable of `{owner}`{hint}",
-                    seg.name.name
+                    "`{}` does not name a callable of `{owner}`{hint}",
+                    name.name
                 ),
             );
         }
@@ -1150,27 +1166,31 @@ impl Checker<'_> {
         }
     }
 
-    /// The declared return type of a `Receiver.Method(args)` call whose receiver
-    /// resolves in-module (`self` or a same-module node) and whose `Method` is a
-    /// callable of that node, as a [`Ty`]; `None` otherwise.
+    /// The declared return type of a call whose callee resolves in-module, as a
+    /// [`Ty`]; `None` otherwise. Covers a bare same-node call `Name(args)` on the
+    /// enclosing node (§5.1) and a `Receiver.Method(args)` whose receiver is a
+    /// same-module node, when the callee is a callable of that node.
     fn call_return(&self, expr: &Expr, owner: &str) -> Option<Ty> {
         let mut expr = expr;
         while let ExprKind::Paren(inner) = &expr.kind {
             expr = inner;
         }
-        let ExprKind::Postfix { base, segments } = &expr.kind else {
-            return None;
+        let (node, method): (String, &str) = match &expr.kind {
+            ExprKind::OwnCall { name, .. } => (owner.to_owned(), name.name.as_str()),
+            ExprKind::Postfix { base, segments } => {
+                let [seg] = segments.as_slice() else {
+                    return None;
+                };
+                seg.call_args.as_ref()?; // a call segment, not a field access
+                (self.call_receiver_node(base)?, seg.name.name.as_str())
+            }
+            _ => return None,
         };
-        let [seg] = segments.as_slice() else {
-            return None;
-        };
-        seg.call_args.as_ref()?; // a call segment, not a field access
-        let node = self.call_receiver_node(base, owner)?;
         let member = self
             .model
             .members(&node)
             .iter()
-            .find(|m| m.kind == MemberKind::Callable && m.name == seg.name.name)?;
+            .find(|m| m.kind == MemberKind::Callable && m.name == method)?;
         Some(ty_from_rendered(&member.ty))
     }
 
@@ -1726,6 +1746,11 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             payload: Some(payload),
             ..
         } => walk_expr(payload, f),
+        ExprKind::OwnCall { args, .. } => {
+            for arg in args {
+                walk_expr(arg, f);
+            }
+        }
         ExprKind::Unary { expr, .. } | ExprKind::Paren(expr) => walk_expr(expr, f),
         ExprKind::Binary { left, right, .. } => {
             walk_expr(left, f);

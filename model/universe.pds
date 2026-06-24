@@ -99,9 +99,9 @@ component Adapter for universe::Universe {
   /// Adapt an already-resolved model: place the structural nodes, wire
   /// containment, then lift and tally call traffic into directed edges.
   public fromModel(graph: model::Graph): universe::SoftwareGraph {
-    nodes = GraphNode[] from self.placeStructural(graph)
-    rooted = SoftwareGraph from self.wireContainment(graph, nodes)
-    return self.tallyTraffic(graph, rooted)
+    nodes = GraphNode[] from placeStructural(graph)
+    rooted = SoftwareGraph from wireContainment(graph, nodes)
+    return tallyTraffic(graph, rooted)
   }
 
   /// Each model node whose kind is structural (system/container/component/person)
@@ -137,8 +137,8 @@ component Adapter for universe::Universe {
 component FlowTracer for universe::Universe {
   /// Every flow, one per entry point in FQN order, coloured by its FQN key.
   public flows(graph: model::Graph): universe::FlowDef[] {
-    entries = model::GraphNode[] from self.entryPoints(graph)
-    return self.traceAll(graph, entries)
+    entries = model::GraphNode[] from entryPoints(graph)
+    return traceAll(graph, entries)
   }
 
   /// The flow entry points: every callable carrying a trigger macro, plus every
@@ -153,12 +153,12 @@ component FlowTracer for universe::Universe {
   /// hops, and carry the flow's colour. A projection failure yields a flow with
   /// no hops rather than aborting — a partial model still animates.
   trace(graph: model::Graph, entry: model::GraphNode, color: string): universe::FlowDef {
-    scene = Result<Scene, EmitError> from emit::Emit.project(graph, self.sequenceView(entry))
+    scene = Result<Scene, EmitError> from emit::Emit.project(graph, sequenceView(entry))
     if (scene.isErr) {
-      return self.emptyFlow(entry, color)
+      return emptyFlow(entry, color)
     }
-    hops = universe::FlowHop[] from self.walkMessages(graph, scene.value)
-    return self.flowOf(entry, color, hops)
+    hops = universe::FlowHop[] from walkMessages(graph, scene.value)
+    return flowOf(entry, color, hops)
   }
 
   /// Assemble the flow from the entry's FQN and simple name, its colour, and
@@ -191,8 +191,8 @@ component Flatten for universe::Universe {
   /// Flatten a graph to a `Snapshot`: map each node and relationship to its flat
   /// `out` form.
   public snapshot(graph: universe::SoftwareGraph): universe::Snapshot {
-    nodes = NodeOut[] from self.nodesOf(graph)
-    edges = EdgeOut[] from self.edgesOf(graph)
+    nodes = NodeOut[] from nodesOf(graph)
+    edges = EdgeOut[] from edgesOf(graph)
     return Snapshot from { nodes, edges }
   }
 

@@ -63,7 +63,7 @@ component PayoutService for payouts::Payouts {
       return Ok(existing.value)
     }
     balance = Balance from ledger::Ledger.balance(merchant)
-    due = Result<shared::Money, PayoutError> from self.payable(balance)
+    due = Result<shared::Money, PayoutError> from payable(balance)
     if (due.isErr) {
       return Err(due.error)
     }
@@ -72,23 +72,23 @@ component PayoutService for payouts::Payouts {
     if (drawn.isErr) {
       return Err(payouts::PayoutError::InsufficientFunds)
     }
-    destination = context::BankAccountRef from self.destinationFor(merchant)
+    destination = context::BankAccountRef from destinationFor(merchant)
     payout = Payout from { id, merchant, due.value, destination, payouts::PayoutStatus::Pending }
     payouts::PayoutStore.save(payout)
-    return self.send(payout)
+    return send(payout)
   }
 
   /// Send a recorded payout to the banking partner. On rejection, restore the
   /// drawn funds to the ledger and fail the payout (surfacing `PayoutFailed`);
   /// on acceptance, mark it in transit for the reconciler to settle.
   send(payout: payouts::Payout): Result<payouts::Payout, payouts::PayoutError> {
-    key = PayoutKey from self.keyFor(payout.id)
+    key = PayoutKey from keyFor(payout.id)
     transfer = Result<BankTransfer, BankError> from context::BankingPartner.initiate(payout.amount, payout.destination, key)
     if (transfer.isErr) {
-      self.refund(payout)
-      return Err(self.translate(transfer.error))
+      refund(payout)
+      return Err(translate(transfer.error))
     }
-    inTransit = Payout from self.markInTransit(payout, transfer.value)
+    inTransit = Payout from markInTransit(payout, transfer.value)
     payouts::PayoutStore.save(inTransit)
     return Ok(inTransit)
   }
@@ -99,11 +99,11 @@ component PayoutService for payouts::Payouts {
   public reconcile(id: shared::PayoutId): void {
     loaded = Option<Payout> from payouts::PayoutStore.fetch(id)
     if (loaded.isSome) {
-      pending = Result<InTransitPayout, PayoutError> from self.inTransit(loaded.value)
+      pending = Result<InTransitPayout, PayoutError> from inTransit(loaded.value)
       if (pending.isOk) {
         state = Option<BankTransferState> from context::BankingPartner.status(pending.value.transfer)
         if (state.isSome) {
-          self.applyState(loaded.value, state.value)
+          applyState(loaded.value, state.value)
         }
       }
     }
@@ -121,22 +121,22 @@ component PayoutService for payouts::Payouts {
 
   /// Apply a partner transfer state: settle, or restore-and-fail on a return.
   applyState(payout: payouts::Payout, state: context::BankTransferState): void {
-    settled = Result<void, PayoutError> from self.isSettled(state)
+    settled = Result<void, PayoutError> from isSettled(state)
     if (settled.isOk) {
-      payouts::PayoutStore.save(self.markPaid(payout))
+      payouts::PayoutStore.save(markPaid(payout))
       payouts::Events.paid(PayoutPaid from { payout.id, payout.merchant, payout.amount })
     } else {
-      self.refund(payout)
+      refund(payout)
     }
   }
 
   /// Restore a failed payout's funds to the ledger and record the failure,
   /// raising `PayoutFailed`. Idempotent: a payout already failed is left alone.
   refund(payout: payouts::Payout): void {
-    fresh = Result<void, PayoutError> from self.notYetFailed(payout)
+    fresh = Result<void, PayoutError> from notYetFailed(payout)
     if (fresh.isOk) {
       ledger::Ledger.restore(payout.merchant, payout.id, payout.amount)
-      payouts::PayoutStore.save(self.markFailed(payout))
+      payouts::PayoutStore.save(markFailed(payout))
       payouts::Events.failed(PayoutFailed from { payout.id, payout.merchant, payout.amount })
     }
   }

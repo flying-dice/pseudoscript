@@ -43,8 +43,8 @@ pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Opt
     }
 
     // A member's own declaration name (a callable or field) resolves to itself;
-    // members live in the member index, not the symbol table, so this is the
-    // only bare-name form that reaches them (ADR-004: no bare member references).
+    // members live in the member index, not the symbol table. The other bare-name
+    // form that reaches a member is a same-node call, handled below (ADR-041).
     if let Some((owner, member)) = ws
         .module(from_fqn)
         .and_then(|entry| entry.model.member_at(clicked))
@@ -56,6 +56,33 @@ pub fn resolve_at(ws: &Workspace, from_fqn: &str, src: &str, offset: u32) -> Opt
         return Some(Hit {
             clicked,
             ..member_hit(member, owner, &owner_fqn, from_fqn.to_owned())
+        });
+    }
+
+    // A bare same-node call `Name(args)` (§5.1, ADR-041): the clicked Ident is
+    // followed by `(` and is not a `::` path tail; it names a callable of the
+    // enclosing node. (A bare name in value position still does not reach a
+    // member — ADR-030; the declaration form is handled above.)
+    let prev_is_colon = idx >= 1 && tokens[idx - 1].kind == TokenKind::ColonColon;
+    if !prev_is_colon
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|t| t.kind == TokenKind::LParen)
+        && let Some(entry) = ws.module(from_fqn)
+        && let Some(node) = enclosing_node(&entry.ast, clicked.start)
+        && let Some(member) = entry
+            .model
+            .members(&node)
+            .iter()
+            .find(|m| m.name == tokens[idx].text && m.kind == crate::MemberKind::Callable)
+    {
+        let owner_fqn = entry
+            .model
+            .symbol(&node)
+            .map_or_else(|| node.clone(), |s| s.fqn.clone());
+        return Some(Hit {
+            clicked,
+            ..member_hit(member, &node, &owner_fqn, from_fqn.to_owned())
         });
     }
 

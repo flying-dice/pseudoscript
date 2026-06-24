@@ -311,8 +311,15 @@ fn expr_tokens(expr: &ast::Expr, out: &mut Vec<SemToken>) {
             }
         }
         ast::ExprKind::Ref(ast::Ref::Path(path)) => ref_path(path, out),
-        // `self` is a keyword and literals are coloured by the token pass.
-        ast::ExprKind::Ref(ast::Ref::SelfNode(_)) | ast::ExprKind::Literal(_) => {}
+        // A bare same-node call: the callee name colours as a method (§5.1).
+        ast::ExprKind::OwnCall { name, args } => {
+            push(out, name.span, SemKind::Method, false);
+            for arg in args {
+                expr_tokens(arg, out);
+            }
+        }
+        // Literals are coloured by the token pass.
+        ast::ExprKind::Literal(_) => {}
         ast::ExprKind::Unary { expr, .. } => expr_tokens(expr, out),
         ast::ExprKind::Binary { left, right, .. } => {
             expr_tokens(left, out);

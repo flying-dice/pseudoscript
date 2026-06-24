@@ -163,8 +163,8 @@ mod tests {
 
     #[test]
     fn references_to_an_operation_include_decl_and_calls() {
-        // An operation's declaration and its `self.`-call are the same symbol.
-        let src = "//! m\n\nsystem S {\n  run(): void { self.op() }\n  op(): void {}\n}\n";
+        // An operation's declaration and its bare same-node call are the same symbol.
+        let src = "//! m\n\nsystem S {\n  run(): void { op() }\n  op(): void {}\n}\n";
         let mods = [("m", src)];
         let workspace = ws(&mods);
         let owned = owned(&mods);

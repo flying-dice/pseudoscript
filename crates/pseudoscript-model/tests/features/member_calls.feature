@@ -4,7 +4,7 @@ Feature: Method calls resolve to a declared callable (LANG.md §6)
   receiver resolves to a same-module node or `data` record. A node receiver must
   name one of its callables; a `data` record has only fields, so any call on a
   record value is rejected. Receivers whose type is not inferred (call results,
-  `::` paths) are not checked (ADR-022); `self.` calls are checked separately.
+  `::` paths) are not checked (ADR-022); bare same-node calls are checked separately.
 
   Scenario: Calling an undeclared method on a node receiver is rejected
     Given the model file:
@@ -72,7 +72,7 @@ Feature: Method calls resolve to a declared callable (LANG.md §6)
       public system S;
       public container C for S {
         fetch(): Conv;
-        run(): void { self.fetch().anything() }
+        run(): void { fetch().anything() }
       }
       """
     Then there are no diagnostics
