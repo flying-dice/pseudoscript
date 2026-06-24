@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/flying-dice/pseudoscript/compare/v0.1.7...v0.2.0) - 2026-06-24
+
+### Added
+
+- optional `for` on container — standalone containers at the context layer (refs #70) ([#75](https://github.com/flying-dice/pseudoscript/pull/75))
+- [**breaking**] drop `self.` qualifier — same-node calls are bare `Name(args)` (refs #71) ([#73](https://github.com/flying-dice/pseudoscript/pull/73))
+
+### Fixed
+
+- workspace pds check reports per-file path:line:col (refs #68)
+- resolve `pds check <file>` against an absolute workspace root (refs #67)
+
+### Other
+
+- apply rustfmt to fix main build ([#64](https://github.com/flying-dice/pseudoscript/pull/64))
+
 ## [0.1.7](https://github.com/flying-dice/pseudoscript/compare/v0.1.6...v0.1.7) - 2026-06-10
 
 ### Other

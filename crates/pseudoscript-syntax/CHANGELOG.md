@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/flying-dice/pseudoscript/compare/pseudoscript-syntax-v0.1.7...pseudoscript-syntax-v0.2.0) - 2026-06-24
+
+### Added
+
+- optional `for` on container — standalone containers at the context layer (refs #70) ([#75](https://github.com/flying-dice/pseudoscript/pull/75))
+- [**breaking**] drop `self.` qualifier — same-node calls are bare `Name(args)` (refs #71) ([#73](https://github.com/flying-dice/pseudoscript/pull/73))
+- *(lang)* mandatory return types — explicit `: void`, call-operand return checking (refs #49)
+- *(lang)* operators + top-level constants for business rules (refs #22)
+- *(model)* architectural-principle lints with code + article links ([#24](https://github.com/flying-dice/pseudoscript/pull/24))
+- *(lang)* `from` is the universal typed value-producer (ADR-035)
+- *(ide)* dependency-aware language intelligence on a single typed wasm
+- *(lang)* bindings state their type — `x: Type = Expr` (ADR-027)
+- static checker, Option/feature language features, enriched self-model
+
+### Fixed
+
+- *(lang)* reject from/marker as binary operands; reject duplicate constants (refs #22)
+- *(parser)* localize from source-set errors and add fix-oriented hints
+
+### Other
+
+- release v0.1.7 ([#63](https://github.com/flying-dice/pseudoscript/pull/63))
+- release
+- release v0.1.4
+- Merge origin/main — regenerate wasm + skill zip on the merged tree
+- release v0.1.0
+
 ## [0.1.7](https://github.com/flying-dice/pseudoscript/compare/pseudoscript-syntax-v0.1.6...pseudoscript-syntax-v0.1.7) - 2026-06-10
 
 ### Added

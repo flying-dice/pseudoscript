@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 # Logging facade (target-agnostic); the subscriber is chosen at the wasm/stdio edge.
 tracing = "0.1"
-pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.7" }
-pseudoscript-model = { path = "../pseudoscript-model", version = "0.1.7" }
-pseudoscript-format = { path = "../pseudoscript-format", version = "0.1.7" }
+pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.2.0" }
+pseudoscript-model = { path = "../pseudoscript-model", version = "0.2.0" }
+pseudoscript-format = { path = "../pseudoscript-format", version = "0.2.0" }
 lsp-types = "=0.94.1"

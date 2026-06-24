@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-doc"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-dot"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-emit"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-format"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-ide"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-layout"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-lsp"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-lsp-core"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "lsp-types",
  "pseudoscript-format",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-model"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cucumber",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-project"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "pseudoscript-model",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-syntax"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cucumber",
  "futures",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "pseudoscript-universe"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "petgraph",
  "pseudoscript-emit",
