@@ -7,6 +7,7 @@
 //! walks the tree for `*.pds` files, deriving each module's FQN from its path
 //! relative to the root.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -19,7 +20,7 @@ use serde::Deserialize;
 // The filesystem module-walking primitives live in `pseudoscript-project`
 // (shared with the stdio LSP); re-exported so `workspace::find_root` /
 // `workspace::load_modules` call sites in `main.rs` stay stable.
-pub use pseudoscript_project::{MANIFEST, find_root, load_modules};
+pub use pseudoscript_project::{MANIFEST, find_root, load_modules, load_modules_with_paths};
 
 /// A loaded project: the resolved doc config, the output directory the site is
 /// written to, and the workspace's modules.
@@ -32,6 +33,10 @@ pub struct Workspace {
     pub out_dir: PathBuf,
     /// The workspace's modules, sorted by FQN for determinism.
     pub modules: Vec<WorkspaceModule>,
+    /// Each local module's FQN mapped to its workspace-relative path, so a
+    /// diagnostic resolves to the real file (`refs #68`). Built from the same
+    /// load pass as `modules`, so every local module has an entry.
+    pub module_paths: HashMap<String, PathBuf>,
     /// Direct git-dependency modules (`LANG.md` §8.3), each FQN prefixed with
     /// the dependency name. Indexed for cross-workspace resolution but not
     /// checked. Empty when the workspace has no `pds.lock`.
@@ -86,12 +91,18 @@ struct SidebarItem {
 /// is neither `light` nor `dark`, or if a `.pds` file cannot be read.
 pub fn load(root: &Path) -> Result<Workspace> {
     let (config, out, doc_format) = load_manifest(root)?;
-    let modules = load_modules(root)?;
+    let loaded = load_modules_with_paths(root)?;
+    let module_paths = loaded
+        .iter()
+        .map(|m| (m.module.fqn.clone(), m.relative_path.clone()))
+        .collect();
+    let modules = loaded.into_iter().map(|m| m.module).collect();
     let dependencies = crate::deps::dependency_modules(root)?;
     Ok(Workspace {
         config,
         out_dir: root.join(out),
         modules,
+        module_paths,
         dependencies,
         doc_format,
     })

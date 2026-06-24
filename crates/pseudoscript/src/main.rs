@@ -36,7 +36,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pseudoscript_emit::{Theme, View, project, project_symbol, render_svg_themed};
 use pseudoscript_format::{FormatError, format};
 use pseudoscript_model::{
-    Diagnostic, WorkspaceModule, check, check_workspace_with_externals, graph,
+    Diagnostic, ModuleDiagnostics, WorkspaceModule, check, check_workspace_modules_with_externals,
+    graph,
 };
 use pseudoscript_syntax::{LineIndex, Severity, render_tokens};
 use serde::Serialize;
@@ -385,18 +386,10 @@ fn check_one_workspace(root: &Path) -> bool {
             return true;
         }
     };
-    let diagnostics = check_workspace_with_externals(&project.modules, &project.dependencies);
-    let mut had_error = false;
-    for diag in &diagnostics {
-        eprintln!(
-            "{}: {}: {}",
-            root.display(),
-            severity_label(diag.severity),
-            diag.message
-        );
-        had_error |= diag.is_error();
-    }
-    had_error
+    let per_module =
+        check_workspace_modules_with_externals(&project.modules, &project.dependencies);
+    report_module_diagnostics(&project.modules, &per_module, &project.module_paths);
+    any_module_error(&per_module)
 }
 
 /// `pds doc --all`: generate docs for every discovered workspace under `root`.
@@ -598,11 +591,7 @@ fn report_source(label: &str, src: &str) -> ExitCode {
     let mut had_error = false;
     for diag in &check(src) {
         let (line, col) = index.line_col(diag.span.start);
-        eprintln!(
-            "{label}:{line}:{col}: {}: {}",
-            severity_label(diag.severity),
-            diag.message
-        );
+        eprint_diagnostic(label, line, col, diag);
         had_error |= diag.is_error();
     }
     if had_error {
@@ -884,16 +873,9 @@ fn build_site(
 
     // One per-module check pass feeds both the console report and the site's
     // health page.
-    let per_module = pseudoscript_model::check_workspace_modules_with_externals(
-        &project.modules,
-        &project.dependencies,
-    );
-    report_diagnostics(
-        &per_module
-            .iter()
-            .flat_map(|m| m.diagnostics.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
+    let per_module =
+        check_workspace_modules_with_externals(&project.modules, &project.dependencies);
+    report_module_diagnostics(&project.modules, &per_module, &project.module_paths);
     let diagnostics = pseudoscript_doc::prepare_diagnostics(&project.modules, &per_module);
 
     let model = graph(&project.modules);
@@ -1129,12 +1111,46 @@ fn copy_logo(root: &Path, project: &workspace::Workspace) {
     }
 }
 
-/// Prints each workspace diagnostic to stderr as `severity: message`. Spans are
-/// per-module byte offsets, so no path/line is rendered here.
-fn report_diagnostics(diagnostics: &[Diagnostic]) {
-    for diag in diagnostics {
-        eprintln!("{}: {}", severity_label(diag.severity), diag.message);
+/// Prints each module's diagnostics to stderr as `path:line:col: severity:
+/// message` — the same format the single-file path emits (`report_source`) —
+/// resolving each module's FQN to its workspace-relative file via `paths`.
+///
+/// Shared by the workspace check and the doc build so both render diagnostics
+/// identically from one check pass (refs #68).
+fn report_module_diagnostics(
+    modules: &[WorkspaceModule],
+    per_module: &[ModuleDiagnostics],
+    paths: &std::collections::HashMap<String, PathBuf>,
+) {
+    let sources: std::collections::HashMap<&str, &str> = modules
+        .iter()
+        .map(|m| (m.fqn.as_str(), m.source.as_str()))
+        .collect();
+    for module in per_module {
+        // A checked module is always a loaded workspace module, so its source
+        // and path are both present — `modules`, `paths`, and `per_module` are
+        // built from one load pass. Skip rather than emit a location-less line
+        // if that invariant ever breaks (refs #68).
+        let (Some(source), Some(path)) = (sources.get(module.fqn.as_str()), paths.get(&module.fqn))
+        else {
+            continue;
+        };
+        let index = LineIndex::new(source);
+        let label = path.display().to_string();
+        for diag in &module.diagnostics {
+            let (line, col) = index.line_col(diag.span.start);
+            eprint_diagnostic(&label, line, col, diag);
+        }
     }
+}
+
+/// Whether any module has an error-severity diagnostic — the non-zero-exit
+/// signal for the workspace check.
+fn any_module_error(per_module: &[ModuleDiagnostics]) -> bool {
+    per_module
+        .iter()
+        .flat_map(|module| &module.diagnostics)
+        .any(Diagnostic::is_error)
 }
 
 /// The lowercase label `pds check` prints for a [`Severity`].
@@ -1144,6 +1160,17 @@ fn severity_label(severity: Severity) -> &'static str {
         Severity::Warning => "warning",
         Severity::Info => "info",
     }
+}
+
+/// Prints one diagnostic to stderr as `label:line:col: severity: message` — the
+/// single line format shared by the single-file (`report_source`) and workspace
+/// (`report_module_diagnostics`) check paths.
+fn eprint_diagnostic(label: &str, line: u32, col: u32, diag: &Diagnostic) {
+    eprintln!(
+        "{label}:{line}:{col}: {}: {}",
+        severity_label(diag.severity),
+        diag.message
+    );
 }
 
 #[cfg(test)]

@@ -401,6 +401,26 @@ fn given_empty_dir(world: &mut CliWorld) {
     world.target = dir;
 }
 
+#[given("a workspace whose module has a static error")]
+fn given_workspace_with_error(world: &mut CliWorld) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("pds-wserr-{}-{unique}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    std::fs::write(dir.join("pds.toml"), "[doc]\nname = \"repro\"\n").expect("write manifest");
+    // A dangling parent reference: one static error at a fixed `line:col`, so the
+    // scenario asserts the workspace diagnostic carries the file location (#68).
+    std::fs::write(
+        dir.join("bad.pds"),
+        "public container C for repro::Missing;\n",
+    )
+    .expect("write module");
+    world.scratch = Some(dir.clone());
+    world.target = dir;
+}
+
 #[when("I run pds init")]
 fn run_init(world: &mut CliWorld) {
     run(world, &["init"]);

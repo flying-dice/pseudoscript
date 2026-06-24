@@ -16,3 +16,9 @@ Feature: pds check
     Given the conformance fixture "syntax/4-container-missing-for.reject"
     When I run pds check
     Then the exit code is non-zero
+
+  Scenario: workspace diagnostics carry the file and source location
+    Given a workspace whose module has a static error
+    When I run pds check
+    Then the exit code is non-zero
+    And stderr contains "bad.pds:1:24: error: parent `repro::Missing` does not resolve"

@@ -323,19 +323,35 @@ component CheckCmd for cli::Cli {
   isDirectory(path: string): bool;
 
   /// The strict path: load the workspace rooted at `root` and check its modules
-  /// with full qualification, failing on any error diagnostic.
+  /// per file with full qualification, reporting each module's findings with
+  /// source location and failing on any error diagnostic. The per-module check
+  /// keeps each diagnostic attributed to its file so it carries the same
+  /// `path:line:col` the single-file path emits — not just the workspace name
+  /// (refs #68).
   checkWorkspace(root: string): Result<void, cli::IoError> {
     project = Result<Workspace, IoError> from cli::Loader.load(root)
     if (project.isErr) {
       return Err(project.error)
     }
-    diagnostics = syntax::Diagnostic[] from model::Model.checkWorkspace(project.value.modules, project.value.dependencies)
-    if (self.anyError(diagnostics)) {
-      err = IoError from { diagnostics }
+    perModule = model::ModuleDiagnostics[] from model::Model.checkWorkspaceModules(project.value.modules, project.value.dependencies)
+    self.reportModules(perModule)
+    if (self.anyModuleError(perModule)) {
+      err = IoError from { perModule }
       return Err(err)
     }
     return Ok
   }
+
+  /// Report each module's findings to stderr as `path:line:col: severity:
+  /// message` — the shared per-file reporter the doc build also feeds, so the
+  /// workspace check and `pds doc` render diagnostics identically. The file is
+  /// the module's workspace-relative path; the loader supplies the FQN → path
+  /// mapping the pure model omits (refs #68).
+  reportModules(perModule: model::ModuleDiagnostics[]): void;
+
+  /// Whether any module has an error-severity diagnostic — the non-zero-exit
+  /// signal for the workspace check.
+  anyModuleError(perModule: model::ModuleDiagnostics[]): bool;
 
   /// The lenient path: a file outside any workspace is checked as one anonymous
   /// module, lenient about full qualification.
