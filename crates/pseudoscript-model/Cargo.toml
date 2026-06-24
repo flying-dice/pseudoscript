@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 # Logging facade (target-agnostic); the subscriber is chosen at the wasm/stdio edge.
 tracing = "0.1"
-pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.1.7" }
+pseudoscript-syntax = { path = "../pseudoscript-syntax", version = "0.2.0" }
 anyhow = "1"
 rustc-hash = "2"
 serde = { version = "1", features = ["derive"] }
