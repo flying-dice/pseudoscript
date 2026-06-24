@@ -1,0 +1,4 @@
+view context
+node m::Backend system "Backend"
+node m::Gateway container "Gateway"
+edge m::Gateway -> m::Backend call "Serve"
