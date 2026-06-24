@@ -30,6 +30,19 @@ export function findDocByPath(docGroups: LiveDocGroup[], path: string): LiveDocI
   return docGroups.flatMap((g) => g.items).find((it) => it.path === path);
 }
 
+/** Drop the doc at `path` from the sidebar, pruning any group left with no items
+ *  (an authored group whose last page is deleted disappears, not lingers empty). */
+export function removeDoc(docGroups: LiveDocGroup[], path: string): LiveDocGroup[] {
+  return docGroups
+    .map((g) => ({ ...g, items: g.items.filter((it) => it.path !== path) }))
+    .filter((g) => g.items.length > 0);
+}
+
+/** Retitle the doc at `path`; its path (and on-disk file) are unchanged. */
+export function retitleDoc(docGroups: LiveDocGroup[], path: string, title: string): LiveDocGroup[] {
+  return docGroups.map((g) => ({ ...g, items: g.items.map((it) => (it.path === path ? { ...it, title } : it)) }));
+}
+
 // The doc-site config the renderer consumes (a structural subset of pds.ts's
 // `DocConfig` — typed here so core doesn't depend on the WASM module).
 export type DocConfigInput = {

@@ -46,6 +46,12 @@ describe("FileTree", () => {
     expect(screen.getByTestId("file-shared")).toBeInTheDocument();
   });
 
+  it("addresses an authored doc by its path (file-<relPath>, no FQN)", () => {
+    // The docs/ folder auto-expands because its page is the open file.
+    renderTree({ entries, openKey: "docs/intro.md" });
+    expect(screen.getByTestId("file-docs/intro.md")).toHaveTextContent("intro.md");
+  });
+
   it("shows the file name as the row label and nests by directory", () => {
     renderTree({ entries, openKey: "shared" });
     expect(screen.getByTestId("file-shared")).toHaveTextContent("shared.pds");
