@@ -1422,6 +1422,10 @@
       return;
     }
     wsStore.docGroups = docs.retitleDoc(docGroups, path, title);
+    // The tab strip labels docs from their own `openTabs` entry (not `openFile`),
+    // and rename leaves the path unchanged, so no prune effect re-syncs it — retitle
+    // the matching tab and the active file in lock-step.
+    wsStore.openTabs = openTabs.map((t) => (t.isDoc && t.path === path ? { ...t, title } : t));
     if (openFile?.isDoc && openFile.path === path) wsStore.openFile = { ...openFile, title };
     try {
       await persistManifest(toml);
@@ -1445,6 +1449,17 @@
   async function deleteDoc(path: string) {
     const ws = workspace;
     if (!ws) return;
+    // Serialise the manifest *before* the destructive disk delete: a malformed
+    // manifest aborts with nothing removed, so live state and disk never diverge.
+    let toml: string;
+    try {
+      toml = rewriteDocSidebar(ws.manifestToml ?? "", (groups) =>
+        groups.map((g) => ({ ...g, items: g.items.filter((it) => it.path !== path) })).filter((g) => g.items.length > 0),
+      );
+    } catch (e) {
+      notify("error", "Couldn't update pds.toml", String((e as Error)?.message ?? e));
+      return;
+    }
     if (ws.root) {
       try {
         await deletePath(ws.root, withBase(path));
@@ -1452,15 +1467,6 @@
         notify("error", "Couldn't delete doc", String((e as Error)?.message ?? e));
         return;
       }
-    }
-    let toml: string;
-    try {
-      toml = rewriteDocSidebar(ws.manifestToml ?? "", (groups) =>
-        groups.map((g) => ({ ...g, items: g.items.filter((it) => it.path !== path) })).filter((g) => g.items.length > 0),
-      );
-    } catch (e) {
-      notify("error", "Deleted the file, but couldn't update pds.toml", String((e as Error)?.message ?? e));
-      return;
     }
     // Live: drop the page from the sidebar + buffer, and clear its baseline so it
     // leaves no dirty residue. A folder-backed `.md` is also walked into `others`

@@ -74,6 +74,8 @@ test("creates an authored doc from the command palette", async ({ page }) => {
 
 test("renames an authored doc from the context menu", async ({ page }) => {
   await expandDocs(page);
+  // Open the page so its tab is live — the rename must retitle the tab too.
+  await page.getByTestId("file-docs/overview.md").click();
   await page.getByTestId("file-docs/overview.md").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Rename…" }).click();
 
@@ -83,8 +85,10 @@ test("renames an authored doc from the context menu", async ({ page }) => {
   await dialog.getByRole("textbox").press("Enter");
 
   await expect(page.getByText("Renamed to Welcome")).toBeVisible();
-  // The path (and the row that keys off it) is unchanged; only the sidebar label moves.
+  // The path (and the row that keys off it) is unchanged; only the label moves —
+  // and it moves on both the sidebar row and the open tab.
   await expect(page.getByTestId("file-docs/overview.md")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Welcome" })).toBeVisible();
 });
 
 test("deletes an authored doc after confirmation", async ({ page }) => {
