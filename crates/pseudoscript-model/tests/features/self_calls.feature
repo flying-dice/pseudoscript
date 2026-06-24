@@ -1,8 +1,8 @@
 Feature: Bare same-node calls resolve to a same-node callable (LANG.md §5.1, ADR-041)
 
   A same-node callable is invoked by a bare call `Name(args)`. A bare call
-  naming no callable of the enclosing node MUST be rejected. The removed `self.`
-  qualifier is diagnosed.
+  naming no callable of the enclosing node MUST be rejected. `self` is no longer
+  reserved: `self.Name(args)` resolves nothing — `self` is an unknown reference.
 
   Scenario: A same-node call to an undeclared callable is rejected
     Given the model file:
@@ -39,7 +39,7 @@ Feature: Bare same-node calls resolve to a same-node callable (LANG.md §5.1, AD
       """
     Then there are no diagnostics
 
-  Scenario: The removed `self.` qualifier is diagnosed
+  Scenario: `self` is an ordinary identifier — `self.Name(args)` is unresolved
     Given the model file:
       """
       //! example
@@ -49,4 +49,4 @@ Feature: Bare same-node calls resolve to a same-node callable (LANG.md §5.1, AD
         helper(): void { self.helper() }
       }
       """
-    Then the diagnostics include "`self.` is removed; call `Name(args)` directly (ADR-041)"
+    Then the diagnostics include "unresolved reference `self`"

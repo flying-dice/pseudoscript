@@ -22,7 +22,6 @@ pub enum TokenKind {
     KwFor,
     KwFrom,
     KwPublic,
-    KwSelf,
     KwReturn,
     KwOk,
     KwErr,
@@ -106,7 +105,6 @@ impl TokenKind {
             TokenKind::KwFor => "KW_FOR",
             TokenKind::KwFrom => "KW_FROM",
             TokenKind::KwPublic => "KW_PUBLIC",
-            TokenKind::KwSelf => "KW_SELF",
             TokenKind::KwReturn => "KW_RETURN",
             TokenKind::KwOk => "KW_OK",
             TokenKind::KwErr => "KW_ERR",
@@ -164,7 +162,7 @@ impl TokenKind {
 
     /// The reserved keyword spellings (§2.3), in declaration order. Every entry
     /// is recognised by [`TokenKind::keyword`]; a test pins them in sync.
-    pub const KEYWORDS: [&str; 27] = [
+    pub const KEYWORDS: [&str; 26] = [
         "system",
         "container",
         "component",
@@ -174,7 +172,6 @@ impl TokenKind {
         "for",
         "from",
         "public",
-        "self",
         "return",
         "Ok",
         "Err",
@@ -211,7 +208,6 @@ impl TokenKind {
             "for" => TokenKind::KwFor,
             "from" => TokenKind::KwFrom,
             "public" => TokenKind::KwPublic,
-            "self" => TokenKind::KwSelf,
             "return" => TokenKind::KwReturn,
             "Ok" => TokenKind::KwOk,
             "Err" => TokenKind::KwErr,

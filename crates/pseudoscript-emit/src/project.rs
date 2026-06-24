@@ -1331,7 +1331,7 @@ mod tests {
             "m".to_owned(),
             "//! m\npublic system Shop;\npublic container Api for Shop;\n\
              /// Validates orders.\npublic component Validator for m::Api {\n  \
-             #[http]\n  public Check(): void { self.Help() }\n  Help(): void;\n}"
+             #[http]\n  public Check(): void { Help() }\n  Help(): void;\n}"
                 .to_owned(),
         );
         let Scene::Sequence(seq) = project(

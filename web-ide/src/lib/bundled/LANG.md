@@ -47,8 +47,8 @@ Every cross-reference is a **fully-qualified name (FQN)**, derived from the file
 ```
 system  container  component  person
 data    constant   for        from
-public  self
-return  Ok    Err   Some  None
+public  return     Ok         Err
+Some    None
 if      else  while  in
 true    false
 feature given when   then   and    but

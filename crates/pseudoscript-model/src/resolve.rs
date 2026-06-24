@@ -195,7 +195,7 @@ fn unique_symbol<'a>(ws: &'a Workspace, from_fqn: &str, name: &str) -> Option<&'
     matches.next().is_none().then_some(first)
 }
 
-/// Resolves `.member` after a `self` or node/data base — including a qualified,
+/// Resolves `.member` after a node/data base — including a qualified,
 /// cross-module base (`a::Svc.op`).
 fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) -> Option<Hit> {
     let member_name = tokens[idx].text.as_str();
@@ -204,10 +204,6 @@ fn resolve_member(ws: &Workspace, from_fqn: &str, tokens: &[Token], idx: usize) 
     let base = tokens.get(base_idx)?;
 
     let symbol = match base.kind {
-        TokenKind::KwSelf => {
-            let node = enclosing_node(&ws.module(from_fqn)?.ast, base.span.start)?;
-            ws.module(from_fqn)?.model.symbol(&node)?
-        }
         TokenKind::Ident => {
             let segments = path_segments(tokens, base_idx);
             resolve_node(ws, from_fqn, &segments)?
@@ -385,8 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn self_member_resolves_to_callable() {
-        let src = "//! m\n\nsystem S {\n  run(): void { self.helper() }\n  helper(): void {}\n}\n";
+    fn bare_same_node_call_resolves_to_callable() {
+        // §5.1, ADR-041: a bare same-node call `helper()` resolves to the
+        // enclosing node's callable — goto-definition lands on its declaration.
+        let src = "//! m\n\nsystem S {\n  run(): void { helper() }\n  helper(): void {}\n}\n";
         let mods = [("m", src)];
         let ws = workspace(&mods);
         let hit = hit_at(&ws, "m", src, "helper", 1);

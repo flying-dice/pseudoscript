@@ -172,15 +172,6 @@ fn binding_type_annotation_offers_types_only() {
 // --- member `.` : only the receiver's members ----------------------------
 
 #[test]
-fn self_member_offers_own_members_not_other_nodes() {
-    let l = labels(
-        "//! m\npublic system A {\n  alpha(): void;\n}\npublic container C for m::A {\n  beta(): void {\n    self.~\n  }\n}\n",
-    );
-    assert!(has(&l, "beta"), "own member missing: {l:?}");
-    assert_none(&l, &["alpha"]); // A's member must not leak onto C
-}
-
-#[test]
 fn cross_module_member_offers_public_only() {
     // `dep::core::Svc.` — a private member of a dependency node is not callable
     // across modules (§8.2), so it must not be offered.

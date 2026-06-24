@@ -1,1 +1,0 @@
-`self.` is removed; call `Name(args)` directly (ADR-041)

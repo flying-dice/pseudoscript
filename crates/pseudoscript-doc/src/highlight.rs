@@ -88,7 +88,6 @@ fn token_class(token: &Token) -> Option<&'static str> {
         | TokenKind::KwFor
         | TokenKind::KwFrom
         | TokenKind::KwPublic
-        | TokenKind::KwSelf
         | TokenKind::KwReturn
         | TokenKind::KwOk
         | TokenKind::KwErr

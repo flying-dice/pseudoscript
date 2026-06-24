@@ -120,7 +120,6 @@ fn is_keyword(kind: TokenKind) -> bool {
             | TokenKind::KwFor
             | TokenKind::KwFrom
             | TokenKind::KwPublic
-            | TokenKind::KwSelf
             | TokenKind::KwReturn
             | TokenKind::KwOk
             | TokenKind::KwErr
@@ -451,12 +450,12 @@ mod tests {
 
     #[test]
     fn callable_param_type_and_calls() {
-        let src = "//! m\n\nsystem S {\n  run(name: string): uuid {\n    return self.alloc(name)\n  }\n}\n";
+        let src = "//! m\n\nsystem S {\n  run(name: string): uuid {\n    return alloc(name)\n  }\n  alloc(n: string): uuid;\n}\n";
         let tokens = semantic_tokens(src);
         assert_eq!(at(&tokens, src, "run").kind, SemKind::Method);
         assert_eq!(at(&tokens, src, "name").kind, SemKind::Parameter);
         assert_eq!(at(&tokens, src, "string").kind, SemKind::Type);
-        assert_eq!(at(&tokens, src, "self").kind, SemKind::Keyword);
+        // A bare same-node call (ADR-041) colours as a method invocation.
         assert_eq!(at(&tokens, src, "alloc").kind, SemKind::Method);
     }
 

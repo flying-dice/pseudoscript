@@ -1027,7 +1027,6 @@ impl Parser {
                     | TokenKind::KwErr
                     | TokenKind::KwSome
                     | TokenKind::KwNone
-                    | TokenKind::KwSelf
                     | TokenKind::Ident
                     | TokenKind::String
                     | TokenKind::Number
@@ -1256,44 +1255,6 @@ impl Parser {
                 Expr {
                     span: lit.span(),
                     kind: ExprKind::Literal(lit),
-                }
-            }
-            Some(TokenKind::KwSelf) => {
-                // `self.` is removed (ADR-041); a same-node call is bare
-                // `Name(args)`. Recover `self.Name(args)` as that bare call so
-                // the body still resolves: a name that resolves draws only this
-                // migration diagnostic. An unknown name additionally draws the
-                // normal unresolved-callable error — the same one `Name(args)`
-                // would draw after migrating, not extra noise.
-                let token = self.bump().expect("peeked self");
-                if self.eat(TokenKind::Dot).is_some() {
-                    let name = self.expect_ident("callable name");
-                    let (args, end) = if self.at(TokenKind::LParen) {
-                        self.parse_call_args()
-                    } else {
-                        (Vec::new(), name.span.end)
-                    };
-                    let span = Span::new(token.span.start, end);
-                    self.error(
-                        span,
-                        "`self.` is removed; call `Name(args)` directly (ADR-041)",
-                    );
-                    Expr {
-                        kind: ExprKind::OwnCall { name, args },
-                        span,
-                    }
-                } else {
-                    self.error(
-                        token.span,
-                        "`self` is removed; call a same-node callable as `Name(args)` (ADR-041)",
-                    );
-                    Expr {
-                        kind: ExprKind::Ref(Ref::Path(Path {
-                            segments: Vec::new(),
-                            span: token.span,
-                        })),
-                        span: token.span,
-                    }
                 }
             }
             Some(TokenKind::LParen) => {
@@ -1580,7 +1541,6 @@ impl Parser {
                 | TokenKind::KwFor
                 | TokenKind::KwFrom
                 | TokenKind::KwPublic
-                | TokenKind::KwSelf
                 | TokenKind::KwReturn
                 | TokenKind::KwOk
                 | TokenKind::KwErr
