@@ -488,17 +488,19 @@ public data ArchRule { code: string, slug: string }
 /// structure: a cross-module call SHOULD reach a container/system's published face,
 /// not an internal `component` (Facade/Gateway); the module dependency graph SHOULD
 /// stay acyclic; a cross-system call SHOULD couple to the other system's boundary,
-/// not its containers. Each firing is a `Warning` stamped with the rule's `code`
-/// and `codeDescription` (its article URL); the model stays valid.
+/// not its containers; a `component` SHOULD have a `for` container, not stand alone
+/// (redundant with a container). Each firing is a `Warning` stamped with the rule's
+/// `code` and `codeDescription` (its article URL); the model stays valid.
 component Architecture for model::Model {
   /// Runs every architectural lint over the graph and unions their warnings: facade
-  /// bypass (PDS-ARCH-001), cyclic dependency (PDS-ARCH-002), and system-boundary
-  /// bypass (PDS-ARCH-003).
+  /// bypass (PDS-ARCH-001), cyclic dependency (PDS-ARCH-002), system-boundary
+  /// bypass (PDS-ARCH-003), and standalone component (PDS-ARCH-004).
   public check(graph: model::Graph): syntax::Diagnostic[] {
     backdoor = syntax::Diagnostic[] from checkBackdoor(graph)
     cycles = syntax::Diagnostic[] from checkCycles(graph)
     boundary = syntax::Diagnostic[] from checkSystemBoundary(graph)
-    return syntax::Diagnostic[] from { backdoor, cycles, boundary }
+    standalone = syntax::Diagnostic[] from checkStandaloneComponent(graph)
+    return syntax::Diagnostic[] from { backdoor, cycles, boundary, standalone }
   }
 
   /// PDS-ARCH-001 — facade bypass (backdooring). For each `Call` edge whose target
@@ -522,6 +524,13 @@ component Architecture for model::Model {
   /// couple to the other system's published face, not its containers. The
   /// component-target case is already PDS-ARCH-001, so it is excluded here.
   checkSystemBoundary(graph: model::Graph): syntax::Diagnostic[];
+
+  /// PDS-ARCH-004 — standalone component. For each `component` node with no `for`
+  /// parent, emit a `Warning` at its declaration span: a parentless component is
+  /// structurally a standalone container (the canonical flat-grain form), so
+  /// declare it a `container` or give it a `for <container>`. The only lint that
+  /// judges a declaration, not a `Call` edge.
+  checkStandaloneComponent(graph: model::Graph): syntax::Diagnostic[];
 
   /// Stamp a rule onto a diagnostic: attach its `code` and the article URL
   /// (`codeDescription`) derived from the principles base URL plus the rule's

@@ -248,8 +248,8 @@ Read in full for the Java/C#-precedent rationale and the rejected implicit-void 
 
 Read in full for the call-vs-construction non-ambiguity, the same-node-vs-local-value rendering split, and the rejected fix-renderer-only alternative.
 
-## [042 — Standalone container: `for` is optional, parentless renders at the context layer](042-standalone-container.md)
+## [042 — Standalone nodes: `for` is optional on container and component; parentless renders at the context layer](042-standalone-container.md)
 
-A `container` MAY omit `for`; a parentless container is standalone — a top-level node at the context layer (§9.1) beside persons and systems, not omitted and not an error. A component still MUST name its parent. The kind rule survives: a container's `for` parent, when named, MUST be a `system`. **Amends ADR-010.**
+A `container` or `component` MAY omit `for`; a parentless node is standalone — a top-level node at the context layer (§9.1) beside persons and systems, not omitted and not an error. The kind rule survives: a `for` parent, when named, MUST be a `system` for a container and a `container` for a component. The container is the canonical flat-grain form, so a standalone component raises **PDS-ARCH-004** (§9.6) — an advisory warning, the first arch lint that judges a declaration rather than a `Call` edge. **Amends ADR-010.**
 
-Read in full for the dropped stub-system workaround and the context-view edge-bubbling change (nearest in-view ancestor, not specifically a system).
+Read in full for the dropped stub-anchor workaround, the context-view edge-bubbling change (nearest in-view ancestor), and the rejected per-model "don't mix" lint.

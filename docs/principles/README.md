@@ -14,6 +14,7 @@ rules judge *how* one part reaches another.
 | [PDS-ARCH-001](PDS-ARCH-001-backdooring-facade.md) | Facade bypass (backdooring) | A cross-module body call reaches an internal `component` instead of its container's published face |
 | [PDS-ARCH-002](PDS-ARCH-002-cyclic-dependency.md) | Cyclic dependency | The module dependency graph (from body calls) contains a cycle |
 | [PDS-ARCH-003](PDS-ARCH-003-system-boundary.md) | System-boundary bypass | A call crosses a `system` boundary into a `container` of the other system instead of its published face |
+| [PDS-ARCH-004](PDS-ARCH-004-standalone-component.md) | Standalone component | A `component` has no `for` parent — redundant with a standalone `container`, the canonical flat-grain form |
 
 Warnings are advisory. Suppress none by default — fix the structure, or accept the
 warning where the coupling is deliberate.

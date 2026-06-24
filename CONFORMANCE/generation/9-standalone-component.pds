@@ -1,0 +1,14 @@
+// LANG.md §9.1 (ADR-042): a standalone component — a `component` with no `for`
+// parent — is a context-layer node beside persons and systems, exactly as a
+// standalone container is. Its cross-boundary call to `Backend` renders as a
+// context-layer edge.
+
+//! m
+
+public system Backend {
+  Serve(): void;
+}
+
+public component Widget {
+  Handle(): void { m::Backend.Serve() }
+}

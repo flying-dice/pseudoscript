@@ -14,6 +14,10 @@
 //! - **PDS-ARCH-003 — system-boundary bypass:** a cross-`system` call whose
 //!   target is a `container` of the other system — couple to the system's
 //!   published face, not its containers.
+//! - **PDS-ARCH-004 — standalone component:** a `component` with no `for` parent
+//!   is structurally a standalone container (ADR-042); the container is the
+//!   canonical flat-grain form, so the parentless component is a redundant
+//!   second encoding.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,6 +48,10 @@ const SYSTEM_BOUNDARY: ArchRule = ArchRule {
     code: "PDS-ARCH-003",
     slug: "PDS-ARCH-003-system-boundary.md",
 };
+const STANDALONE_COMPONENT: ArchRule = ArchRule {
+    code: "PDS-ARCH-004",
+    slug: "PDS-ARCH-004-standalone-component.md",
+};
 
 /// One lint finding tagged with the module its span lies in, so the per-file
 /// diagnostics path ([`check_for_module`]) can attribute it to the right file.
@@ -72,6 +80,7 @@ fn findings(graph: &Graph) -> Vec<Finding> {
     check_backdoor(graph, &mut out);
     check_cycles(graph, &mut out);
     check_system_boundary(graph, &mut out);
+    check_standalone_component(graph, &mut out);
     out
 }
 
@@ -104,6 +113,28 @@ fn check_backdoor(graph: &Graph, out: &mut Vec<Finding>) {
             out.push(Finding {
                 module: from.module.clone(),
                 diag: warn(&BACKDOOR, Diagnostic::warning(edge.span, message)),
+            });
+        }
+    }
+}
+
+/// PDS-ARCH-004 — a `component` with no `for` parent is structurally a standalone
+/// container (ADR-042): both render as a context-layer box. The container is the
+/// canonical flat-grain form, so a parentless component is a redundant second
+/// encoding — declare it `container`, or give it a `for <container>`.
+fn check_standalone_component(graph: &Graph, out: &mut Vec<Finding>) {
+    for node in graph.nodes() {
+        if node.kind == NodeKind::Component && node.parent.is_none() {
+            let message = format!(
+                "standalone component `{}` has no container — a parentless component is a standalone container; declare it `container`, or add `for <container>`",
+                node.fqn
+            );
+            out.push(Finding {
+                module: node.module.clone(),
+                diag: warn(
+                    &STANDALONE_COMPONENT,
+                    Diagnostic::warning(node.span, message),
+                ),
             });
         }
     }
@@ -450,6 +481,38 @@ mod tests {
         // Reaching here means `system_of` did not loop; neither node has a system
         // ancestor, so the boundary rule stays silent.
         assert!(!cs.iter().any(|c| c == "PDS-ARCH-003"), "{cs:?}");
+    }
+
+    #[test]
+    fn standalone_component_warns() {
+        // A `component` with no `for` parent is redundant with a standalone
+        // container (ADR-042); PDS-ARCH-004 fires on it as a Warning.
+        let ds = diags(&[(
+            "m",
+            "//! m\n\npublic component Widget {\n  run(): void;\n}\n",
+        )]);
+        let hit = ds
+            .iter()
+            .find(|d| d.code.as_deref() == Some("PDS-ARCH-004"))
+            .expect("PDS-ARCH-004 fires on a parentless component");
+        assert_eq!(hit.severity, Severity::Warning);
+        assert!(
+            hit.code_description
+                .as_deref()
+                .is_some_and(|url| url.contains("PDS-ARCH-004")),
+            "the warning carries its article URL: {:?}",
+            hit.code_description
+        );
+    }
+
+    #[test]
+    fn parented_component_is_clean() {
+        // A component with a `for` container draws no PDS-ARCH-004.
+        let cs = codes(&[(
+            "m",
+            "//! m\n\npublic system Sys;\npublic container Box for m::Sys;\npublic component Widget for m::Box {\n  run(): void;\n}\n",
+        )]);
+        assert!(!cs.iter().any(|c| c == "PDS-ARCH-004"), "{cs:?}");
     }
 
     #[test]

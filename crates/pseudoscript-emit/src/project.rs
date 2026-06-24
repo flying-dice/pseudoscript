@@ -155,9 +155,10 @@ fn structural_view(graph: &Graph, fqn: &str) -> Result<Scene, EmitError> {
             .parent
             .clone()
             .map_or(View::Context, |of| View::Container { of }),
-        NodeKind::Component => View::Component {
-            of: node.parent.clone().unwrap_or_else(|| fqn.to_owned()),
-        },
+        NodeKind::Component => node
+            .parent
+            .clone()
+            .map_or(View::Context, |of| View::Component { of }),
         // A `data` symbol shows its entity (ER) view (`LANG.md` §9.4); a person
         // has no boundary, and a childless system has no containers to frame, so
         // the context overview stands in.
@@ -348,19 +349,20 @@ fn simple_fqn(fqn: &str) -> String {
 
 // --- C4 projections ---------------------------------------------------------
 
-/// The context view: every person, system, and standalone container (a
-/// `container` with no `for` parent, §4), with inter-system edges, trigger edges,
-/// and provenance (`LANG.md` §9.1). Edges bubble to the enclosing in-view node,
-/// so a body call between containers of two systems is a single system → system
-/// edge, and a call into a standalone container's component bubbles to that
-/// container.
+/// The context view: every person, system, and standalone container or component
+/// (a `container`/`component` with no `for` parent, §4), with inter-system edges,
+/// trigger edges, and provenance (`LANG.md` §9.1). Edges bubble to the enclosing
+/// in-view node, so a body call between containers of two systems is a single
+/// system → system edge, and a call into a standalone node's descendant bubbles
+/// to that node.
 fn project_context(graph: &Graph) -> C4Scene {
     let nodes: Vec<PlacedNode> = graph
         .nodes()
         .iter()
         .filter(|n| {
             matches!(n.kind, NodeKind::Person | NodeKind::System)
-                || (n.kind == NodeKind::Container && n.parent.is_none())
+                || (matches!(n.kind, NodeKind::Container | NodeKind::Component)
+                    && n.parent.is_none())
         })
         .map(|n| placed(n, None))
         .collect();

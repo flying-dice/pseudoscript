@@ -412,18 +412,15 @@ impl Parser {
         let kw = self.bump().expect("peeked node keyword");
         let name = self.expect_ident("node name");
 
-        // §4: a `container` MAY omit `for` (a standalone, context-layer node); a
-        // `component` MUST name its parent container.
+        // §4: a `container` or `component` MAY omit `for` — a parentless node is
+        // standalone, rendered at the context layer (ADR-042). A standalone
+        // component is flagged redundant with a container by PDS-ARCH-004, a
+        // graph lint, not a parse error.
         let mut parent = None;
-        if matches!(kind, NodeKind::Container | NodeKind::Component) {
-            if self.eat(TokenKind::KwFor).is_some() {
-                parent = Some(self.parse_path());
-            } else if kind == NodeKind::Component {
-                self.error(
-                    name.span,
-                    "component declaration missing `for <parent>` clause",
-                );
-            }
+        if matches!(kind, NodeKind::Container | NodeKind::Component)
+            && self.eat(TokenKind::KwFor).is_some()
+        {
+            parent = Some(self.parse_path());
         }
 
         let body = self.parse_node_body(kind, name.span);

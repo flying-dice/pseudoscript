@@ -1,0 +1,9 @@
+// LANG.md §4 (ADR-042): a `component` MAY omit `for`, exactly as a container
+// may. A standalone component parses with no parent; the redundancy with a
+// standalone container is a graph lint (PDS-ARCH-004), not a parse error.
+
+public component Widget {
+  Render(): void;
+}
+
+public component Footer;

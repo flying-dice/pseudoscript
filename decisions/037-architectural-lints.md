@@ -1,6 +1,6 @@
 # ADR-037 — Architectural-principle lints are graph warnings with codes and article links
 
-**Status:** Accepted
+**Status:** Accepted (extended by ADR-042 — PDS-ARCH-004, the first declaration-level lint)
 **Affects:** LANG.md §9.6
 
 ## Context

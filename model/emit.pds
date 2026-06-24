@@ -244,12 +244,12 @@ component Projector for emit::Emit {
   /// an ordered flow against the node it describes.
   projectFeature(graph: model::Graph, of: string): Result<emit::Scene, emit::EmitError>;
 
-  /// The context view: every person, system, and standalone container — a
-  /// `container` with no `for` parent (§4), a context-layer peer of a system —
-  /// with inter-node edges and triggers. Each cross-boundary call bubbles to the
-  /// nearest in-view ancestor (`Edges.lift`): a call between two systems'
-  /// containers collapses to one system → system edge; a call into a standalone
-  /// container's component bubbles to that container.
+  /// The context view: every person, system, and standalone container or
+  /// component — a `container`/`component` with no `for` parent (§4), a
+  /// context-layer peer of a system — with inter-node edges and triggers. Each
+  /// cross-boundary call bubbles to the nearest in-view ancestor (`Edges.lift`):
+  /// a call between two systems' containers collapses to one system → system
+  /// edge; a call into a standalone node's descendant bubbles to that node.
   projectContext(graph: model::Graph): emit::Scene {
     nodes = PlacedNode[] from contextNodes(graph)
     edges = RoutedEdge[] from emit::Edges.collect(graph, nodes)
@@ -330,8 +330,8 @@ component Projector for emit::Emit {
   kindMatches(found: string, expected: string): bool;
 
   /// The context-layer node set, placed in source-declaration order with no
-  /// enclosing boundary: every person, system, and standalone container (a
-  /// `container` with no `for` parent, §4).
+  /// enclosing boundary: every person, system, and standalone container or
+  /// component (a `container`/`component` with no `for` parent, §4).
   contextNodes(graph: model::Graph): emit::PlacedNode[];
 
   /// The boundary anchor plus its `for`-children of `child` kind. The children

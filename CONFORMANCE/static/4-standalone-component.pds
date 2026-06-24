@@ -1,0 +1,9 @@
+// LANG.md §4 (ADR-042): a standalone component (no `for`) is well-formed — it
+// produces no error. The PDS-ARCH-004 redundancy warning is advisory (§9.6) and
+// does not appear among error diagnostics.
+
+//! ui
+
+public component Widget {
+  Render(): void;
+}
