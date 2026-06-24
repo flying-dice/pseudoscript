@@ -34,8 +34,8 @@ pub struct Workspace {
     /// The workspace's modules, sorted by FQN for determinism.
     pub modules: Vec<WorkspaceModule>,
     /// Each local module's FQN mapped to its workspace-relative path, so a
-    /// diagnostic resolves to the real file (`refs #68`). Built alongside
-    /// `modules`; absent only for a module the model omits.
+    /// diagnostic resolves to the real file (`refs #68`). Built from the same
+    /// load pass as `modules`, so every local module has an entry.
     pub module_paths: HashMap<String, PathBuf>,
     /// Direct git-dependency modules (`LANG.md` §8.3), each FQN prefixed with
     /// the dependency name. Indexed for cross-workspace resolution but not

@@ -1113,8 +1113,7 @@ fn copy_logo(root: &Path, project: &workspace::Workspace) {
 
 /// Prints each module's diagnostics to stderr as `path:line:col: severity:
 /// message` — the same format the single-file path emits (`report_source`) —
-/// resolving each module's FQN to its workspace-relative file via `paths`, and
-/// falling back to the bare FQN when a path is unknown.
+/// resolving each module's FQN to its workspace-relative file via `paths`.
 ///
 /// Shared by the workspace check and the doc build so both render diagnostics
 /// identically from one check pass (refs #68).
@@ -1128,24 +1127,19 @@ fn report_module_diagnostics(
         .map(|m| (m.fqn.as_str(), m.source.as_str()))
         .collect();
     for module in per_module {
-        let index = sources
-            .get(module.fqn.as_str())
-            .map(|src| LineIndex::new(src));
-        let label = paths
-            .get(&module.fqn)
-            .map_or_else(|| module.fqn.clone(), |path| path.display().to_string());
+        // A checked module is always a loaded workspace module, so its source
+        // and path are both present — `modules`, `paths`, and `per_module` are
+        // built from one load pass. Skip rather than emit a location-less line
+        // if that invariant ever breaks (refs #68).
+        let (Some(source), Some(path)) = (sources.get(module.fqn.as_str()), paths.get(&module.fqn))
+        else {
+            continue;
+        };
+        let index = LineIndex::new(source);
+        let label = path.display().to_string();
         for diag in &module.diagnostics {
-            match &index {
-                Some(index) => {
-                    let (line, col) = index.line_col(diag.span.start);
-                    eprint_diagnostic(&label, line, col, diag);
-                }
-                None => eprintln!(
-                    "{label}: {}: {}",
-                    severity_label(diag.severity),
-                    diag.message
-                ),
-            }
+            let (line, col) = index.line_col(diag.span.start);
+            eprint_diagnostic(&label, line, col, diag);
         }
     }
 }
