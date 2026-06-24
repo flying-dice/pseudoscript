@@ -348,19 +348,24 @@ fn simple_fqn(fqn: &str) -> String {
 
 // --- C4 projections ---------------------------------------------------------
 
-/// The context view: every person and system, with inter-system edges, trigger
-/// edges into systems, and provenance (`LANG.md` §9.1). Edges bubble to the
-/// enclosing system, so a body call between containers of two systems is a
-/// single system → system edge.
+/// The context view: every person, system, and standalone container (a
+/// `container` with no `for` parent, §4), with inter-system edges, trigger edges,
+/// and provenance (`LANG.md` §9.1). Edges bubble to the enclosing in-view node,
+/// so a body call between containers of two systems is a single system → system
+/// edge, and a call into a standalone container's component bubbles to that
+/// container.
 fn project_context(graph: &Graph) -> C4Scene {
     let nodes: Vec<PlacedNode> = graph
         .nodes()
         .iter()
-        .filter(|n| matches!(n.kind, NodeKind::Person | NodeKind::System))
+        .filter(|n| {
+            matches!(n.kind, NodeKind::Person | NodeKind::System)
+                || (n.kind == NodeKind::Container && n.parent.is_none())
+        })
         .map(|n| placed(n, None))
         .collect();
     let in_view: Vec<&str> = nodes.iter().map(|n| n.fqn.as_str()).collect();
-    let edges = collect_edges(graph, &in_view, |fqn| system_of(graph, fqn));
+    let edges = collect_edges(graph, &in_view, |fqn| lift_to_view(graph, fqn, &in_view));
     laid_out_c4(C4View::Context, None, nodes, edges)
 }
 
@@ -582,19 +587,6 @@ fn lift_to_view(graph: &Graph, fqn: &str, in_view: &[&str]) -> Option<String> {
             return Some(current);
         }
         let node = graph.node(&current)?;
-        current = node.parent.clone()?;
-    }
-}
-
-/// The enclosing `system` of a node, walking the `parent` chain. Used by the
-/// context view to bubble cross-container calls to system → system edges.
-fn system_of(graph: &Graph, fqn: &str) -> Option<String> {
-    let mut current = fqn.to_owned();
-    loop {
-        let node = graph.node(&current)?;
-        if node.kind == NodeKind::System {
-            return Some(current);
-        }
         current = node.parent.clone()?;
     }
 }

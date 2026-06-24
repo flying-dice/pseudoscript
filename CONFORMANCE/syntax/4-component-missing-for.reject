@@ -1,0 +1,5 @@
+// LANG.md §4 / §10 (ADR-042): a `component` MUST name its parent with
+// `for <Parent>`. Unlike a container, the `for` clause is not optional.
+
+component Repository {
+}

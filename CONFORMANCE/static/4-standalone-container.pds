@@ -1,0 +1,12 @@
+// LANG.md §4 (ADR-042): a standalone container (no `for`) is well-formed and
+// coexists with a `for`-parented container in the same module.
+
+//! shop::core
+
+public system Shop;
+
+public container Storefront for shop::core::Shop;
+
+public container Gateway {
+  Route(path: string): void;
+}

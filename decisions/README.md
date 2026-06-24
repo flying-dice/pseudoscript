@@ -58,7 +58,7 @@ Read in full for the delimiter example and the first-line/first-sentence alterna
 
 ## [010 — `for` parent: FQN addressing and kind rules](010-for-parent.md)
 
-A `for` parent is a `Path` resolved as an FQN; a cross-module parent MUST be `public`. A container's parent MUST be a `system`, a component's MUST be a `container`.
+A `for` parent is a `Path` resolved as an FQN; a cross-module parent MUST be `public`. A container's parent MUST be a `system`, a component's MUST be a `container`. **Amended by ADR-042** — `for` is optional on a container; the kind rule applies only when a parent is named.
 
 Read in full when implementing parent resolution or the kind checks, and for the cross-module parenting example.
 
@@ -247,3 +247,9 @@ Read in full for the Java/C#-precedent rationale and the rejected implicit-void 
 `self.Name(args)` is removed; a same-node callable is invoked by a bare call `Name(args)`. A bare name in call position resolves to a callable on the enclosing node; `self` is not reserved — it is an ordinary identifier with no special meaning. The renderer follows a same-node call's body and emits its cross-boundary calls, ending the silent-drop trap (issue #71) ADR-004's collapsed self-message caused. **Supersedes ADR-004.**
 
 Read in full for the call-vs-construction non-ambiguity, the same-node-vs-local-value rendering split, and the rejected fix-renderer-only alternative.
+
+## [042 — Standalone container: `for` is optional, parentless renders at the context layer](042-standalone-container.md)
+
+A `container` MAY omit `for`; a parentless container is standalone — a top-level node at the context layer (§9.1) beside persons and systems, not omitted and not an error. A component still MUST name its parent. The kind rule survives: a container's `for` parent, when named, MUST be a `system`. **Amends ADR-010.**
+
+Read in full for the dropped stub-system workaround and the context-view edge-bubbling change (nearest in-view ancestor, not specifically a system).

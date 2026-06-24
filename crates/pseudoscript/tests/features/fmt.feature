@@ -12,7 +12,7 @@ Feature: pds fmt
     Then the exit code is zero
 
   Scenario: a parse error exits non-zero without writing the file
-    Given a writable copy of fixture "syntax/4-container-missing-for.reject"
+    Given a writable copy of fixture "syntax/4-component-missing-for.reject"
     When I run pds fmt --write
     Then the exit code is non-zero
     And stderr contains "parse errors"

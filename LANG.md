@@ -11,7 +11,7 @@ PseudoScript is an architecture-modeling language where the model *is* the sourc
 
 Principles:
 - Architecture is code — versionable, diffable, reviewable.
-- **Flat structure**: containers and components declare their parent with `for`; nothing is physically nested except behavior inside its owner.
+- **Flat structure**: a component declares its parent with `for`, a container MAY; nothing is physically nested except behavior inside its owner.
 - **Behavior lives with its owner** and never changes ownership.
 - **Progressive disclosure**: any `system`, `container`, `component`, `data` type, or callable MAY disclose internals with a block, or stay a black box with `;`. Sketch the architecture as signatures, then fill in only the flows worth tracing.
 - **High-level**: bodies describe *flow and provenance*, and MAY express static business-rule computation over primitives and constants (operators and `constant`, §7, §3.6, ADR-038); they are never executed.
@@ -177,7 +177,7 @@ public constant LIMIT = 1000
 
 ## 4. Structural Constructs (flat)
 
-`system` is top-level. `container` and `component` name their parent with `for` (an FQN, §8) — they are not physically nested. A `container`'s parent MUST be a `system`; a `component`'s parent MUST be a `container`; any other parent kind MUST be rejected. Each construct MAY **disclose** behavior with a block, or be a **black box** with `;`.
+`system` is top-level. `container` and `component` name their parent with `for` (an FQN, §8) — they are not physically nested. A `container` MAY omit `for`; a parentless container is **standalone**, a top-level node at the context layer (§9.1), modelling a flat set of containers with no system breakdown. A `container`'s parent, when named, MUST be a `system`; a `component` MUST name a parent and it MUST be a `container`; any other parent kind MUST be rejected. Each construct MAY **disclose** behavior with a block, or be a **black box** with `;`.
 
 ```
 system Banking
@@ -198,6 +198,7 @@ public system Banking;                         // black box
 
 public container Mainframe for banking::core::Banking { }     // disclosed (behaviors per §5)
 public container AccountStore for banking::core::Banking;     // black box
+public container Gateway { }                                  // standalone — context layer (§9.1)
 
 component AccountService for banking::core::Mainframe { }     // disclosed
 component Repository for banking::core::AccountStore;         // black box
@@ -440,7 +441,7 @@ A dependency's **identity** is `(source, revision, path)`.
 ## 9. Diagram Generation
 
 ### 9.1 C4 diagrams (structure + relationships)
-- **Context:** `person`, `system`, inter-system arrows.
+- **Context:** `person`, `system`, standalone `container` (one with no `for` parent, §4), inter-node arrows.
 - **Container:** one system's containers (resolved via `for`).
 - **Component:** one container's components (resolved via `for`).
 - Arrows from cross-boundary body calls.
@@ -461,7 +462,7 @@ Each lifeline head card shows the participant's C4 kind and name. A `container` 
 `pds doc` generates a static documentation site from the workspace rooted at `pds.toml` (§8.1), analogous to `cargo doc`: every module and node is documented automatically, with diagrams (§9.1, §9.2, §9.4, §9.5) embedded on the relevant pages.
 
 The site MUST contain:
-- An **index** page: the workspace name and the C4 context diagram (persons, systems, inter-system edges).
+- An **index** page: the workspace name and the C4 context diagram (persons, systems, standalone containers, inter-node edges).
 - One page **per module** (§8.1), listing its nodes with their `///` summaries (§2.1) and tags.
 - One section **per node** with its `///` description, tags, visibility, and relationships (its `for` parent, inbound and outbound edges). A `system` section embeds that system's container diagram; a `container` section embeds its component diagram; a `data` section embeds its entity view (§9.4).
 - A **sequence** diagram for each triggered callable (§9.2), on its owning node.
@@ -529,8 +530,8 @@ Constant    = "constant" Ident "=" Literal ;        // top-level, primitive lite
 
 Person      = "person" Ident Body ;                 // block discloses, ';' = black box
 System      = "system" Ident Body ;
-Container   = "container" Ident "for" Path Body ;   // parent MUST be a system
-Component   = "component" Ident "for" Path Body ;   // parent MUST be a container
+Container   = "container" Ident [ "for" Path ] Body ;   // parent, when named, MUST be a system
+Component   = "component" Ident "for" Path Body ;        // parent MUST be a container
 Body        = "{" { BodyMember } "}" | ";" ;        // block discloses, ';' = black box
 
 BodyMember  = DocBlock { Macro } [ "public" ] Callable ;
