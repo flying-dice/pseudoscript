@@ -1,6 +1,6 @@
 # ADR-010 — `for` parent: FQN addressing and kind rules
 
-**Status:** Accepted
+**Status:** Accepted (amended by ADR-042 — `for` is optional on a container)
 **Affects:** LANG.md §4, §8.2, §10
 
 ## Context

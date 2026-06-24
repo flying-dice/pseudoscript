@@ -1,0 +1,16 @@
+// LANG.md §9.1 (ADR-042): a standalone container — a `container` with no `for`
+// parent — is a context-layer node beside persons and systems. A cross-boundary
+// call from its component descendant `Router` bubbles to `Gateway`, the nearest
+// in-view ancestor, not to a system.
+
+//! m
+
+public system Backend {
+  Serve(): void;
+}
+
+public container Gateway;
+
+component Router for m::Gateway {
+  Handle(): void { m::Backend.Serve() }
+}

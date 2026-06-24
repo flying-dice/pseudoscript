@@ -1,0 +1,7 @@
+// LANG.md §4 (ADR-042): a `container` MAY omit `for`. A standalone container is
+// a top-level node at the context layer; it parses with no parent.
+
+public container Gateway {
+}
+
+public container AuditLog;

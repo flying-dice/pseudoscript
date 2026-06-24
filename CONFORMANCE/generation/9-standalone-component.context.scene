@@ -1,0 +1,4 @@
+view context
+node m::Backend system "Backend"
+node m::Widget component "Widget"
+edge m::Widget -> m::Backend call "Serve"
